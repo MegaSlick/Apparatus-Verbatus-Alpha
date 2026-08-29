@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -974,15 +975,16 @@ def test_append_only_writer_refuses_symlink_and_portable_name_collisions(tmp_pat
     assert outside.read_bytes() == canonical_bytes({"example": "evidence"}) + b"\n"
 
     write_append_only(records / "Evidence.json", {"example": "first"})
-    if (records / "evidence.json").exists():
-        # Default APFS already keeps one publication slot for both spellings, so
-        # the collision this refuses cannot be constructed here: the sibling
-        # spelling *is* the file just written. Skip rather than fail, so a macOS
-        # run reports "not measurable here" instead of a defect that is not one.
-        pytest.skip("the filesystem itself conflates case variants")
     with pytest.raises(SchemaRefusal, match="collides by case or Unicode normalization"):
         write_append_only(records / "evidence.json", {"example": "second"})
-    assert not (records / "evidence.json").exists()
+    # On a case-insensitive host filesystem the two spellings are one file, so
+    # existence of the lowercase name proves nothing; the slot's listing and
+    # bytes staying exactly the first publication is the invariant.
+    assert sorted(entry.name for entry in records.iterdir()) == [
+        "Evidence.json",
+        "redirected.json",
+    ]
+    assert (records / "Evidence.json").read_bytes() == canonical_bytes({"example": "first"}) + b"\n"
 
 
 def test_corpus_directory_refuses_links_case_collisions_and_inode_replacement(tmp_path):
@@ -995,13 +997,18 @@ def test_corpus_directory_refuses_links_case_collisions_and_inode_replacement(tm
             raise AssertionError("a symlinked corpus directory must never be locked")
 
     (real / "One.json").write_text("{}", encoding="utf-8")
-    if (real / "one.json").exists():
-        # As above: the two spellings are one file here, so there is no
-        # collision to refuse. Only this half is filesystem-dependent -- the
-        # inode-replacement half below still runs everywhere.
+    (real / "one.json").write_text("{}", encoding="utf-8")
+    if sorted(entry.name for entry in real.iterdir()) == ["One.json"]:
+        # This host filesystem itself collapses the two spellings, so the plant
+        # cannot exist on disk; drive the same production listing walk with the
+        # names a case-sensitive corpus would deliver.
+        import unittest.mock
+
+        with unittest.mock.patch.object(cli.os, "listdir", return_value=["One.json", "one.json"]):
+            with pytest.raises(SchemaRefusal, match="not portable to default APFS"):
+                cli._records_in(real)
         (real / "One.json").unlink()
     else:
-        (real / "one.json").write_text("{}", encoding="utf-8")
         with pytest.raises(SchemaRefusal, match="not portable to default APFS"):
             cli._records_in(real)
 
@@ -2054,6 +2061,9 @@ def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_
         capture_output=True,
         text=True,
         cwd=Path(__file__).resolve().parents[1],
+        # PYTHONSAFEPATH (the gate exports it) drops the cwd from sys.path, so
+        # `-m gold.cli` needs the repository root supplied explicitly.
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
     )
     assert finished.returncode == 2
     assert finished.stderr.strip() == f"SchemaRefusal: {bad} is not readable JSON"
@@ -2081,6 +2091,7 @@ def test_a_float_in_a_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
         capture_output=True,
         text=True,
         cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
     )
     assert finished.returncode == 2
     assert "Traceback" not in finished.stderr

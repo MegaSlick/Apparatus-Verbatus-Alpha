@@ -15,6 +15,7 @@ from typing import Callable
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
+    AccountBalanceObservation,
     BillingState,
     CostCapture,
     CostLine,
@@ -54,6 +55,7 @@ class FakeProvider:
         self._requests_by_pod: dict[str, PodCreateRequest] = {}
         self.terminate_calls: list[str] = []
         self._next_id = 1
+        self._account_balance_usd = Decimal("100.00")
 
     def inject_failure(self, verb: str, error: BaseException, *, times: int = 1) -> None:
         """Make a verb raise ``error`` the requested finite number of times."""
@@ -77,6 +79,15 @@ class FakeProvider:
 
     def set_billing(self, capture: CostCapture) -> None:
         self._billing[capture.pod_id] = capture
+
+    def set_account_balance(self, available_usd: Decimal | str) -> None:
+        self._account_balance_usd = as_decimal(available_usd, "fake available account balance")
+
+    def observe_account_balance(self) -> AccountBalanceObservation:
+        self._call("observe_account_balance", None)
+        return AccountBalanceObservation(
+            self._account_balance_usd, self.now(), "fake provider account balance"
+        )
 
     def estimate(self, request: PodCreateRequest) -> PodEstimate:
         self._call("estimate", request.name)

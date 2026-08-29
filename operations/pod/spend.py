@@ -8,9 +8,11 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 from pathlib import Path
 
 from .models import (
+    AccountBalanceObservation,
     PodEstimate,
     SpendRefusal,
     as_decimal,
@@ -19,7 +21,24 @@ from .models import (
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
-SPEND_SCHEMA = "pod-spend.v2"
+SPEND_SCHEMA = "pod-spend.v3"
+
+RETIRED_SPEND_SCHEMAS = {
+    "pod-spend.v2": (
+        "a configured pod-spend.v2 policy predates the required "
+        "account_balance_alert_usd warning threshold"
+    ),
+}
+"""Schemas this loader once accepted, and what changed under each name.
+
+``account_balance_alert_usd`` became a required ceiling, so a file that was a
+valid configured v2 policy is now an incomplete v3 one. Left at the same schema
+name, that file failed as "missing a required ceiling" and blamed the operator's
+configuration for a change in this code. The version identifier is what tells
+those two apart, so it moves when the required shape moves.
+"""
+MAX_BALANCE_OBSERVATION_AGE_SECONDS = 60
+"""A gate may use only a current observation, never an indefinitely cached balance."""
 
 CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
 """The fixed opening of the typed phrase; the rest names one action and one challenge.
@@ -75,17 +94,23 @@ class SpendPolicy:
     launch-time metering: the pod plus its attached volume. Ongoing volume
     retention or deletion after close remains a separately authorized decision.
 
-    ``account_balance_floor_usd`` is a manual reserve threshold, not an
-    observed account balance. The documented ``"50.00"`` config-template
-    default is unverified and must be checked against RunPod before a live run.
+    ``account_balance_floor_usd`` is the hard observed-balance stop. It is a
+    reserve that must *remain* available after the action being authorized has
+    run to its hard deadline, so the floor is tested against the observed
+    balance both now and net of this action's own estimated cost plus every
+    locally reserved paid-action liability -- a reserve concurrent runs may
+    spend through is not a reserve. The documented
+    ``"50.00"`` config-template default is unverified and must be checked
+    against RunPod before a live run. ``account_balance_alert_usd`` is a higher
+    warning threshold: it never blocks a paid action.
     """
 
     state: str
     max_hourly_usd: Decimal | None = None
     max_estimated_metered_cost_usd: Decimal | None = None
     # "$50.00" is unverified and must be checked against RunPod before a live run.
-    # This is configuration for a manual reserve, never an observed balance.
     account_balance_floor_usd: Decimal | None = None
+    account_balance_alert_usd: Decimal | None = None
     hard_lifetime_seconds: int | None = None
     laptop_heartbeat_timeout_seconds: int | None = None
     shutdown_poll_interval_seconds: int | None = None
@@ -103,6 +128,7 @@ class SpendPolicy:
             self.max_hourly_usd,
             self.max_estimated_metered_cost_usd,
             self.account_balance_floor_usd,
+            self.account_balance_alert_usd,
             self.hard_lifetime_seconds,
             self.laptop_heartbeat_timeout_seconds,
             self.shutdown_poll_interval_seconds,
@@ -126,12 +152,21 @@ class SpendPolicy:
             "account_balance_floor_usd",
             as_decimal(self.account_balance_floor_usd, "account balance floor"),
         )
+        object.__setattr__(
+            self,
+            "account_balance_alert_usd",
+            as_decimal(self.account_balance_alert_usd, "account balance alert"),
+        )
+        if self.account_balance_alert_usd <= 0:
+            raise SpendRefusal("account balance alert must be positive")
         if (
             self.max_hourly_usd <= 0
             or self.max_estimated_metered_cost_usd <= 0
             or self.account_balance_floor_usd <= 0
         ):
             raise SpendRefusal("money ceilings and account-balance floor must be positive")
+        if self.account_balance_alert_usd <= self.account_balance_floor_usd:
+            raise SpendRefusal("account balance alert must be above the hard floor")
         for label, value in (
             ("hard lifetime", self.hard_lifetime_seconds),
             ("laptop heartbeat timeout", self.laptop_heartbeat_timeout_seconds),
@@ -173,6 +208,21 @@ class SpendPolicy:
             raise SpendRefusal(str(error)) from error
 
 
+class SpendRefusalCause(StrEnum):
+    """Why a spend assessment refused, recorded where the reason is raised.
+
+    ``launch._spend_refusal_state`` turns this into the ``LaunchState`` an
+    operator reads, and it used to derive it by matching the text of
+    ``reasons``. Reflowing one of those strings -- fixing a typo, rewrapping a
+    line -- silently reclassified a money-safety refusal as a price-ceiling one,
+    and no test could catch it because the tests assert on the same prose. The
+    wording is for people; this is what the code decides on.
+    """
+
+    HARD_FLOOR = "hard-floor"
+    BALANCE_UNOBSERVABLE = "balance-unobservable"
+
+
 @dataclass(frozen=True, slots=True)
 class SpendAssessment:
     """The exact ceilings and current estimate shown at both paid-action gates."""
@@ -185,6 +235,40 @@ class SpendAssessment:
     estimated_volume_cost_usd: Decimal
     estimated_total_cost_usd: Decimal
     policy: SpendPolicy
+    balance_observation: AccountBalanceObservation | None = None
+    reserved_liability_usd: Decimal = Decimal("0")
+    refusal_causes: frozenset[SpendRefusalCause] = frozenset()
+    alerts: tuple[str, ...] = ()
+    alert_notifications: tuple[str, ...] = ()
+    """What the notification seam actually did with each alert above.
+
+    ``operations/notify/README.md`` requires a failed send to be said out loud
+    rather than swallowed, and GOVERNANCE 2 forbids losing it behind a
+    successful result.  A warning is notification-only, so its delivery never
+    changes ``allowed`` -- but whether the phone got it is part of the record.
+    """
+
+    @property
+    def hard_floor_triggered(self) -> bool:
+        return SpendRefusalCause.HARD_FLOOR in self.refusal_causes
+
+    @property
+    def balance_unobservable_triggered(self) -> bool:
+        """True when no current, complete balance-safety fact was usable.
+
+        A provider outage, stale observation, or unknown existing liability is not
+        the same failure as an observed balance sitting at/below the floor. An
+        operator must be able to distinguish all of them from an ordinary price
+        ceiling breach; each is the floor mechanism failing closed on missing proof.
+        """
+
+        return SpendRefusalCause.BALANCE_UNOBSERVABLE in self.refusal_causes
+
+    @property
+    def balance_observation_usable(self) -> bool:
+        """Whether this assessment actually relied on a current complete observation."""
+
+        return self.balance_observation is not None and not self.balance_unobservable_triggered
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -209,11 +293,34 @@ class SpendAssessment:
                 "max_hourly_usd": str(self.policy.max_hourly_usd),
                 "max_estimated_metered_cost_usd": str(self.policy.max_estimated_metered_cost_usd),
                 "account_balance_floor_usd": str(self.policy.account_balance_floor_usd),
-                "account_balance_observation": "not-observed-by-runtime",
+                "account_balance_alert_usd": str(self.policy.account_balance_alert_usd),
+                "account_balance_observation": None
+                if self.balance_observation is None
+                else {
+                    "available_usd": str(self.balance_observation.available_usd),
+                    "observed_at": self.balance_observation.observed_at.isoformat(),
+                    "source": self.balance_observation.source,
+                },
+                "other_reserved_liability_usd": str(
+                    _quantize_to_cents(self.reserved_liability_usd)
+                ),
+                "alerts": list(self.alerts),
+                "alert_notifications": list(self.alert_notifications),
                 "hard_lifetime_seconds": self.policy.hard_lifetime_seconds,
                 "billing_cutoff_margin_seconds": self.policy.billing_cutoff_margin_seconds,
             },
         }
+
+
+def _one_line(detail: str | None) -> str:
+    """Collapse a provider error into one bounded line fit for a printed reason."""
+
+    if not detail:
+        return ""
+    text = " ".join(str(detail).split())
+    if len(text) > 160:
+        text = f"{text[:160]} (reason truncated at 160 characters)"
+    return text
 
 
 def _quantize_to_cents(value: Decimal) -> Decimal:
@@ -234,6 +341,12 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
     state = raw.get("state")
     schema = raw.get("schema")
     if schema != SPEND_SCHEMA:
+        retired = RETIRED_SPEND_SCHEMAS.get(schema) if isinstance(schema, str) else None
+        if retired is not None:
+            raise SpendRefusal(
+                f"spend policy schema {schema!r} is retired: {retired}. Add that ceiling "
+                f"deliberately and rename the schema to {SPEND_SCHEMA!r}"
+            )
         raise SpendRefusal(f"spend policy schema must be {SPEND_SCHEMA!r}")
     if state == "unconfigured":
         if set(raw) != {"schema", "state"}:
@@ -248,6 +361,7 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
         "max_hourly_usd",
         "max_estimated_metered_cost_usd",
         "account_balance_floor_usd",
+        "account_balance_alert_usd",
         "hard_lifetime_seconds",
         "laptop_heartbeat_timeout_seconds",
         "shutdown_poll_interval_seconds",
@@ -269,6 +383,9 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
             account_balance_floor_usd=_decimal_text(
                 raw.get("account_balance_floor_usd"), "account_balance_floor_usd"
             ),
+            account_balance_alert_usd=_decimal_text(
+                raw.get("account_balance_alert_usd"), "account_balance_alert_usd"
+            ),
             hard_lifetime_seconds=raw.get("hard_lifetime_seconds"),
             laptop_heartbeat_timeout_seconds=raw.get("laptop_heartbeat_timeout_seconds"),
             shutdown_poll_interval_seconds=raw.get("shutdown_poll_interval_seconds"),
@@ -287,8 +404,18 @@ def assess_spend(
     *,
     requested_deadline: datetime,
     now: datetime,
+    balance_observation: AccountBalanceObservation | None = None,
+    balance_unavailable_detail: str | None = None,
+    reserved_liability_usd: Decimal = Decimal("0"),
+    balance_safety_unavailable_detail: str | None = None,
 ) -> SpendAssessment:
-    """Apply the same checks to an estimated create or an adopted pod's rate."""
+    """Apply the same checks to an estimated create or an adopted pod's rate.
+
+    ``balance_unavailable_detail`` names *why* the balance could not be read when
+    ``balance_observation`` is ``None``. Both cases fail closed, but an unobservable
+    balance remains distinct from an observed floor breach so the refusal can name
+    whether the source was missing, timed out, or returned an unusable response.
+    """
 
     start = require_utc(now, "spend assessment now")
     deadline = require_utc(requested_deadline, "requested hard deadline")
@@ -301,8 +428,11 @@ def assess_spend(
     pod_cost = estimate.pod_hourly_usd * Decimal(requested_seconds) / Decimal(3600)
     volume_cost = estimate.volume_hourly_usd * Decimal(requested_seconds) / Decimal(3600)
     total_cost = pod_cost + volume_cost
+    reserved_liability = as_decimal(reserved_liability_usd, "other reserved liability")
     metered_hourly = estimate.pod_hourly_usd + estimate.volume_hourly_usd
     reasons: list[str] = []
+    causes: set[SpendRefusalCause] = set()
+    alerts: list[str] = []
     if not policy.configured:
         reasons.append("spend policy is unconfigured; paid actions are refused")
     elif requested_seconds <= 0:
@@ -324,6 +454,50 @@ def assess_spend(
             reasons.append(
                 "estimated combined pod and attached-volume cost exceeds configured ceiling"
             )
+        assert policy.account_balance_floor_usd is not None
+        assert policy.account_balance_alert_usd is not None
+        if balance_safety_unavailable_detail:
+            causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
+            reasons.append(
+                "balance safety could not be established ("
+                + _one_line(balance_safety_unavailable_detail)
+                + "); paid actions are refused"
+            )
+        elif balance_observation is None:
+            causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
+            cause = _one_line(balance_unavailable_detail)
+            reasons.append(
+                "available account balance was not observed"
+                + (f" ({cause})" if cause else "")
+                + "; paid actions are refused"
+            )
+        else:
+            available = balance_observation.available_usd
+            observation_age = (start - balance_observation.observed_at).total_seconds()
+            if observation_age < 0:
+                causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
+                reasons.append(
+                    "balance observation is dated in the future; paid actions are refused"
+                )
+            elif observation_age > MAX_BALANCE_OBSERVATION_AGE_SECONDS:
+                causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
+                reasons.append(
+                    f"balance observation is stale by {observation_age:g} seconds; "
+                    "paid actions are refused"
+                )
+            elif available <= policy.account_balance_floor_usd:
+                causes.add(SpendRefusalCause.HARD_FLOOR)
+                reasons.append("observed account balance is at or below the hard floor")
+            elif available - reserved_liability - total_cost <= policy.account_balance_floor_usd:
+                # No balance gate runs after create/adopt, so the reserve must
+                # survive this action's maximum cost through its hard deadline.
+                causes.add(SpendRefusalCause.HARD_FLOOR)
+                reasons.append(
+                    "other reserved paid-action liability plus the estimated cost of this "
+                    "action would take the observed account balance to or below the hard floor"
+                )
+            elif available <= policy.account_balance_alert_usd:
+                alerts.append("observed account balance is below the notification threshold")
     return SpendAssessment(
         allowed=not reasons,
         reasons=tuple(reasons),
@@ -333,6 +507,10 @@ def assess_spend(
         estimated_volume_cost_usd=volume_cost,
         estimated_total_cost_usd=total_cost,
         policy=policy,
+        balance_observation=balance_observation,
+        reserved_liability_usd=reserved_liability,
+        refusal_causes=frozenset(causes),
+        alerts=tuple(alerts),
     )
 
 

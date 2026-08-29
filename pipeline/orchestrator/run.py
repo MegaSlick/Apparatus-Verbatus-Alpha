@@ -33,6 +33,7 @@ sequence and to checkpoint. Its four jobs:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -96,9 +97,76 @@ STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not 
 SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
 RUN_MODES = ("manual", "semi", "auto")
 
+# Importing the gate here would cross the orchestrator's common-only boundary;
+# a test reconciles this duplicate path with the gate's constant.
+DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
+# Duplicated for the same reason and closed the same way: importing
+# `operations.operator.volume_s3`, which owns these names, would cross that
+# boundary too, and
+# `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
+# copy with it. A credential added to one list alone would otherwise leave this
+# route carrying it into a stage that decodes caller-supplied material.
+_TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+
+
+def require_coherent_ingress_options(args: argparse.Namespace) -> None:
+    if args.submission_folder is not None:
+        return
+    if args.submission_manifest is not None:
+        raise ContractError(
+            "a submission filename ledger is meaningful only with a real submission folder; "
+            "the walking skeleton's declared synthetic pages are not gated input "
+            "(--submission-manifest was supplied without --submission-folder)"
+        )
+    if args.data_gate_policy is not None:
+        raise ContractError(
+            "--data-gate-policy is meaningful only with --submission-folder; the synthetic "
+            "fixture route does not evaluate the real-input storage policy"
+        )
+
+
+def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
+    """Bind paths to the caller's cwd without hiding symlinks from the Door."""
+    args.run_root = Path(args.run_root).absolute()
+    for attribute in ("submission_folder", "submission_manifest"):
+        value = getattr(args, attribute)
+        if value is not None:
+            setattr(args, attribute, Path(value).absolute())
+    # A real run's absent policy means the repository default; fixture runs must
+    # not forward a real-only control that the Door would ignore.
+    if args.data_gate_policy is None and args.submission_folder is not None:
+        args.data_gate_policy = DEFAULT_DATA_GATE_POLICY_PATH
+    elif args.data_gate_policy is not None:
+        args.data_gate_policy = Path(args.data_gate_policy).absolute()
+    return args
+
+
+def stage_environment() -> dict[str, str]:
+    """Keep stage runtime settings, but drop credentials for the upload-only verb."""
+    environment = dict(os.environ)
+    for name in _TRANSFER_CREDENTIAL_ENV:
+        environment.pop(name, None)
+    return environment
+
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     """Run one stage as a program and return its exit code."""
+    require_coherent_ingress_options(args)
+    # Direct invocation entry points must not reinterpret caller paths under the
+    # child's repository-root cwd.
+    for attribute, flag in (
+        ("run_root", "--run-root"),
+        ("submission_folder", "--submission-folder"),
+        ("submission_manifest", "--submission-manifest"),
+        ("data_gate_policy", "--data-gate-policy"),
+    ):
+        value = getattr(args, attribute, None)
+        if value is not None and not Path(value).is_absolute():
+            raise ContractError(
+                f"{flag} is still the caller-relative path {str(value)!r}. Stages run from "
+                f"{ROOT} while the caller may be anywhere, so this must be resolved at the "
+                "orchestration boundary (`resolve_caller_paths`) before any child sees it"
+            )
     command = [
         sys.executable,
         # Ignore PYTHON* startup controls and the user site for child stages.
@@ -132,6 +200,14 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         "--hard-failure-config",
         str(args.hard_failure_config),
     ]
+    # Later stages may read only the run tree the Door sealed, never source paths.
+    if program == STAGE_PROGRAMS["door"]:
+        if args.submission_folder is not None:
+            command += ["--submission-folder", str(args.submission_folder)]
+        if args.submission_manifest is not None:
+            command += ["--submission-manifest", str(args.submission_manifest)]
+        if args.data_gate_policy is not None:
+            command += ["--data-gate-policy", str(args.data_gate_policy)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
     # Forwarded to every stage, not only to the door that snapshots it: the
@@ -164,7 +240,14 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # Inherit the operator's streams instead of buffering a stage's unbounded
     # stdout/stderr in the orchestrator. Each stage owns its diagnostic text,
     # and an unexpected exit is named after that text has already been relayed.
-    completed = subprocess.run(command, cwd=ROOT)
+    # This is also how a completed-but-partial Door's private refusal report
+    # reaches the human who ran the pipeline: it is already on the terminal by
+    # the time any exit is judged, rather than being captured and re-printed.
+    #
+    # `stage_environment()` is not optional and is the reason this call is not a
+    # bare subprocess.run: it drops the transfer credentials from every stage's
+    # environment, so only the upload-only verb can ever see them.
+    completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
@@ -200,6 +283,11 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fixture", required=True)
+    parser.add_argument("--submission-folder")
+    parser.add_argument("--submission-manifest")
+    # A relative default would bind beside the caller, not inside the repository.
+    # `resolve_caller_paths` fills the repository default only for real ingress.
+    parser.add_argument("--data-gate-policy", default=None)
     # The fixture declares which scenarios exist; `scenario_for` refuses an
     # undeclared name once the fixture is loaded, so there is no second list here
     # to drift from the declaration.
@@ -342,18 +430,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    require_coherent_ingress_options(args)
+    resolve_caller_paths(args)
+
     # Prove the algebra total before anything runs. A stage added later without a
     # class or a terminal decision should fail at the first run, not at the first
     # unusual page.
     check_algebra_is_total()
 
-    fixture = load_fixture(args.fixture_root)
-    if fixture["fixture_id"] != args.fixture:
-        raise ContractError(
-            f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
-            f"{fixture['fixture_id']!r}"
-        )
-    scenario_for(fixture, args.scenario)
+    # Real run authority seals neither fixture identity nor fixture scenario.
+    if args.submission_folder is None:
+        fixture = load_fixture(args.fixture_root)
+        if fixture["fixture_id"] != args.fixture:
+            raise ContractError(
+                f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
+                f"{fixture['fixture_id']!r}"
+            )
+        scenario_for(fixture, args.scenario)
 
     names, mode = selected_sequence(args)
 

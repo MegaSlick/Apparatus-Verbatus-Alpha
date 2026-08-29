@@ -1,9 +1,11 @@
-"""The two phone moments this surface is allowed to send, and nothing else.
+"""The two notification event classes this surface is allowed to send.
 
 Spec 12: "the four standing moments only (`operations/notify` exists);
 `run`/`export` completion is a `milestone`, a decision-needed hold is a
-`decision`." `start` and `done` belong to a working session's own hooks and are
-never a shipped tool's to send, so the allowed set here is exactly two and it is
+`decision`." A spend warning is also a `milestone`: it reports an observed
+threshold crossing and never asks for a decision or changes a launch result.
+`start` and `done` belong to a working session's own hooks and are never a
+shipped tool's to send, so the allowed event set here remains exactly two and is
 enforced in code rather than left to a caller's habit.
 
 **A failed ping never fails the verb that triggered it.**

@@ -30,18 +30,22 @@ from operations.pod.models import (
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit import gate
+from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
+from . import surface as operator_surface
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
+    DOOR_PROGRAM,
     FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
+    _declared_work,
     _pod_from_record,
     _pod_record,
     _repository_commit,
@@ -85,12 +89,13 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 f'max_hourly_usd = "{hourly}"',
                 'max_estimated_metered_cost_usd = "2.00"',
                 'account_balance_floor_usd = "50.00"',
+                'account_balance_alert_usd = "75.00"',
                 "hard_lifetime_seconds = 900",
                 "laptop_heartbeat_timeout_seconds = 60",
                 "shutdown_poll_interval_seconds = 1",
@@ -936,7 +941,8 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert any("Saved boot report: GREEN." in line for line in status_lines)
     assert any("Saved charges captured through" in line for line in status_lines)
     assert any("Reconciliation from the recorded Armarium export:" in line for line in status_lines)
-    assert any("Saved sealed submission record names 2 file(s)." in line for line in status_lines)
+    upload_payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert any(upload_payload["submission_manifest_sha256"] in line for line in status_lines)
     assert not any("active-launch" in line for line in status_lines)
 
 
@@ -1016,6 +1022,106 @@ def test_configured_ceiling_refusal_does_not_claim_the_policy_is_missing(tmp_pat
     assert "no reviewed spend limit" not in refusal.value.render().lower()
 
 
+def test_unobservable_balance_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface.provider.inject_failure(
+        "observe_account_balance", ProviderFailure("balance source timed out")
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert refusal.value.code is ErrorCode.BALANCE_UNOBSERVABLE
+    rendered = refusal.value.render().lower()
+    assert "current account balance" in rendered
+    assert "no new paid provider action" in rendered
+    assert "repair the named balance source" in rendered
+    receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
+    assert receipt["state"] == LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
+
+
+def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface.provider.set_account_balance("50.00")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert refusal.value.code is ErrorCode.BALANCE_FLOOR_REACHED
+    rendered = refusal.value.render().lower()
+    assert "account-balance reserve" in rendered
+    assert "no new paid provider action" in rendered
+    assert "restore enough available balance" in rendered
+
+
+def test_operator_launch_delivers_and_displays_a_low_balance_warning(tmp_path: Path) -> None:
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.provider.set_account_balance("60.00")
+
+    def deliver(event: str, message: str) -> notify_bridge.NotifyOutcome:
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = deliver
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert prepared.result.preview is not None
+    assert notifications == [
+        (
+            "milestone",
+            "Spend warning: observed account balance is below the notification threshold; "
+            "create operator-test; observed available balance $60.00.",
+        )
+    ]
+    assert any("Warning: observed account balance" in line for line in messages)
+    assert "Phone notification: sent." in messages
+    assert any("Account-balance hard floor: $50.00" in line for line in messages)
+    receipt = surface.receipts.read(surface._descriptor_receipt("spend-alert"))["payload"]
+    assert receipt["action"] == "create"
+    assert receipt["subject"] == "operator-test"
+    assert receipt["spend"]["ceilings"]["alert_notifications"] == ["Phone notification: sent."]
+    # The whole serialised payload, not its top-level keys: the phrase would
+    # arrive nested under `spend`, where every other value read above lives, and
+    # a top-level check would stay green while a durable receipt carried the one
+    # value that must be read off the live price screen instead of copied.
+    serialised = json.dumps(receipt)
+    assert "confirmation_phrase" not in serialised
+    assert prepared.confirmation_phrase not in serialised
+
+
+def test_post_create_balance_refusal_does_not_claim_no_paid_action_occurred(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+    # Counted from installation, so an extra balance read added inside
+    # `prepare_launch` cannot silently move which gate this test faults. The
+    # first read here is `launch`'s own re-preview and must pass; the second is
+    # the post-create read, which is the one this test is about.
+    observations = 0
+    original_observer = surface.provider.observe_account_balance
+
+    def observe():  # type: ignore[no-untyped-def]
+        nonlocal observations
+        observations += 1
+        if observations == 2:
+            raise ProviderFailure("balance endpoint failed after create")
+        return original_observer()
+
+    surface.provider.observe_account_balance = observe  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.LAUNCH_UNRESOLVED
+    rendered = refusal.value.render().lower()
+    assert "provider request may already have occurred" in rendered
+    assert "do not launch again" in rendered
+    assert "balance endpoint failed after create" in rendered
+
+
 def test_partial_upload_is_recorded_and_retries_from_verified_work(tmp_path: Path) -> None:
     messages: list[str] = []
     surface = _surface(tmp_path, faults=Faults(partial_upload=True), output=messages)
@@ -1034,6 +1140,59 @@ def test_partial_upload_is_recorded_and_retries_from_verified_work(tmp_path: Pat
     status = surface.status()
     assert any("Upload is partial" in line for line in status)
     assert any("Upload is complete" in line for line in status)
+
+
+def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid replacement restored before the final hash cannot change what is sent."""
+
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    original = canonical_bytes(build_manifest(walk_folder(source)))
+    manifest.write_bytes(original)
+    (source / "page-two.bin").write_bytes(b"second\n")
+    replacement = canonical_bytes(build_manifest(walk_folder(source)))
+    real_resume = operator_surface.ChecksummedTransfer.resume
+
+    def swap_restore(self):  # type: ignore[no-untyped-def]
+        manifest.write_bytes(replacement)
+        try:
+            return real_resume(self)
+        finally:
+            manifest.write_bytes(original)
+
+    monkeypatch.setattr(operator_surface.ChecksummedTransfer, "resume", swap_restore)
+
+    surface.upload(source, sealed_manifest=manifest)
+
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["transfer"]["completed_keys"] == ["volume/page-one.bin"]
+    assert payload["submission_manifest_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(b" " * (operator_surface.MAX_SEALED_MANIFEST_BYTES + 1))
+
+    def should_not_construct(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("the transfer was constructed for an oversized manifest")
+
+    monkeypatch.setattr(operator_surface, "ChecksummedTransfer", should_not_construct)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, sealed_manifest=manifest)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_MANIFEST_MISSING
+    assert not (surface.state_root / "fixture-volume").exists()
 
 
 def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
@@ -1201,6 +1360,28 @@ def test_load_request_refuses_unreadable_json(tmp_path: Path) -> None:
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
 
 
+def test_load_request_refuses_an_oversized_file_before_json_deserialization(tmp_path: Path) -> None:
+    request = tmp_path / "oversized-request.json"
+    request.write_bytes(b" " * (cli.MAX_REQUEST_BYTES + 1))
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(request)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert str(cli.MAX_REQUEST_BYTES) not in refusal.value.render()
+
+
+def test_load_request_does_not_follow_a_symlink(tmp_path: Path) -> None:
+    request = _request_json(tmp_path)
+    alias = tmp_path / "request-alias.json"
+    alias.symlink_to(request)
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(alias)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
 def test_load_request_refuses_a_non_object_json_value(tmp_path: Path) -> None:
     array = tmp_path / "request.json"
     array.write_text("[1, 2, 3]", encoding="utf-8")
@@ -1286,6 +1467,317 @@ def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
     assert result == 2
     assert uploads == []
     assert "existing sealed record already carries the policy" in capsys.readouterr().out
+
+
+def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    source = tmp_path / "approved" / "source"
+    ledger = tmp_path / "approved" / "ledger.json"
+    policy = tmp_path / "policy.json"
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "run",
+                "--run-id",
+                "real-run",
+                "--submission-folder",
+                str(source),
+                "--submission-manifest",
+                str(ledger),
+                "--data-gate-policy",
+                str(policy),
+            ]
+        )
+        == 0
+    )
+    assert observed["submission_folder"] == source
+    assert observed["submission_manifest"] == ledger
+    assert observed["data_gate_policy"] == policy
+
+
+@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
+    tmp_path: Path, orphan: str
+) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="orphan-real-option", **{orphan: tmp_path / "value"})
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert f"--{orphan.replace('_', '-')}" in str(refusal.value.detail)
+    assert "--submission-folder" in str(refusal.value.detail)
+    assert not observed, "the fault drill launched the Door before validating its option shape"
+
+
+def _recording_surface(
+    tmp_path: Path, *, faults: Faults | None = None, output: list[str] | None = None
+) -> tuple[OperatorSurface, list[tuple[list[str], Path | None]]]:
+    """Record child launches; successful stubs let crash drills reach interruption."""
+
+    observed: list[tuple[list[str], Path | None]] = []
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append((command, kwargs.get("cwd")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=(output if output is not None else []).append,
+        faults=faults,
+        runner=runner,
+    )
+    return surface, observed
+
+
+def _argv_value(command: list[str], flag: str) -> str:
+    assert flag in command, f"{flag} never reached the child's argv"
+    return command[command.index(flag) + 1]
+
+
+def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relative input paths bind before the child changes cwd to the workspace."""
+
+    elsewhere = tmp_path / "operator-home"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="relative-real",
+            submission_folder=Path("approved/submitted-pages"),
+            submission_manifest=Path("approved/submission-ledger.json"),
+            data_gate_policy=Path("data-gate-policy.json"),
+        )
+
+    command, cwd = observed[0]
+    assert cwd == ROOT, "the child no longer runs from the workspace; re-read this test's premise"
+    assert _argv_value(command, "--submission-folder") == str(
+        elsewhere / "approved" / "submitted-pages"
+    )
+    assert _argv_value(command, "--submission-manifest") == str(
+        elsewhere / "approved" / "submission-ledger.json"
+    )
+    assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_real_ingress_absolutization_preserves_a_symlink_for_the_doors_gate(
+    tmp_path: Path,
+) -> None:
+    """The operator must not erase a redirect before the Door inspects it."""
+
+    approved = tmp_path / "approved"
+    actual = approved / "actual-pages"
+    actual.mkdir(parents=True)
+    submitted_link = approved / "submitted-link"
+    submitted_link.symlink_to(actual, target_is_directory=True)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="symlink-real", submission_folder=submitted_link)
+
+    command, _cwd = observed[0]
+    assert Path(_argv_value(command, "--submission-folder")) == submitted_link
+    assert Path(_argv_value(command, "--submission-folder")).is_symlink()
+
+
+def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path: Path) -> None:
+    """A real-route fault drill must not fall back to fixture ingress."""
+
+    source = tmp_path / "approved" / "submitted-pages"
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    policy = tmp_path / "data-gate-policy.json"
+    messages: list[str] = []
+    surface, observed = _recording_surface(
+        tmp_path, faults=Faults(laptop_crash=True), output=messages
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="crash-real",
+            submission_folder=source,
+            submission_manifest=manifest,
+            data_gate_policy=policy,
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    command, _cwd = observed[0]
+    assert command[1] == str(ROOT / DOOR_PROGRAM), "the drill no longer runs the Door"
+    assert _argv_value(command, "--submission-folder") == str(source)
+    assert _argv_value(command, "--submission-manifest") == str(manifest)
+    assert _argv_value(command, "--data-gate-policy") == str(policy)
+    interrupted = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert interrupted["ingress"] == "real"
+    assert interrupted["last_observed_work"] == "The real submission's pages reached the Door."
+    assert any("real submission reached the Door" in line for line in messages)
+    assert not any("fixture pages" in line for line in messages)
+
+
+def test_the_laptop_crash_drill_does_not_mask_the_doors_refusal_report(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+
+    def partial_door(command, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "Private named refusal report: 1_exemplar/artifacts/refusal-report/report.json\n",
+        )
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=messages.append,
+        faults=Faults(laptop_crash=True),
+        runner=partial_door,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="partial-door-crash",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert any("Private named refusal report:" in line for line in messages)
+    assert any("laptop-crash drill interrupted" in line for line in messages)
+
+
+def test_pipeline_children_do_not_receive_upload_only_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_environment: dict[str, str] = {}
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "upload-access-secret")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "upload-secret-secret")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record_environment(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        faults=Faults(laptop_crash=True),
+        runner=record_environment,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="credential-boundary")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert "RUNPOD_S3_ACCESS_KEY" not in observed_environment
+    assert "RUNPOD_S3_SECRET_KEY" not in observed_environment
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
+def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
+    """A receipt may retain fixture configuration without calling it the input."""
+
+    observed: list[list[str]] = []
+
+    def fail_after_recording(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 2, "", "the real Designator refused")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        runner=fail_after_recording,
+    )
+    with pytest.raises(OperatorError) as failure:
+        surface.run(
+            run_id="failed-real",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+            submission_manifest=tmp_path / "approved" / "submission-ledger.json",
+        )
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert observed
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["ingress"] == "real"
+
+
+def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path: Path) -> None:
+    """Fixture names are false for real runs; policy also keeps real names off-screen."""
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    for name in ("page-1.png", "page-2.png"):
+        (folder / name).write_bytes(b"not really a page, and never opened here")
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(folder))))
+    messages: list[str] = []
+    surface, _observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="narration",
+            submission_folder=folder,
+            submission_manifest=manifest,
+            data_gate_policy=tmp_path / "data-gate-policy.json",
+        )
+
+    declared_pages, declared_acts, declared_ok = _declared_work(ROOT)
+    assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
+    for name in declared_pages + declared_acts:
+        assert not any(name in line for line in messages), (
+            f"a real run was narrated with the declared fixture's {name!r}"
+        )
+    assert any("extent is recorded by the submitted filename ledger" in line for line in messages)
+    for name in ("page-1.png", "page-2.png"):
+        assert not any(name in line for line in messages), (
+            "a submitted filename reached the terminal; the policy's logging rule allows "
+            "counts and the private report location there, not real names"
+        )
+
+
+def test_the_operator_does_not_read_the_ledger_before_the_door(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Door checks storage policy before any operator-path ledger read."""
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_text("{not canonical json", encoding="utf-8")
+    monkeypatch.setattr(
+        submission_door,
+        "load_manifest",
+        lambda _path: pytest.fail("the operator read the ledger before the Door's gate"),
+    )
+    messages: list[str] = []
+    surface, observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="bad-ledger", submission_folder=folder, submission_manifest=manifest)
+
+    assert any("Door checks against the data-handling policy" in line for line in messages)
+    assert observed, "the run never reached the Door, which is the only thing that can refuse it"
 
 
 def test_console_interrupt_never_prints_a_raw_traceback(
@@ -1572,6 +2064,9 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
 
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "not a list" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
 
 
 @pytest.mark.parametrize("member", ("pages", "non_delivered"))
@@ -1728,6 +2223,181 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
     assert first_receipt["sha256"] == sha256_file(first_bundle)
     assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
+def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "linked-content-address"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+    bundle_bytes = b"new evidence bundle"
+
+    def fake_bundle(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self
+        destination.write_bytes(bundle_bytes)
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", fake_bundle)
+    exports = surface.state_root / "exports"
+    exports.mkdir(parents=True)
+    digest = hashlib.sha256(bundle_bytes).hexdigest()
+    destination = exports / f"{run_id}-armarium-base-{digest}.zip"
+    outside = tmp_path / "outside-existing-file"
+    outside.write_bytes(b"not the evidence bundle")
+    destination.symlink_to(outside)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert outside.read_bytes() == b"not the evidence bundle"
+    assert destination.is_symlink()
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
+
+
+def test_status_reads_a_refused_upload_receipt_without_calling_it_unreadable(
+    tmp_path: Path,
+) -> None:
+    """The verb every failure message sends the operator to must survive that failure.
+
+    A refusal recorded before any transfer began -- a refused submission folder,
+    an unavailable network volume -- never had a sealed record to bind, so
+    requiring `submission_manifest_sha256` on every upload receipt made `status`
+    print "UNREADABLE; it was not treated as success" for a perfectly correct
+    record and exit 2. `status` is read-only and documented as always safe, and
+    teaching an operator to ignore STATUS_UNREADABLE costs the signal itself.
+    """
+
+    output: list[str] = []
+    surface = _surface(tmp_path, output=output)
+    surface._record_failure("upload", "submission-refused", "the submitted folder was refused")
+
+    surface.status()
+
+    printed = "\n".join(output)
+    assert "UNREADABLE" not in printed
+    assert "submission-refused" in printed
+    # A receipt that does claim bytes moved is still held to the digest.
+    surface._write_action(
+        "upload",
+        {"summary": "Upload is complete.", "state": "complete", "zero_gpu_hours": True},
+        descriptor_action="upload",
+    )
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
+def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: Path) -> None:
+    """A directory proved to exist was never proved to hold anything.
+
+    `7_armarium` was checked for its kind, so an empty one passed: the walk
+    wrote zero members, the writer returned normally, and `export` recorded
+    `"state": "complete"` for a bundle carrying `run.json` and not one
+    established reading. For a parish run that is every act in it missing, with
+    a receipt vouching for the absence -- GOVERNANCE 2's "'complete' is refused
+    unless everything reconciles", through one more door.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "empty-armarium"
+    run_root = tmp_path / "runs"
+    (run_root / run_id / "7_armarium").mkdir(parents=True)
+    (run_root / run_id / "run.json").write_text("{}", encoding="utf-8")
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "holds no evidence files" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert list(exports.glob("*.zip")) == []
+    assert list(exports.glob("*.staged")) == []
+    assert list(exports.glob(".*tmp*")) == []
+
+
+def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status` must be able to show a failed export, whatever refused it.
+
+    Every structural refusal in `_write_base_armarium_bundle` -- a missing
+    `run.json`, a member of the wrong kind, a name collision, a member that
+    changed while it was copied -- raises `OperatorError`, which the handler here
+    did not catch. The export failed with no receipt written and the staged file
+    left in `exports/`, so the operator was told to run `status` and `status` had
+    nothing to show them.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "structurally-refused"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(tmp_path / "runs"),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    def refuse_structurally(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self, destination
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail="the Armarium evidence bundle cannot be written as complete: run.json is missing",
+        )
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", refuse_structurally)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
+    assert "run.json is missing" in str(failure)
+    assert list((surface.state_root / "exports").glob("*.staged")) == []
 
 
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
@@ -1919,6 +2589,119 @@ def test_mac_wrapper_refuses_an_empty_project_root(
     assert completed.returncode == 1
     assert "could not open its project folder" in completed.stdout
     assert "Traceback" not in completed.stderr
+
+
+def _checkout_root_entry_names() -> set[str]:
+    """Read one level: every prohibited state or scratch placement starts at the root."""
+
+    return {entry.name for entry in ROOT.iterdir()}
+
+
+@pytest.fixture
+def recorded_temporary_directories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Path]:
+    """Capture scratch paths without changing TemporaryDirectory cleanup."""
+
+    real = dry_run.tempfile.TemporaryDirectory
+    created: list[Path] = []
+
+    def recording(*args, **kwargs):
+        handle = real(*args, **kwargs)
+        created.append(Path(handle.name))
+        return handle
+
+    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
+    return created
+
+
+def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
+    tmp_path: Path,
+) -> None:
+    """The six-word flow may create no state or scratch entry at workspace root."""
+
+    before = _checkout_root_entry_names()
+    surface = _surface(tmp_path)
+    spend = _spend_policy(tmp_path)
+    source, manifest = _manifest(tmp_path)
+
+    _launch(surface, spend)
+    surface.boot()
+    surface.upload(source, sealed_manifest=manifest)
+    surface.run(run_id="no-litter-run")
+    surface.export(run_id="no-litter-run")
+    prepared_close = surface.prepare_close()
+    surface.close(prepared_close, prepared_close.phrase)
+    surface.status()
+    make_transcript(tmp_path / "rehearsal.txt")
+
+    assert surface.workspace == ROOT
+    assert _checkout_root_entry_names() == before
+    assert not (ROOT / ".verbatus").exists()
+
+
+def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
+    tmp_path: Path, recorded_temporary_directories: list[Path]
+) -> None:
+    """Observe the scratch path before automatic cleanup can hide its placement."""
+
+    dry_run.make_transcript(tmp_path / "rehearsal.txt")
+
+    assert recorded_temporary_directories
+    for scratch in recorded_temporary_directories:
+        assert ROOT not in scratch.resolve().parents
+
+
+def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_temporary_directories: list[Path],
+) -> None:
+    """TemporaryDirectory honours TMPDIR, so the placement must be checked."""
+
+    configured = ROOT / "operator-temporary-files"
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(configured))
+
+    dry_run.make_transcript(tmp_path / "rehearsal.txt")
+
+    assert recorded_temporary_directories
+    assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
+
+
+def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last-resort refusal must not be the one failure that prints a traceback.
+
+    `_scratch_root` raised a plain `RuntimeError`, and `main` translates only
+    `KeyboardInterrupt`, `OperatorError` and `OSError`. `OperatorError` derives
+    from `RuntimeError` rather than the reverse, so nothing caught it: the person
+    running the rehearsal saw a stack trace instead of what happened, what it
+    meant, and what to do next.
+    """
+
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
+    monkeypatch.setattr(dry_run, "_is_within", lambda path, directory: True)
+
+    with pytest.raises(OperatorError) as refusal:
+        dry_run._scratch_root()
+
+    assert refusal.value.code is ErrorCode.UNEXPECTED
+    assert "no temporary directory outside the checkout" in str(refusal.value.detail)
+
+    exit_code = dry_run.main(["--output", str(tmp_path / "rehearsal.txt")])
+
+    assert exit_code == 1
+
+
+def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    scratch = checkout / "scratch"
+    scratch.mkdir(parents=True)
+    alias = tmp_path / "scratch-alias"
+    alias.symlink_to(scratch, target_is_directory=True)
+
+    assert dry_run._is_within(alias, checkout)
 
 
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
@@ -2133,74 +2916,223 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
         assert payload["summary"] in joined
 
 
-def test_status_names_a_manifest_that_no_longer_matches_the_upload_receipt(
-    tmp_path: Path,
-) -> None:
-    """A path is not identity: status must not treat different bytes at the
-    recorded path as the manifest that was actually uploaded.
-
-    But the sealed manifest lives outside `.verbatus/`, at a path this tool
-    does not own — re-sealing a later batch to the same filename is ordinary
-    drift, not a corrupted *operator* record, so it must not swallow the
-    intact, still-correct upload receipt behind `STATUS_UNREADABLE`. Before
-    this fix it did: this exact scenario raised `STATUS_UNREADABLE`
-    permanently and printed the upload record twice, once correctly and once
-    as "UNREADABLE".
-    """
+def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: Path) -> None:
+    """A receipt names the sealed record by digest, never by local source path."""
 
     surface = _surface(tmp_path)
     source, manifest = _manifest(tmp_path)
     surface.upload(source, sealed_manifest=manifest)
     receipt = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
 
-    (source / "later-page.bin").write_bytes(b"not in the uploaded manifest\n")
-    replacement = build_manifest(walk_folder(source))
-    manifest.write_bytes(canonical_bytes(replacement))
-
     lines = surface.status()
 
     assert (
-        receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt["submission_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
     )
+    assert "source" not in receipt
+    assert "submission_manifest" not in receipt
     joined = "\n".join(lines)
-    assert "no longer matches what the upload receipt recorded" in joined
-    assert "upload receipt itself still stands" in joined
-    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
-    assert len(upload_lines) == 1
-    assert "UNREADABLE" not in upload_lines[0]
+    assert receipt["submission_manifest_sha256"] in joined
+    serialized = json.dumps(receipt)
+    for local in (source, manifest):
+        # Both spellings: on macOS `tmp_path` is under /var/folders while
+        # `resolve()` returns /private/var/folders, so asserting only the
+        # resolved form would have passed while the receipt carried the
+        # caller's unresolved path -- the exact leak this test names.
+        assert str(local) not in serialized
+        assert str(local.resolve()) not in serialized
 
 
-def test_deleting_the_sealed_manifest_after_upload_does_not_permanently_break_status(
-    tmp_path: Path,
+@pytest.mark.parametrize("digest", (None, "not-a-sha256", "A" * 64))
+def test_status_refuses_to_present_a_malformed_manifest_digest_as_evidence(
+    tmp_path: Path, digest: str | None
 ) -> None:
-    """Deleting a temporary sealed manifest, or re-sealing over it, is ordinary
-    housekeeping outside `.verbatus/` — a routine act, not record corruption.
+    surface = _surface(tmp_path)
+    payload = {
+        "summary": "synthetic upload record",
+        "state": "complete",
+        "zero_gpu_hours": True,
+    }
+    if digest is not None:
+        payload["submission_manifest_sha256"] = digest
+    surface._write_action(
+        "upload",
+        payload,
+        descriptor_action="upload",
+    )
 
-    Before this fix, `status` — the verb the README sells as "the one you can
-    run any time" — raised `STATUS_UNREADABLE` permanently the moment this
-    happened, blamed the intact upload receipt by name, and had no recorded
-    way to clear it.
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "does not bind its submission record digest" in str(refusal.value.detail)
+
+
+def test_status_contract_says_it_reads_receipts_without_reopening_manifests() -> None:
+    help_text = cli.build_parser().format_help()
+    overview = (ROOT / "operations" / "README.md").read_text()
+
+    assert "read saved receipts only; it never contacts a provider" in help_text
+    assert "reads saved receipts only" in overview
+    assert "never reopens local submission files" in overview
+    assert "reads saved receipts and sealed submission records" not in overview
+
+
+def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
+    state = cli._default_state_dir()
+
+    assert state.is_absolute()
+    assert ".verbatus" not in str(state)
+
+
+def test_an_absolute_xdg_state_root_inside_the_checkout_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(workspace / "xdg-state"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    state = cli._default_state_dir(workspace)
+
+    assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
+    assert not cli._is_within(state, workspace)
+
+
+def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    state_parent = workspace / "state-parent"
+    state_parent.mkdir(parents=True)
+    alias = tmp_path / "state-alias"
+    alias.symlink_to(state_parent, target_is_directory=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(alias))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    state = cli._default_state_dir(workspace)
+
+    assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
+
+
+def test_state_default_failure_uses_the_operator_error_contract(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unavailable(_workspace: Path | None = None) -> Path:
+        raise RuntimeError("no safe state root")
+
+    monkeypatch.setattr(cli, "_default_state_dir", unavailable)
+
+    assert cli.main(["status"]) == 2
+    output = capsys.readouterr().out
+    assert "Verbatus met a problem it could not classify" in output
+    assert "no safe state root" in output
+    assert "Traceback" not in output
+
+
+@pytest.mark.parametrize("value", ("", ".", "relative/state"))
+def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """The Base Directory specification requires ignoring non-absolute values."""
+
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", value)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    default = cli._default_state_dir()
+
+    assert default.is_absolute()
+    assert workspace not in default.parents
+    assert default == tmp_path / "home" / ".local" / "state" / "verbatus"
+
+
+def test_a_relative_home_cannot_make_the_default_state_root_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", "")
+    monkeypatch.setenv("HOME", "relative-home")
+
+    default = cli._default_state_dir()
+
+    assert default.is_absolute()
+    assert workspace not in default.parents
+
+
+def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A moved default must not make existing receipts disappear silently."""
+
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["status"])
+
+    out = capsys.readouterr().out
+    assert str(old_state) in out
+    assert "not read here" in out
+
+
+def test_no_stale_verbatus_notice_when_state_dir_is_named_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["--state-dir", str(old_state), "status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
+
+
+def test_an_abbreviated_state_dir_flag_is_honoured_rather_than_parsed_and_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """argparse accepts abbreviations, so argv text cannot decide what was named.
+
+    `--state-di /records` set `args.state_dir`, but the scan looked for the full
+    spelling, found nothing, and overwrote the operator's folder with the
+    computed default: receipts went to `~/.local/state/verbatus`, the abandoned
+    state notice appeared, and `status` afterwards read a different set of
+    records from the one they had asked for.
     """
 
-    surface = _surface(tmp_path)
-    source, manifest = _manifest(tmp_path)
-    surface.upload(source, sealed_manifest=manifest)
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
-    manifest.unlink()
+    cli.main(["--state-di", str(old_state), "status"])
 
-    lines = surface.status()
+    out = capsys.readouterr().out
+    assert "not read here" not in out
 
-    joined = "\n".join(lines)
-    assert "is no longer present" in joined
-    assert "upload receipt itself still stands" in joined
-    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
-    assert len(upload_lines) == 1
-    assert "UNREADABLE" not in upload_lines[0]
 
-    # Running status again afterward must behave exactly the same way, not
-    # escalate or leave a lingering failure state anywhere.
-    again = surface.status()
-    assert again == lines
+def test_no_stale_verbatus_notice_when_no_old_directory_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
 
 
 def test_one_unreadable_status_record_does_not_hide_the_intact_ledgers(tmp_path: Path) -> None:
@@ -2399,6 +3331,85 @@ def test_an_evidence_bundle_refuses_a_symlinked_armarium_member(tmp_path: Path) 
     assert "7_armarium/export.json is not a regular file" in (refusal.value.detail or "")
     assert not destination.exists(), "a refused bundle must not leave a file behind"
     assert not destination.with_name(f".{destination.name}.tmp").exists()
+
+
+def test_evidence_bundle_does_not_follow_its_old_predictable_temporary_name(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "temporary-link-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (armarium / "export.json").write_text("{}", encoding="utf-8")
+    destination = tmp_path / "bundle.zip"
+    victim = tmp_path / "must-not-be-truncated"
+    victim.write_bytes(b"outside bytes")
+    predictable = destination.with_name(f".{destination.name}.tmp")
+    predictable.symlink_to(victim)
+
+    surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert destination.is_file()
+    assert victim.read_bytes() == b"outside bytes"
+    assert predictable.is_symlink()
+
+
+def test_evidence_bundle_refuses_case_variant_archive_members() -> None:
+    """Byte-distinct members that extract to one default-APFS name are refused.
+
+    The descriptor-based walk cannot plant this condition through the local
+    case-insensitive filesystem (two case-variant writes land in one file), so
+    the guard is proven at its own seam, where a case-sensitive source tree
+    would deliver both names.
+    """
+    from operations.operator import surface as surface_module
+
+    archive_names: dict[str, str] = {}
+    surface_module._register_archive_name("r/7_armarium/Result.json", archive_names)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface_module._register_archive_name("r/7_armarium/result.json", archive_names)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "collide on the default macOS filesystem" in (refusal.value.detail or "")
+
+
+def test_evidence_bundle_refuses_a_member_replaced_between_check_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "member-open-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    member = armarium / "export.json"
+    member.write_text('{"first": true}', encoding="utf-8")
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"replacement": true}', encoding="utf-8")
+    destination = tmp_path / "raced-bundle.zip"
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "export.json" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            member.unlink()
+            replacement.replace(member)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "changed between check and open" in (refusal.value.detail or "")
+    assert not destination.exists()
 
 
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:

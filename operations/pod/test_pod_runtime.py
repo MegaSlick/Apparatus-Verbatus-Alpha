@@ -6,10 +6,14 @@ without the paired red path would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import fcntl
+import inspect
 import itertools
 import json
+import os
 import subprocess
 import threading
+import unittest.mock
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,25 +22,36 @@ from pathlib import Path
 import pytest
 
 from common.chairs.config import load_models_toml
+from common.chairs.errors import DigestMismatchRefusal
 
 from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
     BootstrapPlan,
     BootstrapStep,
     BootstrapStepFailure,
+    ModelStoreBootstrapAction,
     SubprocessBootstrapActions,
 )
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
-from .launch import LaunchResult, LaunchState, PodRuntime, _bind_report_path_to_launch
+from .launch import (
+    SPEND_ALERT_DEBOUNCE_SECONDS,
+    LaunchResult,
+    LaunchState,
+    PodRuntime,
+    _bind_report_path_to_launch,
+    _spend_refusal_state,
+)
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
+    AccountBalanceObservation,
     BillingState,
     CloseState,
     CostCapture,
@@ -48,6 +63,7 @@ from .models import (
     ProviderStatus,
     SpendRefusal,
 )
+from .notify_bridge import NotifyOutcome, shell_notifier, silent
 from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
 from .preflight import (
     CacheMismatch,
@@ -64,6 +80,7 @@ from .shutdown import VerifiedShutdown
 from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
+    SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
     mint_challenge,
@@ -216,6 +233,7 @@ def policy(
     hourly: str = "1.00",
     lifetime: int = 3600,
     balance_floor: str = "50.00",
+    balance_alert: str = "75.00",
     cutoff_margin: int = 3600,
 ) -> SpendPolicy:
     return SpendPolicy(
@@ -223,6 +241,7 @@ def policy(
         max_hourly_usd=Decimal(hourly),
         max_estimated_metered_cost_usd=Decimal("2.00"),
         account_balance_floor_usd=Decimal(balance_floor),
+        account_balance_alert_usd=Decimal(balance_alert),
         hard_lifetime_seconds=lifetime,
         laptop_heartbeat_timeout_seconds=30,
         shutdown_poll_interval_seconds=1,
@@ -237,10 +256,18 @@ def test_spend_policy_refuses_an_out_of_bounds_billing_cutoff_margin(margin: obj
         replace(policy(), billing_cutoff_margin_seconds=margin)
 
 
-@pytest.mark.parametrize("field", ["account_balance_floor_usd", "billing_cutoff_margin_seconds"])
+@pytest.mark.parametrize(
+    "field",
+    ["account_balance_floor_usd", "account_balance_alert_usd", "billing_cutoff_margin_seconds"],
+)
 def test_configured_spend_policy_refuses_each_required_new_field(field: str) -> None:
     with pytest.raises(SpendRefusal, match="missing a required ceiling"):
         replace(policy(), **{field: None})
+
+
+def test_nonpositive_balance_alert_refusal_names_the_alert() -> None:
+    with pytest.raises(SpendRefusal, match="^account balance alert must be positive$"):
+        replace(policy(), account_balance_alert_usd=Decimal("0"))
 
 
 def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> PodCreateRequest:
@@ -403,6 +430,7 @@ def runtime(
     *,
     spend: SpendPolicy | None = None,
     armer: FakeControllerArmer | None = None,
+    notifier=None,
 ) -> PodRuntime:
     tokens = iter(("a" * 32, "b" * 32))
     return PreviewingRuntime(
@@ -415,6 +443,7 @@ def runtime(
         token_factory=lambda: next(tokens),
         challenge_factory=lambda: TEST_CHALLENGE,
         controller_armer=armer or FakeControllerArmer(clock, provider),
+        notifier=notifier or (lambda message: NotifyOutcome(False, False, "test silent")),
     )
 
 
@@ -742,17 +771,19 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
 ) -> None:
     clock = Clock()
     provider = fake(clock)
+    provider.now = lambda: datetime.now(UTC)
     armer = FakeControllerArmer(clock, provider)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
                 'max_estimated_metered_cost_usd = "2.00"',
                 'account_balance_floor_usd = "50.00"',
+                'account_balance_alert_usd = "75.00"',
                 "hard_lifetime_seconds = 3600",
                 "laptop_heartbeat_timeout_seconds = 30",
                 "shutdown_poll_interval_seconds = 1",
@@ -873,6 +904,984 @@ def test_both_paid_paths_refuse_a_price_outside_spend_ceiling(tmp_path: Path) ->
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_observed_balance_at_or_below_hard_floor_refuses_create_and_adopt_before_arming(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("49.99")
+    create_request = request(clock)
+
+    refused_create = runtime(provider, clock, tmp_path).create(
+        create_request, confirmation=CREATE_CONFIRMATION
+    )
+
+    assert refused_create.state is LaunchState.REFUSED_BALANCE_FLOOR
+    assert "hard floor" in refused_create.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+    assert list(tmp_path.glob("*.json")) == []
+
+    existing = provider.create(create_request)
+    refused_adopt = runtime(provider, clock, tmp_path).adopt(
+        existing.pod_id, expected=create_request, confirmation=adopt_confirmation(existing.pod_id)
+    )
+    assert refused_adopt.state is LaunchState.REFUSED_BALANCE_FLOOR
+    assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ProviderFailure("RunPod account balance request timed out"),
+        ProviderFailure("RunPod account balance response could not be parsed"),
+        ValueError("malformed balance payload"),
+    ],
+)
+def test_unobservable_balance_at_the_actual_gate_fails_closed_even_after_a_clean_preview(
+    tmp_path: Path, error: BaseException
+) -> None:
+    """A provider error, timeout, or malformed response must never read as 'proceed',
+    and the gate must not fall back on an earlier successful preview's reading --
+    that would be exactly the cached-balance shortcut the ruling refuses.
+
+    Constructed directly against ``PodRuntime`` (not the ``runtime()``/
+    ``PreviewingRuntime`` helper): ``PreviewingRuntime.create`` stages an extra,
+    discarded preview before the one that gates, so injecting a single failure
+    through it proves nothing about the actual gate -- it can be silently consumed
+    by the discarded call instead. Every other balance test here drives the fake's
+    clean, injected balance, proving the ceiling comparison but never this
+    fail-closed catch in ``PodRuntime._observe_balance``.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    create_request = request(clock)
+    tokens = iter(("a" * 32, "b" * 32))
+    pod_runtime = PodRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+
+    shown = pod_runtime.preview_create(create_request)
+    assert shown.state is LaunchState.PREVIEW
+    assert shown.preview is not None and shown.preview.assessment.allowed
+
+    provider.inject_failure("observe_account_balance", error)
+    refused = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+
+    assert refused.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert refused.preview is not None
+    assert "available account balance was not observed" in "; ".join(
+        refused.preview.assessment.reasons
+    )
+    assert not any(verb == "create" for verb, _ in provider.calls)
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_balance_source_failure_cannot_spoof_an_observed_hard_floor_breach(
+    tmp_path: Path,
+) -> None:
+    """Provider detail is evidence to retain, not trusted refusal taxonomy."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.inject_failure(
+        "observe_account_balance",
+        ProviderFailure("hard floor service timed out"),
+        times=99,
+    )
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "hard floor service timed out" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_malformed_balance_source_result_is_a_named_fail_closed_refusal(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.observe_account_balance = lambda: object()  # type: ignore[method-assign]
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "not AccountBalanceObservation" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_post_create_balance_failure_records_its_real_shutdown_cause(tmp_path: Path) -> None:
+    """A balance outage after POST must not be preserved as a price-ceiling breach."""
+
+    clock = Clock()
+    provider = fake(clock)
+    observations = 0
+
+    def observe() -> AccountBalanceObservation:
+        nonlocal observations
+        observations += 1
+        if observations == 3:
+            raise ProviderFailure("balance endpoint failed after create")
+        return AccountBalanceObservation("100.00", clock.now(), "sequenced fake balance")
+
+    provider.observe_account_balance = observe  # type: ignore[method-assign]
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert result.close_report is not None
+    assert "post-create spend assessment refused" in result.close_report.reason
+    assert "balance endpoint failed after create" in result.close_report.reason
+    assert "price" not in result.close_report.reason
+
+
+def test_balance_warning_notifies_only_and_cannot_block_a_guarded_create(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def failing_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, False, "fake send failure")
+
+    result = runtime(provider, clock, tmp_path, notifier=failing_notifier).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert warnings
+    assert all("Spend warning:" in warning for warning in warnings)
+
+
+def test_balance_warning_debounces_a_hovering_balance_across_previews(tmp_path: Path) -> None:
+    """Repeated low observations are one episode until the debounce expires."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+    result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 1
+
+    suppressed = pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 1
+    assert suppressed.preview is not None
+    assert suppressed.preview.assessment.alert_notifications == (
+        "Phone notification: not sent (a delivered warning for this action and subject "
+        "is still inside the debounce window).",
+    )
+
+    clock.sleep(SPEND_ALERT_DEBOUNCE_SECONDS + 1)
+    pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 2
+
+
+def test_a_recovered_balance_then_a_second_crossing_notifies_inside_the_debounce_window(
+    tmp_path: Path,
+) -> None:
+    """Duplicate samples are noise; a new low-balance episode is not.
+
+    Two consecutive safe observations establish recovery.  The next drop is a
+    new crossing and must reach the phone even though the earlier episode's
+    delivery stamp is still inside the ordinary fifteen-minute window.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    warnings: list[str] = []
+
+    def preview() -> None:
+        # Reconstruct the runtime each time so this proves the durable state a
+        # second CLI process would read, not merely an in-memory transition.
+        runtime(
+            provider,
+            clock,
+            tmp_path,
+            notifier=lambda message: (
+                warnings.append(message),
+                NotifyOutcome(True, True, "ok"),
+            )[1],
+        ).preview_create(request(clock))
+
+    provider.set_account_balance("60.00")
+    preview()
+    provider.set_account_balance("80.00")
+    preview()
+    preview()
+    provider.set_account_balance("60.00")
+    preview()
+
+    assert len(warnings) == 2
+    assert clock.seconds < SPEND_ALERT_DEBOUNCE_SECONDS
+
+
+def test_a_flapping_balance_does_not_rearm_or_flood_the_phone(tmp_path: Path) -> None:
+    """One safe sample is not a recovery when the next sample falls straight back."""
+
+    clock = Clock()
+    provider = fake(clock)
+    warnings: list[str] = []
+
+    for balance in ("60.00", "80.00", "60.00", "80.00", "60.00", "80.00", "60.00"):
+        provider.set_account_balance(balance)
+        runtime(
+            provider,
+            clock,
+            tmp_path,
+            notifier=lambda message: (
+                warnings.append(message),
+                NotifyOutcome(True, True, "ok"),
+            )[1],
+        ).preview_create(request(clock))
+
+    assert len(warnings) == 1
+
+
+def test_a_post_create_threshold_crossing_is_delivered_and_recorded(tmp_path: Path) -> None:
+    """The provider-returned price gate reads balance a third time after POST.
+
+    If that observation is the first one below the alert threshold, it is still
+    a real crossing.  The guarded result must retain the delivery evidence rather
+    than returning the pre-create assessment that saw only a safe balance.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    balances = iter(("100.00", "100.00", "60.00"))
+    warnings: list[str] = []
+
+    def observe() -> AccountBalanceObservation:
+        return AccountBalanceObservation(next(balances), clock.now(), "sequenced fake balance")
+
+    provider.observe_account_balance = observe  # type: ignore[method-assign]
+    result = runtime(
+        provider,
+        clock,
+        tmp_path,
+        notifier=lambda message: (warnings.append(message), NotifyOutcome(True, True, "ok"))[1],
+    ).create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert len(warnings) == 1
+    assert result.preview is not None
+    ceilings = result.preview.to_record()["spend"]["ceilings"]  # type: ignore[index]
+    assert ceilings["account_balance_observation"]["available_usd"] == "60.00"  # type: ignore[index]
+    assert ceilings["alert_notifications"] == ["Phone notification: sent."]  # type: ignore[index]
+
+
+def test_balance_warning_debounce_is_scoped_per_action_and_subject(tmp_path: Path) -> None:
+    """A hovering balance on one pod must not silence the warning for a different one."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+    pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 1
+
+    other_request = replace(request(clock), name="pod-runtime-test-other")
+    pod_runtime.preview_create(other_request)
+    assert len(warnings) == 2
+
+
+def test_a_corrupted_or_out_of_range_spend_alert_stamp_never_crashes_the_preview(
+    tmp_path: Path,
+) -> None:
+    """The debounce stamp is untrusted input the moment it is read back from disk;
+    a malformed or absurd value must be treated the same as a missing one -- sent
+    again, never a crash. A crash here would break the display-only preview, not
+    the spend decision, but ``_preview`` must still be able to return."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+    pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 1
+
+    stamp = pod_runtime._spend_alert_stamp_path("create", "pod-runtime-test")
+    stamp.write_text("not-a-number", encoding="utf-8")
+    result = pod_runtime.preview_create(request(clock))
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 2
+
+    stamp.write_text("9" * 30, encoding="utf-8")  # far outside datetime's representable range
+    result = pod_runtime.preview_create(request(clock))
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 3
+
+    stamp.write_bytes(b"\xff")
+    result = pod_runtime.preview_create(request(clock))
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 4
+
+
+def test_an_oversized_spend_alert_stamp_cannot_silence_the_low_balance_page(
+    tmp_path: Path,
+) -> None:
+    """A stamp too long to parse must send, not be lost behind a raised parse error.
+
+    ``_load_spend_alert_state`` promises that corrupt evidence reverts to
+    sending, but it read the whole file and handed it to ``int``, which refuses a
+    decimal string past ``sys.int_max_str_digits`` with a ``ValueError`` rather
+    than answering.  That escaped the loader, so every later gate for this action
+    and subject recorded a delivery failure instead of paging: one file, written
+    once, silences the low-balance warning permanently.  The stamp is written
+    into the same directory a paid run writes leases into, so its size is
+    untrusted exactly as its content is.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+    pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 1
+
+    stamp = pod_runtime._spend_alert_stamp_path("create", "pod-runtime-test")
+    stamp.write_text("9" * 5000, encoding="utf-8")
+
+    result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 2
+    assert result.preview is not None
+    assert result.preview.assessment.alert_notifications == ("Phone notification: sent.",)
+
+
+def test_a_failed_debounce_write_is_recorded_beside_the_delivered_warning(
+    tmp_path: Path,
+) -> None:
+    """A sent warning whose stamp did not persist says so on the receipt.
+
+    Losing the stamp is advisory -- it can cause one duplicate page, never a
+    blocked action -- but a receipt reading only ``sent`` leaves that duplicate
+    with no recorded cause, which is the shape GOVERNANCE 2 refuses.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+
+    def refuse_write(path, payload):
+        raise PermissionError("the stamp directory is read-only")
+
+    with unittest.mock.patch.object(launch_module, "atomic_write", refuse_write):
+        result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    notifications = result.preview.assessment.alert_notifications
+    assert "Phone notification: sent." in notifications
+    assert any("Debounce state: NOT RECORDED" in line for line in notifications)
+    assert any("read-only" in line for line in notifications)
+
+
+def test_a_lease_that_vanishes_between_listing_and_reading_refuses_the_paid_gate(
+    tmp_path: Path,
+) -> None:
+    """A liability seen a moment ago and now gone is unknown, not zero.
+
+    ``glob`` accounted for the file; ``LeaseStore.load`` then answered ``None``
+    because it no longer exists.  Treating that as "nothing to reserve" lets the
+    next create authorise a pod without counting a lease that may still be
+    billing.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = runtime(provider, clock, leases)
+    # The listing names a lease the read can no longer find: exactly the state a
+    # file removed between `glob` and `LeaseStore.load` leaves behind.
+    vanished = leases / ("d" * 32 + ".json")
+    real_glob = Path.glob
+
+    def glob_reporting_a_removed_lease(self, pattern):
+        return iter([*real_glob(self, pattern), vanished])
+
+    with unittest.mock.patch.object(Path, "glob", glob_reporting_a_removed_lease):
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "vanished" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_spend_gate_lock_another_process_holds_refuses_rather_than_waiting(
+    tmp_path: Path,
+) -> None:
+    """An unbounded wait on the money path is a defect, so the gate gives up by name.
+
+    A holder that never finishes -- a provider call hung inside another process's
+    spend gate -- used to leave this create blocked in ``flock`` forever, printing
+    nothing at all instead of a refusal an operator can act on.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = PreviewingRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=leases,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: "a" * 32,
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+        notifier=lambda message: NotifyOutcome(False, False, "test silent"),
+        lock_sleeper=lambda seconds: None,
+        lock_wait_seconds=0.05,
+    )
+    held = leases.parent / f".{leases.name}.spend-gate.lock"
+    with held.open("a+b") as blocker:
+        fcntl.flock(blocker.fileno(), fcntl.LOCK_EX)
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "spend-reservation" in result.detail
+    assert "still holds this lock" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: Path) -> None:
+    """Unknown remaining liability is a named refusal, never an escaping OSError.
+
+    ``Path.is_symlink`` re-raises a permission error rather than answering
+    ``False``, so a lease directory the process may list but not stat threw
+    straight out of ``create`` -- past the ``_SpendGateLockFailure`` catch, past
+    every refusal state, and out of the operator surface as a bare traceback.
+    Failing closed under its own name is the whole point of the reserved-
+    liability read.
+    """
+
+    if os.geteuid() == 0:
+        # CAP_DAC_OVERRIDE walks straight through the 0o600 below, so the
+        # unreadable directory this test depends on cannot be staged as root.
+        pytest.skip("root bypasses the directory mode this refusal is staged with")
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    (leases / ("c" * 32 + ".json")).write_text("{}", encoding="utf-8")
+    pod_runtime = runtime(provider, clock, leases)
+    leases.chmod(0o600)  # listable, not statable: the lease cannot be read or ruled out
+    try:
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+    finally:
+        leases.chmod(0o700)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    # One arm, and it is the cause. This used to accept `"lease" in detail` as
+    # well, because a long tmp path truncated the phrase away at 160 characters
+    # -- but the word `lease` appears in almost every liability refusal this
+    # gate produces, so that arm passed even when the unreadable-lease cause had
+    # been replaced by an unrelated one. `_reserved_liability` names the cause
+    # before the path now, so the phrase survives truncation and can be asserted
+    # on its own.
+    assert "could not be read" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_post_create_assessment_fault_still_closes_the_billing_pod(tmp_path: Path) -> None:
+    """A pod exists by this line; an escaping exception would leave it billing.
+
+    The re-assessment after POST is the last money gate, and its refusal path
+    closes the pod.  A fault *inside* it had no path at all: the exception left
+    ``create`` with no close attempted, no close report, and no result state for
+    the operator to act on -- the one shape this runtime exists to prevent.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = runtime(provider, clock, tmp_path)
+    unfaulted = pod_runtime._assess
+    assessments = itertools.count()
+
+    def flaky(*args: object, **kwargs: object) -> SpendAssessment:
+        if next(assessments) >= 2:  # the two previews pass; the post-create read does not
+            raise PermissionError("lease directory became unstatable after the pod existed")
+        return unfaulted(*args, **kwargs)  # type: ignore[arg-type]
+
+    pod_runtime._assess = flaky  # type: ignore[method-assign]
+
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert result.record is not None
+    assert "could not be completed" in result.detail
+    assert result.close_report is not None
+    assert "could not be completed" in result.close_report.reason
+    assert provider.terminate_calls == [result.record.pod_id]
+    # A refusal report never carries a phrase that would authorize anything.
+    assert result.preview is not None
+    assert result.preview.to_record()["confirmation_phrase"] is None
+
+
+def test_a_balance_exactly_at_the_hard_floor_refuses(tmp_path: Path) -> None:
+    """The reserve survives only when the available balance is strictly above it."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("50.00")
+
+    refused = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert refused.state is LaunchState.REFUSED_BALANCE_FLOOR
+    assert "at or below the hard floor" in refused.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+@pytest.mark.parametrize("offset_seconds", [-61, 1])
+def test_a_stale_or_future_balance_observation_cannot_authorize_a_paid_action(
+    tmp_path: Path, offset_seconds: int
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+
+    def observe() -> AccountBalanceObservation:
+        return AccountBalanceObservation(
+            "100.00",
+            clock.now() + timedelta(seconds=offset_seconds),
+            "misdated fake balance",
+        )
+
+    provider.observe_account_balance = observe  # type: ignore[method-assign]
+    refused = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert refused.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "balance observation" in refused.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_concurrent_paid_actions_reserve_each_others_maximum_liability(tmp_path: Path) -> None:
+    """Two individually affordable runs must not jointly spend through the floor."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("51.50")
+    spend = policy(balance_floor="50.00", balance_alert="51.00")
+    first_request = request(clock, lifetime=3600)
+    second_request = replace(first_request, name="pod-runtime-test-other")
+    first = bare_runtime(provider, clock, tmp_path)
+    second = PodRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=spend,
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: "f" * 32,
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+    first.spend_policy = spend
+    first.preview_create(first_request)
+    second.preview_create(second_request)
+    barrier = threading.Barrier(2)
+    results: list[LaunchResult] = []
+
+    def launch(pod_runtime: PodRuntime, create_request: PodCreateRequest, phrase: str) -> None:
+        barrier.wait(timeout=5)
+        results.append(pod_runtime.create(create_request, confirmation=phrase))
+
+    threads = (
+        threading.Thread(target=launch, args=(first, first_request, CREATE_CONFIRMATION)),
+        threading.Thread(
+            target=launch,
+            args=(
+                second,
+                second_request,
+                confirmation_phrase(
+                    "create", second_request.name, POD_HOURLY, VOLUME_HOURLY, TEST_CHALLENGE
+                ),
+            ),
+        ),
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert sum(result.state is LaunchState.CREATED_GUARDED for result in results) == 1
+    refused = next(result for result in results if result.state is not LaunchState.CREATED_GUARDED)
+    assert refused.state is LaunchState.REFUSED_BALANCE_FLOOR
+    assert "reserved" in refused.detail
+
+
+def test_spend_gate_serializes_aliases_of_the_same_lease_root(tmp_path: Path) -> None:
+    """A symlink spelling must not give one liability root a second lock."""
+
+    clock = Clock()
+    provider = fake(clock)
+    lease_root = tmp_path / "leases"
+    lease_root.mkdir()
+    alias = tmp_path / "lease-alias"
+    alias.symlink_to(lease_root, target_is_directory=True)
+    direct_runtime = bare_runtime(provider, clock, lease_root)
+    alias_runtime = bare_runtime(provider, clock, alias)
+    attempting = threading.Event()
+    entered = threading.Event()
+
+    def acquire_alias() -> None:
+        attempting.set()
+        with alias_runtime._spend_gate_lock():
+            entered.set()
+
+    with direct_runtime._spend_gate_lock():
+        contender = threading.Thread(target=acquire_alias)
+        contender.start()
+        assert attempting.wait(timeout=1)
+        assert not entered.wait(timeout=0.1)
+
+    contender.join(timeout=2)
+    assert entered.is_set()
+    assert not contender.is_alive()
+
+
+def test_only_a_real_spend_lock_failure_is_named_as_a_lock_refusal(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("plain file", encoding="utf-8")
+
+    result = runtime(provider, clock, blocked_parent / "leases").create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "spend-reservation lock failed" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_token_source_failure_is_not_mislabeled_as_a_spend_lock_failure(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+
+    def fail_token() -> str:
+        raise OSError("entropy source unavailable")
+
+    pod_runtime.token_factory = fail_token
+    pod_runtime.preview_create(request(clock))
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.LEASE_FAILURE
+    assert "could not mint lease identity: entropy source unavailable" in result.detail
+    assert "lock failed" not in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_balance_exactly_at_the_alert_threshold_warns_without_blocking(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("75.00")
+    warnings: list[str] = []
+
+    result = runtime(
+        provider,
+        clock,
+        tmp_path,
+        notifier=lambda message: (warnings.append(message), NotifyOutcome(True, True, "ok"))[1],
+    ).create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert len(warnings) == 1
+
+
+def test_a_run_that_would_spend_through_the_hard_floor_is_refused_before_it_starts(
+    tmp_path: Path,
+) -> None:
+    """The floor is a reserve that has to survive the run, not just start it.
+
+    The balance here is above *both* the floor and the warning threshold, but
+    the run's maximum liability would leave the account below the reserve that
+    keeps the network volume alive while data is secured. The create gate must
+    therefore refuse before the provider sees a paid action.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("100.00")  # above the floor and above the alert
+    warnings: list[str] = []
+    hourly_run = request(clock, lifetime=3600)  # $0.77 + $0.05 for one hour
+
+    refused = runtime(
+        provider,
+        clock,
+        tmp_path,
+        spend=policy(balance_floor="99.50", balance_alert="99.75"),
+        notifier=lambda message: (warnings.append(message), NotifyOutcome(True, True, "ok"))[1],
+    ).create(hourly_run, confirmation=CREATE_CONFIRMATION)
+
+    assert refused.state is LaunchState.REFUSED_BALANCE_FLOOR
+    assert "would take the observed account balance to or below the hard floor" in refused.detail
+    assert warnings == []  # this is the floor stop, not a second warning threshold
+    assert not any(verb == "create" for verb, _ in provider.calls)
+    assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.parametrize(
+    ("balance", "state"),
+    [
+        ("100.82", LaunchState.REFUSED_BALANCE_FLOOR),  # lands exactly on the floor
+        ("100.83", LaunchState.CREATED_GUARDED),  # one cent of reserve survives
+    ],
+)
+def test_the_projected_floor_comparison_is_exact_to_the_cent(
+    tmp_path: Path, balance: str, state: LaunchState
+) -> None:
+    """Decimal money, not binary floats: $100.82 - $0.82 is exactly the floor."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance(balance)
+
+    result = runtime(
+        provider,
+        clock,
+        tmp_path,
+        spend=policy(balance_floor="100.00", balance_alert="100.50"),
+    ).create(request(clock, lifetime=3600), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is state
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected"),
+    [
+        (ProviderFailure("RunPod account balance request timed out"), "request timed out"),
+        (ValueError("malformed balance payload"), "malformed balance payload"),
+    ],
+)
+def test_an_unobservable_balance_records_why_it_could_not_be_read(
+    tmp_path: Path, provider_error: BaseException, expected: str
+) -> None:
+    """ "Not observed" alone cannot be triaged. GOVERNANCE 2 is about the reason
+    as much as the result: a missing configured source, a timeout, and a response
+    nobody could parse call for three different actions, and the refusal has to
+    say which one happened rather than swallowing the provider's own words."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.inject_failure("observe_account_balance", provider_error, times=99)
+
+    refused = runtime(provider, clock, tmp_path).preview_create(request(clock))
+
+    assert refused.state is LaunchState.PREVIEW
+    assert refused.preview is not None
+    reasons = "; ".join(refused.preview.assessment.reasons)
+    assert "available account balance was not observed" in reasons
+    assert expected in reasons
+
+
+def test_a_provider_with_no_balance_source_says_so_rather_than_only_not_observed(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = runtime(provider, clock, tmp_path)
+    pod_runtime.balance_source = None
+
+    refused = pod_runtime.preview_create(request(clock))
+
+    assert refused.preview is not None
+    reasons = "; ".join(refused.preview.assessment.reasons)
+    assert "no account-balance source is configured for this provider" in reasons
+
+
+def test_a_spend_warning_that_never_reached_the_phone_is_recorded_not_swallowed(
+    tmp_path: Path,
+) -> None:
+    """`operations/notify/README.md`: "If a send fails, say so." A warning whose
+    delivery failed silently is indistinguishable from one that arrived, and the
+    balance it was warning about is the one thing nobody may quietly not hear."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+
+    def failing_notifier(message: str) -> NotifyOutcome:
+        del message
+        return NotifyOutcome(True, False, "no topic configured")
+
+    result = runtime(provider, clock, tmp_path, notifier=failing_notifier).preview_create(
+        request(clock)
+    )
+
+    assert result.preview is not None
+    record = result.preview.to_record()["spend"]
+    assert isinstance(record, dict)
+    ceilings = record["ceilings"]
+    assert isinstance(ceilings, dict)
+    assert ceilings["alert_notifications"] == [
+        "Phone notification: NOT DELIVERED (no topic configured). The result above still stands."
+    ]
+
+
+def test_a_broken_notifier_is_recorded_and_still_cannot_fail_the_preview(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+
+    def raising_notifier(message: str) -> NotifyOutcome:
+        del message
+        raise RuntimeError("notifier exploded")
+
+    result = runtime(provider, clock, tmp_path, notifier=raising_notifier).preview_create(
+        request(clock)
+    )
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    ceilings = result.preview.to_record()["spend"]["ceilings"]  # type: ignore[index]
+    assert ceilings["alert_notifications"] == [  # type: ignore[index]
+        "Phone notification: NOT DELIVERED (the notifier raised: RuntimeError). "
+        "The result above still stands."
+    ]
+
+
+def test_safe_balance_state_failure_is_not_mislabeled_as_a_failed_delivery(
+    tmp_path: Path,
+) -> None:
+    """Recovery bookkeeping can fail when no phone notification was due."""
+
+    clock = Clock()
+    provider = fake(clock)
+
+    class BrokenRecoveryStateRuntime(PreviewingRuntime):
+        def _record_nonalert_balance(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            del args, kwargs
+            raise OSError("recovery state unavailable")
+
+    pod_runtime = BrokenRecoveryStateRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+    result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    notifications = result.preview.assessment.alert_notifications
+    assert notifications == (
+        "Phone notification recovery state: NOT RECORDED (OSError). No notification was due.",
+    )
+    assert "NOT DELIVERED" not in notifications[0]
+
+
+def test_safe_balance_without_an_alert_episode_writes_no_debounce_state(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    lease_root = tmp_path / "not-created"
+
+    result = runtime(provider, clock, lease_root).preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert not lease_root.exists()
+
+
+def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
+    """The script's reason distinguishes a missing topic from an ntfy refusal."""
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command, kwargs
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="notify: NOT DELIVERED (start) — no topic\n"
+        )
+
+    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
+
+    assert outcome == NotifyOutcome(True, False, "notify: NOT DELIVERED (start) — no topic")
+    assert outcome.line().startswith("Phone notification: NOT DELIVERED")
+
+
+def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -> None:
+    def timing_out(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command
+        raise subprocess.TimeoutExpired(cmd="sh", timeout=kwargs["timeout"])
+
+    timed_out = shell_notifier(runner=timing_out)("Spend warning: balance is low.")
+    assert timed_out == NotifyOutcome(
+        True, False, "the notification command did not answer within 10 seconds"
+    )
+
+    def unreachable(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command, kwargs
+        raise AssertionError("a malformed message must never reach the script")
+
+    refused = shell_notifier(runner=unreachable)("two\nlines")
+    assert refused == NotifyOutcome(False, False, "the message was not one non-empty line")
+
+
+def test_the_pod_cli_does_not_page_a_phone_unless_asked() -> None:
+    """The flag is the consent boundary; without it the seam stays switched off."""
+
+    assert cli._notifier(False) is silent
+    assert cli._notifier(True) is not silent
+
+
 def test_spend_ceiling_counts_attached_volume_during_the_hard_lifetime(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
@@ -909,7 +1918,12 @@ def test_confirmation_preview_shows_cost_rounded_to_the_cent(tmp_path: Path) -> 
     ceilings = record["ceilings"]
     assert isinstance(ceilings, dict)
     assert ceilings["account_balance_floor_usd"] == "50.00"
-    assert ceilings["account_balance_observation"] == "not-observed-by-runtime"
+    assert ceilings["account_balance_alert_usd"] == "75.00"
+    assert ceilings["account_balance_observation"] == {
+        "available_usd": "100.00",
+        "observed_at": START.isoformat(),
+        "source": "fake provider account balance",
+    }
 
 
 def test_spend_guard_rounds_fractional_lifetime_up_not_down(tmp_path: Path) -> None:
@@ -2579,11 +3593,82 @@ class FakeBootstrapActions:
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER)
 
+    def materialize_model_store(self) -> dict[str, object]:
+        return self._step(BootstrapStep.MODEL_STORE)
+
     def verify_chair_cache(self) -> dict[str, object]:
         return self._step(BootstrapStep.CHAIR_CACHE)
 
     def run_preflight(self) -> dict[str, object]:
         return self._step(BootstrapStep.PREFLIGHT) | {"color": "green"}
+
+
+def test_model_store_bootstrap_action_delegates_pinned_materialization(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed: dict[str, object] = {}
+
+    def materialize(root, fetcher, *, capacity):  # type: ignore[no-untyped-def]
+        observed.update(root=root, fetcher=fetcher, capacity=capacity)
+        return {"artifacts": [], "complete": False}
+
+    monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
+    fetcher = object()
+    action = ModelStoreBootstrapAction(
+        tmp_path / "models",
+        fetcher,
+        capacity={"cleanup_owner": "pod operator"},  # type: ignore[arg-type]
+    )
+
+    assert action.materialize() == {"artifacts": [], "complete": False}
+    assert observed == {
+        "root": tmp_path / "models",
+        "fetcher": fetcher,
+        "capacity": {"cleanup_owner": "pod operator"},
+    }
+
+
+def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
+    """Protocol methods, resumable steps, and concrete actions must stay one-to-one.
+
+    Structural Protocol annotations do not enforce that alignment at runtime.
+    """
+    from operations.operator.surface import FixtureBootstrapActions
+
+    required = {name for name, _ in inspect.getmembers(BootstrapActions, inspect.isfunction)} - {
+        "__init__"
+    }
+    assert len(required) == len(BootstrapStep), (
+        "every bootstrap step needs exactly one action method on the protocol; "
+        f"steps={[step.value for step in BootstrapStep]}, methods={sorted(required)}"
+    )
+    for implementation in (
+        FixtureBootstrapActions,
+        SubprocessBootstrapActions,
+        FakeBootstrapActions,
+    ):
+        missing = sorted(name for name in required if not hasattr(implementation, name))
+        assert not missing, f"{implementation.__name__} implements no {missing}"
+
+
+def test_bootstrapper_refuses_any_unregistered_structural_implementation_that_drifted(
+    tmp_path: Path,
+) -> None:
+    """The guard applies to future implementations, not only today's test roster."""
+
+    class DriftedActions(FakeBootstrapActions):
+        materialize_model_store = None  # type: ignore[assignment]
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="materialize_model_store"):
+        Bootstrapper(
+            BootstrapJournal(
+                tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+            ),
+            DriftedActions(),  # type: ignore[arg-type]
+        )
 
 
 def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: Path) -> None:
@@ -2601,6 +3686,7 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert report.green
     assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
     assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 2
+    assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
@@ -2615,6 +3701,37 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
 
     with pytest.raises(BootstrapStepFailure, match="does not account for every step"):
         journal.load_or_create()
+
+
+def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
+    tmp_path: Path,
+) -> None:
+    """A journal is not blamed for a change this code made to the step list.
+
+    Inserting ``MODEL_STORE`` before ``CHAIR_CACHE`` changed the valid completion
+    prefix. Under the old schema name a perfectly honest v1 journal was rejected
+    as "duplicated, reordered, or skips a step", which reads as tampering. The
+    schema bump makes it what it is: a journal this code no longer understands,
+    to be preserved and replaced.
+    """
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    path = tmp_path / "bootstrap.json"
+    journal = BootstrapJournal(path, BootstrapPlan("f" * 40, lockfile), now=lambda: START)
+    record = journal.load_or_create()
+    # Exactly what a v1 pod wrote after finishing everything through the chair
+    # cache: the step order that existed before the model store was inserted.
+    record["schema"] = "pod-bootstrap.v1"
+    record["completed"] = ["repository", "uv-environment", "transfer", "chair-cache"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        journal.load_or_create()
+
+    assert "schema is absent or unsupported" in failure.value.detail
+    assert "reordered" not in failure.value.detail
+    assert "Preserve it for review" in failure.value.remediation
 
 
 def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> None:
@@ -2633,6 +3750,29 @@ def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> 
     assert BootstrapStep.PREFLIGHT not in actions.calls
 
 
+def test_model_store_security_refusal_keeps_its_code_and_stops_bootstrap(tmp_path: Path) -> None:
+    class RefusingModelStore(FakeBootstrapActions):
+        def materialize_model_store(self) -> dict[str, object]:
+            self.calls.append(BootstrapStep.MODEL_STORE)
+            raise DigestMismatchRefusal("qwen3.8-27B", "external link target refused")
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    actions = RefusingModelStore()
+    report = Bootstrapper(
+        BootstrapJournal(
+            tmp_path / "bootstrap.json", BootstrapPlan("e" * 40, lockfile), now=lambda: START
+        ),
+        actions,
+    ).run()
+
+    assert report.failure_step is BootstrapStep.MODEL_STORE
+    assert report.detail is not None and "security refusal digest-mismatch" in report.detail
+    assert "qwen3.8-27B" in report.detail
+    assert BootstrapStep.CHAIR_CACHE not in actions.calls
+    assert BootstrapStep.PREFLIGHT not in actions.calls
+
+
 def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     tmp_path: Path,
 ) -> None:
@@ -2645,6 +3785,7 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     actions = SubprocessBootstrapActions(
         repository=repository,
         transfer=lambda: {},
+        materialize_model_store=lambda: {},
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {"color": "green"},
         runner=lambda argv, cwd: (_ for _ in ()).throw(AssertionError(f"unexpected {argv}")),
@@ -2654,12 +3795,74 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    commit = "f" * 40
+    observed: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setenv("VERBATUS_PARENT_SECRET", "must-not-leak")
+
+    def run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append((list(argv), dict(kwargs["env"])))
+        stdout = f"{commit}\n" if argv[1:] == ["rev-parse", "HEAD"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("operations.pod.bootstrap.subprocess.run", run)
+    actions = SubprocessBootstrapActions(
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+    )
+
+    assert actions.checkout_commit(commit) == {"commit": commit}
+    assert observed
+    assert all(argv[0] == "/usr/bin/git" for argv, _ in observed)
+    # The whole environment, spelled out: the point of this test is that the
+    # child sees exactly what this repository chose and nothing inherited, so an
+    # entry added to `BOOTSTRAP_ENVIRONMENT` must be named here deliberately
+    # rather than admitted by a subset check. `UV_CACHE_DIR` is here because uv
+    # otherwise infers its cache from XDG_CACHE_HOME or HOME, neither of which
+    # this environment supplies.
+    assert all(
+        environment
+        == {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
+        }
+        for _, environment in observed
+    )
+    assert all("VERBATUS_PARENT_SECRET" not in environment for _, environment in observed)
+
+
+def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {
+            "complete": False,
+            "real_roster_complete": False,
+        },
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+    )
+
+    with pytest.raises(BootstrapStepFailure, match="every real-roster repository"):
+        actions.materialize_model_store()
+
+
 def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     actions = SubprocessBootstrapActions(
         repository=repository,
         transfer=lambda: {},
+        materialize_model_store=lambda: {},
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {
             "color": "red",
@@ -3004,6 +4207,19 @@ def test_pod_runtime_checked_in_spend_policy_refuses_paid_actions() -> None:
     root = Path(__file__).resolve().parents[2]
     configured = load_spend_policy(root / "config/spend.toml")
     assert not configured.configured
+    template = (root / "config/spend.toml").read_text(encoding="utf-8")
+    assert 'account_balance_floor_usd = "50.00"' in template
+    assert "unverified" in template
+
+
+def test_spend_configuration_documentation_matches_the_observed_balance_contract() -> None:
+    root = Path(__file__).resolve().parents[2]
+    documentation = (root / "config" / "README.md").read_text(encoding="utf-8")
+
+    assert "observed `account_balance_floor_usd` hard reserve" in documentation
+    assert "`account_balance_alert_usd` notification threshold" in documentation
+    assert "explicitly configured source" in documentation
+    assert "runtime does not observe account balance" not in documentation
 
 
 def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -> None:
@@ -3238,12 +4454,13 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v2"',
+        "schema": '"pod-spend.v3"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
         "max_estimated_metered_cost_usd": '"2.00"',
         "account_balance_floor_usd": '"50.00"',
+        "account_balance_alert_usd": '"75.00"',
         "hard_lifetime_seconds": "3600",
         "laptop_heartbeat_timeout_seconds": "30",
         "shutdown_poll_interval_seconds": "1",
@@ -3261,12 +4478,108 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         load_spend_policy(path)
 
 
+def test_a_reworded_refusal_reason_cannot_reclassify_a_money_safety_refusal() -> None:
+    """The operator-facing state is decided by recorded cause, not by prose.
+
+    `hard_floor_triggered` and `balance_unobservable_triggered` used to match the
+    text of `reasons`, and `_spend_refusal_state` turns them into the state an
+    operator reads. Reflowing any of those strings -- a typo fix, a rewrap --
+    made both properties False and reported a balance-reserve refusal as a price
+    ceiling, sending the operator to inspect a price sheet with nothing wrong in
+    it. No prose assertion could catch that, because the assertions read the same
+    prose. So the reasons are rewritten here to nonsense and the classification
+    must be unchanged.
+    """
+
+    from .models import PodEstimate
+    from .spend import SpendRefusalCause, assess_spend
+
+    clock = Clock()
+    estimate = PodEstimate(POD_HOURLY, VOLUME_HOURLY, "fixture price sheet", clock.now())
+    observation = AccountBalanceObservation(
+        available_usd=Decimal("50.00"), observed_at=clock.now(), source="fixture"
+    )
+    floored = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=observation,
+    )
+
+    assert not floored.allowed
+    assert floored.refusal_causes == frozenset({SpendRefusalCause.HARD_FLOOR})
+    assert _spend_refusal_state(floored) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    reworded = replace(floored, reasons=("some future editor reflowed this line",))
+
+    assert reworded.hard_floor_triggered
+    assert _spend_refusal_state(reworded) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    unobservable = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=None,
+        balance_unavailable_detail="the fixture source is switched off",
+    )
+
+    assert unobservable.refusal_causes == frozenset({SpendRefusalCause.BALANCE_UNOBSERVABLE})
+    assert (
+        _spend_refusal_state(replace(unobservable, reasons=("reworded",)))
+        is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    )
+
+
+def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The schema identifier separates an operator's mistake from a change in this code.
+
+    ``account_balance_alert_usd`` became required. A file that was a complete
+    configured v2 policy is now an incomplete v3 one, and under the unchanged
+    schema name it failed as "missing a required ceiling" -- an accusation
+    against configuration nobody had touched.
+    """
+
+    from .spend import load_spend_policy
+
+    complete_v2 = {
+        "schema": '"pod-spend.v2"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+    }
+    path = tmp_path / "spend.toml"
+    path.write_text(
+        "\n".join(f"{key} = {value}" for key, value in complete_v2.items()) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpendRefusal) as refusal:
+        load_spend_policy(path)
+
+    detail = str(refusal.value)
+    assert "retired" in detail
+    assert "account_balance_alert_usd" in detail
+    assert "pod-spend.v3" in detail
+    assert "missing a required ceiling" not in detail
+
+
 def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
     from .spend import load_spend_policy
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v2"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 
@@ -3717,16 +5030,18 @@ def _drive_cli(
 ) -> int:
     """Run `cli.main` against a fake, answering any prompt correctly."""
 
+    provider.now = lambda: datetime.now(UTC)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
                 'max_estimated_metered_cost_usd = "2.00"',
                 'account_balance_floor_usd = "50.00"',
+                'account_balance_alert_usd = "75.00"',
                 "hard_lifetime_seconds = 3600",
                 "laptop_heartbeat_timeout_seconds = 30",
                 "shutdown_poll_interval_seconds = 1",

@@ -9,8 +9,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
+from common.chairs.errors import ChairRefusal
+from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chairs.registry import ChairRegistry
 
@@ -18,7 +20,36 @@ from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
 from .preflight import is_cache_mismatch
 
-BOOTSTRAP_SCHEMA = "pod-bootstrap.v1"
+BOOTSTRAP_SCHEMA = "pod-bootstrap.v2"
+"""Bumped when ``ORDERED_STEPS`` changed: ``MODEL_STORE`` was inserted before
+``CHAIR_CACHE``, so a journal written under v1 lists a completion prefix this
+code no longer recognises. Left at v1, such a journal was rejected as
+"duplicated, reordered, or skips a step" -- the journal blamed for a change in
+the step list. Under its own name it is rejected as an unsupported schema, whose
+remediation is already the correct one: preserve it and start a new journal,
+because every step from ``MODEL_STORE`` onward genuinely has not run.
+"""
+BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
+BOOTSTRAP_ENVIRONMENT = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
+    # $HOME. This environment is explicit and supplies none of those, so where
+    # `uv sync --locked --frozen` cached anything was left to whatever uv could
+    # infer from a passwd entry -- on the money path, with the GPU billing while
+    # it failed. Naming it makes the dependency visible instead of inferred.
+    #
+    # `/tmp` because it is the one absolute path writable by whatever user the
+    # pod image runs as. The cost is honest and bounded: the cache does not
+    # survive a pod, so a fresh pod re-downloads the locked wheels once. It is
+    # deliberately not under the checkout, which must stay exactly the pinned
+    # commit, and not on the model volume, whose contents are evidence.
+    #
+    # Unverified against a real pod image, like the spend template's "$50.00":
+    # check it on the first live boot.
+    "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
+}
 
 
 class BootstrapStep(StrEnum):
@@ -27,6 +58,7 @@ class BootstrapStep(StrEnum):
     REPOSITORY = "repository"
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
+    MODEL_STORE = "model-store"
     CHAIR_CACHE = "chair-cache"
     PREFLIGHT = "preflight"
 
@@ -96,6 +128,9 @@ class BootstrapActions(Protocol):
 
     def resume_transfer(self) -> dict[str, object]:
         """Resume checksum-aware transfer, or raise a named partial-transfer failure."""
+
+    def materialize_model_store(self) -> dict[str, object]:
+        """Fetch real pinned snapshots and publish their measured store evidence."""
 
     def verify_chair_cache(self) -> dict[str, object]:
         """Verify every configured chair pin, with at most one same-pin re-fetch each."""
@@ -250,6 +285,20 @@ class Bootstrapper:
     """Run only unfinished steps.  A crash re-enters the current idempotent step."""
 
     def __init__(self, journal: BootstrapJournal, actions: BootstrapActions) -> None:
+        # Static typing is not a repository gate, so structural fixtures must
+        # prove every Protocol effect at construction too.
+        missing = sorted(
+            name
+            for name, member in vars(BootstrapActions).items()
+            if not name.startswith("_")
+            and callable(member)
+            and not callable(getattr(actions, name, None))
+        )
+        if missing:
+            raise TypeError(
+                f"bootstrap actions {type(actions).__name__} lacks callable Protocol methods: "
+                f"{missing}"
+            )
         self.journal = journal
         self.actions = actions
 
@@ -264,6 +313,15 @@ class Bootstrapper:
             try:
                 receipt = self._execute(step)
             except BootstrapStepFailure as failure:
+                self.journal.mark_failure(record, failure)
+                return _report_from_record(record)
+            except ChairRefusal as refusal:
+                failure = BootstrapStepFailure(
+                    step,
+                    f"security refusal {refusal.code}: {refusal}",
+                    "Correct the named chair evidence mismatch, then resume this same "
+                    "journal; do not substitute an artifact, revision, or refusal.",
+                )
                 self.journal.mark_failure(record, failure)
                 return _report_from_record(record)
             except Exception as error:
@@ -287,6 +345,8 @@ class Bootstrapper:
             return self.actions.sync_uv_environment(self.journal.plan.lockfile)
         if step is BootstrapStep.TRANSFER:
             return self.actions.resume_transfer()
+        if step is BootstrapStep.MODEL_STORE:
+            return self.actions.materialize_model_store()
         if step is BootstrapStep.CHAIR_CACHE:
             return self.actions.verify_chair_cache()
         if step is BootstrapStep.PREFLIGHT:
@@ -344,6 +404,24 @@ class ChairCacheBootstrapAction:
         return {"chairs": receipts}
 
 
+class ModelStoreBootstrapAction:
+    """Launch-time acquisition of the real roster onto the mounted model volume."""
+
+    def __init__(
+        self,
+        store_root: str | Path,
+        fetcher: MaterializationFetcher,
+        *,
+        capacity: dict[str, object],
+    ) -> None:
+        self.store_root = Path(store_root)
+        self.fetcher = fetcher
+        self.capacity = capacity
+
+    def materialize(self) -> dict[str, object]:
+        return materialize_real_roster(self.store_root, self.fetcher, capacity=self.capacity)
+
+
 class SubprocessBootstrapActions:
     """Production-effect adapter; its commands are explicit argv, never shell text.
 
@@ -356,14 +434,35 @@ class SubprocessBootstrapActions:
         *,
         repository: str | Path,
         transfer: Callable[[], dict[str, object]],
+        materialize_model_store: Callable[[], dict[str, object]],
         cache: ChairCacheBootstrapAction,
         preflight: Callable[[], dict[str, object]],
         runner: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
+        executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,
+        environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
     ) -> None:
         self.repository = Path(repository)
         self.transfer = transfer
+        self.materialize = materialize_model_store
         self.cache = cache
         self.preflight = preflight
+        if set(executables) != {"git", "uv"} or any(
+            not isinstance(value, str) or not Path(value).is_absolute()
+            for value in executables.values()
+        ):
+            raise ValueError("bootstrap executables must give absolute git and uv paths")
+        if any(
+            not isinstance(key, str)
+            or not key
+            or "=" in key
+            or "\x00" in key
+            or not isinstance(value, str)
+            or "\x00" in value
+            for key, value in environment.items()
+        ):
+            raise ValueError("bootstrap environment must contain valid explicit text entries")
+        self.executables = dict(executables)
+        self.environment = dict(environment)
         self.runner = runner or self._run
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
@@ -404,6 +503,17 @@ class SubprocessBootstrapActions:
     def resume_transfer(self) -> dict[str, object]:
         return self.transfer()
 
+    def materialize_model_store(self) -> dict[str, object]:
+        result = self.materialize()
+        if result.get("real_roster_complete") is not True:
+            raise BootstrapStepFailure(
+                BootstrapStep.MODEL_STORE,
+                "model-store materialization did not verify every real-roster repository",
+                "Resume the same pinned materialization; do not advance to chair-cache "
+                "verification while a real-roster artifact is absent or unverified.",
+            )
+        return result
+
     def verify_chair_cache(self) -> dict[str, object]:
         return self.cache.verify()
 
@@ -419,7 +529,22 @@ class SubprocessBootstrapActions:
         return result
 
     def _command(self, argv: list[str], step: BootstrapStep) -> subprocess.CompletedProcess[str]:
-        result = self.runner(argv, self.repository)
+        executable = self.executables.get(argv[0])
+        if executable is None:
+            raise BootstrapStepFailure(
+                step,
+                f"no trusted executable is configured for command {argv[0]!r}",
+                "Configure the exact absolute bootstrap executable; PATH lookup is not used.",
+            )
+        command = [executable, *argv[1:]]
+        try:
+            result = self.runner(command, self.repository)
+        except OSError as error:
+            raise BootstrapStepFailure(
+                step,
+                f"command {argv[0]!r} could not start from {executable!r}: {error}",
+                "Repair the exact trusted bootstrap executable and resume.",
+            ) from error
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
             raise BootstrapStepFailure(
@@ -429,9 +554,15 @@ class SubprocessBootstrapActions:
             )
         return result
 
-    @staticmethod
-    def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+    def _run(self, argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=self.environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
 
 def _report_from_record(record: dict[str, object]) -> BootstrapReport:

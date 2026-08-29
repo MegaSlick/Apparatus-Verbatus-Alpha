@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +22,7 @@ from .errors import (
     AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
+    ConfigurationRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
     ReceiptRefusal,
@@ -39,6 +42,9 @@ from .models import (
 from .receipts import build_receipt
 
 CACHE_DESCRIPTOR = ".chair-identity.json"
+# The real roster must be parseable before materialization, but no verification,
+# receipt, or serving path may treat this placeholder as a pin.
+PRE_MATERIALIZATION_SENTINEL = "0" * 64
 
 
 class SnapshotFetcher(Protocol):
@@ -53,6 +59,15 @@ class HuggingFaceClient(Protocol):
 
     def snapshot_download(self, **kwargs: object) -> object:
         """Download an explicitly pinned snapshot subset."""
+
+    def metadata_load(self, local_path: Path) -> dict[str, object] | None:
+        """Read one local model card's front-matter metadata.
+
+        `load_model_card_metadata` calls this, so the declared seam has to name
+        it: a fake that implemented the Protocol as written failed here with
+        `AttributeError`, and the `attr-defined` ignore at the call site kept
+        the type checker from pointing at the cause.
+        """
 
 
 class HuggingFaceFetcher:
@@ -101,6 +116,234 @@ class HuggingFaceFetcher:
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(origin, target)
+
+
+class HuggingFaceMaterializationFetcher:
+    """Fetch a whole pinned repository for the pod's evidence materializer."""
+
+    def __init__(self, client: HuggingFaceClient):
+        self.client = client
+
+    @classmethod
+    def from_huggingface_hub(cls) -> "HuggingFaceMaterializationFetcher":
+        return cls(HuggingFaceFetcher.from_huggingface_hub().client)
+
+    def fetch(self, repo: str, revision: str, destination: Path) -> None:
+        """Leave the exact repository revision below `destination`, and nothing else.
+
+        ``snapshot_download(local_dir=...)`` writes client bookkeeping under the
+        directory it fills, including a wall-clock timestamp.  Deleting the whole
+        ``.cache`` afterward is not safe either: a repository may itself track
+        ``.cache/*`` bytes, which would then disappear before the manifest claimed
+        to measure the exact revision. Downloading through a per-call client cache
+        beside staging and copying the returned snapshot separates those namespaces:
+        the returned directory is repository content, while client state stays
+        outside the evidence tree and inside the volume's reserved promotion space.
+        """
+
+        if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
+            raise DigestMismatchRefusal(
+                repo, "materialization destination must be an existing empty regular directory"
+            )
+        client_cache = destination.with_name(f"{destination.name}.huggingface-cache")
+        if client_cache.exists() or client_cache.is_symlink():
+            raise DigestMismatchRefusal(
+                repo, f"per-call Hugging Face cache path already exists: {client_cache}"
+            )
+        failure: BaseException | None = None
+        try:
+            downloaded = self.client.snapshot_download(
+                repo_id=repo, revision=revision, cache_dir=client_cache
+            )
+            source = Path(str(downloaded))
+            if not _same_directory_anchor(source, client_cache):
+                raise DigestMismatchRefusal(
+                    repo,
+                    "Hugging Face returned a snapshot outside its per-call cache; only the "
+                    "requested revision below that isolated cache can enter staging",
+                )
+            if client_cache.is_symlink() or not client_cache.is_dir():
+                raise DigestMismatchRefusal(
+                    repo,
+                    "Hugging Face replaced its per-call cache root; an isolated cache "
+                    "must remain one regular directory",
+                )
+            if source.is_symlink() or not source.is_dir():
+                raise DigestMismatchRefusal(
+                    repo, "Hugging Face returned no regular snapshot directory"
+                )
+            files = _validated_materialization_files(source, client_cache, repo)
+            for relative, origin, identity in files:
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _copy_verified_file(origin, target, identity, repo, relative)
+        except OSError as error:
+            failure = DigestMismatchRefusal(
+                repo, f"cannot copy the pinned Hugging Face snapshot into staging: {error}"
+            )
+            raise failure from error
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            _cleanup_huggingface_cache(client_cache, repo, failure)
+
+
+def _same_directory_anchor(path: Path, root: Path) -> bool:
+    """Prove lexical containment reaches the configured root's actual inode."""
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(resolved_root)
+        anchor = resolved
+        for _ in relative.parts:
+            anchor = anchor.parent
+        return anchor.samefile(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _validated_materialization_files(
+    source: Path, client_cache: Path, repo: str
+) -> list[tuple[str, Path, tuple[int, int]]]:
+    """Inventory repository files without following a link outside the cache."""
+
+    try:
+        cache_device = client_cache.stat(follow_symlinks=False).st_dev
+    except OSError as error:
+        raise DigestMismatchRefusal(repo, f"cannot inspect the per-call cache: {error}") from error
+    identities: dict[str, str] = {}
+    files: list[tuple[str, Path, tuple[int, int]]] = []
+
+    def refuse_walk(error: OSError) -> None:
+        raise DigestMismatchRefusal(
+            repo, f"cannot inspect the returned Hugging Face snapshot: {error}"
+        ) from error
+
+    for directory, directories, filenames in os.walk(
+        source, followlinks=False, onerror=refuse_walk
+    ):
+        parent = Path(directory)
+        for name in [*directories, *filenames]:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            folded = unicodedata.normalize("NFD", relative).casefold()
+            previous = identities.setdefault(folded, relative)
+            if previous != relative:
+                raise DigestMismatchRefusal(
+                    repo,
+                    "the pinned repository carries paths that collide on default APFS: "
+                    f"{previous!r} and {relative!r}",
+                )
+        for name in directories:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            if candidate.is_symlink():
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"the Hugging Face cache represents directory {relative!r} as a symlink; "
+                    "directory links are never followed into repository evidence",
+                )
+            try:
+                status = candidate.stat(follow_symlinks=False)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    repo, f"cannot inspect returned snapshot directory {relative!r}: {error}"
+                ) from error
+            if status.st_dev != cache_device:
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot directory {relative!r} crosses the isolated "
+                    "cache's device boundary",
+                )
+        for name in filenames:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            try:
+                origin = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+                status = origin.stat(follow_symlinks=False)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    repo, f"cannot resolve returned snapshot file {relative!r}: {error}"
+                ) from error
+            if not stat.S_ISREG(status.st_mode) or status.st_dev != cache_device:
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot file {relative!r} is not a regular file on the "
+                    "isolated cache device",
+                )
+            if not _same_directory_anchor(origin, client_cache):
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot file {relative!r} resolves outside the per-call "
+                    "cache; external link targets are never read",
+                )
+            files.append((relative, origin, (status.st_dev, status.st_ino)))
+    return sorted(files, key=lambda item: item[0])
+
+
+def _copy_verified_file(
+    origin: Path,
+    target: Path,
+    expected_identity: tuple[int, int],
+    repo: str,
+    relative: str,
+) -> None:
+    """Copy the inode that validation observed, refusing a check/use swap."""
+
+    # `O_NONBLOCK`, as `model_store._read_limited_bytes` already pays for: validation
+    # proved this name was a regular file, but the Hugging Face client still owns the
+    # per-call cache directory between then and now. A name replaced by a FIFO would
+    # block this open forever -- inside a pod boot, with the GPU billing, no journal
+    # step recorded and no reason printed -- before the `fstat` below could reject it.
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(origin, flags)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            # Named separately from the identity check below so the refusal says
+            # what was found, not merely that something changed.
+            raise DigestMismatchRefusal(
+                repo,
+                f"returned snapshot file {relative!r} is no longer a regular file",
+            )
+        if (status.st_dev, status.st_ino) != expected_identity:
+            raise DigestMismatchRefusal(
+                repo,
+                f"returned snapshot file {relative!r} changed between validation and copy",
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as source_handle:
+            with target.open("xb") as target_handle:
+                shutil.copyfileobj(source_handle, target_handle)
+    finally:
+        os.close(descriptor)
+
+
+def _cleanup_huggingface_cache(
+    client_cache: Path, repo: str, failure: BaseException | None
+) -> None:
+    """Remove client state and keep both causes when acquisition also failed."""
+
+    try:
+        if client_cache.is_symlink():
+            client_cache.unlink(missing_ok=True)
+        elif client_cache.exists():
+            shutil.rmtree(client_cache)
+    except OSError as cleanup_error:
+        detail = f"per-call Hugging Face cache cleanup failed at {client_cache}: {cleanup_error}"
+        if failure is None:
+            raise DigestMismatchRefusal(repo, detail) from cleanup_error
+        if isinstance(failure, Exception):
+            raise DigestMismatchRefusal(repo, f"{failure}; {detail}") from failure
+        failure.add_note(detail)
+
+
+def load_model_card_metadata(path: Path) -> dict[str, object] | None:
+    """Load card metadata without making Hugging Face an import-time dependency."""
+
+    client = HuggingFaceFetcher.from_huggingface_hub().client
+    return client.metadata_load(path)  # type: ignore[no-any-return]
 
 
 class ChairRegistry:
@@ -203,6 +446,18 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never accept a neighbouring revision",
+            )
+        # Identity mismatch must win when a caller supplies the sentinel against
+        # a configured real pin. Config accepts the sentinel only so launch-time
+        # materialization can read the roster; every pin-reliant door meets it here.
+        if identity.digest_manifest == PRE_MATERIALIZATION_SENTINEL:
+            raise ConfigurationRefusal(
+                identity.role,
+                "digest_manifest is the all-zero pre-materialization sentinel, not a "
+                f"pin: {identity.repo or identity.path}@{identity.revision} has not been "
+                "fetched and measured. Materialize the model store, then record the "
+                "measured manifest digest on this row through a reviewed config edit; "
+                "nothing serves from a sentinel",
             )
 
     def _manifest(self, identity: ChairIdentity) -> DigestManifest:

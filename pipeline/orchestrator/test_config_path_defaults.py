@@ -1,18 +1,8 @@
-"""The orchestrator's sealed-config defaults may not depend on the caller's cwd.
+"""Sealed-path defaults must work outside the repository's cwd.
 
-The orchestrator invokes every stage as a real subprocess and passes *its own*
-value for each sealed config path on the child's argv. Its default therefore
-overrides the absolute default `common.stage.stage_parser` already gives the
-stage: a relative default here does not merely fail for the orchestrator, it
-replaces a working absolute path with one that resolves only when the run
-happens to start at the repository root. `run_config_bindings` seals each of
-these files by digest, so the whole run then refuses for a reason that has
-nothing to do with the corpus.
-
-`--models-config` is the one deliberate exception, and it is not this file's to
-change: `stage_parser` itself declares `config/models.toml` relative, so the
-orchestrator agrees with the stage rather than overriding it. Fixing that means
-moving the models-config surface, which is not an orchestrator concern.
+`--models-config` deliberately matches `stage_parser`'s relative default.
+`--data-gate-policy` has no parser default because real ingress binds it at the
+caller's boundary; fixture ingress must leave it absent.
 """
 
 import argparse
@@ -24,10 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Every orchestrator flag whose value is read as a file this run seals by digest,
-# minus the declared `--models-config` exception above.
-# `test_no_config_flag_escapes_this_suite` fails when a new `-config` flag is
-# added to the orchestrator without a decision here: cover it or declare it.
+# Every listed value is sealed by digest; exceptions are classified below.
 SEALED_CONFIG_FLAGS = (
     "--pdf-render-config",
     "--designator-padding-config",
@@ -41,35 +28,33 @@ SEALED_CONFIG_FLAGS = (
     "--witness-context-config",
 )
 
-# Flags deliberately not required to resolve from every working directory, each
-# with its reason on record (module docstring for `--models-config`).
+# This exception is constrained by `stage_parser`'s matching default.
 DECLARED_RELATIVE_CONFIG_FLAGS = ("--models-config",)
 
+# These paths bind at the caller boundary and therefore cannot have a relative default.
+RESOLVED_AT_BOUNDARY_FLAGS = ("--data-gate-policy",)
 
-def _orchestrator_string_defaults() -> dict[str, str]:
-    """Read the orchestrator parser's own defaults without running a pipeline.
+# Both suffixes name files whose bytes enter the run's sealed config digests.
+SEALED_PATH_FLAG_SUFFIXES = ("-config", "-policy")
 
-    `main()` builds its parser and parses in one breath, so the parser is not
-    reachable any other way. Intercepting `parse_args` takes the defaults off the
-    real, fully constructed parser rather than off a second copy in this file
-    that could drift from it.
-    """
+
+def _orchestrator_defaults() -> dict[str, object]:
+    """Capture every default from `main`'s otherwise inaccessible parser."""
     spec = importlib.util.spec_from_file_location(
         "orchestrator_config_defaults", ROOT / "pipeline" / "orchestrator" / "run.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
     real_parse_args = argparse.ArgumentParser.parse_args
 
     def capture(self, *_args, **_kwargs):
         captured.update(
             {
-                action.option_strings[0]: str(action.default)
+                action.option_strings[0]: action.default
                 for action in self._actions
-                if action.option_strings and isinstance(action.default, (str, os.PathLike))
+                if action.option_strings
             }
         )
         raise SystemExit(0)
@@ -83,20 +68,31 @@ def _orchestrator_string_defaults() -> dict[str, str]:
     return captured
 
 
-def test_no_config_flag_escapes_this_suite():
-    """SEALED_CONFIG_FLAGS is hand-maintained; this derives the ground truth from
-    the real parser so a new `-config` flag with a relative default cannot land
-    silently uncovered -- it must either join the sealed tuple or be declared a
-    deliberate exception with its reason."""
-    defaults = _orchestrator_string_defaults()
-    config_flags = {flag for flag in defaults if flag.endswith("-config")}
+def test_no_config_or_policy_flag_escapes_this_suite():
+    """Every sealed-path flag must be checked or explicitly classified."""
+    flags = set(_orchestrator_defaults())
+    sealed_path_flags = {flag for flag in flags if flag.endswith(SEALED_PATH_FLAG_SUFFIXES)}
     uncovered = sorted(
-        config_flags - set(SEALED_CONFIG_FLAGS) - set(DECLARED_RELATIVE_CONFIG_FLAGS)
+        sealed_path_flags
+        - set(SEALED_CONFIG_FLAGS)
+        - set(DECLARED_RELATIVE_CONFIG_FLAGS)
+        - set(RESOLVED_AT_BOUNDARY_FLAGS)
     )
     assert not uncovered, (
-        f"the orchestrator declares config flag(s) {uncovered} that this suite neither "
-        "checks nor declares as a deliberate exception; a relative default there would "
-        "break every run that does not start at the repository root"
+        f"the orchestrator declares config/policy flag(s) {uncovered} that this suite "
+        "neither checks nor declares as a deliberate exception; a relative default there "
+        "would break every run that does not start at the repository root"
+    )
+
+
+@pytest.mark.parametrize("flag", RESOLVED_AT_BOUNDARY_FLAGS)
+def test_every_boundary_resolved_flag_declares_no_relative_parser_default(flag):
+    """A string default here would be resolved against the caller's cwd."""
+    defaults = _orchestrator_defaults()
+    assert flag in defaults, f"{flag} is no longer an orchestrator flag"
+    assert defaults[flag] is None, (
+        f"{flag} declares the default {defaults[flag]!r}; a value here is resolved against "
+        "the caller's cwd and would name a file beside the caller, not the repository's own"
     )
 
 
@@ -104,7 +100,11 @@ def test_no_config_flag_escapes_this_suite():
 def test_every_sealed_config_default_resolves_from_any_working_directory(
     flag, tmp_path, monkeypatch
 ):
-    defaults = _orchestrator_string_defaults()
+    defaults = {
+        option: str(default)
+        for option, default in _orchestrator_defaults().items()
+        if isinstance(default, (str, os.PathLike))
+    }
     assert flag in defaults, f"{flag} is no longer an orchestrator flag with a string default"
     monkeypatch.chdir(tmp_path)
     assert Path(defaults[flag]).is_file(), (

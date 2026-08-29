@@ -51,12 +51,7 @@ jobs:
             python3 .githooks/check_ingress.py --ref-object "$GITHUB_REF"
           fi
 
-      - name: Install project and check tools
-        run: |
-          python -m pip install .
-          python -m pip install -r requirements-dev.txt
-
-      - name: Verify the dependency lock
+      - name: Install the frozen dependency environment
         # Two commands because they check different things. `uv lock --check`
         # is the one that fails when uv.lock no longer describes pyproject.toml
         # — `--frozen` deliberately skips that check, so a step with only the
@@ -66,7 +61,7 @@ jobs:
         run: |
           python -m pip install uv==0.12.1
           uv lock --check
-          uv sync --frozen --group audit
+          uv sync --frozen --group test --group audit
 
       - name: Repository checks
         run: sh .githooks/check-all.sh --ci

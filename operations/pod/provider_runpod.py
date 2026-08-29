@@ -39,6 +39,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +54,7 @@ from .models import (
     BILLING_BUCKET_WIDTH,
     BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
+    AccountBalanceObservation,
     BillingState,
     CostCapture,
     CostLine,
@@ -83,6 +85,17 @@ _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
 _BUCKET_WIDTH = BILLING_BUCKET_WIDTH
 """Matches the `bucketSize=hour` this adapter always requests; the shared
 symbol keeps this slack and the generic verifier's from drifting apart."""
+
+BALANCE_OBSERVATION_TIMEOUT_SECONDS = 30.0
+"""How long the injected balance source may take before it is a named failure.
+
+The balance is observed at every spend gate, and one of those gates runs *after*
+`create` has returned a billing pod and *before* `_arm_or_close` has armed
+anything that would stop it. A source that blocks rather than fails leaves that
+pod running with no assessment recorded, no close attempted, and no result for
+an operator to read. Everything downstream of this method already fails closed
+on a raised exception, so bounding the call is what turns a hang into the
+refusal the runtime already knows how to handle."""
 
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """No documented RunPod response (one pod, a pod list, a billing window) is
@@ -193,12 +206,25 @@ class RunPodProvider:
         *,
         pod_price: Callable[[str], Decimal],
         volume_price: Callable[[str], Decimal],
+        balance_observer: Callable[[], AccountBalanceObservation] | None = None,
+        balance_timeout_seconds: float = BALANCE_OBSERVATION_TIMEOUT_SECONDS,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
+        self.balance_observer = balance_observer
+        self.balance_timeout_seconds = balance_timeout_seconds
         self.now = now
+        # Set once, by the first observation that overran its deadline. See
+        # `observe_account_balance`: after that the source is not called again,
+        # so at most one abandoned thread can ever exist per adapter.
+        self._balance_abandoned: str | None = None
+        # True only between starting a worker and that call returning. Guarded by
+        # the same lock as the latch, because the check and the start are one
+        # transaction; see `observe_account_balance`.
+        self._balance_in_flight = False
+        self._balance_lock = threading.Lock()
 
     # -- the seven verbs ---------------------------------------------------
 
@@ -209,6 +235,100 @@ class RunPodProvider:
         except Exception as error:
             raise ProviderFailure(f"RunPod current price could not be obtained: {error}") from error
         return PodEstimate(pod_hourly, volume_hourly, "RunPod reviewed price sheet", self.now())
+
+    def observe_account_balance(self) -> AccountBalanceObservation:
+        """Use the separately supplied observed-balance source, never a guessed reserve.
+
+        Bounded, because this is a money path: see
+        `BALANCE_OBSERVATION_TIMEOUT_SECONDS`. The observer runs on a daemon
+        thread so a source that never returns cannot hold the caller or the
+        interpreter's exit; the deadline is what the caller sees, and it arrives
+        as an ordinary `ProviderFailure` naming the timeout rather than as a
+        stall with nothing recorded.
+
+        **A source that overruns its deadline is not consulted again**, and the
+        reason is billing safety rather than tidiness. The alternatives were:
+
+        *Cancel the blocked call.* Not available. The observer is an arbitrary
+        injected zero-argument callable, and nothing here can interrupt a
+        syscall inside it. Buying cancellation means changing the seam so every
+        source must accept and honour a deadline — placing the guarantee in the
+        one component that has just demonstrated it does not honour one.
+
+        *Let a bounded number accumulate.* This keeps paying the full deadline
+        at every later gate while a pod may already be billing, and still leaks
+        threads up to the cap. It is worse on both axes than refusing.
+
+        *Refuse from then on*, which is this. At most one thread is ever
+        abandoned per adapter — concurrent callers included, since the latch
+        check and the worker start are one locked transaction and a caller
+        arriving mid-observation is refused rather than queued — and every later
+        gate refuses at once instead of stalling another
+        `balance_timeout_seconds` on a money path. That is
+        fail-closed in the direction that matters: the refusal denies paid
+        actions and closes a created pod, because `_observe_balance` turns any
+        raised error into "balance unobservable" and the callers already fail
+        closed on it. It cannot strand a running pod — `_close_and_record`
+        closes through `VerifiedShutdown`, which never assesses spend, so no
+        shutdown path passes through here at all. A stale answer arriving late
+        would be unusable anyway: an observation over sixty seconds old is
+        already refused.
+        """
+
+        if self.balance_observer is None:
+            raise ProviderFailure("RunPod account balance source was not configured")
+        # Reading the latch and starting the worker must be one transaction. Two
+        # callers that both read "not abandoned" before either started would
+        # both start one, and the at-most-one-abandoned-thread guarantee above
+        # would be a guarantee about the sequential case only. Refusing while an
+        # observation is in flight, rather than queueing behind it, is the same
+        # reasoning as the latch: a second caller on a money path should not
+        # wait out a deadline it can already see is at risk, and refusing denies
+        # a paid action rather than allowing one.
+        with self._balance_lock:
+            if self._balance_abandoned is not None:
+                raise ProviderFailure(self._balance_abandoned)
+            if self._balance_in_flight:
+                raise ProviderFailure(
+                    "RunPod account balance observation is already in progress; a "
+                    "concurrent paid action is refused rather than queued behind it"
+                )
+            self._balance_in_flight = True
+        try:
+            observed: list[AccountBalanceObservation] = []
+            failed: list[BaseException] = []
+
+            def observe() -> None:
+                try:
+                    observed.append(self.balance_observer())  # type: ignore[misc]
+                except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
+                    failed.append(error)
+
+            worker = threading.Thread(
+                target=observe, name="runpod-balance-observation", daemon=True
+            )
+            worker.start()
+            worker.join(self.balance_timeout_seconds)
+            if worker.is_alive():
+                overran = (
+                    "RunPod account balance source did not answer within "
+                    f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
+                    "every later paid action is refused on this same reason"
+                )
+                with self._balance_lock:
+                    self._balance_abandoned = overran
+                raise ProviderFailure(overran)
+            if failed:
+                raise failed[0]
+            if not observed:
+                raise ProviderFailure("RunPod account balance source returned nothing")
+            return observed[0]
+        finally:
+            # Cleared even after a timeout, where it changes nothing: the latch
+            # is set by then and is checked first, so no later call can reach
+            # the worker start again.
+            with self._balance_lock:
+                self._balance_in_flight = False
 
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.

@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+COPY_BLOCK_BYTES = 1024 * 1024
 
 
 def worktree_path_for_ref(root: Path, ref: str) -> Path | None:
@@ -70,6 +71,127 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
         raise
 
 
+def _drawer_ancestor(source: Path, drawer_descriptor: int) -> tuple[int, tuple[str, ...]] | None:
+    """Return an opened alias of ``drawer`` and the lexical suffix below it.
+
+    A case-insensitive filesystem or a symlink outside the drawer can give the
+    same directory another spelling.  Compare opened directory identities, not
+    strings, and keep the matching descriptor for the later no-follow walk.
+    """
+
+    drawer_stat = os.fstat(drawer_descriptor)
+    source_absolute = Path(os.path.abspath(source))
+    suffix: tuple[str, ...] = (source_absolute.name,)
+    ancestor = source_absolute.parent
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    while True:
+        try:
+            candidate = os.open(ancestor, directory_flags)
+        except OSError:
+            candidate = -1
+        if candidate >= 0:
+            if os.path.samestat(os.fstat(candidate), drawer_stat):
+                return candidate, suffix
+            os.close(candidate)
+        if ancestor.parent == ancestor:
+            return None
+        suffix = (ancestor.name, *suffix)
+        ancestor = ancestor.parent
+
+
+def open_write_source(source: Path, drawer: Path):
+    """Open a dispatch source without trusting agent-writable drawer components.
+
+    Sources outside the drawer may be the session's standing-brief symlinks;
+    sources beneath it may follow no component. Containment is directory
+    identity, not spelling, so case variants and an outside alias to the drawer
+    receive the untrusted treatment too.
+    """
+
+    drawer_absolute = Path(os.path.abspath(drawer))
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        drawer_descriptor = os.open(drawer_absolute, directory_flags)
+        try:
+            match = _drawer_ancestor(source, drawer_descriptor)
+            if match is None:
+                # Outside the drawer the path is the session's own, so its open
+                # happens after this guard. Inside the guard, an ordinary
+                # permission error or vanished standing brief was rewritten as
+                # "cannot safely open ... beneath <drawer>", and the launcher then
+                # blamed an agent-controlled symlink -- sending the operator to
+                # inspect the chamber's drawer over a fault on their own file.
+                external = True
+            else:
+                external = False
+                directory, relative_parts = match
+            if not external:
+                try:
+                    for component in relative_parts[:-1]:
+                        child = os.open(component, directory_flags, dir_fd=directory)
+                        os.close(directory)
+                        directory = child
+                    descriptor = os.open(
+                        relative_parts[-1],
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                        dir_fd=directory,
+                    )
+                finally:
+                    os.close(directory)
+        finally:
+            os.close(drawer_descriptor)
+    except OSError as error:
+        raise OSError(f"cannot safely open {source} beneath {drawer}: {error}") from error
+    if external:
+        # The session's own path may legitimately be a standing-brief symlink, so
+        # this open follows links -- but it keeps the two guards the drawer path
+        # has. `O_NONBLOCK`: a FIFO left at that path would otherwise wait for a
+        # writer forever, with `dispatch` printing nothing and still holding the
+        # task lifecycle lock, so no other launcher could touch that task either.
+        # The regular-file check below: `st_size` is 0 for anything else, and the
+        # byte ceiling and `copy_bounded` both read it, so an oversized input
+        # would be reported as "input changed size while being read".
+        external_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(external_descriptor).st_mode):
+                raise OSError(f"{source} is not a regular file")
+            return os.fdopen(external_descriptor, "rb")
+        except BaseException:
+            os.close(external_descriptor)
+            raise
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"{source} is not a regular file")
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def byte_limit(value: str) -> int:
+    """Parse the launcher's bounded decimal byte limits without integer surprises."""
+
+    if re.fullmatch(r"[1-9][0-9]{0,9}", value) is None:
+        raise OSError("the byte limit is not a positive bounded decimal integer")
+    return int(value)
+
+
+def copy_bounded(reading, writing, limit: int) -> None:
+    """Copy at most ``limit`` bytes and refuse a file that changes size while read."""
+
+    expected = os.fstat(reading.fileno()).st_size
+    if expected > limit:
+        raise OSError(f"input is larger than the {limit}-byte limit")
+    copied = 0
+    while block := reading.read(min(COPY_BLOCK_BYTES, limit - copied + 1)):
+        if copied + len(block) > limit:
+            raise OSError(f"input grew beyond the {limit}-byte limit while being read")
+        writing.write(block)
+        copied += len(block)
+    if copied != expected:
+        raise OSError("input changed size while being read")
+
+
 def main() -> int:
     """Move untrusted bytes, or inspect worktree occupancy without flattening paths.
 
@@ -77,9 +199,10 @@ def main() -> int:
     `O_NOFOLLOW`.
 
     `write SOURCE SLOT` writes *into* `/out`: the slot is the agent's and is opened
-    with `O_NOFOLLOW`; the source is a path the session chose and is opened normally.
-    Refusing to follow a link there would break the ordinary way of pointing at a
-    standing brief, and would refuse it with a message naming the wrong file.
+    with `O_NOFOLLOW`. A source outside that drawer is a path the session chose and
+    may be a standing-brief symlink. A source inside the drawer is agent-writable,
+    so it receives the same regular-file/no-follow treatment as every other drawer
+    input. This distinction remains true while a dispatch waits for its lock.
 
     `bundle SLOT REF` opens the untrusted output slot once and gives that descriptor to
     `git bundle create - REF`, so Git never resolves the slot path itself.
@@ -91,24 +214,27 @@ def main() -> int:
     try:
         command = sys.argv[1]
         source = Path(sys.argv[2])
-        if command == "read" and len(sys.argv) == 3:
+        if command == "read" and len(sys.argv) == 4:
+            limit = byte_limit(sys.argv[3])
             with open_regular(source, os.O_RDONLY) as reading:
-                shutil.copyfileobj(reading, sys.stdout.buffer)
+                copy_bounded(reading, sys.stdout.buffer, limit)
             return 0
-        if command == "write" and len(sys.argv) == 4:
-            with (
-                open(source, "rb") as reading,
-                open_regular(Path(sys.argv[3]), os.O_WRONLY | os.O_CREAT) as writing,
-            ):
-                # The launcher prints the drawer's brief path, so using that path as
-                # the next dispatch input is an ordinary workflow. Opening it again
-                # with O_TRUNC would empty the inode underneath the already-open read
-                # descriptor. Compare the opened objects, not their path spellings;
-                # aliases and hard links are the same case.
-                if os.path.samestat(os.fstat(reading.fileno()), os.fstat(writing.fileno())):
-                    return 0
-                os.ftruncate(writing.fileno(), 0)
-                shutil.copyfileobj(reading, writing)
+        if command == "write" and len(sys.argv) == 5:
+            limit = byte_limit(sys.argv[4])
+            destination = Path(sys.argv[3])
+            with open_write_source(source, destination.parent) as reading:
+                if os.fstat(reading.fileno()).st_size > limit:
+                    raise OSError(f"input is larger than the {limit}-byte limit")
+                with open_regular(destination, os.O_WRONLY | os.O_CREAT) as writing:
+                    # The launcher prints the drawer's brief path, so using that path as
+                    # the next dispatch input is an ordinary workflow. Opening it again
+                    # with O_TRUNC would empty the inode underneath the already-open read
+                    # descriptor. Compare the opened objects, not their path spellings;
+                    # aliases and hard links are the same case.
+                    if os.path.samestat(os.fstat(reading.fileno()), os.fstat(writing.fileno())):
+                        return 0
+                    os.ftruncate(writing.fileno(), 0)
+                    copy_bounded(reading, writing, limit)
             return 0
         if command == "bundle" and len(sys.argv) == 4:
             with open_regular(source, os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing:
@@ -185,7 +311,8 @@ def main() -> int:
         print(f"safe-file: {failure}", file=sys.stderr)
         return 1
     print(
-        "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF | "
+        "usage: safe_file.py read SLOT MAX_BYTES | write SOURCE SLOT MAX_BYTES | "
+        "bundle SLOT REF | "
         "retain SOURCE DESTINATION | "
         "bundle-tip BUNDLE REF EXPECTED | "
         "worktree ROOT REF occupied|tree",

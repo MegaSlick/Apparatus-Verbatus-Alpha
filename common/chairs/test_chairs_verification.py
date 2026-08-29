@@ -15,10 +15,19 @@ the seam for, and what it did with what came back.
 """
 
 import json
+import os
+import unittest.mock
+from pathlib import Path
 
 import pytest
 
-from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
+from common.chairs import registry as registry_module
+from common.chairs.config import load_models_toml
+from common.chairs.errors import (
+    ConfigurationRefusal,
+    DigestMismatchRefusal,
+    UnresolvedChairRefusal,
+)
 from common.chairs.manifests import (
     build_manifest,
     file_digest,
@@ -26,7 +35,13 @@ from common.chairs.manifests import (
     read_manifest,
     write_manifest,
 )
-from common.chairs.registry import CACHE_DESCRIPTOR
+from common.chairs.models import ChairIdentity
+from common.chairs.registry import (
+    CACHE_DESCRIPTOR,
+    PRE_MATERIALIZATION_SENTINEL,
+    ChairRegistry,
+    HuggingFaceMaterializationFetcher,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
 from .conftest import (
@@ -35,8 +50,11 @@ from .conftest import (
     hf_chair,
     pin_snapshot,
     registry_for,
+    serving_details,
     write_snapshot,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_file_digest_streams_the_snapshot_file_in_bounded_chunks(tmp_path, monkeypatch):
@@ -407,3 +425,299 @@ def test_the_written_manifest_round_trips_through_its_own_reader(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8")) == manifest.to_record()
     assert manifest_digest(manifest) == pin
     assert read_manifest(path, expected_digest=pin, chair="attestator_1") == manifest
+
+
+def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
+    """The real roster's rows pin nothing yet, and must say so when asked to serve.
+
+    The parseable sentinel lets launch materialize the roster, but every door
+    that relies on a pin must refuse it before reading a manifest or producing
+    provenance.
+    """
+    snapshot = write_snapshot(tmp_path / "cache" / "attestator_1", {"model.bin": b"weights\n"})
+    pin_snapshot(snapshot, tmp_path / "manifests" / "attestator_1.json")
+    config = config_of(
+        tmp_path,
+        {"attestator_1": hf_chair("attestator_1", PRE_MATERIALIZATION_SENTINEL)},
+    )
+    registry = registry_for(config, tmp_path)
+    identity = config.chairs["attestator_1"]
+
+    with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+        registry.ensure(identity)
+    with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+        registry.receipt(identity, serving_details())
+
+    # The refusal is about the shipped roster, not only about a synthetic one.
+    # Which rows still carry the sentinel is today's state, not a rule: recording
+    # a measured manifest digest on a row is the documented outcome of a verified
+    # fetch, and asserting every row still carries the sentinel would turn the
+    # first such config edit red while naming only the role, not the reason.
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    unmeasured = 0
+    for _role, configured in real.chairs.items():
+        if not isinstance(configured, ChairIdentity):
+            continue
+        if configured.digest_manifest != PRE_MATERIALIZATION_SENTINEL:
+            continue
+        unmeasured += 1
+        with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+            ChairRegistry(real).ensure(configured)
+    assert unmeasured, "no shipped row carries the sentinel, so this refusal is untested here"
+
+
+def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
+    """The Hugging Face client's bookkeeping must not become part of a pin.
+
+    Client cache data can be nondeterministic, while a pinned repository may own
+    its own `.cache` bytes. The adapter must isolate the client namespace rather
+    than manifest it or delete repository content by name.
+    """
+
+    class CachedSnapshotClientFake:
+        def snapshot_download(self, **kwargs):
+            assert "local_dir" not in kwargs
+            cache = Path(kwargs["cache_dir"])
+            source = cache / "snapshot"
+            source.mkdir(parents=True)
+            (source / "config.json").write_bytes(b'{"pinned":true}')
+            repository_cache = source / ".cache"
+            repository_cache.mkdir()
+            (repository_cache / "repository-owned.json").write_text(
+                "pinned bytes", encoding="utf-8"
+            )
+            return str(source)
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+    HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
+        "fixture-org/pinned", "a" * 40, destination
+    )
+
+    assert [
+        path.relative_to(destination).as_posix()
+        for path in sorted(destination.rglob("*"))
+        if path.is_file()
+    ] == [".cache/repository-owned.json", "config.json"]
+    assert not Path(f"{destination}.huggingface-cache").exists()
+
+
+def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
+    class ClientMustNotRun:
+        def snapshot_download(self, **kwargs):
+            raise AssertionError("a symlinked destination must be refused before download")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    destination = tmp_path / "staging"
+    destination.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="existing empty regular directory"):
+        HuggingFaceMaterializationFetcher(ClientMustNotRun()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert sorted(outside.iterdir()) == []
+
+
+def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_boot(tmp_path):
+    """A check/use swap must end in a refusal, never in an open that never returns.
+
+    Validation proves the name is a regular file, and the Hugging Face client
+    still owns the per-call cache between then and the copy. Opening the name
+    again without ``O_NONBLOCK`` blocks forever on a FIFO -- inside a pod boot,
+    with the GPU billing, no journal step recorded and no reason printed -- so
+    the identity check below it never runs. ``_read_limited_bytes`` already pays
+    for this flag; this call did not.
+
+    The refusal is asserted from a worker thread with a deadline: a regression
+    here is a hang, and a hang must surface as a failed test rather than a suite
+    that never finishes.
+    """
+
+    import threading
+
+    client_cache = tmp_path / "staging.huggingface-cache"
+
+    class ReturnsOneRegularFile:
+        def snapshot_download(self, **kwargs):
+            snapshot = client_cache / "snapshot"
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+            return snapshot
+
+    real_validate = registry_module._validated_materialization_files
+
+    def swap_for_a_fifo(source, cache, repo):
+        files = real_validate(source, cache, repo)
+        for _relative, origin, _identity in files:
+            origin.unlink()
+            os.mkfifo(origin)
+        return files
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            with unittest.mock.patch.object(
+                registry_module, "_validated_materialization_files", swap_for_a_fifo
+            ):
+                HuggingFaceMaterializationFetcher(ReturnsOneRegularFile()).fetch(
+                    "fixture-org/pinned", "a" * 40, destination
+                )
+            outcome.append(None)
+        except BaseException as error:  # noqa: BLE001 - reported through the assertion below
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=15)
+
+    assert not worker.is_alive(), "the copy blocked on the FIFO instead of refusing"
+    assert isinstance(outcome[0], DigestMismatchRefusal)
+    assert "no longer a regular file" in str(outcome[0])
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cache(tmp_path):
+    outside = tmp_path / "unrelated-snapshot"
+    outside.mkdir()
+    (outside / "model.safetensors").write_bytes(b"unrelated bytes")
+
+    class ReturnsUnrelatedDirectory:
+        def snapshot_download(self, **kwargs):
+            return outside
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(DigestMismatchRefusal, match="outside its per-call cache"):
+        HuggingFaceMaterializationFetcher(ReturnsUnrelatedDirectory()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_path):
+    outside = tmp_path / "operator-secret"
+    outside.write_bytes(b"must not enter model evidence")
+
+    class ReturnsExternalFileLink:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").symlink_to(outside)
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    # Unchanged bytes are not proof that nothing read them, and the claim in this
+    # test's name is about the read. `_copy_verified_file` is the only step that
+    # opens a returned file, and it opens through `os.open`, so a regression that
+    # copied the operator's secret and then refused for some later reason trips
+    # this guard rather than passing on an intact file.
+    real_open = os.open
+
+    def refuse_external_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == outside:
+            raise AssertionError("the external symlink target was opened")
+        return real_open(path, *args, **kwargs)
+
+    with pytest.raises(DigestMismatchRefusal, match="external link targets are never read"):
+        with unittest.mock.patch.object(os, "open", refuse_external_open):
+            HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
+                "fixture-org/pinned", "a" * 40, destination
+            )
+
+    assert outside.read_bytes() == b"must not enter model evidence"
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_copies_only_internal_cache_symlink_bytes(tmp_path):
+    class ReturnsInternalBlobLink:
+        def snapshot_download(self, **kwargs):
+            cache = Path(kwargs["cache_dir"])
+            blob = cache / "blobs" / "model"
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(b"pinned model bytes")
+            source = cache / "snapshots" / "revision"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").symlink_to("../../blobs/model")
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    HuggingFaceMaterializationFetcher(ReturnsInternalBlobLink()).fetch(
+        "fixture-org/pinned", "a" * 40, destination
+    )
+
+    copied = destination / "model.safetensors"
+    assert not copied.is_symlink()
+    assert copied.read_bytes() == b"pinned model bytes"
+
+
+def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_path):
+    class ReturnsCaseCollidingFiles:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "Weights.bin").write_bytes(b"first")
+            (source / "weights.bin").write_bytes(b"second")
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    # The collision check runs in `registry`, not in `model_store`. `os` is one
+    # shared module object, so this replacement is process-wide for the block
+    # below; it is spelled through `registry_module` only to say where the
+    # checked code lives. The real `os.walk` signature is kept so an unrelated
+    # positional caller inside the block cannot fail with `TypeError`.
+    original_walk = registry_module.os.walk
+
+    def case_sensitive_walk(top, topdown=True, onerror=None, followlinks=False):
+        # A case-insensitive host filesystem collapses the planted spellings
+        # into one file; deliver the listing a case-sensitive fetch cache would.
+        for directory, directories, filenames in original_walk(
+            top, topdown=topdown, onerror=onerror, followlinks=followlinks
+        ):
+            if any(name.lower() == "weights.bin" for name in filenames):
+                filenames = sorted(set(filenames) | {"Weights.bin", "weights.bin"})
+            yield directory, directories, filenames
+
+    with unittest.mock.patch.object(registry_module.os, "walk", case_sensitive_walk):
+        with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
+            HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
+                "fixture-org/pinned", "a" * 40, destination
+            )
+
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_path, monkeypatch):
+    class CachedSnapshotClientFake:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").write_bytes(b"pinned bytes")
+            return source
+
+    def refuse_cleanup(path):
+        raise PermissionError("cache cleanup denied")
+
+    monkeypatch.setattr("common.chairs.registry.shutil.rmtree", refuse_cleanup)
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="per-call Hugging Face cache cleanup failed.*cache cleanup denied",
+    ):
+        HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
