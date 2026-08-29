@@ -452,6 +452,29 @@ def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
     assert referent.read_bytes() == data
 
 
+def test_a_planted_link_to_different_bytes_is_never_written_through(tmp_path):
+    """The identical-referent case cannot see a write-through; this one can.
+
+    When the referent already holds the same bytes, a defect that followed the
+    link and wrote would leave it byte-identical and undetectable. Giving the
+    referent different content makes the write visible. This is not hypothetical
+    for this function: `atomic_create` exists because `os.replace` used to
+    clobber unconditionally, and `os.replace` onto a symlink writes through it.
+    """
+    target = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    original = b"a wholly different sealed record"
+    referent.write_bytes(original)
+    target.symlink_to(referent)
+
+    with pytest.raises(submit.ExistingRecordRefusal):
+        submit.atomic_create(target, b"identical sealed bytes")
+
+    assert target.is_symlink()
+    assert os.readlink(target) == str(referent)
+    assert referent.read_bytes() == original
+
+
 def test_an_uncomparable_target_is_not_reported_as_a_changed_submission(tmp_path):
     """The two refusals must stay distinguishable, or the message misdirects.
 
