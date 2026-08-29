@@ -35,7 +35,10 @@ from .errors import ApprovalRefusal
 # artifact naming anyone else is refused by the schema rather than by convention.
 APPROVER: Final = "Tyrel"
 
-ACTIONS: Final = ("exclusion", "salvage-promotion", "other")
+# ``advance`` is deliberately distinct from ``other``. It is the one operator
+# decision that can move a staged run forward, and readers must be able to find
+# it without treating a free-text label as authority.
+ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "other")
 
 # Approval records are small operator-authored evidence, but both entry points
 # hash the whole object and the builder sorts every subject.  Bounds make a

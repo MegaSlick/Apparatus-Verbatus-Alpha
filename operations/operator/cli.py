@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import pwd
@@ -14,8 +15,11 @@ from typing import Sequence
 
 from operations.pod.models import PodCreateRequest, require_utc
 
-from . import notify_bridge
+from . import console, notify_bridge
+from .advance import sealed_boundary, trigger_advance
+from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
+from .review import ReadOnlyRun
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
@@ -225,6 +229,35 @@ def build_parser() -> PlainParser:
     )
 
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
+    review = verbs.add_parser(
+        "review",
+        help="open one run tree read-only; it cannot contact a provider or change evidence",
+    )
+    review.add_argument(
+        "--run-root", type=Path, required=True, help="folder containing the run tree"
+    )
+    review.add_argument("--run-id", required=True, help="the sealed run to inspect")
+    advance = verbs.add_parser(
+        "advance",
+        help="append Tyrel's confirmed decision to pass one exact sealed stage boundary",
+    )
+    advance.add_argument(
+        "--run-root", type=Path, required=True, help="folder containing the run tree"
+    )
+    advance.add_argument("--run-id", required=True, help="the sealed run to advance")
+    advance.add_argument("--stage", required=True, help="the sealed stage boundary to pass")
+    advance.add_argument("--reason", required=True, help="why Tyrel chose to advance this boundary")
+    backup = verbs.add_parser(
+        "backup",
+        help="copy one run tree to a local Mac directory by digest, without a provider credential",
+    )
+    backup.add_argument(
+        "--run-root", type=Path, required=True, help="folder containing the volume-hosted run"
+    )
+    backup.add_argument("--run-id", required=True, help="the sealed run to copy")
+    backup.add_argument(
+        "--mac-directory", type=Path, required=True, help="local synced backup directory"
+    )
     return parser
 
 
@@ -306,7 +339,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.close(prepared_close, confirmation)
         elif args.verb == "status":
             surface.status()
-        else:  # argparse owns this list, but an explicit branch prevents a silent no-op.
+        elif args.verb == "review":
+            _review_in_custody(args.run_root, args.run_id, workspace)
+        elif args.verb == "advance":
+            _advance_with_confirmation(
+                args.run_root,
+                args.run_id,
+                args.stage,
+                reason=args.reason,
+                workspace=workspace,
+            )
+        elif args.verb == "backup":
+            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
+        # Parser choices must never become a silent no-op if dispatch drifts.
+        else:
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
             )
@@ -316,11 +362,183 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         _print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 2
-    except Exception as error:  # the only route raw implementation failures take to the operator
+    # Raw implementation failures must reach the same three-part operator contract.
+    except Exception as error:
         wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
         _print(wrapped.render())
         return 2
     return 0
+
+
+def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
+    """Bind one run before any verb acts on it, and name a bad id as a bad id.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root; both arrive as `ContractError`. Constructed outside
+    a guard, a typed `--run-id My-Run` reached the unclassified handler and
+    told the operator to photograph the message and find a maintainer over one
+    capital letter, and an attempted escape from the approved run root
+    reported itself the same way — a tool that broke rather than a request
+    that was refused.
+
+    The code is `INVALID_COMMAND` rather than a verb-specific refusal because
+    that is what happened: the instruction named no run this tool could bind,
+    nothing was read, and nothing was changed. A tree-unreadable code would
+    send the operator to preserve and investigate register evidence that was
+    never opened.
+    """
+
+    from common.contracts.errors import ContractError
+
+    try:
+        return run_tree_class(Path(run_root).resolve(), run_id)
+    except (ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+
+
+def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
+    """Exec the renderer with no credential and a kernel-enforced no-write policy."""
+
+    # Read before crossing the boundary.  The UI child receives only this
+    # immutable value stream, never a run-tree path or a ``RunTree`` object.
+    # It can deceive its viewer about those bytes if compromised, but cannot
+    # reopen the evidence to mutate it or reach any pipeline/provider module.
+    from common.runtree.store import RunTree
+
+    _bound_run_tree(RunTree, run_root, run_id)
+    projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
+    command = python_module_command("operations.operator.console")
+    backend, completed = run_confined(
+        command,
+        writable=None,
+        cwd=workspace,
+        input_text=json.dumps(projection),
+    )
+    if completed.returncode != 0:
+        launcher = backend.launcher_failure(completed)
+        if launcher is not None:
+            # The confinement launcher never exec'd the console, so this is a
+            # platform-enforcement refusal rather than a claim that the run
+            # tree itself is unreadable.
+            raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
+        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
+            # The console never opened the run tree, so this must not tell the
+            # operator to preserve and investigate its evidence.
+            raise OperatorError(
+                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+                detail=completed.stderr or completed.stdout,
+            )
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
+        )
+    _print(completed.stdout.rstrip())
+
+
+def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _workspace: Path) -> None:
+    """Copy evidence only in the no-network, credential-free custody child."""
+
+    from .backup import (
+        BackupRefusal,
+        BackupReport,
+        destination_identities,
+        prepare_backup_layout,
+        required_identity,
+        resolve_backup_paths,
+        verify_backup_snapshot,
+    )
+
+    # The parent must reject overlap before creating the layout; otherwise its
+    # setup can write `objects/` and `snapshots/` inside the sealed source.
+    # Custody grants the child publication rights but deliberately withholds
+    # directory creation, so the checked closed layout must exist first.
+    try:
+        source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
+        prepare_backup_layout(source, destination)
+        source_identity = required_identity(source, what="source run tree")
+        destination_identity = destination_identities(destination)
+    except BackupRefusal as refusal:
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
+    # `--workspace` selects project data for other verbs; it is not authority to
+    # replace this custody worker's code: the surviving python_module_command
+    # pins the import root to the checkout that loaded this module and accepts
+    # no caller-nominated root at all. The same pinned root stays the cwd.
+    worker_root = Path(__file__).resolve().parents[2]
+    command = python_module_command("operations.operator.backup_worker")
+    request = json.dumps(
+        {
+            "run_root": str(run_root.resolve()),
+            "run_id": run_id,
+            "mac_directory": str(destination),
+            "source_identity": list(source_identity),
+            "destination_identities": [list(identity) for identity in destination_identity],
+        }
+    )
+    backend, completed = run_confined(
+        command, writable=destination, cwd=worker_root, input_text=request
+    )
+    if completed.returncode != 0:
+        launcher = backend.launcher_failure(completed)
+        detail = launcher or completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"backup worker exited {completed.returncode} without a diagnostic"
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
+    try:
+        report = BackupReport.from_record(json.loads(completed.stdout))
+        verify_backup_snapshot(
+            destination,
+            run_id,
+            report,
+            expected_destination_identities=destination_identity,
+        )
+    except (BackupRefusal, ValueError, RecursionError) as error:
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
+    _print(
+        "Mac backup complete: "
+        f"{report.copied} copied, {report.reused} reused; snapshot {report.snapshot_sha256}."
+    )
+
+
+def _advance_with_confirmation(
+    run_root: Path,
+    run_id: str,
+    stage: str,
+    *,
+    reason: str,
+    workspace: Path,
+) -> None:
+    """Bind a human confirmation to one observed digest, then launch the worker."""
+
+    from common.contracts.errors import ApprovalRefusal
+    from common.runtree.store import RunTree
+
+    tree = _bound_run_tree(RunTree, run_root, run_id)
+    try:
+        _seal, digest = sealed_boundary(tree, stage)
+    except (ApprovalRefusal, OSError) as error:
+        # `sealed_boundary` converts contract failures, but a stage manifest or
+        # seal artefact that cannot be read raises `OSError` straight through.
+        # Uncaught, that reached the catch-all and told the operator to
+        # photograph an unexpected error and find a maintainer, when the answer
+        # is that this boundary cannot be advanced because its evidence could
+        # not be read. `advance.trigger_advance` guards the same call this way.
+        raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
+    phrase = f"advance {run_id} past {stage} at {digest}"
+    _print(f"The current {stage} boundary has seal digest {digest}.")
+    confirmation = _typed_advance_confirmation(phrase)
+    if confirmation != phrase:
+        raise OperatorError(
+            ErrorCode.ADVANCE_REFUSED,
+            detail="the typed confirmation did not exactly name this run, stage, and seal digest",
+        )
+    reference = trigger_advance(
+        run_root,
+        run_id,
+        stage,
+        reason=reason,
+        workspace=workspace,
+        expected_digest=digest,
+    )
+    _print(f"Advance record: {reference.relative_path} ({reference.sha256})")
 
 
 def load_request(path: str | Path) -> PodCreateRequest:
@@ -420,7 +638,9 @@ def _interactive_arguments() -> list[str]:
     """The double-click route asks for a word and the smallest needed facts."""
 
     _print("Verbatus")
-    _print("Choose one word: launch, boot, upload, run, export, close, or status.")
+    _print(
+        "Choose one word: launch, boot, upload, run, export, close, status, review, advance, or backup."
+    )
     try:
         verb = input("What would you like to do? ").strip().lower()
     except EOFError:
@@ -473,6 +693,27 @@ def _interactive_arguments() -> list[str]:
         return ["export"]
     if verb == "close":
         return ["close"]
+    if verb in {"review", "advance", "backup"}:
+        run_root = _ask("Folder containing the run tree")
+        run_id = _ask("The sealed run ID")
+        if not run_root or not run_id:
+            _print(f"{verb.title()} needs both a run-tree folder and a run ID. Nothing changed.")
+            return []
+        arguments = [verb, "--run-root", run_root, "--run-id", run_id]
+        if verb == "advance":
+            stage = _ask("The sealed stage boundary to pass")
+            reason = _ask("Why this boundary should be advanced")
+            if not stage or not reason:
+                _print("Advance needs both a stage and a reason. Nothing changed.")
+                return []
+            arguments.extend(("--stage", stage, "--reason", reason))
+        if verb == "backup":
+            mac_directory = _ask("Local synced Mac backup directory")
+            if not mac_directory:
+                _print("Backup needs a local synced destination directory. Nothing changed.")
+                return []
+            arguments.extend(("--mac-directory", mac_directory))
+        return arguments
     return [verb]
 
 
@@ -495,6 +736,16 @@ def _typed_paid_confirmation() -> str | None:
 def _typed_close_confirmation(phrase: str) -> str | None:
     try:
         return input(f"Type this line exactly, with no quotation marks:\n{phrase}\n> ")
+    except EOFError:
+        return None
+
+
+def _typed_advance_confirmation(phrase: str) -> str | None:
+    try:
+        return input(
+            "This appends Tyrel's decision record; it does not edit evidence or start a provider.\n"
+            f"Type this line exactly, with no quotation marks:\n{phrase}\n> "
+        )
     except EOFError:
         return None
 

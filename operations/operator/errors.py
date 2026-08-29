@@ -51,6 +51,11 @@ class ErrorCode(StrEnum):
     CLOSE_REFUSED = "close-refused"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
+    CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
+    CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
+    CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
+    ADVANCE_REFUSED = "advance-refused"
+    BACKUP_FAILED = "backup-failed"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -240,6 +245,31 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "A saved operator record could not be read safely.",
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
+    ),
+    ErrorCode.CONSOLE_CUSTODY_REFUSED: ErrorCopy(
+        "The operator console or a custody worker could not complete inside its OS boundary.",
+        "No provider action was reached. An advance may have appended a record, and a backup may have added verified objects, even though no checked result returned.",
+        "Follow the saved detail below. Inspect advance_records before retrying an advance; for a backup, keep its objects and retry after fixing the named boundary; otherwise fix Landlock or Seatbelt before reopening the console.",
+    ),
+    ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
+        "The operator console could not read the selected run tree safely.",
+        "It did not guess at missing evidence or change the run tree.",
+        "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
+    ),
+    ErrorCode.CONSOLE_PROJECTION_UNREADABLE: ErrorCopy(
+        "The operator console could not read the view this command handed it.",
+        "The run tree was never opened by that process, so nothing about the evidence is in question and nothing was changed.",
+        "Run the same `verbatus review` again. If it repeats, keep the saved detail below and report it; do not alter the run tree, which is not what failed.",
+    ),
+    ErrorCode.ADVANCE_REFUSED: ErrorCopy(
+        "The requested stage boundary could not be advanced.",
+        "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
+        "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
+    ),
+    ErrorCode.BACKUP_FAILED: ErrorCopy(
+        "The Mac backup did not finish with a verified snapshot.",
+        "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
+        "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
