@@ -135,6 +135,15 @@ def artifacts(tree: RunTree, stage: str, kind: str, subject: str) -> list[dict]:
     ]
 
 
+def page_testimonia(tree: RunTree) -> list[dict]:
+    """Every page-scoped record the run actually sealed, whatever its subject."""
+    return [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+
+
 def snapshot(run_root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(run_root)): path.read_bytes()
@@ -505,6 +514,22 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
     act = act_id_for("a2")
     tree = through_attestatores(root, "r", "reread-success")
     before = snapshot(root)
+
+    # The refusal's basis, proved from sealed run state rather than from the
+    # sentence the refusal prints. Two facts the run already carries: this chair
+    # sealed a page-scoped record, and its row on this very act is marked a page
+    # witness -- which is exactly what makes its act-level view derived and
+    # leaves no act-scoped request to repeat. Asserting only on stderr would pass
+    # on a handler that printed the right words about the wrong chair.
+    scopes = {
+        record["payload"]["chair"]: record["payload"]["scope"] for record in page_testimonia(tree)
+    }
+    assert scopes.get("attestator_1") == "page", scopes
+    attachment = artifacts(tree, ATTESTATORES, "act-attachment", act)[-1]
+    page_witness = {
+        row["chair"]: row["page_witness"] for row in attachment["payload"]["attachments"]
+    }
+    assert page_witness["attestator_1"] is True, page_witness
 
     result = reread(root, "r", "reread-success", act, "attestator_1")
 
