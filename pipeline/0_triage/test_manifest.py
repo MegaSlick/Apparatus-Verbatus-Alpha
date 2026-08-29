@@ -129,21 +129,49 @@ def test_every_field_round_trips_and_a_derivative_links_to_the_row():
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "field,value,match",
     [
-        ("confidence", 5),
-        ("mode", "automatic"),
-        ("human_override", "yes"),
-        ("actor", {"kind": "model", "identity": "x"}),
-        ("actor", {"kind": "model", "identity": "x", "revision": ""}),
-        ("actor", {"kind": "model", "identity": "x", "revision": None}),
-        ("actor", {"kind": "human", "identity": "Tyrel", "revision": "n/a"}),
+        ("confidence", 5, "outside the closed ordinal"),
+        ("mode", "automatic", "triage mode is not one of"),
+        ("human_override", "yes", "human_override must be present and boolean"),
+        (
+            "actor",
+            {"kind": "model", "identity": "x"},
+            "closed kind/identity/revision record",
+        ),
+        (
+            "actor",
+            {"kind": "robot", "identity": "x", "revision": "r1"},
+            "actor kind must be one of",
+        ),
+        (
+            "actor",
+            {"kind": "model", "identity": "   ", "revision": "r1"},
+            "identity must be a non-blank resolved name",
+        ),
+        ("actor", {"kind": "model", "identity": "x", "revision": ""}, "resolved model revision"),
+        ("actor", {"kind": "model", "identity": "x", "revision": None}, "resolved model revision"),
+        (
+            "actor",
+            {"kind": "human", "identity": "Tyrel", "revision": "n/a"},
+            "human triage actor carries no revision",
+        ),
     ],
 )
-def test_required_provenance_and_closed_values_are_refused(field, value):
+def test_required_provenance_and_closed_values_are_refused(field, value, match):
+    """Pinned to the reason, as the geometry-convention cases below already are.
+
+    Each case mutates a row `make_row` already sealed, so `manifest_row_sha256` no
+    longer binds the payload and `validate_row` has a second reason to refuse it.
+    With a bare `pytest.raises(ContractError)` the digest check answered for every
+    guard named here: delete the confidence ordinal check, or the mode check, or
+    any branch of `_validate_actor`, and the row was still refused and the test was
+    still green. What that would cost in practice is a triage row carrying a
+    confidence nobody declared or a mode nobody declared, and those two fields
+    decide which frames go to human review. Found by CodeRabbit."""
     values = row()
     values[field] = value
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=match):
         validate_manifest(manifest([values]))
 
 

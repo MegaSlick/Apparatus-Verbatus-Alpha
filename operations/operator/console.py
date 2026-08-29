@@ -26,7 +26,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     try:
         projection = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    # Every way the input pipe can fail, not only the one. `json.load` on
+    # `sys.stdin` raises `JSONDecodeError` for malformed text, `UnicodeDecodeError`
+    # when the pipe delivers bytes that are not UTF-8, and `OSError` when the read
+    # itself fails -- and the last two used to leave this process dying on a
+    # traceback with status 1, which is the exact outcome the status above exists
+    # to prevent: the parent reporting a pipe fault as a claim about the run tree.
+    except (ValueError, OSError) as error:
         # This is deliberately not an OperatorError: the custody parent only
         # hands the child bytes it just serialized, and a malformed pipe cannot
         # be a claim about the run tree.  The parent turns a nonzero child exit
@@ -37,8 +43,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # the named evidence problem" with no problem named, and was sent to
         # preserve and investigate register evidence that was never touched.
         print(
-            "the projection on standard input was not complete JSON; the run tree "
-            "itself was never read by this process",
+            "the projection on standard input could not be read as complete JSON "
+            f"({type(error).__name__}); the run tree itself was never read by this process",
             file=sys.stderr,
         )
         return PROJECTION_UNREADABLE_EXIT

@@ -145,10 +145,8 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
     ),
 )
 def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": [chair]},
-        witness_chairs=("attestator_1",),
-    )
+    """The roster is a list, so only the exact-type rule can refuse it."""
+    context = _scope_context([chair])
 
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)

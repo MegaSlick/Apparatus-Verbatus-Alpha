@@ -586,12 +586,27 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         # captures are is the one thing about it that grows.
         row = _closed(
             record,
-            {"kind", "corpus_id", "volume_id", "designation", "physical_page_id"},
+            {
+                "kind",
+                "corpus_id",
+                "volume_id",
+                "designation",
+                "physical_page_id",
+                "appending_run",
+            },
             kind,
         )
         expected = physical_page_id(row["corpus_id"], row["volume_id"], row["designation"])
         if row["physical_page_id"] != expected:
             raise SchemaRefusal("physical-page record id does not bind its declaration")
+        # Every other record kind names the run that appended it, and a
+        # declaration needs it most: the register is append-only, so a folio
+        # typed against the wrong volume stands for ever, and without this there
+        # is no field on which to find the rest of what that same pass entered.
+        # It is not one of `physical_page_id`'s bindings, so identity is
+        # unchanged by carrying it.
+        if not isinstance(row["appending_run"], str) or not row["appending_run"]:
+            raise SchemaRefusal("physical-page record names no appending run")
         identity = row["physical_page_id"]
         reading.physical_pages.add(identity)
     elif kind == "membership":

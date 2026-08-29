@@ -31,13 +31,16 @@ CAPTURE_BOUNDS = {"x": 10, "y": 20, "w": 30, "h": 40}
 CAPTURE_ACT = act_id(CAPTURE_PAGE, "proposal", CAPTURE_BOUNDS)
 
 
-def _declaration(page=PAGE, *, corpus="synthetic", volume="volume-1", designation="12r"):
+def _declaration(
+    page=PAGE, *, corpus="synthetic", volume="volume-1", designation="12r", run="triage-1"
+):
     return {
         "kind": "physical-page",
         "corpus_id": corpus,
         "volume_id": volume,
         "designation": designation,
         "physical_page_id": page,
+        "appending_run": run,
     }
 
 
@@ -345,6 +348,22 @@ def test_a_retraction_naming_no_earlier_record_is_refused():
                     }
                 ],
             )
+        )
+
+
+def test_a_physical_page_declaration_must_name_the_run_that_appended_it():
+    """A folio typed against the wrong volume stands for ever -- the register is
+    append-only, and correctly so. What the operator then needs is the rest of
+    what that same pass entered, and only this field can be searched on. An
+    absent one is a closed-record refusal; a present but empty one is refused by
+    name, so a writer cannot satisfy the shape while naming nothing."""
+    declaration = _declaration()
+    without = {key: value for key, value in declaration.items() if key != "appending_run"}
+    with pytest.raises(SchemaRefusal, match="closed record"):
+        validate_register_bytes(canonical_bytes({"schema": SCHEMA, "records": [without]}))
+    with pytest.raises(SchemaRefusal, match="physical-page record names no appending run"):
+        validate_register_bytes(
+            canonical_bytes({"schema": SCHEMA, "records": [{**declaration, "appending_run": ""}]})
         )
 
 

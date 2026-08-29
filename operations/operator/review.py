@@ -64,6 +64,37 @@ class _ImageBudget:
             )
 
 
+def _budgeted_image_bytes(
+    tree: RunTree, relative_path: str, budget: _ImageBudget, what: str
+) -> bytes:
+    """Charge an image against the budget before it is anywhere near memory.
+
+    `RunTree.read_bytes` loads the whole file and only then hands its length to
+    `spend`, so a page larger than the allowance was fully resident at the exact
+    moment the limit existed to refuse it -- on a parish-sized image that is the
+    console dying rather than refusing by name (GOVERNANCE 2). The size on disk
+    is charged first and the read is then bounded by what was charged, so a file
+    that grew between the two spends nothing it was not allowed.
+    """
+
+    path = tree.resolve(relative_path)
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"{what} could not be measured: {error}"
+        ) from error
+    budget.spend(size, what)
+    with path.open("rb") as handle:
+        data = handle.read(size + 1)
+    if len(data) != size:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"{what} changed size while the console was reading it",
+        )
+    return data
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewProjection:
     """Only display values and immutable byte references; never a writable tree."""
@@ -196,8 +227,9 @@ def _image_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> d
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=f"sealed page {row.get('ordinal')!r} has no immutable image reference",
         )
-    data = tree.read_bytes(row["image_path"])
-    budget.spend(len(data), f"sealed page {row.get('ordinal')!r}")
+    data = _budgeted_image_bytes(
+        tree, row["image_path"], budget, f"sealed page {row.get('ordinal')!r}"
+    )
     actual = digest_bytes(data)
     if actual != row["image_sha256"]:
         raise OperatorError(
@@ -241,8 +273,9 @@ def _act_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dic
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail="an act crop has no immutable image reference",
             )
-        data = tree.read_bytes(region["image_path"])
-        budget.spend(len(data), f"act crop {region.get('region_id')!r}")
+        data = _budgeted_image_bytes(
+            tree, region["image_path"], budget, f"act crop {region.get('region_id')!r}"
+        )
         actual = digest_bytes(data)
         if actual != region["image_sha256"]:
             raise OperatorError(
@@ -371,14 +404,20 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
         return {
             "boundary_stage": stage,
             "boundary_current": False,
-            "boundary_note": f"{stage} has no stored stage-seal now, so this advance binds a boundary that is no longer there",
+            "boundary_note": (
+                f"{stage} has no stored stage-seal now, so this advance binds a "
+                "boundary that is no longer there"
+            ),
         }
     current = boundary["seal_digest"]
     if current != record["target_version_hash"]:
         return {
             "boundary_stage": stage,
             "boundary_current": False,
-            "boundary_note": f"{stage}'s seal changed after this advance was recorded; the advance binds an earlier boundary",
+            "boundary_note": (
+                f"{stage}'s seal changed after this advance was recorded; the advance "
+                "binds an earlier boundary"
+            ),
         }
     if not boundary["sealed"]:
         return {
@@ -438,7 +477,22 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                     detail="the Armarium bundle contains more than one review-items.jsonl",
                 )
             member = members[0]
-            if member.is_dir() or member.file_size > MAX_REVIEW_ITEMS_BYTES:
+            # Two faults, two sentences. Joined, a directory entry answered with
+            # "exceeds the operator review limit" -- `file_size` is 0 for one --
+            # and sent the operator looking for an oversized queue that does not
+            # exist. The branch is in fact unreachable through the member filter
+            # above, since `is_dir()` needs a trailing separator this name cannot
+            # have; it stays as a defensive check, but a defensive check that
+            # names the wrong fault is worse than none.
+            if member.is_dir():  # pragma: no cover - unconstructible; see the test by this name
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        "the Armarium bundle names a directory at review-items.jsonl, so it "
+                        "carries no review queue to read"
+                    ),
+                )
+            if member.file_size > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
                     detail=(

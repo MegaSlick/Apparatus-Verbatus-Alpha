@@ -401,16 +401,66 @@ def test_the_triage_render_refuses_geometry_that_falls_outside_what_it_decoded(f
 
 
 def test_the_triage_render_still_applies_geometry_that_is_contained():
-    """The refusal above must not have closed the ordinary path with it."""
+    """The refusal above must not have closed the ordinary path with it.
+
+    The master's pixels are all different, and the decoded output is read back and
+    compared. Against a uniform white master this test asserted only the output
+    size, and a regression that ignored `crop_box["x"]` and `crop_box["y"]`
+    entirely still returned a correctly sized 2x2 page of the right colour and
+    passed. What the function is for is *which* pixels it cuts."""
     master = BytesIO()
-    Image.new("L", (4, 4), 255).save(master, format="PNG")
+    source = Image.frombytes("L", (4, 4), bytes(16 * y + x for y in range(4) for x in range(4)))
+    source.save(master, format="PNG")
     part = triage_part()
     part["crop_box"].update(x=1, y=1, w=2, h=2)
 
-    _rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
+    rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
 
     assert (geometry["width"], geometry["height"]) == (2, 2)
     assert (geometry["source_width"], geometry["source_height"]) == (4, 4)
+    with Image.open(BytesIO(rendered)) as decoded:
+        assert decoded.tobytes() == bytes([17, 18, 33, 34])
+
+
+def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_bound(monkeypatch):
+    """`expand=True` grows the canvas to the rotated bounding box, and that box is
+    not bounded by the crop's area: a 200000x2 strip is 400000 pixels, inside the
+    bound by three orders of magnitude, and at 45 degrees its bounding box is about
+    4e10 pixels. Nothing between the crop and `Image.rotate` looked at that number,
+    so Pillow was asked for the allocation and the run ended there instead of at a
+    recorded refusal — the Door checks the geometry of the page it is handed, which
+    is a page that no longer exists. The strip is the cheap shape to provoke it with:
+    the master itself decodes to 400KB. Found by CodeRabbit."""
+    master = BytesIO()
+    Image.new("L", (200_000, 2), 255).save(master, format="PNG")
+    part = triage_part(width=200_000, height=2)
+    part["rotation"]["rotation_millidegrees"] = 45_000
+
+    def refuse_to_allocate(*args, **kwargs):
+        raise AssertionError(
+            "the guard regressed: rotation was reached and would allocate ~4e10 pixels"
+        )
+
+    # Without this, a regressed guard does not fail the test — it exhausts the
+    # worker's memory allocating the canvas and the run dies without a report.
+    monkeypatch.setattr(Image.Image, "rotate", refuse_to_allocate)
+
+    with pytest.raises(ValueError, match="pixel bound"):
+        render_triage_derivative(master.getvalue(), page_index=0, part=part)
+
+
+def test_the_triage_render_still_rotates_what_stays_inside_the_bound():
+    """The expansion check must refuse the bounding box it would actually allocate,
+    not every rotation. A 4x4 crop turned 45 degrees expands to 6x6, and the record
+    has to report the expanded page rather than the crop it came from."""
+    master = BytesIO()
+    Image.new("L", (4, 4), 255).save(master, format="PNG")
+    part = triage_part()
+    part["rotation"]["rotation_millidegrees"] = 45_000
+
+    _rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
+
+    assert (geometry["width"], geometry["height"]) == (6, 6)
 
 
 def test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages():

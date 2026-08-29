@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterator, cast
+
+import pytest
 
 from common.runtree.store import RunTree
 from operations.operator.backup import sync_run_tree
@@ -226,7 +229,8 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     """
     local = tmp_path / "local-runs"
     volume = tmp_path / "mounted-volume" / "runs"
-    assert _run(local, "r", "review").returncode == 3
+    baseline = _run(local, "r", "review")
+    assert baseline.returncode == 3, baseline.stderr
     uninterrupted = snapshot(local)
 
     crashed = _crash_mid_recovery(volume, tmp_path)
@@ -292,19 +296,64 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     exactly, and let both the source and restored copy reach the same result.
     """
     volume = tmp_path / "mounted-volume" / "runs"
-    crashed = _crash_mid_recovery(volume, tmp_path)
+    _crash_mid_recovery(volume, tmp_path)
+
+    # Whether the kill lands mid-write, leaving a `.<target>.tmp-*` publication
+    # temporary behind, is a matter of timing -- so whether this test exercised
+    # the backup's exclusion of them was decided by the scheduler. It failed
+    # exactly once in a full-suite run for that reason. One is planted, so the
+    # exclusion path is measured on every run instead of occasionally.
+    planted = volume / "r" / ".run.json.tmp-interruptedpublication"
+    planted.write_bytes(b"an interrupted publication, mid-write when the driver died")
+    crashed = snapshot(volume)
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
-    assert report.copied == len(crashed) and report.reused == 0
+    # Two facts, asserted separately, and the published list rather than a count.
+    # `copied` counts files written as new objects and `reused` counts digests
+    # the store already held, so two identical files anywhere in the run tree
+    # make `copied` smaller than the crashed set with the backup behaving
+    # correctly -- and the joined assertion would then fail without saying which
+    # half broke, leaving a reader unable to tell a lost file from de-duplication.
+    published = json.loads(
+        (mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json").read_text()
+    )
+    # A tree killed mid-write can hold a `.<target>.tmp-*` publication temporary,
+    # which the backup excludes by design and records by name so the exclusion
+    # cannot be silent. Comparing against the raw crashed set therefore fails
+    # whenever the SIGKILL happens to land mid-write -- as did the
+    # `copied == len(crashed)` count this replaced, for the same reason. The
+    # exclusions are subtracted from the expectation rather than ignored, and
+    # each one must really have been in the crashed tree, so an exclusion can
+    # never stand in for a file the backup lost.
+    excluded = {f"r/{name}" for name in published["excluded_publication_temporaries"]}
+    assert f"r/{planted.name}" in excluded, "the planted temporary was carried, not excluded"
+    assert excluded <= set(crashed), "the snapshot excluded something the tree never held"
+    # `snapshot` keys are relative to the run root's parent; a backup inventory
+    # names members relative to the run tree itself.
+    assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed) - excluded
+    assert report.reused == 0, "nothing was in the object store before this backup"
+    assert report.copied + report.reused == len(published["files"])
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
-    assert snapshot(restored_root) == crashed
+    # The restore replays the published inventory, so a crashed tree holding an
+    # excluded temporary restores without it -- the tree, minus what the backup
+    # deliberately never carried.
+    assert snapshot(restored_root) == {
+        path: digest for path, digest in crashed.items() if path not in excluded
+    }
     _assert_every_reference_resolves(restored_root, "r")
 
-    assert _run(restored_root, "r", "review").returncode == 3
-    assert _run(volume, "r", "review").returncode == 3
+    # The planted temporary has done its work. Removing it leaves the two trees
+    # byte-identical going into the resume, so the comparison below stays an
+    # exact equality rather than one taught to overlook a set of paths.
+    planted.unlink()
+
+    restored_run = _run(restored_root, "r", "review")
+    assert restored_run.returncode == 3, restored_run.stderr
+    source_run = _run(volume, "r", "review")
+    assert source_run.returncode == 3, source_run.stderr
     assert snapshot(restored_root) == snapshot(volume)
     _assert_every_reference_resolves(restored_root, "r")
 
@@ -320,20 +369,132 @@ def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
         target.write_bytes(data)
 
 
-def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group(monkeypatch) -> None:
-    observed: list[object] = []
+def _process_has_terminated(pid: int) -> bool:
+    """Has this pid stopped running -- reaped, or dead and awaiting its parent?
 
-    class Process:
-        pid = 123
+    Signal zero asks whether the pid exists, and a zombie still does: it holds
+    its slot until someone reaps it. On Linux that is a real interval, because
+    the grandchild's own parent is being killed in the same signal and cannot
+    reap it; the pid only disappears once it is reparented and init collects it.
+    Waiting for disappearance alone therefore spends the full deadline and then
+    reports a leak after a kill that worked perfectly.
 
-        def poll(self):
-            return None
+    Linux answers the actual question through procfs, where state ``Z`` is
+    "terminated, not yet reaped". The comm field can contain spaces and
+    parentheses, so the state is read after the last ``)``. Elsewhere -- macOS
+    has no procfs -- disappearance is the only available answer and is used.
+    """
 
-        def wait(self, *, timeout):
-            observed.append(("wait", timeout))
-            return -signal.SIGKILL
+    # Only the two answers that are evidence of termination. A `PermissionError`
+    # says the pid exists and belongs to someone else, and an `EACCES` or `EIO`
+    # reading procfs says nothing about the process at all -- reporting either
+    # as "gone" would let this test pass without ever establishing that the kill
+    # worked. They are left to surface as the failures they are.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    if sys.platform != "linux":
+        return False
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        # The entry went away between the two reads, which is the pid being
+        # reaped -- the outcome this function is asked about.
+        return True
+    return _procfs_state_is_zombie(stat_line)
 
-    monkeypatch.setattr(os, "killpg", lambda pid, sent: observed.append(("killpg", pid, sent)))
 
-    assert _kill_and_reap(Process()) == -signal.SIGKILL
-    assert observed == [("killpg", 123, signal.SIGKILL), ("wait", 120)]
+def _procfs_state_is_zombie(stat_line: str) -> bool:
+    """Read the state field of a `/proc/<pid>/stat` line.
+
+    Split out so the parse is measurable on a host without procfs. The comm
+    field is parenthesised and may itself contain spaces and parentheses, so the
+    state is the first token after the *last* `)`, never `split()[2]`.
+    """
+
+    return stat_line.rpartition(")")[2].split()[:1] == ["Z"]
+
+
+def test_only_evidence_of_termination_counts_as_termination(monkeypatch) -> None:
+    """A pid we may not signal is a pid that still exists.
+
+    Reporting `PermissionError` as "gone" would let the process-group test pass
+    without ever establishing that the kill worked, which is the one thing it
+    exists to establish.
+    """
+
+    def _denied(_pid, _signal):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", _denied)
+    with pytest.raises(PermissionError):
+        _process_has_terminated(1)
+
+    def _absent(_pid, _signal):
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(os, "kill", _absent)
+    assert _process_has_terminated(1)
+
+
+def test_the_procfs_state_parse_survives_a_command_name_full_of_parentheses() -> None:
+    """`split()[2]` is the parse this must not be, and a stat line says why."""
+
+    assert _procfs_state_is_zombie("42 (python3) Z 1 42 42 0 -1 4194560 0 0")
+    assert not _procfs_state_is_zombie("42 (python3) S 1 42 42 0 -1 4194560 0 0")
+    # A real command name this repository could produce: spaces and brackets.
+    assert _procfs_state_is_zombie("42 (run.py --stage recovery) Z 1 42 42")
+    assert not _procfs_state_is_zombie("42 (run.py --stage recovery) R 1 42 42")
+    assert _procfs_state_is_zombie("42 (weird )(name) Z 1 42 42")
+    assert not _procfs_state_is_zombie("42 (weird )(name) S 1 42 42")
+
+
+def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:
+    """A real session, a real grandchild, and a real check that the group is gone.
+
+    Driven through stubs -- a `Process` that always reports itself alive, an
+    `os.killpg` replaced by a list append, a `wait` that returns whatever the
+    stub says -- this proved only that `_kill_and_reap` calls two functions in
+    one order. It would have stayed green if the wrong group were killed, or if
+    a real child survived on the machine, and a leaked recovery driver
+    accumulating through a parish-sized run is the thing it is named for.
+
+    The child starts its own session and forks a grandchild that outlives it, so
+    killing the process alone leaves the grandchild running: only a group-wide
+    signal ends both. The grandchild reports its pid, and its death is what this
+    asserts, rather than the call sequence that was supposed to cause it.
+    """
+
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys, time\n"
+            "child = os.fork()\n"
+            "if child == 0:\n"
+            "    time.sleep(600)\n"
+            "    os._exit(0)\n"
+            "sys.stdout.write(f'{child}\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(600)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        assert process.stdout is not None
+        grandchild = int(process.stdout.readline())
+        # Running, and outside the child's own lifetime.
+        assert not _process_has_terminated(grandchild)
+
+        assert _kill_and_reap(process) == -signal.SIGKILL
+
+        # The grandchild is not this process's child, so it is never reaped here
+        # and cannot be mistaken for gone by a `waitpid` race.
+        deadline = time.monotonic() + 30
+        while not _process_has_terminated(grandchild):
+            assert time.monotonic() < deadline, (
+                f"grandchild {grandchild} survived the group kill, so a recovery driver "
+                "would have been left running on the machine"
+            )
+            time.sleep(0.01)
