@@ -575,6 +575,25 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
     from . import triage
 
     try:
+        # Completeness first, before anything durable. `write_mode_declaration`
+        # refuses to rewrite a batch's declared mode once it exists, so an
+        # incomplete `--accept` that wrote the record and *then* refused left the
+        # mode for that batch claimed by a command that did nothing — and an
+        # operator who corrects the invocation to a different `--mode` is then
+        # refused by their own abandoned attempt.
+        if args.decline is not None and args.queue_state is None:
+            raise triage.TriageRefusal(
+                "triage refusal queue-state-required: decline needs --queue-state"
+            )
+        if args.accept is not None:
+            if args.queue_state is None or args.draft is None or args.confirmation_out is None:
+                raise triage.TriageRefusal(
+                    "triage refusal acceptance-incomplete: accept needs --queue-state, --draft, and --confirmation-out"
+                )
+            if args.preview_sha256 is None:
+                raise triage.TriageRefusal(
+                    "triage refusal preview-confirmation-required: accept needs the shown preview digest"
+                )
         declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
         triage.write_mode_declaration(args.mode_record, declaration)
         queue = triage.load_queue(
@@ -587,22 +606,10 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
             triage_modes_path=workspace / "config" / "triage_modes.toml",
         )
         if args.decline is not None:
-            if args.queue_state is None:
-                raise triage.TriageRefusal(
-                    "triage refusal queue-state-required: decline needs --queue-state"
-                )
             triage.append_decision(
                 args.queue_state, queue, item_digest=args.decline, decision="decline"
             )
         if args.accept is not None:
-            if args.queue_state is None or args.draft is None or args.confirmation_out is None:
-                raise triage.TriageRefusal(
-                    "triage refusal acceptance-incomplete: accept needs --queue-state, --draft, and --confirmation-out"
-                )
-            if args.preview_sha256 is None:
-                raise triage.TriageRefusal(
-                    "triage refusal preview-confirmation-required: accept needs the shown preview digest"
-                )
             draft = triage._read_canonical(args.draft, "confirmation-draft")
             # Acceptance spans two durable files; this transaction API preserves
             # journal-first ordering and resumes a missing confirmation on replay.
