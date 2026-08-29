@@ -369,6 +369,18 @@ def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
     return data, persisted
 
 
+def load_confirmation_draft(path: str | Path) -> dict[str, Any]:
+    """Read the canonical confirmation draft the operator was shown.
+
+    The console needs this one read and had been reaching through
+    `_read_canonical`, which meant the CLI also carried the "confirmation-draft"
+    label by hand. That label is not decoration: it is the `what` that names the
+    record in every refusal this read can raise, so a copy of it living at the
+    call site is a second place for the operator-facing text to drift from.
+    """
+    return _read_canonical(path, "confirmation-draft")
+
+
 def load_queue(
     manifest_path: str | Path,
     evidence_path: str | Path,

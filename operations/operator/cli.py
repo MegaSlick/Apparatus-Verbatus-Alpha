@@ -617,7 +617,7 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                 args.queue_state, queue, item_digest=args.decline, decision="decline"
             )
         if args.accept is not None:
-            draft = triage._read_canonical(args.draft, "confirmation-draft")
+            draft = triage.load_confirmation_draft(args.draft)
             # Acceptance spans two durable files; this transaction API preserves
             # journal-first ordering and resumes a missing confirmation on replay.
             triage.accept_candidate(
