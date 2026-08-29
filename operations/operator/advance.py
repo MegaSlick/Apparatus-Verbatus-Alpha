@@ -503,9 +503,10 @@ def trigger_advance(
                 f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
                 file=sys.stderr,
             )
-        except OSError:
+        except (OSError, ValueError):
             # The record is written, verified against the exact request, and
-            # about to be returned. A `BrokenPipeError` here would escape to the
+            # about to be returned. A `BrokenPipeError` — or the `ValueError`
+            # `print` raises on an already-closed stream — here would escape to the
             # CLI's catch-all and exit 2, telling the operator the advance
             # failed and inviting a retry of a boundary that is already
             # advanced and cannot be retracted -- the same fault the worker's
