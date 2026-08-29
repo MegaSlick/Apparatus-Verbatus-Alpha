@@ -239,9 +239,12 @@ two-digest pairs drawn from the cluster's members. The producer derives each pag
 physical_page_ids))`; membership growth cannot rename that id. A frame may be a member
 of every physical page it shows. Missing designation, an unsubmitted member, overlapping
 clusters, incompatible split counts, or a cluster span above the shard cap refuses the
-whole producer pass. The register receives one ordered append — declarations before
-membership links — and only then may the caller write the already-validated manifest
-cluster records and their row ids. No confirmation means no cluster record and all
+whole producer pass. The register receives one ordered append, page by page: each new
+page's declaration precedes that page's own membership link, so a confirmation
+introducing two pages appends declaration A, membership A, declaration B, membership B.
+It is not all declarations followed by all membership links, and nothing downstream may
+read it as that. Only then may the caller write the already-validated manifest cluster
+records and their row ids. No confirmation means no cluster record and all
 `re_shoot_cluster_id` fields remain null.
 
 Every `evidence_pairs` entry must be a pair the instrument actually evidenced: the
@@ -314,8 +317,8 @@ reads canonical JSON from a path, and `produce` accepts an already-parsed mappin
 in-process caller can synthesize one without any file existing. The `authority` record
 (`{kind, identity, revision}`) is a *claim* the confirmation makes about itself, not a
 credential anything verifies. Cryptographic trust roots for approval records are settled
-permanently against (integrity-only records are the design), so this is not a gap waiting
-on a signature scheme; it is the honest shape of a pre-console act.
+permanently against adoption: integrity-only records are the design. This is therefore
+not a gap waiting on a signature scheme; it is the honest shape of a pre-console act.
 
 Three things make that shape safe enough to ship, and each is enforced rather than
 documented:
