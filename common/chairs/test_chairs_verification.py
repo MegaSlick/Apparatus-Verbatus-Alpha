@@ -713,7 +713,9 @@ def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_b
                     "fixture-org/pinned", "a" * 40, destination
                 )
             outcome.append(None)
-        except BaseException as error:  # noqa: BLE001 - reported through the assertion below
+        # Broad on purpose: the worker thread must hand whatever it raised back
+        # to the assertions below rather than die with it on a daemon thread.
+        except BaseException as error:
             outcome.append(error)
 
     worker = threading.Thread(target=run, daemon=True)

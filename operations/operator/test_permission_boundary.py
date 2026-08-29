@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import inspect
 import io
 import json
@@ -1654,7 +1655,19 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
     assert "Advance record:" in capsys.readouterr().out
 
 
-def test_a_worker_refusal_on_stderr_cannot_be_hidden_by_a_zero_exit(tmp_path, monkeypatch):
+def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    """Stderr is read after the returned reference, and neither half is lost.
+
+    Deciding on stderr first made any byte on that pipe a refusal, including
+    the `DeprecationWarning` the worker's own `runpy.run_module` prints by
+    default -- a completed, verifiable advance reported as refused. Deciding on
+    it not at all would drop a diagnostic the worker meant a person to read
+    (GOVERNANCE 2). The record is checked against the exact request first, and
+    what the worker wrote then reaches the operator beside it.
+    """
+
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
@@ -1670,25 +1683,148 @@ def test_a_worker_refusal_on_stderr_cannot_be_hidden_by_a_zero_exit(tmp_path, mo
             [],
             0,
             json.dumps(reference.to_record()),
-            "SECURITY REFUSAL: worker state was inconsistent",
+            "DeprecationWarning: the worker's own diagnostic channel spoke",
         )
         return _StubConfinement(lambda command: command), completed
 
     monkeypatch.setattr(advance, "run_confined", _false_success)
+
+    returned = advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="worker reported both success and refusal",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    assert returned.sha256
+    assert "the worker's own diagnostic channel spoke" in capsys.readouterr().err
+    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+
+
+def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusal path must not be the place the worker's words get dropped."""
+
+    run_root, run_id = _make_run(tmp_path)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _unreadable_report(*_args, **_kwargs):
+        completed = subprocess.CompletedProcess(
+            [], 0, "not a decision reference", "the worker explained itself here"
+        )
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _unreadable_report)
 
     with pytest.raises(OperatorError) as excinfo:
         advance.trigger_advance(
             run_root,
             run_id,
             "armarium",
-            reason="worker reported both success and refusal",
+            reason="the worker returned something unreadable",
             workspace=ROOT,
             expected_digest=expected_digest,
         )
 
     assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
-    assert "reported a refusal despite returning success" in (excinfo.value.detail or "")
-    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+    assert "returned no checked decision reference" in (excinfo.value.detail or "")
+    assert "the worker explained itself here" in (excinfo.value.detail or "")
+
+
+def test_a_written_record_the_worker_could_not_report_is_not_called_a_refused_advance(
+    tmp_path, monkeypatch
+) -> None:
+    """Exit `WORKER_REPORT_FAILED_EXIT` names the one state a bare nonzero hid.
+
+    The record is appended before it is reported, so a broken stdout pipe used
+    to leave the worker dying on a traceback with a status the parent read as
+    "the advance was refused" -- about a boundary that had in fact been
+    advanced, permanently.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _wrote_but_could_not_report(*_args, **_kwargs):
+        completed = subprocess.CompletedProcess(
+            [],
+            advance.WORKER_REPORT_FAILED_EXIT,
+            "",
+            "the advance record was written and could not be reported: [Errno 32] Broken pipe",
+        )
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _wrote_but_could_not_report)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="the report never reached the parent",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    detail = excinfo.value.detail or ""
+    assert "the advance record was written and the worker could not report it" in detail
+    assert "Broken pipe" in detail
+
+
+def test_the_worker_reports_a_written_record_it_cannot_deliver_with_its_own_status(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The parent's classification is only worth having if the worker emits it.
+
+    The record is appended first, so the report is the one step whose failure
+    must not read as "no advance happened". Everything up to the append is left
+    alone; only stdout is made to fail.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+    receipts = tree.root / "receipts" / "sha256"
+    before = {path.name for path in receipts.glob("*.json")}
+
+    class _RefusingStdout:
+        def write(self, _text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def flush(self):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def fileno(self):
+            raise io.UnsupportedOperation("this stdout has no descriptor")
+
+    monkeypatch.setattr(
+        advance_worker.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "stage": "armarium",
+                    "reason": "the report never reached the parent",
+                    "expected_digest": expected_digest,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(advance_worker.sys, "stdout", _RefusingStdout())
+
+    status = advance_worker.main(
+        ["--run-root", str(run_root), "--run-id", run_id, *_worker_identity_arguments(tree)]
+    )
+
+    assert status == advance.WORKER_REPORT_FAILED_EXIT
+    assert "could not be reported" in capsys.readouterr().err
+    # The record it could not report is on disk, which is the whole reason the
+    # status must not be told to the operator as a refused advance.
+    assert {path.name for path in receipts.glob("*.json")} - before
 
 
 def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeypatch):
@@ -1926,8 +2062,8 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
             )
         ),
     )
-    printed: list[str] = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    reported = io.StringIO()
+    monkeypatch.setattr(advance_worker.sys, "stdout", reported)
 
     assert (
         advance_worker.main(
@@ -1942,7 +2078,7 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
         == 0
     )
 
-    reference = json.loads(printed[-1])
+    reference = json.loads(reported.getvalue().strip().splitlines()[-1])
     record = tree.read_approval_record(
         ApprovalRecordReference(reference["relative_path"], reference["sha256"])
     )
