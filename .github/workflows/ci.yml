@@ -24,8 +24,11 @@ jobs:
     timeout-minutes: 75
     strategy:
       matrix:
-        # 3.12 is the supported floor; later entries are cross-version coverage.
-        python-version: ['3.12', '3.13', '3.14']
+        # 3.12 is the supported floor and 3.14 the newest supported; 3.13 was
+        # dropped 2026-08-29 (Tyrel, in session) — it is bracketed by the other
+        # two and no failure in the pr/ queue's runs was unique to it, so the
+        # middle leg bought compute, not detection.
+        python-version: ['3.12', '3.14']
     steps:
       # v6.1.0; full commit pin prevents a mutable tag changing executed code.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
