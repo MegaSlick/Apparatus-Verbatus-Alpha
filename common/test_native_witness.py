@@ -559,6 +559,41 @@ def test_page_retained_response_path_is_derived_from_its_digest():
         validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
+def test_the_public_page_seam_actually_reaches_the_retained_response_check():
+    """The three tests above call the checker directly and pass either way.
+
+    `validate_page_testimonium_payload` is the only caller in the pipeline, and
+    the Recensor hands it `read_bytes` precisely so the retained bytes are
+    re-hashed against their recorded digests. A stray `return` above that call
+    made the whole check unreachable while the unit tests stayed green: the
+    record then reported a verified retained response nobody had verified
+    (GOVERNANCE 10). This case goes through the public function, so the dead
+    path fails loudly rather than quietly.
+    """
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+
+    value = _page_payload(raw_response_refs=[reference])
+    assert validate_page_testimonium_payload(value, read_bytes=lambda _path: raw) is value
+
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        validate_page_testimonium_payload(
+            _page_payload(raw_response_refs=[reference]), read_bytes=lambda _path: b"changed"
+        )
+
+    # The shape checks reach the seam too, not only the byte recheck: a caller
+    # that passes no `read_bytes` still gets the closed reference contract.
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_page_testimonium_payload(
+            _page_payload(
+                raw_response_refs=[
+                    {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "b" * 64}
+                ]
+            )
+        )
+
+
 def _page_with_churro_capture() -> dict:
     value = payload()
     text = value["payload"]

@@ -597,7 +597,6 @@ def validate_page_testimonium_payload(
                     raise SchemaRefusal(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
-    return validate_native_witness_geometry(payload)
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
