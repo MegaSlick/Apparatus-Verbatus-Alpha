@@ -75,7 +75,7 @@ def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
         }
     )
 
-    with pytest.raises(SchemaRefusal, match="invalid page-scope facts.*cannot be placed"):
+    with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         attestatores.validate_page_testimonium_payload(payload)
 
 
@@ -1921,7 +1921,9 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
     normalized character in the clipped match mapped to ``None``. That asserted
     alignment to an empty raw slice the witness never supplied. Exercise the
     caller, not only the translator: both page chairs must retain an explicit
-    unaligned fact, with no zero-length aligned attachment surviving.
+    unaligned fact, with no zero-length text alignment surviving.  Unit 10C's
+    separate geometric attachment basis may still attach the page Testimonium;
+    it must never turn that non-existent raw text span back into alignment.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     loss = {
@@ -1976,4 +1978,8 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
         row["alignment"] == {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
         for row in page_attachments
     )
-    assert all(row["attached"] is False and row["span"] is None for row in page_attachments)
+    assert all(
+        row["attached"] is True and row["attachment_basis"] == "geometric-overlap"
+        for row in page_attachments
+    )
+    assert all(row["span"] is None for row in page_attachments)

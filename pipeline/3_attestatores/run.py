@@ -25,18 +25,32 @@ the other chairs to reach it would re-read ink nobody doubted.
 import json
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Final, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import witness_adapters  # noqa: E402
 
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.fixture_identity import page_identity  # noqa: E402
+from common.imaging import dimensions  # noqa: E402
+from common.native_witness import (  # noqa: E402
+    PAGE_TESTIMONIUM_REQUIRED_FIELDS,
+    partition_disagreement,
+    reported_geometry_overlaps,
+    unpresented_region_ids,
+    validate_native_witness_geometry,
+    validate_page_testimonium_payload,
+    validate_presented_page_binding,
+    validate_unpresented_regions,
+)
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -128,6 +142,28 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     return sorted(proposed, key=_region_ordinal)
 
 
+def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
+    """Every sealed Designator proposal on one page, independent of act state.
+
+    The page partition and unrouted-observation denominator is the page's whole
+    sealed proposal set (Unit 10C's rule): a held act's proposal was still
+    sealed on this page, and omitting it makes the retained snapshot contradict
+    the Recensor's independent re-derivation of the same denominator.
+    """
+    regions = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        payload = record.get("payload", {})
+        if (
+            payload.get("origin") == "proposal"
+            and payload.get("transform", {}).get("source_page_ordinal") == page_ordinal
+        ):
+            regions.append(record)
+    return sorted(regions, key=_region_ordinal)
+
+
 def _region_ordinal(record: dict) -> int:
     ordinal = record.get("payload", {}).get("attempt_ordinal")
     if not isinstance(ordinal, int) or isinstance(ordinal, bool):
@@ -147,13 +183,195 @@ def region_references(regions: list[dict]) -> list[dict[str, str]]:
     ]
 
 
-def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
-    """Bind each distinct crop blob once while retaining every region in payloads."""
+def region_inputs(context, regions: list[dict], presented: dict[str, Any]) -> list[dict[str, str]]:
+    """Bind every proposal crop and the exact presentation, each distinct blob once."""
     inputs = {}
     for record in regions:
         reference = context.input_ref(record["payload"]["image_path"])
         inputs[reference["relative_path"]] = reference
+    if presented:
+        reference = context.input_ref(presented["image_path"])
+        inputs[reference["relative_path"]] = reference
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
+REGION_PRESENTATION_FIELDS: Final = ("region_id", "image_path", "image_sha256")
+REGION_TRANSFORM_FIELDS: Final = ("source_page_id", "source_page_ordinal")
+
+
+def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
+    """Derive one region presentation from a sealed proposal record.
+
+    The writer's caller has already verified this region's crop lineage, but
+    `validate_testimonium_presentation` reads regions straight out of the
+    Designator manifest to reconcile a record it is treating as untrusted. A
+    sealed region missing its transform or blob identity left that seam as a
+    raw KeyError -- from the check whose whole job is to name what is wrong
+    with the evidence -- so the missing field is named here instead.
+    """
+    payload = region.get("payload")
+    transform = payload.get("transform") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not isinstance(transform, dict):
+        raise SchemaRefusal(
+            "a sealed Designator region has no payload and page-space transform to present"
+        )
+    missing = [field for field in REGION_PRESENTATION_FIELDS if field not in payload]
+    missing += [field for field in REGION_TRANSFORM_FIELDS if field not in transform]
+    if missing:
+        raise SchemaRefusal(
+            f"a sealed Designator region lacks the field(s) {sorted(missing)} its presentation "
+            "must name. The record cannot be traced to the exact pixels a witness was shown"
+        )
+    return {
+        "kind": "region",
+        "source_page_id": transform["source_page_id"],
+        "source_page_ordinal": transform["source_page_ordinal"],
+        "image_path": payload["image_path"],
+        "image_sha256": payload["image_sha256"],
+        "transform": transform,
+        "region_ref": {"region_id": payload["region_id"]},
+    }
+
+
+def page_witness_attempted(
+    page_acts: list[dict[str, Any]],
+    chair: str,
+    attempts_by_pair: dict[tuple[str, str], "Attempt"],
+) -> bool:
+    """Whether this page-scoped chair was shown pixels for at least one of its acts.
+
+    Distinct from `page_join`'s `reading` (whether text was actually produced):
+    a chair attempted and shown a crop that came back `failed` is still a chair
+    that was shown an image, so `presented` must not collapse that case into the
+    same empty block held acts, refused pages, and absent chairs record. Using
+    `reading` here would misreport "shown pixels, bad response" as "never shown
+    an image" (GOVERNANCE 2).
+    """
+    return any(
+        attempts_by_pair[(act["act_id"], chair)].outcome in ATTEMPTED_WITNESS_OUTCOMES
+        for act in page_acts
+    )
+
+
+def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
+    """Bind a page witness to the sealed whole-page pixels it was shown."""
+    page_id = page_identity(context.fixture, page_ordinal)
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    image_path = page["payload"]["image_path"]
+    width, height = dimensions(context.tree.read_bytes(image_path))
+    return {
+        "kind": "page",
+        "source_page_id": page_id,
+        "source_page_ordinal": page_ordinal,
+        "image_path": image_path,
+        "image_sha256": page["payload"]["source_sha256"],
+        "transform": {
+            "operation": "whole",
+            "source_page_id": page_id,
+            "source_page_ordinal": page_ordinal,
+            "bounds": {"x": 0, "y": 0, "w": width, "h": height},
+        },
+    }
+
+
+def observed_from_presentation(presented: dict[str, Any]) -> list[dict[str, Any]]:
+    """The fixture's default is one observation of exactly its presentation."""
+    return [
+        {
+            "ordinal": 0,
+            "bounds": dict(presented["transform"]["bounds"]),
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
+
+
+def _fixture_native_observations(
+    context, *, chair: str, page_ordinal: int
+) -> list[dict[str, Any]] | None:
+    """Fixture geometry is a stimulus; its routing threshold remains unmeasured."""
+    rows = [
+        row
+        for row in context.fixture.get("native_observation", [])
+        if row.get("chair") == chair
+        and row.get("page_ordinal") == page_ordinal
+        and row.get("scenario") in (None, context.scenario)
+    ]
+    if not rows:
+        return None
+    observations = []
+    for ordinal, row in enumerate(rows):
+        # A row missing a coordinate is refused where the fixture row can be
+        # identified. Passing `{"w": None}` down instead reaches the geometry
+        # contract as "non-integer page-pixel coordinates", which is true and
+        # names neither the chair, the page, nor which row to go and fix.
+        missing = sorted(key for key in ("x", "y", "w", "h") if key not in row)
+        if missing:
+            raise SchemaRefusal(
+                f"fixture native_observation row {ordinal} for chair {chair!r} on page "
+                f"{page_ordinal} lacks the coordinate(s) {missing}; a declared witness "
+                "observation must be a complete page-pixel box"
+            )
+        observations.append(
+            {
+                "ordinal": ordinal,
+                "bounds": {key: row[key] for key in ("x", "y", "w", "h")},
+                "bounds_source": "native",
+                "span": None,
+            }
+        )
+    return observations
+
+
+def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
+    """Re-derive the presentation's sealed page, blob binding, and region wall."""
+    payload = record["payload"]
+    presented = payload["presented"]
+    validate_native_witness_geometry(payload)
+    if presented == {}:
+        if record.get("inputs") != []:
+            raise SchemaRefusal("an unpresented Testimonium carries image inputs")
+        return
+    page = context.tree.read_artifact(
+        EXEMPLAR,
+        "page",
+        artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
+    )
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
+    if not any(
+        item == {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
+        for item in record.get("inputs", [])
+    ):
+        raise SchemaRefusal("a Testimonium presented image is not digest-bound in record.inputs")
+    if presented["kind"] == "region":
+        matches = []
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+            if entry["kind"] != "region":
+                continue
+            region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            if region.get("payload", {}).get("region_id") == presented["region_ref"]["region_id"]:
+                matches.append(region)
+        if len(matches) != 1:
+            raise SchemaRefusal("a region presentation names no unique sealed Designator region")
+        region = matches[0]
+        if region["payload"].get("origin") != "proposal":
+            raise SchemaRefusal(
+                "a recovery region cannot be presented as a witness basis; origin is not proposal"
+            )
+        if presentation_for_region(region) != presented:
+            raise SchemaRefusal(
+                "a region presentation disagrees with its sealed proposal geometry or blob"
+            )
 
 
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
@@ -608,6 +826,9 @@ TESTIMONIUM_FIELDS = frozenset(
         "payload",
         "witness_reported",
         "content_health",
+        "presented",
+        "observed",
+        "unpresented_regions",
     }
 )
 # `page_witness` marks a page chair's act-scoped compatibility record and is
@@ -616,13 +837,12 @@ TESTIMONIUM_FIELDS = frozenset(
 # carries, and allowing them here let a resealed act record wear page clothing.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 
-# Page testimony has its own closed shape because `page_role` is evidence about
-# all acts contributing to that page, not a fact an act-scoped record can carry.
-PAGE_TESTIMONIUM_FIELDS = TESTIMONIUM_FIELDS | frozenset(
-    {"scope", "page_ordinal", "page_role", "unjoined_act_attempts"}
-)
-PAGE_TESTIMONIUM_OPTIONAL_FIELDS = frozenset({"reason", "reported"})
-PAGE_ROLES = frozenset({"primary", "continuation", "mixed"})
+# A page Testimonium is a different, closed record from the act-scoped
+# compatibility Testimonium above.  In particular, ``page_role`` says whether
+# the page is the act's primary page, only carries continuations, or contains
+# both.  Keeping that fact in the producer's contract prevents page two from
+# being an anonymous duplicate of page one.
+PAGE_TESTIMONIUM_FIELDS = PAGE_TESTIMONIUM_REQUIRED_FIELDS
 
 
 def testimonium_payload(
@@ -636,8 +856,12 @@ def testimonium_payload(
     native_payload: Any,
     witness_reported: Any,
     health: dict[str, Any],
+    presented: dict[str, Any] | None = None,
+    observed: list[dict[str, Any]] | None = None,
+    unpresented_regions: list[str] | None = None,
     outcome: str,
     reason: str | None = None,
+    page_witness: bool = False,
 ) -> dict[str, Any]:
     """Build the stage schema without letting a compatibility field define it."""
     record: dict[str, Any] = {
@@ -650,18 +874,38 @@ def testimonium_payload(
         "payload": native_payload,
         "witness_reported": witness_reported,
         "content_health": health,
+        "presented": {} if presented is None else presented,
+        "observed": [] if observed is None else observed,
+        "unpresented_regions": [] if unpresented_regions is None else unpresented_regions,
     }
     if reason is not None:
         record["reason"] = reason
+    if page_witness:
+        # Set before validation: the geometry contract must know this act view
+        # restates a page witness's page-space geometry (see validate_observed).
+        record["page_witness"] = True
 
-    # Temporary consumer bridge: Perlector's current skeleton input contract only
-    # accepts a textual `reported` field. It is a projection of a *textual native
-    # payload*, never a self-report, and structured native payloads deliberately
-    # receive no coerced text substitute. The bridge can be deleted only by the
-    # Perlector owner when its consumer reads `payload` natively.
+    # `reported` is only a compatibility projection of textual native payloads;
+    # structured payloads must not acquire coerced substitute text.
     if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
         record["reported"] = native_payload
-    return record
+    return validate_testimonium_payload(record)
+
+
+def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
+    """Close the act Testimonium at both its writer and its tally read-back."""
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a Testimonium is not its closed payload schema")
+    if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
+        raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
+    allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
+    if unexpected := sorted(set(payload) - allowed):
+        raise SchemaRefusal(
+            f"a Testimonium carries unknown field(s) {unexpected}; this stage writes a closed "
+            "payload, and a field nothing validates is a field nothing downstream can trust"
+        )
+    validate_unpresented_regions(payload)
+    return validate_native_witness_geometry(payload)
 
 
 def page_testimonium_payload(
@@ -669,6 +913,8 @@ def page_testimonium_payload(
     page_ordinal: int,
     page_role: str,
     unjoined_act_attempts: list[dict[str, Any]],
+    partition_disagreement: dict[str, Any] | None,
+    testimonium_id: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Page-scoped Testimonia admit only the producer's closed field set."""
@@ -682,6 +928,9 @@ def page_testimonium_payload(
         "native_payload",
         "witness_reported",
         "health",
+        "presented",
+        "observed",
+        "unpresented_regions",
         "outcome",
         "reason",
     }
@@ -697,42 +946,10 @@ def page_testimonium_payload(
         "page_role": page_role,
         "unjoined_act_attempts": unjoined_act_attempts,
     }
-    validate_page_testimonium_payload(record)
+    if partition_disagreement is not None:
+        record["partition_disagreement"] = partition_disagreement
+    validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     return record
-
-
-def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
-    """A page record must carry valid scope, ordinal, role, and unjoined facts."""
-    if not isinstance(payload, dict):
-        raise SchemaRefusal(
-            "a page Testimonium payload is not an object; its fields cannot be verified; "
-            "publish the closed object shape instead"
-        )
-    if unexpected := sorted(
-        set(payload) - PAGE_TESTIMONIUM_FIELDS - PAGE_TESTIMONIUM_OPTIONAL_FIELDS
-    ):
-        raise SchemaRefusal(
-            f"a page Testimonium carries unknown field(s) {unexpected}; its closed schema "
-            "cannot account for them; remove the fields before publication"
-        )
-    if missing := sorted(PAGE_TESTIMONIUM_FIELDS - set(payload)):
-        raise SchemaRefusal(
-            f"a page Testimonium lacks required field(s) {missing}; its evidence record is "
-            "incomplete; restore the fields before publication"
-        )
-    if (
-        payload["scope"] != "page"
-        or not isinstance(payload["page_ordinal"], int)
-        or isinstance(payload["page_ordinal"], bool)
-        or not isinstance(payload["page_role"], str)
-        or payload["page_role"] not in PAGE_ROLES
-        or not isinstance(payload["unjoined_act_attempts"], list)
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium has invalid page-scope facts; its page evidence cannot be "
-            "placed or interpreted; correct the scope, ordinal, role, and unjoined list"
-        )
-    return payload
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1047,15 +1264,8 @@ def validate_tallied_testimonium(
     payload = record.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium tally record has no object payload")
-    if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
-        raise SchemaRefusal(f"a Testimonium tally record lacks required field(s) {missing}")
-    allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
-    if unexpected := sorted(set(payload) - allowed):
-        raise SchemaRefusal(
-            f"a Testimonium tally record carries unknown field(s) {unexpected}; this stage "
-            "writes a closed payload, and a field nothing validates is a field nothing "
-            "downstream can trust"
-        )
+    validate_testimonium_payload(payload)
+    validate_testimonium_presentation(context, record)
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
         raise SchemaRefusal("a Testimonium tally record names no configured chair")
@@ -1103,13 +1313,22 @@ def validate_tallied_testimonium(
             regions = proposed_regions(context, act["act_id"])
             regions_by_act[act["act_id"]] = regions
         if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
-            context, regions
+            context, regions, payload["presented"]
         ):
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
-    elif payload["regions"] != [] or record["inputs"] != []:
-        raise SchemaRefusal("a non-attempted Testimonium tally record carries regions or inputs")
+        # Re-derive the explicit limit from sealed regions so it cannot understate
+        # which bound crops the one presented image does not speak for.
+        if payload["unpresented_regions"] != unpresented_region_ids(payload["presented"], regions):
+            raise SchemaRefusal(
+                "a Testimonium tally record does not name exactly the bound regions its "
+                "presentation does not speak for"
+            )
+    elif payload["regions"] != []:
+        raise SchemaRefusal("a non-attempted Testimonium tally record carries regions")
+    elif payload["presented"] != {} or payload["observed"] != [] or record["inputs"] != []:
+        raise SchemaRefusal("a non-attempted Testimonium carries image evidence or observations")
     if record["outcome"] == "dead" and payload["provenance"].get("chair_state") != "absent":
         raise SchemaRefusal("a dead Testimonium tally record does not retain an absent chair")
     if record["outcome"] == "not-run" and payload["provenance"].get("chair_state") != "configured":
@@ -1219,15 +1438,7 @@ def attempt_tally(
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 raise SchemaRefusal("a Testimonium carries no object payload")
-            if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
-                raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
-            allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
-            if unexpected := sorted(set(payload) - allowed):
-                raise SchemaRefusal(
-                    f"a Testimonium carries unknown field(s) {unexpected}; this stage writes a "
-                    "closed payload, and a field nothing validates is a field nothing downstream "
-                    "can trust"
-                )
+            validate_testimonium_payload(payload)
             chair = payload.get("chair")
             if not isinstance(chair, str) or not chair:
                 raise SchemaRefusal("a Testimonium carries no named chair")
@@ -1468,30 +1679,47 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """Validate page-witness scope before any Testimonium can be sealed.
+    """Read page-witness scope from the sealed model configuration.
 
-    All write and reread paths use this accessor because a downstream page-join
-    check cannot repair an immutable act record carrying the wrong scope.
+    Unit 10A moves the source of truth here: scope is `witness_scope` in the
+    sealed roster, never a fixture declaration a run could contradict. This
+    producer must not accept fixture scope or delegate roster validation to the
+    Perlector; each side of the handoff checks the sealed authority itself.
+
+    All write and reread paths use this accessor, because a downstream page-join
+    check cannot repair an immutable act record that already carries the wrong
+    scope.
     """
-    declared = context.fixture.get("page_witness_chairs", [])
-    # Set construction and refusal formatting may invoke subclass-defined
-    # behavior, so both require exact built-in strings first.
+    roster = context.witness_chairs
+    # `type(chair) is not str` rather than `isinstance`: set construction and
+    # refusal formatting below both invoke subclass-defined behaviour, so the
+    # exact built-in string is required first (work/boundary-named-refusals).
     if (
-        not isinstance(declared, list)
-        or any(type(chair) is not str for chair in declared)
-        or len(declared) != len(set(declared))
+        not isinstance(roster, list)
+        or any(type(chair) is not str for chair in roster)
+        or len(roster) != len(set(roster))
     ):
-        raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    declared_chairs = set(declared)
-    unknown_chairs = declared_chairs - set(context.witness_chairs)
-    if unknown_chairs:
-        # Both sets are required to correct the fixture without consulting
-        # external configuration for the roster sealed into this run.
         raise SchemaRefusal(
-            "fixture page_witness_chairs names chair(s) outside the configured witness roster: "
-            f"{sorted(unknown_chairs)} not in {sorted(context.witness_chairs)}"
+            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
+            "cannot be derived from this run authority. Start a new run from the sealed models "
+            "configuration; do not edit the existing run"
         )
-    return declared_chairs
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
+    if unknown:
+        raise SchemaRefusal(
+            "the sealed witness roster names chair(s) absent from the current models "
+            "configuration: "
+            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
+            "configuration do not describe the same witness set. Reopen the run with its original "
+            "models configuration or start a new run; do not edit sealed evidence"
+        )
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
 
 
 def publish_attempt(
@@ -1505,7 +1733,34 @@ def publish_attempt(
     attempt: Attempt,
 ) -> None:
     """Seal one immutable Testimonium. The only write path for an attempt."""
+    # This shared accessor must run before building any artifact facts: a bad
+    # roster cannot be allowed to seal an otherwise plausible record first.
+    page_witness_chairs = declared_page_witness_chairs(context)
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+    # One presentation has one page-pixel space. Continuation crops remain bound
+    # in `regions`/`inputs`, while `unpresented_regions` explicitly prevents the
+    # derived geometry from looking complete across pages it cannot describe.
+    presented = presentation_for_region(regions[0]) if attempted else {}
+    adapter = (
+        witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+        if attempted and isinstance(resolved, ChairIdentity)
+        else None
+    )
+    if adapter is not None:
+        presented = adapter.present(context, presented)
+    unpresented_regions = unpresented_region_ids(presented, regions)
+    if not presented:
+        observed: list[dict[str, Any]] = []
+    elif (
+        fixture_observed := _fixture_native_observations(
+            context, chair=chair, page_ordinal=presented["source_page_ordinal"]
+        )
+    ) is not None:
+        observed = fixture_observed
+    elif adapter is not None:
+        observed = adapter.observe(presented, attempt.native_payload)
+    else:
+        observed = observed_from_presentation(presented)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -1516,21 +1771,28 @@ def publish_attempt(
         native_payload=attempt.native_payload,
         witness_reported=attempt.witness_reported,
         health=attempt.health,
+        presented=presented,
+        observed=observed,
+        unpresented_regions=unpresented_regions,
         outcome=attempt.outcome,
+        # The interim act view of an immutable page witness carries the flag
+        # from construction so the geometry contract validates it correctly.
+        # Its attachment points at the retained page Testimonium; R4 replaces
+        # this view with alignment, not with another witness kind.
+        page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
     )
-    page_witness_chairs = declared_page_witness_chairs(context)
-    if chair in page_witness_chairs:
-        # This is the fixture's interim act view of an immutable page witness.
-        # Its attachment points at the retained page Testimonium; R4 replaces
-        # this declared view with alignment, not with another witness kind.
-        payload["page_witness"] = True
+    inputs = region_inputs(context, regions, presented) if attempted else []
+    # Adapter output is untrusted. Reconcile it while refusal can still leave
+    # the immutable Testimonium identity unwritten; tally/consumer validation
+    # repeats this check but cannot undo an invalid publication.
+    validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     context.publish(
         kind="testimonium",
         subject_id=act["act_id"],
         outcome=attempt.outcome,
         attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
-        inputs=region_inputs(context, regions) if attempted else [],
+        inputs=inputs,
         payload=payload,
     )
 
@@ -1615,6 +1877,19 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int
             "while either kind is outstanding"
         )
     if not joined:
+        # One case further along the same road the docstring above walks twice.
+        # A page whose chair was never served at all reaches here with every row
+        # `not-run` or `dead`, and "N attempts, none of them carrying a reading"
+        # describes requests that were made and came back useless -- sending an
+        # operator to look for responses that were never asked for. `not-run` at
+        # page scope means no request reached the chair, and the reason has to
+        # say that rather than borrow the attempted wording.
+        if not any(row["outcome"] in ATTEMPTED_WITNESS_OUTCOMES for row in unread):
+            return (
+                f"this chair was never shown any of the {len(unread)} act(s) on this page: "
+                "no request reached it, so the page is unattempted rather than attempted "
+                "and unread"
+            )
         return (
             f"no act attempt on this page was a reading at all: {len(unread)} attempts, "
             "none of them carrying a reading this join could take; the page is unread "
@@ -1656,8 +1931,11 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     *between* delivered characters, and the outcome is derived from the joined
     text rather than from the length of the list that produced it:
 
-    - `failed`: no act attempt joined at all. Nothing on this page was read by
-      this chair, so there is no page reading and no receipt to carry.
+    - `failed`: no act reading joined and at least one underlying attempt reached
+      the chair. The page has no reading, but the attempted serving receipt still
+      travels with the failed record.
+    - `not-run`: no act reading joined because none of the underlying requests was
+      attempted. It carries neither a presentation nor a receipt.
     - `genuinely-empty`: acts joined and every one of them delivered an empty
       body. The chair read the page's acts and reported nothing on each, which
       is the same fact at page scope that the act-scoped outcome records, and
@@ -1682,7 +1960,11 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
         attempt.native_payload for _, attempt in joined if attempt.native_payload
     )
     if not joined:
-        outcome = "failed"
+        outcome = (
+            "failed"
+            if any(attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES for _, attempt in unjoined)
+            else "not-run"
+        )
     elif native_payload == "":
         # A completed absence is claimed only over a page this chair's join
         # fully carried: `genuinely-empty` says "read the page's acts and
@@ -1753,6 +2035,7 @@ def act_scoped_attachment_entry(
             artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
         ),
         "attached": attached,
+        "attachment_basis": "presented-region" if attached else "unattached",
         "content_health": attempt.health,
         "alignment": None,
         "span": (
@@ -1784,10 +2067,13 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
+    # Scope is authoritative only after the sealed roster and configured
+    # occupants agree.
     page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
+    page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
     # The anchor is a page fact, not a chair's report, and it is kept in its own
     # map for that reason: parked in `page_texts` under a reserved chair slot it
@@ -1837,48 +2123,110 @@ def publish_page_testimonia_and_attachments(
 
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
+        page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         for chair in sorted(page_chairs):
             join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
             native_payload, outcome = join.native_payload, join.outcome
             unjoined_act_attempts = join.unjoined_act_attempts
             reading = outcome in WITNESS_READING_OUTCOMES
+            attempted_page = page_witness_attempted(page_acts, chair, attempts_by_pair)
             failure_reason = page_failure_reason(unjoined_act_attempts, join.joined_act_attempts)
             page_texts[(page_ordinal, chair)] = native_payload
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
+            presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
+            adapter = (
+                witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+                if attempted_page and isinstance(resolved, ChairIdentity)
+                else None
+            )
+            if adapter is not None:
+                presented = adapter.present(context, presented)
+            unpresented_regions = unpresented_region_ids(presented, page_proposal_regions)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"
                 for act in page_acts
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
+            if not presented:
+                observed: list[dict[str, Any]] = []
+            elif (
+                fixture_observed := _fixture_native_observations(
+                    context, chair=chair, page_ordinal=page_ordinal
+                )
+            ) is not None:
+                observed = fixture_observed
+            elif adapter is not None:
+                observed = adapter.observe(presented, native_payload)
+            else:
+                # An absent chair cannot currently be attempted; keep its
+                # no-adapter fallback explicit if that invariant changes.
+                observed = observed_from_presentation(presented)
+            # The page Testimonium is the durable home for a witness's own
+            # partition.  Keep every proposal/observation pairing as geometry,
+            # including the common unrouted-observation finding; this stage does
+            # not choose an act for a marginal observation.
+            page_proposals = page_proposal_regions
+            page_artifact_id = artifact_id(
+                ATTESTATORES, "page-testimonium", page_subject, page_attempt
+            )
+            # A never-presented page has no witness geometry to partition, and a
+            # retained snapshot naming zero proposals on a page the Designator
+            # sealed proposals for would be a false fact the Recensor refuses.
+            # The optional field is honestly absent instead.
+            disagreement = (
+                partition_disagreement(
+                    {
+                        "artifact_id": page_artifact_id,
+                        "payload": {"presented": presented, "observed": observed},
+                    },
+                    page_proposals,
+                )
+                if presented
+                else None
+            )
+            payload = page_testimonium_payload(
+                page_ordinal=page_ordinal,
+                page_role=page_role,
+                unjoined_act_attempts=unjoined_act_attempts,
+                partition_disagreement=disagreement,
+                testimonium_id=page_artifact_id,
+                chair=chair,
+                act_key=f"page-{page_ordinal}",
+                ordinal=ordinal,
+                regions=[],
+                # A failed attempted page still records the serving moment;
+                # every attempted witness outcome is receipt-backed.
+                provenance=provenance_for(context, resolved, attempted=attempted_page),
+                format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                native_payload=native_payload if reading else None,
+                witness_reported=None,
+                health=health if reading else no_response_health(reason=failure_reason),
+                presented=presented,
+                observed=observed,
+                unpresented_regions=unpresented_regions,
+                outcome=outcome,
+                reason=None if reading else failure_reason,
+            )
+            inputs = [context.input_ref(presented["image_path"])] if presented else []
+            # See the act-scoped writer: no adapter-derived evidence is made
+            # immutable before it reconciles with its sealed page and inputs.
+            validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
             context.publish(
                 kind="page-testimonium",
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
-                payload=page_testimonium_payload(
-                    page_ordinal=page_ordinal,
-                    page_role=page_role,
-                    unjoined_act_attempts=unjoined_act_attempts,
-                    chair=chair,
-                    act_key=f"page-{page_ordinal}",
-                    ordinal=ordinal,
-                    regions=[],
-                    provenance=provenance_for(context, resolved, attempted=reading),
-                    format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-                    native_payload=native_payload if reading else None,
-                    witness_reported=None,
-                    health=health if reading else no_response_health(reason=failure_reason),
-                    outcome=outcome,
-                    reason=None if reading else failure_reason,
-                ),
+                inputs=inputs,
+                payload=payload,
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(
                 ATTESTATORES,
                 "page-testimonium",
-                artifact_id(ATTESTATORES, "page-testimonium", page_subject, page_attempt),
+                page_artifact_id,
             )
+            page_observations[(page_ordinal, chair)] = observed
         anchors = [
             row
             for row in context.fixture.get("chandra_anchor", [])
@@ -2006,7 +2354,6 @@ def publish_page_testimonia_and_attachments(
             attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
             alignment: dict[str, Any] | None = None
-            attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
                 if attempt.outcome not in WITNESS_READING_OUTCOMES:
@@ -2170,9 +2517,6 @@ def publish_page_testimonia_and_attachments(
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":
                         alignment = {"status": "unaligned", "reason": result["reason"]}
-                attached = (
-                    alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
-                )
             if page_witness:
                 # Derive each row from the primary alignment without mutating it:
                 # source-page ordinal does not determine primary-first act order,
@@ -2187,7 +2531,22 @@ def publish_page_testimonia_and_attachments(
                             "reason": "continuation-page-no-act-anchor",
                         }
                     )
-                    page_attached = attached and is_primary_page
+                    page_bounds = [
+                        region["payload"]["transform"]["bounds"]
+                        for region in regions_by_act[act["act_id"]][0]
+                        if region["payload"]["transform"]["source_page_ordinal"]
+                        == contributing_page
+                    ]
+                    # Alignment only supplies a span inside this witness's own
+                    # text.  The attachment itself is the page geometry this
+                    # chair reported against the sealed proposal; no anchor
+                    # selects a witness/proposal correspondence.
+                    page_attached = attempt.outcome in WITNESS_READING_OUTCOMES and any(
+                        reported_geometry_overlaps(
+                            page_observations[(contributing_page, chair)], bounds
+                        )
+                        for bounds in page_bounds
+                    )
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {
@@ -2196,6 +2555,9 @@ def publish_page_testimonia_and_attachments(
                             "page_ordinal": contributing_page,
                             "testimonium_ref": reference,
                             "attached": page_attached,
+                            "attachment_basis": (
+                                "geometric-overlap" if page_attached else "unattached"
+                            ),
                             "content_health": attempt.health,
                             "alignment": page_alignment,
                             "span": (
@@ -2203,7 +2565,7 @@ def publish_page_testimonia_and_attachments(
                                     "start": page_alignment["witness_span"]["start"],
                                     "end": page_alignment["witness_span"]["end"],
                                 }
-                                if page_attached
+                                if page_attached and page_alignment["status"] == "aligned"
                                 else None
                             ),
                         }
@@ -2283,13 +2645,12 @@ def witness_bound_reading_acts(context) -> frozenset[str]:
     sealed. There is no forward path, because the Perlectio that would have to
     change is itself immutable (GOVERNANCE 4).
 
-    That is the model rather than an oversight. A Testimonium is a clue that
-    primes a reading, never the ink the reading is established from
-    (ARCHITECTURE; GOVERNANCE 3), so a second look by a witness does not make a
-    second reading exist — and re-reading an act because a witness spoke again is
-    the re-roll GOVERNANCE 11 refuses ("never re-rolled until it looks better").
-    The witness layer of an act is open until the act is read and closed
-    afterwards.
+    A witness pass may add coverage. A reading is still made only by a crop.
+    A second look's coverage has nowhere to go except a recovery request, and a
+    recovery request mints a region, and a region moves the reading ordinal.
+    New testimony after a reading is refused; new INK after a reading is a
+    recovery request. This distinguishes coverage recovery (GOVERNANCE 11) from
+    re-rolling a witness until it says something preferable.
 
     **Closed by a reading that cites testimony, not by any Perlectio at all.** A
     held act and an absent Perlector chair both publish `not-run` records with no
@@ -2329,11 +2690,11 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
             f"witness layer is closed: {what} would append testimony no reading can be "
-            "established from. A witness is only ever shown the act's original proposal "
-            "crop, so a second look adds priming, never coverage — and re-reading an act "
-            "because a witness spoke again is the re-roll GOVERNANCE 11 refuses. "
-            "Re-witness before the Perlector reads the act, or let this reading stand; "
-            "the doubt has no dedicated review channel today beyond the run's own records"
+            "established from. A witness pass may add coverage, but a reading is made only "
+            "by a crop: new ink must route through a Recensor recovery request, which mints "
+            "a region and moves the reading ordinal. New testimony after a reading is "
+            "refused; new INK after a reading is a recovery request. Re-asking a witness "
+            "because it spoke again is the re-roll GOVERNANCE 11 refuses"
         )
 
 
@@ -2406,7 +2767,7 @@ def reread_pass(
         # operation — a different concept whose name must not be borrowed for
         # this one; one word per concept.)
         raise ContractError(
-            f"chair {chair!r} is a page witness on this fixture: it reports one reading per "
+            f"chair {chair!r} is page-scoped in this run: it reports one reading per "
             "page and its act-level view is derived from that page reading, so there is no "
             f"act-scoped attempt for act {act_id} to repeat. No operation exists to re-ask "
             "a page witness; building one would be new page-scoped Attestatores work, and "
@@ -2569,6 +2930,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "ignore the act and chair it was given, and report success"
         )
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     acts = expected_acts(context)
     try:
         index = _attempt_history(context)

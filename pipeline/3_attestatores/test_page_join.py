@@ -1,15 +1,7 @@
-"""`page_join`: what a page witness's synthetic page reading may claim.
+"""A synthetic page reading may contain only content from that chair's act attempts.
 
-R0 has no live page-scoped witness. A page Testimonium is built by joining one
-chair's own act attempts on that page, so everything the page record asserts has
-to be derivable from those attempts and nothing else.
-
-The join used to be `"\\n".join(readable)` over every joined payload, with the
-outcome `read` whenever the *list* was non-empty. Two acts a chair genuinely read
-as empty therefore produced `payload="\\n"` under `outcome="read"`: a separator
-character no act delivered, retained as a reading of it, and counted as page
-content by every consumer downstream (CodeRabbit W44). Separators now appear only
-between delivered characters, and the outcome is derived from the joined text.
+Separators may occur only between delivered characters, and the outcome must be
+derived from the joined text rather than the number of attempts.
 """
 
 import ast
@@ -19,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.chairs.models import AbsentChair
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import SchemaRefusal
 
 
@@ -44,54 +36,79 @@ class _HostileReprString(str):
         raise RuntimeError("the refusal rendered an untrusted chair-name subclass")
 
 
+def _identity(role: str, scope: str) -> ChairIdentity:
+    return ChairIdentity(
+        role=role,
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest=f"manifests/{role}.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="churro.v1",
+        witness_scope=scope,
+    )
+
+
+def _scope_context(chairs=None, *, scopes=None, **fields):
+    scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
+    configured = {role: _identity(role, scope) for role, scope in scopes.items()}
+    return SimpleNamespace(
+        witness_chairs=list(scopes) if chairs is None else chairs,
+        registry=SimpleNamespace(config=SimpleNamespace(chairs=configured)),
+        **fields,
+    )
+
+
 @pytest.mark.parametrize(
     "bad_chair",
     ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
 )
 def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
-    """Fixture data crosses this boundary before set-based roster handling."""
-    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+    """Roster values must be type-checked before set-based handling."""
+    context = _scope_context([bad_chair])
 
-    with pytest.raises(SchemaRefusal, match="unique string list"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
 
 
 def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
-    """A declared typo is evidence of a missing witness, not an empty intersection."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
-    )
+    """A sealed-roster typo is a mismatch, not an empty intersection."""
+    context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.publish_page_testimonia_and_attachments(
             context, acts=[], ordinal=1, attempts_by_pair={}, regions_by_act={}
         )
 
 
 def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself():
-    """The accessor must protect write paths that cannot rely on the later page join."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
-    )
+    """`publish_attempt` and `reread_pass` read `declared_page_witness_chairs`
+    directly and never call `publish_page_testimonia_and_attachments` (the
+    reread path does not call it at all; the whole-pass path calls it only
+    after `attempt_pass` has already sealed every attempt). The roster check
+    must live in the accessor itself or a mismatched chair silently reaches those
+    write paths unrefused before the join ever runs."""
+    context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.declared_page_witness_chairs(context)
 
 
 def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
-    """A usable roster mismatch names both the declaration and sealed roster."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1", "attestator_3"),
-    )
+    """The operator needs both mismatched sets to distinguish drift from a typo."""
+    context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
     message = str(caught.value)
     assert "attestator_33" in message
     assert "attestator_1" in message and "attestator_3" in message
+    assert "do not describe the same witness set" in message
+    assert "start a new run; do not edit sealed evidence" in message
 
 
 @pytest.mark.parametrize(
@@ -103,8 +120,8 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
         True,
         pytest.param(10**5000, id="huge-int"),
         None,
-        # The accessor accepts in-memory fixtures, so it must refuse cycles
-        # without recursively inspecting or hashing them.
+        # Recursive values can reach direct callers; validation must not walk
+        # them, hash them, or render them.
         "recursive",
     ),
 )
@@ -114,9 +131,9 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
         recursive: list = []
         recursive.append(recursive)
         bad_chair = recursive
-    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+    context = _scope_context([bad_chair])
 
-    with pytest.raises(SchemaRefusal, match="unique string list"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
 
 
@@ -128,21 +145,19 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
     ),
 )
 def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": [chair]},
-        witness_chairs=("attestator_1",),
-    )
+    """The roster is a list, so only the exact-type rule can refuse it."""
+    context = _scope_context([chair])
 
-    with pytest.raises(SchemaRefusal, match="unique string list"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
 
 
 def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
-    """The roster refusal must remain encodable when the chair name is not."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_\ud800"]},
-        witness_chairs=("attestator_1",),
-    )
+    """A chair name is a string, so it clears the shape check and reaches the
+    roster refusal — which then puts it in a message an operator's stderr has to
+    encode. `repr` escapes the surrogate; an f-string interpolating it raw would
+    raise `UnicodeEncodeError` out of the report of the refusal."""
+    context = _scope_context(["attestator_\ud800"])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
@@ -151,10 +166,7 @@ def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
 
 @pytest.mark.parametrize("chair", ("NaN", "attestator_\0"))
 def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": [chair]},
-        witness_chairs=("attestator_1",),
-    )
+    context = _scope_context([chair])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
@@ -162,17 +174,24 @@ def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
 
 
 def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
-    """A malformed declaration must refuse before immutable testimony is written."""
+    """The timing guarantee, driven rather than reasoned about.
+
+    `publish_attempt` builds its payload first and publishes last, so the
+    constraint is that the accessor runs on the near side of the write.
+    A recording context answers it: the refusal must arrive with the publish
+    list still empty, because a Testimonium sealed carrying a silently wrong
+    `page_witness` flag is immutable (GOVERNANCE 4) and nothing later can take
+    it back.
+    """
     published: list = []
     resolved = AbsentChair(role="attestator_1", reason="fixture test needs no live chair")
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
+    context = _scope_context(
+        ["attestator_33"],
         adapter_revision="fake-attestatores-v0",
         publish=lambda **kwargs: published.append(kwargs),
     )
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.publish_attempt(
             context,
             act={"act_id": "act_0123456789abcdef", "act_key": "1-1"},
@@ -352,7 +371,7 @@ def test_every_testimonium_writer_has_a_dominating_declaration_call():
 
     assert set(writers) == {"publish_attempt", "publish_page_testimonia_and_attachments"}, (
         f"{module_path} publishes a Testimonium from {sorted(writers)}; a new write path "
-        "must validate the page-witness declaration before it seals, and this scan is what "
+        "must validate sealed page-witness scope before it seals, and this scan is what "
         "notices it was added"
     )
     assert dynamic == {}, (
@@ -369,8 +388,8 @@ def test_every_testimonium_writer_has_a_dominating_declaration_call():
     )
     for name, (declaration_line, publish_lines) in writers.items():
         assert declaration_line >= 0 and declaration_line < min(publish_lines), (
-            f"{name} seals a Testimonium before validating the fixture's page-witness "
-            "declaration; a sealed record is immutable, so a refusal after the write "
+            f"{name} seals a Testimonium before validating sealed page-witness scope; "
+            "a sealed record is immutable, so a refusal after the write "
             "cannot take back the wrong page_witness flag it carries"
         )
 
@@ -455,6 +474,25 @@ def test_nothing_joined_is_failed_rather_than_an_empty_reading():
         "the chair returned no usable response",
         "no attempt was made for this configured chair",
     ]
+
+
+def test_a_page_never_presented_to_the_configured_chair_is_not_run_not_failed():
+    """`failed` is an attempted outcome and therefore receipt-bearing. A page
+    assembled entirely from never-run act rows must keep that absence in the
+    outcome vocabulary rather than force a downstream consumer to guess from
+    `presented` whether the same word means attempted this time."""
+    join = _join(
+        ("a1", _attempt("not-run", None, reason="not asked")),
+        ("a2", _attempt("not-run", None, reason="not asked")),
+    )
+
+    assert join.native_payload == ""
+    assert join.outcome == "not-run"
+    assert [row["outcome"] for row in join.unjoined_act_attempts] == ["not-run", "not-run"]
+    # The reason an operator reads must not describe requests that were made.
+    reason = attestatores.page_failure_reason(join.unjoined_act_attempts, join.joined_act_attempts)
+    assert "never shown" in reason
+    assert "attempts, none of them carrying a reading" not in reason
 
 
 def test_a_failed_attempt_carrying_text_is_disclosed_rather_than_folded_in():

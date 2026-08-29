@@ -81,6 +81,7 @@ from common.recovery import (
     recovery_kind_budget,
 )
 from common.runtree.store import PublishResult, RunTree
+from common.witness_adapters import validate_witness_adapter_bindings
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -1287,8 +1288,12 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
+    # Reconstruct the producer's environment on the consumer's machine.  The
+    # stage argument describes which decode work the record speaks for; using
+    # the reader here compares two different jobs by construction (for example,
+    # Attestatores passes pixels through while Perlector decodes them).
     current_environment = _validate_decode_environment(
-        _decode_environment(reader), f"{reader} current"
+        _decode_environment(producer), f"{reader} current for {producer}"
     )
     differences = _decode_difference(previous_environment, current_environment)
     if differences:
@@ -1303,10 +1308,11 @@ def _verify_stage_seal(
 def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
     """Every field difference the binding consult requires reported by name.
 
-    The two role fields predictably differ at some boundaries, but omitting them
-    would make a self-consistent forged record observationally invisible.
-    Reporting is not refusal: Unit 17 alone decides whether any valid difference
-    becomes fatal.
+    Both values describe the producer's work, observed at production and again
+    by its consumer.  Role fields remain in the comparison: changing either one
+    is a real change to the producer environment, not a reason to weaken the
+    field-by-field contract. Reporting is not refusal; Unit 17 alone decides
+    whether any valid difference becomes fatal.
     """
     changes = []
     previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
@@ -1506,6 +1512,12 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
         fixture = tomllib.load(handle)
     if not fixture.get("page") or not fixture.get("act"):
         raise ContractError(f"{path} declares no pages or no acts")
+    if "page_witness_chairs" in fixture:
+        raise ContractError(
+            f"{path} declares page_witness_chairs, a key retired to the models configuration's "
+            "witness_scope. A stale fixture carrying it would be silently ignored rather "
+            "than honoured; remove the key so the sealed roster is the only source of scope."
+        )
     return fixture
 
 
@@ -1767,6 +1779,7 @@ def run_config_bindings(
     }
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    validate_witness_adapter_bindings(models)
     witness_context_config_digest = validate_witness_context_bindings(
         models,
         witness_context=witness_context,

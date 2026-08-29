@@ -65,8 +65,18 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
+from common.contracts.outcomes import ATTACHMENT_BASES  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.imaging import dimensions  # noqa: E402
+from common.native_witness import (  # noqa: E402
+    reported_geometry_overlaps,
+    unpresented_region_ids,
+    unrouted_observations,
+    validate_native_witness_geometry,
+    validate_page_testimonium_payload,
+    validate_presented_page_binding,
+)
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -470,35 +480,216 @@ def _region_reference(region: dict) -> dict[str, str]:
     }
 
 
-def _testimonium_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
-    """The crop blobs that a witness attempt must directly bind."""
+def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
+    """Validate native presentation, rather than the retired shared-crop premise."""
+    payload = record["payload"]
+    presented = payload.get("presented") if isinstance(payload, dict) else None
+    if not isinstance(presented, dict):
+        raise SchemaRefusal("a Testimonium has no presented native witness block")
+    validate_native_witness_geometry(payload)
+    unpresented = payload.get("unpresented_regions")
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    if not attempted:
+        if (
+            payload.get("regions") != []
+            or presented != {}
+            or payload.get("observed") != []
+            or unpresented != []
+            or record.get("inputs") != []
+        ):
+            raise SchemaRefusal(
+                "a non-attempted Testimonium carries proposal or image evidence. The record "
+                "would say a chair saw pixels when its outcome says it was not served. Remove "
+                "the evidence or record the attempted outcome that actually occurred"
+            )
+        return
+    if presented == {}:
+        raise SchemaRefusal(
+            "an attempted Testimonium has no image presentation. Its reading or failure cannot "
+            "be traced to pixels the chair received. Retain the exact presentation before "
+            "publishing the attempted record"
+        )
+    expected_regions = [_region_reference(region) for region in proposal_regions]
+    if payload.get("regions") != expected_regions:
+        raise SchemaRefusal(
+            "an attempted Testimonium does not bind exactly its original proposal regions. "
+            "Its act association could omit or acquire evidence silently. Restore the sealed "
+            "proposal references without substituting a recovery crop"
+        )
+    page_id = presented.get("source_page_id")
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
     inputs = {}
-    for region in regions:
+    for region in proposal_regions:
         reference = context.input_ref(region["payload"]["image_path"])
         inputs[reference["relative_path"]] = reference
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
-
-
-def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
-    """Bind a witness's claimed regions to the actual original proposal.
-
-    A Testimonium's direct blob references prove its pixels have not changed, but
-    not by themselves that the `regions` payload names the proposal it was shown.
-    Without this comparison, a resealed record could add a recovery crop and make
-    Perlector mark newly uncovered ink as witnessed.  Recovery must stay visible
-    as recovery, not become retrospective witness coverage.
-    """
-    payload = record["payload"]
-    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
-    expected_regions = (
-        [_region_reference(region) for region in proposal_regions] if attempted else []
+    reference = context.input_ref(presented["image_path"])
+    inputs[reference["relative_path"]] = reference
+    expected_inputs = sorted(
+        inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
     )
-    expected_inputs = _testimonium_inputs(context, proposal_regions) if attempted else []
-    if payload.get("regions") != expected_regions or record.get("inputs") != expected_inputs:
+    # Re-derive the explicit limit for every presentation kind so a kind change
+    # cannot understate which bound crops its one page-space image omits.
+    if unpresented != unpresented_region_ids(presented, proposal_regions):
         raise SchemaRefusal(
-            "a Testimonium does not bind exactly the original proposal regions and pixel "
-            "inputs it claims its witness saw"
+            "a Testimonium does not name exactly the bound proposal regions its presentation "
+            "does not speak for"
         )
+
+    # One spelling of this refusal, called from both paths rather than hoisted
+    # above them. Order is load-bearing: a forged region presentation also has
+    # the wrong inputs, and checking those first would answer "wrong blobs" for
+    # a record whose actual fault is that it presents a recovery crop as a
+    # witness basis. The specific fault has to be the one the operator reads.
+    def _require_bound_inputs() -> None:
+        if record.get("inputs") != expected_inputs:
+            raise SchemaRefusal(
+                "an attempted Testimonium does not bind exactly its proposal and presentation "
+                "blobs. The consumer cannot prove which immutable pixels produced the report. "
+                "Restore the complete digest-bound input set and remove unrelated inputs"
+            )
+
+    if presented["kind"] != "region":
+        _require_bound_inputs()
+        return
+    matches = [
+        region
+        for region in regions_of(context, record["subject_id"])
+        if region.get("payload", {}).get("region_id") == presented["region_ref"]["region_id"]
+    ]
+    if len(matches) != 1:
+        raise SchemaRefusal("a Testimonium region_ref names no unique sealed region")
+    region = matches[0]
+    if region["payload"].get("origin") != "proposal":
+        raise SchemaRefusal(
+            "a recovery region cannot be presented as a witness basis; origin is not proposal"
+        )
+    if (
+        _region_reference(region)
+        != {
+            "region_id": presented["region_ref"]["region_id"],
+            "image_path": presented["image_path"],
+            "image_sha256": presented["image_sha256"],
+        }
+        or region["payload"].get("transform") != presented["transform"]
+    ):
+        raise SchemaRefusal("a Testimonium region presentation disagrees with its sealed proposal")
+    _require_bound_inputs()
+
+
+def validate_page_testimonium_record(
+    context,
+    record: dict[str, Any],
+    proposal_regions: list[dict[str, Any]],
+) -> None:
+    """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
+    payload = record.get("payload")
+    validate_page_testimonium_payload(payload, testimonium_id=record.get("artifact_id"))
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    presented = payload["presented"]
+    if payload["regions"] != []:
+        raise SchemaRefusal(
+            "a page Testimonium carries act-region references. Its page evidence would acquire "
+            "an act identity the page record does not own. Keep act associations in the "
+            "digest-bound attachments"
+        )
+    if not attempted:
+        if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
+            raise SchemaRefusal(
+                "a non-attempted page Testimonium carries image evidence. The record would say "
+                "a chair saw pixels when its outcome says it was not served. Remove the image "
+                "evidence or record the attempted outcome that actually occurred"
+            )
+    else:
+        if presented == {}:
+            raise SchemaRefusal(
+                "an attempted page Testimonium has no image presentation. Its outcome cannot be "
+                "traced to pixels the chair received. Retain the exact presentation before "
+                "publishing the attempted record"
+            )
+        if (
+            presented["source_page_id"] != record["subject_id"]
+            or presented["source_page_ordinal"] != payload["page_ordinal"]
+        ):
+            raise SchemaRefusal(
+                "wrong page Testimonium: its presentation names a different page than its "
+                "record. Its observations would be attributed to the wrong sealed ink. Restore "
+                "the page identity and ordinal of the presentation actually served"
+            )
+        page = context.tree.read_artifact(
+            EXEMPLAR,
+            "page",
+            artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
+        )
+        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+        page_size = dimensions(page_bytes)
+        validate_native_witness_geometry(payload, page_size=page_size)
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=page["payload"]["ordinal"],
+            page_image_path=page["payload"]["image_path"],
+            page_sha256=page["payload"]["source_sha256"],
+            page_size=page_size,
+            page_bytes=page_bytes,
+        )
+        expected_inputs = [
+            {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
+        ]
+        if record.get("inputs") != expected_inputs:
+            raise SchemaRefusal(
+                "a page Testimonium does not bind exactly its presented image. The consumer "
+                "cannot prove which immutable pixels produced the page report. Restore the one "
+                "digest-bound presentation input and remove unrelated inputs"
+            )
+    page_proposals = [
+        region
+        for region in proposal_regions
+        if region["payload"]["transform"]["source_page_id"] == record["subject_id"]
+    ]
+    if payload["unpresented_regions"] != unpresented_region_ids(presented, page_proposals):
+        raise SchemaRefusal(
+            "a page Testimonium does not name exactly the proposal regions outside its "
+            "presentation. Its derived layer would look more complete than the pixels shown. "
+            "Re-derive unpresented_regions from the sealed page proposals"
+        )
+    validate_serving_provenance(
+        context,
+        payload["provenance"],
+        producer_stage=ATTESTATORES,
+        require_receipt=attempted,
+    )
+
+
+def sealed_proposal_regions(context) -> list[dict]:
+    """Every verified proposal in the run-wide routing denominator."""
+    regions = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        # Keep the origin-specific refusal ahead of the general lineage refusal;
+        # callers rely on the shared recovery-denominator vocabulary.
+        recovery_region_count(record.get("subject_id", "unidentified act"), [record])
+        validate_serving_provenance(
+            context,
+            record.get("payload", {}).get("provenance"),
+            producer_stage=DESIGNATOR,
+            require_receipt=True,
+        )
+        verify_region(context, record)
+        if record["payload"]["origin"] == "proposal":
+            regions.append(record)
+    return regions
 
 
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
@@ -543,35 +734,90 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """Independently validate the producer's page-witness declaration.
+    """Read page scope independently from the sealed model configuration.
 
-    A consumer may not inherit trust across a stage boundary. Uniqueness keeps
-    duplicates from disappearing in a set, and roster membership prevents a
-    declaration for nonexistent chairs from silently erasing page coverage.
+    A consumer may not inherit trust across a stage boundary: this side must not
+    take the Attestatores' validation, or a fixture declaration, for the sealed
+    authority. Uniqueness keeps duplicates from disappearing into a set, and the
+    roster check below prevents a scope claim for a nonexistent chair from
+    silently erasing page coverage.
     """
-    declared = context.fixture.get("page_witness_chairs", [])
-    # Set construction and refusal formatting may invoke subclass-defined
-    # behavior, so both require exact built-in strings first.
+    roster = context.witness_chairs
+    # `type(chair) is not str` rather than `isinstance`: set construction and
+    # refusal formatting both invoke subclass-defined behaviour, so the exact
+    # built-in string is required first (work/boundary-named-refusals).
     if (
-        not isinstance(declared, list)
-        or any(type(item) is not str for item in declared)
-        or len(declared) != len(set(declared))
+        not isinstance(roster, list)
+        or any(type(chair) is not str for chair in roster)
+        or len(roster) != len(set(roster))
     ):
         raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
+            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
+            "cannot be derived from this run authority. Start a new run from the sealed models "
+            "configuration; do not edit the existing run"
         )
-    declared_chairs = set(declared)
-    unknown = declared_chairs - set(context.witness_chairs)
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
     if unknown:
         raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
-            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+            "the sealed witness roster names chair(s) absent from the current models "
+            "configuration: "
+            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
+            "configuration do not describe the same witness set. Reopen the run with its original "
+            "models configuration or start a new run; do not edit sealed evidence"
         )
-    return declared_chairs
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
+
+
+ATTACHMENT_FIELDS: Final = frozenset(
+    {
+        "chair",
+        "page_witness",
+        "page_ordinal",
+        "testimonium_ref",
+        "attached",
+        "attachment_basis",
+        "content_health",
+        "alignment",
+        "span",
+    }
+)
+
+
+def _validate_attachment_shape(attachment: Any) -> None:
+    """The one closed-shape rule for an attachment, applied wherever it is read.
+
+    `type(chair) is not str` rather than `isinstance`: the value becomes a set
+    and dict key below, and both set construction and refusal formatting invoke
+    subclass-defined behaviour, so the exact built-in string is required first.
+    Kept in one place because a second, looser copy of a closed schema is how a
+    field added to one list quietly escapes validation in the other.
+    """
+    if (
+        not isinstance(attachment, dict)
+        or set(attachment) != ATTACHMENT_FIELDS
+        or type(attachment.get("chair")) is not str
+        or not isinstance(attachment.get("page_witness"), bool)
+        or not isinstance(attachment.get("attached"), bool)
+        or attachment.get("attachment_basis") not in ATTACHMENT_BASES
+        or not isinstance(attachment.get("content_health"), dict)
+    ):
+        raise SchemaRefusal("an act-attachment record has a malformed attachment")
 
 
 def act_attachment_view(
-    context, act: dict[str, Any], testimonia: list[dict], bases: list[dict]
+    context,
+    act: dict[str, Any],
+    testimonia: list[dict],
+    bases: list[dict],
+    proposal_region_ids: set[str],
+    page_testimonia_seen: dict[str, dict] | None = None,
+    all_proposal_regions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
@@ -611,9 +857,9 @@ def act_attachment_view(
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    # This run-global declaration is validated first, and by the stricter of the
-    # two readings that met here: exact strings, no duplicates hiding in a set,
-    # and no chair outside this run's configured roster. It must fail before any
+    # The run-global scope reading is validated first, and by the strictest of
+    # the readings that met here: exact strings, no duplicates hiding in a set,
+    # and no chair outside this run's sealed roster. It must fail before any
     # per-attachment diagnostic can misattribute its malformation to a chair record.
     page_chairs = declared_page_witness_chairs(context)
     # Validate every value that becomes a set/dict key before pair accounting.
@@ -621,26 +867,8 @@ def act_attachment_view(
     # unhashable JSON value would otherwise escape as a raw TypeError here. The
     # attachment is untrusted evidence read from disk, so neither may reach the
     # denominator as though it named a real page.
-    attachment_fields = {
-        "chair",
-        "page_witness",
-        "page_ordinal",
-        "testimonium_ref",
-        "attached",
-        "content_health",
-        "alignment",
-        "span",
-    }
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment) != attachment_fields
-            or type(attachment.get("chair")) is not str
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        _validate_attachment_shape(attachment)
         page_ordinal = attachment["page_ordinal"]
         if attachment["page_witness"] and (
             not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
@@ -649,6 +877,8 @@ def act_attachment_view(
         if not attachment["page_witness"] and page_ordinal is not None:
             raise SchemaRefusal("an act-scoped witness carries a page ordinal")
     attachment_chairs = [attachment["chair"] for attachment in attachments]
+    if all_proposal_regions is None:
+        all_proposal_regions = sealed_proposal_regions(context)
     if any(chair not in configured for chair in attachment_chairs):
         raise FatalAccounting(
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
@@ -676,9 +906,12 @@ def act_attachment_view(
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
+        _validate_attachment_shape(attachment)
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:
+            if attachment["attachment_basis"] != "presented-region":
+                raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
             expected_end = (
                 characters
                 if isinstance(characters, int) and not isinstance(characters, bool)
@@ -688,8 +921,19 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
-        elif not attachment["attached"] and span is not None:
-            raise SchemaRefusal("an unattached act view claims an alignment span")
+        # Two separate faults, and each names its own field. This branch is
+        # reached by page-witness attachments as well as act-scoped ones, so the
+        # refusal may not call every row an "act view"; and a row whose only
+        # fault is its basis sent the operator to a `span` that was already
+        # null.
+        elif not attachment["attached"]:
+            if attachment["attachment_basis"] != "unattached":
+                raise SchemaRefusal(
+                    "an unattached attachment names an attachment basis other than "
+                    "'unattached'; nothing attached it, so nothing decided the basis"
+                )
+            if span is not None:
+                raise SchemaRefusal("an unattached attachment claims an alignment span")
         chair = attachment["chair"]
         attachment_page = attachment["page_ordinal"]
         # The attachment describes one attempt, and the reread path
@@ -768,6 +1012,38 @@ def act_attachment_view(
                 subject_id=page_ids[attachment_page],
             )
             page_payload = testimonium.get("payload")
+            validate_page_testimonium_record(context, testimonium, all_proposal_regions)
+            # Collected for the caller's routing sweep rather than examined here:
+            # a page Testimonium belongs to a (page, chair) pair, not to this act,
+            # so its observations must be judged once per run and not once per act
+            # that happens to sit on the page. This is the only digest-checked read
+            # of these records the Perlector makes, which is why the sink hangs
+            # here instead of a second walk of the Attestatores manifest -- a
+            # second walk would need its own current-attempt collapse and would be
+            # the third mirror of the Recensor's (see `current_page_testimonia`).
+            if page_testimonia_seen is not None and isinstance(page_payload, dict):
+                page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+            # A recovery crop postdates testimony and therefore cannot expand
+            # the sealed-proposal denominator used to attach that testimony.
+            page_bases = [
+                basis
+                for basis in bases
+                if basis["source_page_ordinal"] == attachment_page
+                and basis["region_id"] in proposal_region_ids
+            ]
+            geometrically_attached = chair_testimonium[
+                "outcome"
+            ] in WITNESS_READING_OUTCOMES and any(
+                reported_geometry_overlaps(
+                    page_payload.get("observed", []), basis["transform"]["bounds"]
+                )
+                for basis in page_bases
+            )
+            if attachment["attached"] != geometrically_attached:
+                raise SchemaRefusal(
+                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
+                    "that witness's reported geometry against the sealed proposal"
+                )
             unjoined = (
                 page_payload.get("unjoined_act_attempts")
                 if isinstance(page_payload, dict)
@@ -849,22 +1125,22 @@ def act_attachment_view(
                     "unjoined-attempt record"
                 )
             alignment = attachment["alignment"]
-            if attachment["attached"]:
-                if (
-                    not isinstance(alignment, dict)
-                    or set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_span",
-                        "witness_span",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                    }
-                    or alignment.get("status") != "aligned"
-                    or span != alignment.get("witness_span")
-                ):
+            if attachment["attached"] and attachment["attachment_basis"] != "geometric-overlap":
+                raise SchemaRefusal("an attached page witness has no geometric-overlap basis")
+            if (
+                attachment["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                if set(alignment) != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_span",
+                    "witness_span",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                } or span != alignment.get("witness_span"):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
                 page_text = page_payload.get("reported")
                 witness_span = alignment["witness_span"]
@@ -883,7 +1159,26 @@ def act_attachment_view(
                 # handed on unstripped would carry whatever markup it cut
                 # through. Found in audit; F-X3, recomposed by R6's F-G2.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
+            elif attachment["attached"] and (
+                not isinstance(alignment, dict)
+                or set(alignment) != {"status", "reason"}
+                or alignment.get("status") != "unaligned"
+                or span is not None
+                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+            ):
+                raise SchemaRefusal(
+                    "a geometrically attached page witness has no explicit span limit"
+                )
             elif (
+                not attachment["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                # Text alignment survives independently but cannot authorize a
+                # geometric attachment or comparison view.
+                if span is not None:
+                    raise SchemaRefusal("an unattached page witness claims a comparison span")
+            elif not attachment["attached"] and (
                 not isinstance(alignment, dict)
                 or set(alignment) != {"status", "reason"}
                 or alignment.get("status") != "unaligned"
@@ -2147,6 +2442,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     read = 0
     acknowledged = 0
     pending: list[dict[str, Any]] = []
+    # Walked once for the whole run: the routing denominator is every sealed
+    # proposal, and `reported_unrouted` keeps one observation's finding from being
+    # restated by every act that reaches the same page Testimonium.
+    all_proposal_regions = sealed_proposal_regions(context)
+    reported_unrouted: set[tuple[str, int]] = set()
     chair = perlector_chair(context)
     for act in wanted:
         act_id = act["act_id"]
@@ -2214,13 +2514,37 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        attachment_view = act_attachment_view(context, act, testimonia, bases)
+        page_testimonia: dict[str, dict] = {}
+        attachment_view = act_attachment_view(
+            context,
+            act,
+            testimonia,
+            bases,
+            {region["payload"]["region_id"] for region in proposal_regions},
+            page_testimonia_seen=page_testimonia,
+            all_proposal_regions=all_proposal_regions,
+        )
+        # Both witness scopes use the run-wide proposal denominator. Deduplicate
+        # page testimony so an observation is named once, not once per act.
+        unrouted = unrouted_observations(
+            testimonia + list(page_testimonia.values()),
+            all_proposal_regions,
+            prior_findings=reported_unrouted,
+        )
+        for finding in unrouted:
+            reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
+            # Named on stderr before this stage seals, never silently normalized
+            # into the closest act. The Recensor independently re-derives the
+            # same finding from this observed geometry and the sealed proposal
+            # denominator, then may route it through bounded coverage recovery.
+            # It does not trust the page record's optional retained snapshot.
+            print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
         # between a gap in the record and a gap nobody can see. It changes nothing
         # about the reading — the Perlector reads the ink either way.
-        witnessed = witnessed_region_ids(testimonia)
+        witnessed = witnessed_region_ids(testimonia, bases)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
 

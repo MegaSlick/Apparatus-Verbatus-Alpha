@@ -12,7 +12,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .errors import ConfigurationRefusal
-from .models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
+from .models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    is_hf_revision,
+    is_sha256,
+    is_witness_role,
+)
 
 _TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "model_root"}
 _CONFIGURED_COMMON = {
@@ -23,6 +30,8 @@ _CONFIGURED_COMMON = {
     "adapter_of",
     "serving_recipe",
     "license_note",
+    "witness_adapter",
+    "witness_scope",
 }
 
 
@@ -67,6 +76,8 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
     for role, values in raw_chairs.items():
         _role(role)
         chairs[role] = _parse_chair(role, values)
+
+    _refuse_case_variant_collisions(chairs)
 
     if (
         any(
@@ -135,7 +146,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         )
     allowed = _CONFIGURED_COMMON | ({"repo", "revision"} if source == "huggingface" else {"path"})
     _only_keys(role, values, allowed)
-    required = _CONFIGURED_COMMON - {"adapter_of"}
+    required = _CONFIGURED_COMMON - {"adapter_of", "witness_adapter", "witness_scope"}
     required |= {"repo", "revision"} if source == "huggingface" else {"path"}
     missing = sorted(field for field in required if field not in values)
     if missing:
@@ -166,6 +177,33 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         path = _relative_posix(role, "path", values["path"])
         revision = None
 
+    witness_adapter = values.get("witness_adapter")
+    witness_scope = values.get("witness_scope")
+    # Non-witness adapter rows would enter provenance and config_digest despite
+    # naming a boundary that role never crosses. Refuse them at their source.
+    if not is_witness_role(role) and (witness_adapter is not None or witness_scope is not None):
+        raise ConfigurationRefusal(
+            role,
+            "declares witness_adapter or witness_scope on a non-Attestator chair. This role "
+            "never invokes a native witness boundary. Remove both fields or move them to the "
+            "intended [chairs.attestator_*] table",
+        )
+    if witness_adapter is None and witness_scope is not None:
+        raise ConfigurationRefusal(
+            role,
+            "declares witness_scope without witness_adapter. Scope alone names no runnable "
+            "native boundary. Add the exact witness_adapter name or remove witness_scope",
+        )
+    if witness_adapter is not None:
+        witness_adapter = _text(role, "witness_adapter", witness_adapter)
+        if witness_scope not in ("page", "act"):
+            raise ConfigurationRefusal(
+                role,
+                f"declares invalid witness_scope {witness_scope!r}. The adapter cannot determine "
+                "whether it runs once per page or once per act. Set witness_scope to exactly "
+                "'page' or 'act'",
+            )
+
     return ChairIdentity(
         role=role,
         source=source,
@@ -177,6 +215,8 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         adapter_of=adapter_of,
         serving_recipe=_text(role, "serving_recipe", values["serving_recipe"]),
         license_note=_text(role, "license_note", values["license_note"]),
+        witness_adapter=witness_adapter,
+        witness_scope=witness_scope,
     )
 
 
@@ -187,6 +227,47 @@ def _parse_adapter_recipes(value: Any) -> dict[str, str]:
     for name, recipe in value.items():
         parsed[_role(name)] = _text("adapter_recipes", str(name), recipe)
     return parsed
+
+
+def _refuse_case_variant_collisions(
+    chairs: Mapping[str, ChairIdentity | AbsentChair],
+) -> None:
+    """Refuse distinct spellings that alias on default case-insensitive APFS.
+
+    Chair roles become cache directory names, manifests become files below the
+    configuration root, and local paths become snapshot directories.  Exact
+    sharing is deliberate and remains legal; two different spellings for the
+    same case-folded path are ambiguous across supported filesystems.
+    """
+
+    _refuse_case_variants(((role, role) for role in chairs), "chair roles")
+    configured = [
+        (role, identity) for role, identity in chairs.items() if isinstance(identity, ChairIdentity)
+    ]
+    _refuse_case_variants(
+        ((role, identity.manifest) for role, identity in configured), "manifest paths"
+    )
+    _refuse_case_variants(
+        (
+            (role, identity.path)
+            for role, identity in configured
+            if identity.source == "local-repository" and identity.path is not None
+        ),
+        "local-repository paths",
+    )
+
+
+def _refuse_case_variants(rows: Any, label: str) -> None:
+    first_by_folded: dict[str, tuple[str, str]] = {}
+    for role, spelling in rows:
+        folded = spelling.casefold()
+        first = first_by_folded.setdefault(folded, (role, spelling))
+        if first[1] != spelling:
+            raise ConfigurationRefusal(
+                "models.toml",
+                f"case-variant {label} alias on a case-insensitive filesystem: "
+                f"{first[0]!r} names {first[1]!r}, while {role!r} names {spelling!r}",
+            )
 
 
 def _only_keys(role: str, values: Mapping[str, Any], allowed: set[str]) -> None:

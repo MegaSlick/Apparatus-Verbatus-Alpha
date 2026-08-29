@@ -1,6 +1,7 @@
 """Focused audit tests for R6's new geometry and testimony coverage inputs."""
 
 import importlib.util
+import tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import attempt_id
+from common.native_witness import partition_disagreement
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -201,6 +203,8 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
         "page_witness": True,
         "page_ordinal": ordinal,
         "attached": attached,
+        "attachment_basis": "geometric-overlap" if attached else "unattached",
+        "testimonium_ref": {"artifact_id": f"pt-{ordinal}"},
         "content_health": {"truncated": False},
         "alignment": alignment,
     }
@@ -267,6 +271,240 @@ def test_an_orphaned_page_testimonium_cannot_become_an_unowned_finding():
         RUN.testimony_content_findings(context)
 
 
+def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding(monkeypatch):
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["unclaimed_observations"] == [
+        {
+            "kind": "unrouted-observation",
+            "testimonium_id": "page-witness-1",
+            "ordinal": 0,
+            "source_page_id": "page-1",
+            "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+            "overlap_rule": {"rule": "positive-area", "status": "unmeasured"},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    (
+        pytest.param({"x": 0, "y": 0, "h": 10}, id="missing-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 10, "z": 1}, id="extra-side"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": True}, id="boolean-height"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": "10"}, id="string-height"),
+        pytest.param({"x": -1, "y": 0, "w": 10, "h": 10}, id="negative-x"),
+        pytest.param({"x": 0, "y": -1, "w": 10, "h": 10}, id="negative-y"),
+        pytest.param({"x": 0, "y": 0, "w": 0, "h": 10}, id="zero-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 0}, id="zero-height"),
+        pytest.param({"x": 0, "y": 0, "w": -10, "h": 10}, id="negative-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": -10}, id="negative-height"),
+    ),
+)
+def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(monkeypatch, bounds):
+    """Two failures, one refusal. A rectangle missing a side travels on as a
+    proposal box into `unrouted_observations`, which indexes all four by name,
+    and leaves the stage that decides recovery as a bare `KeyError` naming
+    neither page nor act. A rectangle that is merely degenerate -- off-page
+    origin, or zero/negative extent -- is worse: it indexes cleanly and overlaps
+    nothing, so ink a real proposal covers is published as an unrouted
+    observation and drives bounded recovery on evidence the run manufactured.
+    Every case here is a rectangle `_proposal_geometry_by_page` already refuses
+    of the same sealed proposals."""
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": bounds,
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    with pytest.raises(FatalAccounting, match="has no page-pixel bounds"):
+        RUN.testimony_content_findings(context)
+
+
+def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
+    """A failed page has no text to diff, and must not look like a covered one.
+
+    The unclaimed-observation route creates the page finding, seeded
+    `shortfall: False`. On a page whose witness reported no text, nothing then
+    measures anything -- and the seed would be published as a clean text
+    coverage result, byte-identical to a page whose witnesses were read and
+    covered every character (GOVERNANCE 10). The geometry stays; the text fact
+    goes back to unmeasured.
+    """
+    page = _page_testimonium(outcome="failed")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"] == {}
+    assert finding["shortfall"] is None, "no chair's text was measured on this page"
+    assert "was not measured" in finding["reason"]
+    assert len(finding["unclaimed_observations"]) == 1, "the geometry finding still stands"
+
+
+def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch):
+    """An internally consistent stale snapshot is still false evidence."""
+    observed = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            "bounds_source": "native",
+        }
+    ]
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": observed,
+        }
+    )
+    stale_proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 20, "y": 20, "w": 5, "h": 5},
+            },
+        }
+    }
+    page["payload"]["partition_disagreement"] = partition_disagreement(page, [stale_proposal])
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    sealed_proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [sealed_proposal])
+
+    with pytest.raises(FatalAccounting, match="false partition facts.*sealed proposals"):
+        RUN.testimony_content_findings(context)
+
+
+def test_large_untrusted_page_text_does_not_allocate_a_character_bitmap(monkeypatch):
+    """Coverage memory stays bounded by attachment spans, not response length."""
+    text = "x" * 1_000_000
+    page = _page_testimonium(outcome="read", reported=text)
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=0)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    tracemalloc.start()
+    try:
+        finding = RUN.testimony_content_findings(context)[1]["by_chair"]["attestator_1"]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert finding["uncovered_non_whitespace"] == {
+        "ranges": [{"start": 0, "end": len(text)}],
+        "count": len(text),
+    }
+    assert peak < 2_000_000
+
+
 def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypatch):
     context = _context()
     context.tree.records["attachment-1"] = _attachment(context, end=5)
@@ -307,7 +545,42 @@ def test_an_unaligned_continuation_still_requires_its_current_page_testimonium(m
         RUN.testimony_content_findings(context)
 
 
-def test_page_attachment_facts_preserve_a_later_primary_alignment():
+def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
+    """Stand in for 10C's geometric sub-derivation so merge/duplicate/enum
+    protections stay testable in isolation. Attached rows get one native box
+    overlapping the page's sole proposal; unattached rows get none. The real
+    geometric derivation keeps its own tests on real run trees."""
+    box = {"x": 0, "y": 0, "w": 10, "h": 10}
+    monkeypatch.setattr(
+        RUN,
+        "_proposal_geometry_by_page",
+        lambda unused_context, unused_act_id: {
+            ordinal: {"source_page_id": f"pg-{ordinal}", "bounds": [dict(box)]}
+            for ordinal in observed_by_ordinal
+        },
+    )
+    monkeypatch.setattr(RUN, "validate_page_testimonium_payload", lambda payload, **unused: payload)
+
+    def fake_reference(reference, *, stage, kind, subject_id):
+        ordinal = int(subject_id.rsplit("-", 1)[1])
+        observed = (
+            [{"ordinal": 0, "bounds": dict(box), "bounds_source": "native", "span": None}]
+            if observed_by_ordinal[ordinal]
+            else []
+        )
+        return {
+            "artifact_id": f"pt-{ordinal}",
+            "payload": {
+                "chair": "attestator_1",
+                "page_ordinal": ordinal,
+                "observed": observed,
+            },
+        }
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", fake_reference, raising=False)
+
+
+def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
     """An earlier-page continuation cannot erase the act's primary alignment.
 
     This order alone does not discriminate — last-row-wins would report the same
@@ -318,14 +591,16 @@ def test_page_attachment_facts_preserve_a_later_primary_alignment():
         _page_fact(ordinal=1, attached=False),
         _page_fact(ordinal=2, attached=True, anchor_basis="act-anchor"),
     ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: False, 2: True})
 
-    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
 
 
-def test_page_attachment_facts_preserve_an_earlier_primary_alignment():
+def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch):
     """A later continuation row may not overwrite the primary page's alignment.
 
     The discriminating order: replace the `attached or attached` merge with
@@ -335,8 +610,10 @@ def test_page_attachment_facts_preserve_an_earlier_primary_alignment():
         _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor"),
         _page_fact(ordinal=2, attached=False),
     ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: False})
 
-    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
@@ -347,7 +624,7 @@ def test_page_attachment_facts_preserve_an_earlier_primary_alignment():
     (("act-line-not-located", "act-anchor"), ("act-anchor", "act-line-not-located")),
     ids=("failure-first", "failure-second"),
 )
-def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases):
+def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases, monkeypatch):
     """`act-line-not-located` survives an aligned sibling row, in either order.
 
     This is the clause the merge's second condition exists for, and it decides
@@ -360,33 +637,39 @@ def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases):
         _page_fact(ordinal=1, attached=True, anchor_basis=bases[0]),
         _page_fact(ordinal=2, attached=True, anchor_basis=bases[1]),
     ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: True})
 
-    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
 
     assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
 
 
-def test_page_attachment_facts_refuse_a_duplicate_page_pair():
+def test_page_attachment_facts_refuse_a_duplicate_page_pair(monkeypatch):
     rows = [
         _page_fact(ordinal=1, attached=False),
         _page_fact(ordinal=1, attached=False),
     ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: False})
 
     with pytest.raises(FatalAccounting, match="repeats attachment pair.*exactly one row"):
-        RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+        RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
 
 
 @pytest.mark.parametrize(
     ("field", "message"),
     [("status", "computed alignment fact"), ("anchor_basis", "malformed aligned")],
 )
-def test_page_attachment_facts_name_unhashable_alignment_enums(field, message):
+def test_page_attachment_facts_name_unhashable_alignment_enums(field, message, monkeypatch):
     """JSON arrays at enum fields are refusals, never set-membership tracebacks."""
     row = _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor")
     row["alignment"][field] = []
+    context = _context(_attachment_fact_record([row]))
+    _patched_page_geometry(monkeypatch, context, {1: True})
 
     with pytest.raises(FatalAccounting, match=message):
-        RUN.act_attachment_facts(_context(_attachment_fact_record([row])), "act-1")
+        RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
 
 
 def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(monkeypatch):

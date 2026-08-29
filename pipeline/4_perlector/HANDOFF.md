@@ -47,6 +47,45 @@ Recovery regions are readable evidence for a later attempt. They remain marked
 `witness_covered=false` unless a completed Testimonium actually names that exact
 region; a recrop never rewrites what a witness saw.
 
+### Native witness intake
+
+The consumer validates the same closed `presented`/`observed` waist the
+Attestatores writes. Page ids and ordinals are reconciled to the sealed Exemplar;
+whole-page and adapter-crop transforms are executable; region presentations are
+looked up physically and must resolve to one Designator proposal; observed boxes
+are bounded integer sealed-page coordinates; spans address retained text; and
+preferences, floats, unknown fields, malformed ordinals, and overlapping spans
+are refused. The page-Testimonium read additionally applies the shared full
+payload allowlist and validates Attestatores provenance/receipt requirements,
+not only geometry. A page outcome in `read | genuinely-empty | failed` is
+attempted and receipt-backed; `not-run` is explicitly unpresented and receipt-free.
+
+`unpresented_regions` is re-derived for region, page, and adapter-crop
+presentations by the common page-space-containment function. An empty list beside
+a real presentation means all bound proposal crops lie inside it; beside
+`presented={}` it is inapplicable, and the non-attempted record is independently
+forbidden to bind regions. A continuation crop on another page therefore cannot
+be hidden by changing presentation kind or deleting the field's member.
+
+Before routing any observation, `sealed_proposal_regions` validates every
+Designator region's provenance and full Exemplar crop lineage, including regions
+belonging to an act outside a narrowed `--act` invocation. The shared routing
+derivation then asks the same question of current act and page Testimonia:
+whether each `native`/`derived` box has positive-area overlap with any sealed
+proposal on its presented page. The rule records
+`{rule="positive-area", status="unmeasured"}`; `bounds_source="presented"` is
+excluded because it reports no witness geometry. Routing is overlap; Unit 10C
+coverage is containment, and the two must remain separately named.
+
+The Perlector's own derived `unrouted-observation` is deduplicated within the
+invocation and printed before sealing; it is not retained by this stage. It does
+not need to be. The Attestatores page Testimonium already stores the same common
+derivation in `partition_disagreement.unclaimed_observations`, and the Recensor
+re-derives the finding independently from the observed geometry and the current
+sealed proposal denominator rather than trusting that retained snapshot. The
+print here is an operator-visible echo of a fact that is retained elsewhere, so
+no second artifact vocabulary is introduced.
+
 ## The one attempt model
 
 **Which reading attempt this is, is a function of the act's crop history alone.**

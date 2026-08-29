@@ -449,21 +449,18 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
         registry.receipt(identity, serving_details())
 
     # The refusal is about the shipped roster, not only about a synthetic one.
-    # Which rows still carry the sentinel is today's state, not a rule: recording
-    # a measured manifest digest on a row is the documented outcome of a verified
-    # fetch, and asserting every row still carries the sentinel would turn the
-    # first such config edit red while naming only the role, not the reason.
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    unmeasured = 0
-    for _role, configured in real.chairs.items():
+    checked = 0
+    for role, configured in real.chairs.items():
         if not isinstance(configured, ChairIdentity):
             continue
-        if configured.digest_manifest != PRE_MATERIALIZATION_SENTINEL:
-            continue
-        unmeasured += 1
+        assert configured.digest_manifest == PRE_MATERIALIZATION_SENTINEL, role
         with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
             ChairRegistry(real).ensure(configured)
-    assert unmeasured, "no shipped row carries the sentinel, so this refusal is untested here"
+        checked += 1
+    # Without this the loop body can be skipped entirely and the test still
+    # passes, reporting a refusal it never exercised (GOVERNANCE 10).
+    assert checked, "the shipped roster declares no configured chair to refuse"
 
 
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):

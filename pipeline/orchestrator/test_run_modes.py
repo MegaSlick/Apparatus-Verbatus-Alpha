@@ -101,7 +101,9 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
         for entry in tree.build_manifest("designator")["artifacts"]
         if entry["kind"] == "stage-seal"
     ]
-    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
+    # Even unassigned page geometry must produce an explicitly sequenced,
+    # sealed recovery round.
+    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2, 3]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):

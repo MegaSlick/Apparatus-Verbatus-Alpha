@@ -33,6 +33,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
+    ATTACHMENT_BASES,
     OutcomeClass,
     classify,
     terminal_category,
@@ -46,6 +47,13 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.native_witness import (  # noqa: E402
+    reported_geometry_overlaps,
+    unrouted_observations,
+    validate_page_testimonium_payload,
+    validate_partition_disagreement,
+    validate_reportable_observations,
+)
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
@@ -196,8 +204,67 @@ def chair_read_evidence(current_attempts: dict[str, dict]) -> dict[str, dict[str
     return {chair: fact["read_evidence"] for chair, fact in current_attempts.items()}
 
 
-def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
-    """Read R0's derived attachment record before counting the witness floor."""
+def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
+    """The sealed-proposal denominator a page witness could have seen.
+
+    Recovery regions are deliberately absent.  They are minted only after the
+    Attestatores has sealed, so including them here would let a later crop
+    retroactively attach testimony to an act the witness never identified.
+    """
+    pages: dict[int, dict] = {}
+    for region in artifacts_for(context, DESIGNATOR, "region", act_id):
+        payload = _payload(region, f"Designator region of {act_id}")
+        if payload.get("origin") != "proposal":
+            continue
+        facts = _expected_basis_facts(region, act_id)
+        ordinal = facts["source_page_ordinal"]
+        transform = facts["transform"]
+        bounds = transform.get("bounds") if isinstance(transform, dict) else None
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(facts["source_page_id"], str)
+            or not facts["source_page_id"]
+            or not isinstance(bounds, dict)
+            or set(bounds) != {"x", "y", "w", "h"}
+            or any(
+                not isinstance(bounds[key], int) or isinstance(bounds[key], bool)
+                for key in ("x", "y", "w", "h")
+            )
+            or bounds["x"] < 0
+            or bounds["y"] < 0
+            or bounds["w"] <= 0
+            or bounds["h"] <= 0
+        ):
+            raise FatalAccounting(f"act {act_id} has malformed sealed-proposal page geometry")
+        page = pages.setdefault(
+            ordinal,
+            {"source_page_id": facts["source_page_id"], "bounds": []},
+        )
+        if page["source_page_id"] != facts["source_page_id"]:
+            raise FatalAccounting(
+                f"act {act_id}'s sealed proposals give page {ordinal} more than one page identity"
+            )
+        page["bounds"].append(bounds)
+    return pages
+
+
+def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
+    """An unattached continuation may not erase another page's attachment."""
+    if current["attached"] and not previous["attached"]:
+        return current
+    return previous
+
+
+def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict[str, dict]:
+    """Re-derive R0's attachment record before counting the witness floor.
+
+    The Perlector checks the same writer fact at its read seam.  The Recensor is
+    the independent floor-accounting seam, so a sealed attachment boolean is
+    not evidence merely because its basis label is spelled correctly: page
+    testimony must still overlap this act's original proposal geometry, in
+    either direction of claimed/derived drift.
+    """
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
@@ -212,6 +279,7 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
     entries = payload.get("attachments") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")
+    proposal_pages = _proposal_geometry_by_page(context, act_id)
     facts: dict[str, dict] = {}
     seen_pairs: set[tuple[str, int | None]] = set()
     for entry in entries:
@@ -220,6 +288,11 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         chair = entry["chair"]
         if not isinstance(entry.get("attached"), bool):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+        attachment_basis = entry.get("attachment_basis")
+        if attachment_basis not in ATTACHMENT_BASES:
+            raise FatalAccounting(
+                f"act {act_id} attachment entry for chair {entry['chair']!r} has no known attachment basis"
+            )
         health = entry.get("content_health")
         # A malformed health record and an absent one are different facts: only
         # the absent one is honestly "health not recorded", and only the
@@ -257,6 +330,51 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
             )
         seen_pairs.add(pair)
         if page_witness:
+            # `page_ordinal` was type-checked above, before it became half of
+            # the duplicate-pair key; re-reading and re-checking it here said
+            # the same thing twice with a thinner message.
+            proposal_page = proposal_pages.get(page_ordinal)
+            if proposal_page is None:
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} attaches outside the sealed "
+                    "proposal denominator"
+                )
+            reference = entry.get("testimonium_ref")
+            if not isinstance(reference, dict):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} has no page Testimonium reference"
+                )
+            try:
+                page_testimonium = context.tree.read_artifact_reference(
+                    reference,
+                    stage=ATTESTATORES,
+                    kind="page-testimonium",
+                    subject_id=proposal_page["source_page_id"],
+                )
+                page_payload = validate_page_testimonium_payload(
+                    page_testimonium.get("payload"),
+                    testimonium_id=page_testimonium.get("artifact_id"),
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} has no valid page geometry: {error}"
+                ) from error
+            if (
+                page_payload.get("chair") != chair
+                or page_payload.get("page_ordinal") != page_ordinal
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} points to a different page Testimonium"
+                )
+            geometrically_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES and any(
+                reported_geometry_overlaps(page_payload.get("observed", []), bounds)
+                for bounds in proposal_page["bounds"]
+            )
+            if entry["attached"] != geometrically_attached:
+                raise FatalAccounting(
+                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
+                    "that witness's reported geometry against the sealed proposal"
+                )
             alignment = entry.get("alignment")
             alignment_status = alignment.get("status") if isinstance(alignment, dict) else None
             if not isinstance(alignment_status, str) or alignment_status not in {
@@ -266,9 +384,13 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no computed alignment fact"
                 )
-            if entry["attached"] != (alignment["status"] == "aligned"):
+            if entry["attached"] and attachment_basis != "geometric-overlap":
                 raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} contradicts its computed alignment"
+                    f"act {act_id} page witness {chair!r} is attached without geometric evidence"
+                )
+            if not entry["attached"] and attachment_basis != "unattached":
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} names a basis for an unattached record"
                 )
             # The documented closed shapes (pipeline/3_attestatores/HANDOFF.md),
             # enforced where the floor is counted, not only at the Perlector: an
@@ -304,8 +426,31 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
+        else:
+            if entry.get("page_ordinal") is not None:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped witness {chair!r} claims a page ordinal"
+                )
+            if entry.get("alignment") is not None:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped witness {chair!r} claims page alignment evidence"
+                )
+            expected_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES
+            if entry["attached"] != expected_attached:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} disagrees with "
+                    "the current Testimonium outcome for that chair"
+                )
+            expected_basis = "presented-region" if expected_attached else "unattached"
+            if attachment_basis != expected_basis:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} names "
+                    f"{attachment_basis!r}; its {entry['attached']!r} attached fact requires "
+                    f"{expected_basis!r}"
+                )
         fact = {
             "attached": entry["attached"],
+            "attachment_basis": attachment_basis,
             "truncated": truncated,
             "health_unrecorded": truncated is None,
             "page_witness": page_witness,
@@ -330,17 +475,31 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # The act-level floor is one attempt per chair, while page references
-            # remain separate; an unaligned continuation cannot erase an aligned
-            # primary-page row.
-            facts[chair]["attached"] = facts[chair]["attached"] or fact["attached"]
-            if fact["anchor_basis"] is not None and (
-                facts[chair]["anchor_basis"] is None
-                or fact["anchor_basis"] == "act-line-not-located"
-            ):
-                # `act-line-not-located` is sticky across aligned page rows: a
-                # terminal blank cannot discard the page whose geometry failed.
-                facts[chair]["anchor_basis"] = fact["anchor_basis"]
+            # A page witness has one attachment for every contributing page.
+            # Its act-level floor remains the one act attempt, so a continuation
+            # whose page has no anchor cannot erase the primary page's valid
+            # attachment; all page references remain separately checked by the
+            # content denominator below.
+            previous = facts[chair]
+            merged = dict(_merge_page_attachment_fact(previous, fact))
+            # Only rows of this same act attempt are merged -- the health
+            # equality just above is what holds that -- so filling one page's
+            # missing basis from a sibling page never borrows another attempt's
+            # evidence.
+            #
+            # `act-line-not-located` is sticky across aligned page rows: a
+            # terminal blank cannot discard the page whose geometry failed.
+            # Without the stickiness `blank_corroboration` would read the merged
+            # row as geometry-checked and let a failed alignment corroborate a
+            # blank it never located.
+            bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
+            if "act-line-not-located" in bases_seen:
+                merged["anchor_basis"] = "act-line-not-located"
+            elif merged["anchor_basis"] is None:
+                merged["anchor_basis"] = next(
+                    (basis for basis in bases_seen if basis is not None), None
+                )
+            facts[chair] = merged
             continue
         facts[chair] = fact
     return facts
@@ -493,7 +652,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"which this run was not sealed with. `run.json` names its witness "
             "chairs and nothing may add one after the seal"
         )
-    attachments = act_attachment_facts(context, act_id)
+    attachments = act_attachment_facts(context, act_id, outcomes)
     # R4's attachment is an independent computed fact for a PAGE witness.  It
     # must not be forced back into the act attempt outcome there: a page
     # witness can have read its page while the bounded text-to-anchor
@@ -1154,12 +1313,47 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     }
 
 
-def uncovered_non_whitespace_ranges(text: str, covered: list[bool]) -> dict:
-    """Losslessly compact uncovered non-whitespace offsets into half-open ranges."""
+def _covered_intervals(
+    spans: list[tuple[int, int, str]], text_length: int
+) -> list[tuple[int, int]]:
+    """Validate and merge coverage without allocating one slot per character."""
+    intervals = []
+    for start, end, _ in spans:
+        if start < 0 or end < start or end > text_length:
+            raise FatalAccounting("act attachment span lies outside its page Testimonium")
+        if start != end:
+            intervals.append((start, end))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def uncovered_non_whitespace_ranges(text: str, covered_intervals: list[tuple[int, int]]) -> dict:
+    """Losslessly compact uncovered non-whitespace offsets into half-open ranges.
+
+    Page testimony crosses an untrusted boundary and can be much larger than a
+    normal reading.  Coverage therefore stays proportional to the number of
+    retained attachment spans, not to the response length; the text itself is
+    scanned once without materializing a page-sized boolean bitmap.
+    """
     ranges = []
     count = 0
+    interval_index = 0
     for index, char in enumerate(text):
-        if covered[index] or char.isspace():
+        while (
+            interval_index < len(covered_intervals)
+            and covered_intervals[interval_index][1] <= index
+        ):
+            interval_index += 1
+        covered = (
+            interval_index < len(covered_intervals)
+            and covered_intervals[interval_index][0] <= index
+        )
+        if covered or char.isspace():
             continue
         count += 1
         if ranges and ranges[-1]["end"] == index:
@@ -1252,6 +1446,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
     # the proposal seal and re-verifies its self-hash on every call, and this stage
     # never writes to the Designator's seal while it runs.
     acts_by_page: dict[int, list[dict]] = {}
+    proposal_regions_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
         found_page = False
         for region in artifacts_for(context, DESIGNATOR, "region", act["act_id"]):
@@ -1268,6 +1463,37 @@ def testimony_content_findings(context) -> dict[int, dict]:
             page_acts = acts_by_page.setdefault(ordinal, [])
             if act not in page_acts:
                 page_acts.append(act)
+            bounds = transform.get("bounds")
+            # The same rectangle `_proposal_geometry_by_page` requires of these
+            # same sealed proposals: four integer sides, on the page, with
+            # positive area. Two distinct failures follow from accepting less.
+            # A rectangle that is a dict and nothing more reaches
+            # `unrouted_observations`, which indexes all four sides by name, and
+            # leaves the stage that decides recovery as a bare `KeyError` naming
+            # neither page nor act. Worse, a *degenerate* rectangle -- zero or
+            # negative width, or an off-page origin -- indexes cleanly and
+            # overlaps nothing, so `_overlaps` reports that no proposal accounts
+            # for ink a proposal does in fact cover, and the witness's
+            # observation is published as an unrouted-observation finding. That
+            # is manufactured coverage evidence driving bounded recovery
+            # (GOVERNANCE 10, 11), which is why the range checks belong here and
+            # not only in the sibling reader.
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
+                    for side in ("x", "y", "w", "h")
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+            ):
+                raise FatalAccounting(
+                    f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
+                )
+            proposal_regions_by_page.setdefault(ordinal, []).append(region)
             found_page = True
         # Unit callers may provide the proposal seal without materialized
         # regions; its primary page remains a known one-page denominator.
@@ -1309,6 +1535,56 @@ def testimony_content_findings(context) -> dict[int, dict]:
     findings: dict[int, dict] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        # `current_page_testimonia` types only the page ordinal and the chair,
+        # because those two become dict keys. The observed rows below are still
+        # untrusted evidence read from disk, and `unrouted_observations` indexes
+        # each one by name: a row that is not a closed observation would leave
+        # this stage as a raw KeyError rather than a named refusal, from the one
+        # stage that decides whether coverage recovery runs.
+        try:
+            validate_reportable_observations(payload.get("observed", []))
+        except ContractError as error:
+            raise FatalAccounting(
+                f"page Testimonium {record['artifact_id']} for page {ordinal}, chair {chair!r} "
+                f"has malformed observed geometry: {error}"
+            ) from error
+        presented = payload.get("presented")
+        disagreement = payload.get("partition_disagreement")
+        if disagreement is not None:
+            try:
+                validate_partition_disagreement(
+                    disagreement,
+                    observed=payload.get("observed"),
+                    source_page_id=(
+                        presented.get("source_page_id") if isinstance(presented, dict) else None
+                    ),
+                    testimonium_id=record["artifact_id"],
+                    proposal_boxes=[
+                        region["payload"]["transform"]["bounds"]
+                        for region in proposal_regions_by_page.get(ordinal, [])
+                    ],
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"page Testimonium {record['artifact_id']} has false partition facts: {error}"
+                ) from error
+        observed = payload.get("observed")
+        if isinstance(presented, dict) and presented and isinstance(observed, list):
+            # Coverage is computed from what the witness saw and the current
+            # sealed proposal denominator. The optional retained partition is
+            # audit evidence, not an input whose omission or older denominator
+            # may suppress a present finding.
+            unclaimed = unrouted_observations([record], proposal_regions_by_page.get(ordinal, []))
+        else:
+            unclaimed = []
+        if disagreement is not None or unclaimed:
+            finding = findings.setdefault(
+                ordinal,
+                {"by_chair": {}, "shortfall": False},
+            )
+            finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
+            # Unclaimed geometry requests bounded recovery without becoming an
+            # act-level text shortfall; it assigns the observation to no act.
         if "reported" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(
@@ -1346,13 +1622,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ):
                     raise FatalAccounting("attached page witness has malformed alignment span")
                 spans.append((span["start"], span["end"], act_id))
-        covered = [False] * len(text)
-        for start, end, _ in spans:
-            if start < 0 or end < start or end > len(text):
-                raise FatalAccounting("act attachment span lies outside its page Testimonium")
-            for index in range(start, end):
-                covered[index] = True
-        uncovered = uncovered_non_whitespace_ranges(text, covered)
+        covered_intervals = _covered_intervals(spans, len(text))
+        uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
         finding["by_chair"][chair] = {
             "attached_spans": [
@@ -1362,7 +1633,33 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
+    for finding in findings.values():
+        if finding["by_chair"]:
+            continue
+        # This finding exists only because unclaimed geometry created it: no
+        # chair on this page reported text, so the loop above never diffed one
+        # and `by_chair` stayed empty. Leaving the seeded `shortfall: False`
+        # would publish a clean text measurement nobody took, indistinguishable
+        # from a page whose witnesses were read and covered everything
+        # (GOVERNANCE 10) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
+        # exists to avoid for pages that reach no measurement at all. The
+        # unclaimed observations stay: they are geometry, and they still route
+        # bounded recovery.
+        finding["shortfall"] = None
+        finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     return findings
+
+
+def recovery_request_reason(*, declared_crop: bool, unclaimed_observation: bool) -> str:
+    """Every triggered coverage cause must remain explicit in the request."""
+    causes = []
+    if declared_crop:
+        causes.append("the crop may be incomplete")
+    if unclaimed_observation:
+        causes.append("a page witness reported ink outside every sealed proposal")
+    if not causes:
+        raise FatalAccounting("a fallback-recrop request has no recorded coverage cause")
+    return f"{' and '.join(causes)}; an expanded recrop is requested"
 
 
 NO_PAGE_CONSERVATION = {
@@ -1775,7 +2072,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
         allowed_fallback = recovery_kind_budget(budget, FALLBACK_RECROP)
-        wants_recovery = act_key in scenario["recover_acts"] and used_total == 0
+        wants_recovery = (
+            act_key in scenario["recover_acts"]
+            or bool(content_coverage.get("unclaimed_observations"))
+        ) and used_total == 0
         ordinal = used_total + 1
 
         # The cap is enforced at the request boundary rather than by convention
@@ -1810,7 +2110,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "act_key": act_key,
                     "attempt_ordinal": ordinal,
                     "recovery_kind": FALLBACK_RECROP,
-                    "reason": "the crop may be incomplete; an expanded recrop is requested",
+                    "reason": recovery_request_reason(
+                        declared_crop=act_key in scenario["recover_acts"],
+                        unclaimed_observation=bool(content_coverage.get("unclaimed_observations")),
+                    ),
                     "budget_allowed": budget["allowed"],
                     "budget_used": used_total,
                     "kind_budget_allowed": allowed_fallback,
@@ -1876,11 +2179,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # gate and the outcomes cannot disagree about which attempt is
             # current" is structural rather than two identical walks agreeing.
             current_attempts = chair_current_attempts(context, act_id)
+            current_outcomes = chair_outcomes(current_attempts)
             corroborating_chairs = (
                 blank_corroboration(
                     coverage,
-                    chair_outcomes(current_attempts),
-                    act_attachment_facts(context, act_id),
+                    current_outcomes,
+                    act_attachment_facts(context, act_id, current_outcomes),
                     chair_read_evidence(current_attempts),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )

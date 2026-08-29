@@ -46,6 +46,7 @@ chair, act_key, attempt_ordinal
 regions = [{region_id, image_path, image_sha256}, ...]
 provenance, format_capabilities
 payload, witness_reported, content_health
+presented, observed, unpresented_regions
 reason                         only when a named non-reading/failure needs one
 ```
 
@@ -82,6 +83,172 @@ JSON-native values: its shared canonical writer refuses floating-point numbers,
 and this stage records that refusal as `failed` rather than coercing the number.
 That is an unresolved gap against Spec 07's unexpected-but-parseable payload
 requirement, not a claim that the float was retained verbatim.
+
+### Native image/geometry waist
+
+`presented` is either `{}` (this record has no image presentation) or the closed
+description of exactly one `page`, `region`, or `adapter-crop` image: sealed page
+identity and ordinal, blob path/digest, and an executable sealed-page transform.
+A region presentation is re-derived from its unique Designator proposal. A page
+presentation must name the whole sealed page and `operation="whole"`. The current
+adapter-crop recipe is exactly `operation="crop"`; both read seams regenerate its
+PNG bytes from the sealed page and refuse a digest that differs. A resize or any
+other adapter-owned recipe must extend this closed transform rather than ride as
+an opaque operation string.
+
+`observed` is the witness-order list of integer sealed-page boxes, each with a
+dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
+an optional non-overlapping span into this Testimonium's own retained text. Every
+box is contained by the exact presented image's page-space bounds; a witness
+cannot report pixels its presentation did not include.
+
+**One record kind is exempt, and only one.** A page chair's act view
+(`page_witness: true`, never `scope: "page"`) presents a single crop while
+restating the page-level geometry that chair actually reported, so its boxes may
+legitimately exceed that one crop. They remain bounded by the sealed page, which
+is the wall that does not move, and Unit 10C's coverage derivation is what
+consumes that page-space geometry. The flag cannot buy the exemption on its own:
+a `scope: "page"` record presents the chair's complete view and keeps the
+containment rule, so the relaxation cannot be forged onto a record whose
+presentation really was everything the witness saw. Every other record — act
+chairs, and page chairs at page scope — is contained as above. `observed`
+carries no act identity, preference, authority, or confidence field. `presented`
+is an explicit no-geometry fallback: it restates the image sent and is excluded
+from both unrouted-ink detection and Unit 10C coverage. Only `native` and
+`derived` boxes report witness geometry.
+
+`unpresented_regions` is computed after the adapter's final presentation and
+re-derived at both later act read seams by page-space containment. With a real
+presentation, `[]` means every bound proposal crop lies inside that one image;
+with `presented={}`, the list is inapplicable and must be `[]`. Those states are
+not ambiguous because `presented` distinguishes them, and a non-attempted record
+is independently forbidden from binding any regions or image inputs.
+
+The runnable adapter registry resolves exact configured names with no default.
+`present(context, presentation)` may retain an adapter-owned crop through the run
+tree; `observe(presentation, native_payload)` must derive geometry from the exact
+presentation and retained response together. Churro's fixture response has no
+layout, so its adapter returns only the excluded `bounds_source="presented"`
+fallback. A future layout adapter cannot be wired to an observation callable
+that never receives its own response.
+
+**Observations reach a record from three sources, in this order.** The fixture's
+`[[native_observation]]` table is consulted first: rows matching the chair and
+page ordinal (and the scenario, where one is named) become `bounds_source="native"`
+boxes directly, ahead of the adapter. Those are reported geometry — they drive
+attachment and routing exactly as an adapter's own layout would, which is what
+makes the table a stimulus for the geometry paths rather than decoration. Only
+when no row matches does `observe` run, and only when there is no adapter at all
+does the `bounds_source="presented"` echo of the presentation stand in.
+
+### What an adapter must produce (Units 11, 12, 13)
+
+Unit 10's contract is finished. An adapter-owning unit needs this page and no
+consult report.
+
+**Configuration.** Two rows on the occupant's own `[chairs.<role>]` table in
+`config/models.toml`: `witness_adapter` (an exact declared name — no default, no
+near match; a default adapter is a picker with one candidate) and `witness_scope`
+∈ `page | act`. Both enter `ChairIdentity.to_record()` and therefore
+`config_digest`. `witness_scope` is invocation granularity only: it says nothing
+about image kind, geometry, region identity, or coverage.
+
+**Registries move together.** The declared name joins
+`common/witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES`; the callable joins
+`pipeline/3_attestatores/witness_adapters.RUNNABLE_ADAPTERS`. A configured chair
+whose adapter has no runnable binding is fatal by name; a declared name with no
+configured occupant is reported on stderr and is not fatal, because an adapter
+may land before its chair does.
+
+**Five roles, never merged.** `prompt` frames the request; `parse` turns one
+native response into its text; `retain` records the exact view and the raw bytes;
+`present` binds the image; `observe` derives geometry. Two of them are the intake
+contract:
+
+* `present(context, presentation)` returns the closed `presented` block —
+  `kind` ∈ `page | region | adapter-crop`, sealed page identity and ordinal, blob
+  path and digest, and an executable transform in **sealed-page pixel space**
+  (the only space anything downstream can verify: `verify_exemplar_crop_lineage`
+  re-derives there and the Recensor reconciles there). `kind="region"` may name a
+  Designator region whose `origin` is `proposal` and nothing else — a recovery
+  crop may never be presented as a witness basis. An `adapter-crop` is a
+  page-scoped occupant's own subdivision, not a third scope, and both read seams
+  regenerate its bytes from the sealed page and refuse a differing digest.
+* `observe(presentation, native_payload)` returns the closed `observed` list from
+  that exact image and response together — dense, unique, zero-based ordinal;
+  integer `x/y/w/h` in the pixel space of `presented.source_page_id`;
+  `bounds_source` ∈ `native | derived | presented`; and a span into this
+  Testimonium's own retained text, or null. No act identity, no confidence, no
+  authority, and no preference-shaped key anywhere in the payload — `primary`,
+  `canonical`, `best`, `preferred` and `superseded_by` are refused recursively.
+
+**The quantization rule — where a float goes.** The native layer is open and
+verbatim; the derived layer is integer. `retain` writes the raw response
+content-addressed as `raw_response_ref`, and **that blob is the authority: it
+never loses a float.** Real layout detectors emit float or normalized boxes, so
+an adapter quantizes them to integer sealed-page pixels **inside `observe`**, and
+the quantization rule is a property of the adapter, declared with it, with the
+raw digest beside it in the same record. Two things it may not be: a coercion
+nobody recorded, and a failed attempt. Note the wall this implies for `parse`:
+`_native_problem` refuses any float in the retained native payload and turns the
+attempt into a `failed` Testimonium with `content_health.recordable=false`, which
+would report a working layout model as a broken witness. Return text or
+integer-only structures from `parse`; put the geometry through `observe` and the
+floats in the blob.
+
+**Scope semantics.** A `page` occupant writes one page-scoped Testimonium per
+(page, chair) carrying `partition_disagreement`, and reaches an act only by
+**geometric overlap of its own reported `native`/`derived` geometry against the
+sealed proposal** — never through an anchor, never chair against chair. A
+`presented` box is an explicit no-geometry fallback and is excluded from both
+routing and coverage. An `act` occupant writes one Testimonium per (act, chair)
+with attachment basis `presented-region`. A page witness cannot be re-asked: a
+targeted reread reaches act-scoped chairs only.
+
+**What an adapter never does.** It never mints a region (crop lineage refuses a
+stage that is not the Designator), never expresses a preference, and never
+reports coverage. Ink it observed that no sealed proposal accounts for becomes a
+named non-fatal `unrouted-observation` finding, retained in
+`partition_disagreement.unclaimed_observations`; the Recensor alone may spend a
+bounded fallback-recrop on it, against one absolute cap of three shared with
+every other recovery origin.
+
+**Evidence.** Each adapter lands with one recorded specimen response read from
+the vendor's published source, with that source and its licence recorded, exactly
+as `feeding.churro_prompt` cites stanford-oval/churro.
+
+**Named obligations after Unit 10.** These are adapter/integration work, not
+unfinished choices in this contract:
+
+* **Unit 11 (Chandra)** adds Chandra's exact shared name and local runnable
+  binding, plus the shared adapter-metadata field that records an explicit
+  float-to-integer quantization rule beside `raw_response_ref` in the retained
+  model view. Its `observe` applies that declared rule to native layout; its
+  `parse` returns text or integer-only data. The unit carries one published
+  specimen response with source and licence.
+* **Unit 12 (Churro)** replaces the fixture-only Churro serve with the real
+  full-page XML boundary while keeping raw bytes, parse failure, truncation and
+  post-capture repetition visible. It declares whether it has any native
+  quantization to apply (rather than inheriting another adapter's rule) and
+  carries its own published specimen evidence.
+* **Unit 13 (DAI)** adds DAI's exact registry rows, records its detector's
+  float quantization beside the raw digest, and extends the closed transform for
+  its adapter-owned resize/crop so the shown pixels remain reproducible. Its
+  carried prompts, generation configuration, specimen, source and licence are
+  named; uncertainty tokens are retained unchanged.
+* **Unit 14 (native-testimony integration)** removes the temporary
+  `payload.reported` bridge below and teaches the Perlector/Recensor consumers to
+  use each adapter's native retained text and partition facts without choosing a
+  witness boundary. It also owns the explicit hold for an unproposed cross-page
+  half act and the ink-map/proposal coverage reconciliation already assigned to
+  that unit.
+
+For Units 11--13, the declared-name set, runnable mapping, parser/retention
+dispatch and occupant configuration move together. A special quantization
+error in `_native_problem` is deliberately **not** a Unit 10 mechanism: a float
+that leaks through `parse` has violated its adapter contract, and the current
+generic unsupported-native-type failure is accurate. The adapters instead keep
+the float in the raw blob and make the declared conversion in `observe`.
 
 ### Temporary textual bridge
 
@@ -336,9 +503,11 @@ regions, so the two groupings cannot drift apart.
 R0 has no live page-scoped witness. A page Testimonium is `page_join`'s
 concatenation of one chair's own act attempts on that page, so its outcome comes
 from the joined text and not from the shape of the list that produced it:
-`failed` when no attempt joined at all — or when the join could not carry
-every attempt and the carried ones were all empty, because a completed absence
-may only be claimed over a page this chair's join fully read (invariant 6);
+`failed` when no reading joined and at least one underlying attempt reached the
+chair — or when the join could not carry every attempt and the carried ones were
+all empty, because a completed absence may only be claimed over a page this
+chair's join fully read (invariant 6); `not-run` when no underlying attempt
+reached the configured chair;
 `genuinely-empty` when every attempt joined and every one delivered an empty
 body; `read` when the text carries a delivered character (delivered characters
 beside disclosed omissions claim less, not more). Separators are placed only *between* delivered characters.
@@ -348,6 +517,16 @@ whenever the list was non-empty gave a page of genuinely-empty acts
 as testimony to them (CodeRabbit W44). An act whose reading the join could not
 carry is disclosed in `unjoined_act_attempts`; an act it carried as empty is not,
 because it was carried.
+
+The synthetic page presentation and receipt are fixture declarations of the
+page-scoped invocation the skeleton is exercising, just as the act arm's
+`fixture://` receipt is a declaration rather than a live serve. `page_join`
+supplies that declared invocation's response fragments; it is not evidence that
+a provider ran. A failed page record carries a presentation and receipt exactly
+when at least one underlying act attempt reached the configured chair. If none
+did, the page outcome is `not-run`, with `presented={}` and no receipt. Thus
+`failed` never also means “never attempted,” and an absent or never-shown chair
+is never forced to invent a serving moment.
 
 ## Act-attachment schema (R4)
 

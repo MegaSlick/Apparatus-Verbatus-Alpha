@@ -811,6 +811,11 @@ def _validate_region_fields(region, label: str) -> None:
             f"{unexpected}); a region travels into this record and out through the export "
             "whole, so a field beside the crop facts is a second unvalidated payload"
         )
+    if not isinstance(region["witness_covered"], bool):
+        raise SchemaRefusal(
+            f"{label} has non-boolean witness_covered; geometric witness coverage is a fact, "
+            "not an omitted or truthy presentation hint"
+        )
 
 
 def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str, str]]:

@@ -28,6 +28,7 @@ from common.contracts.outcomes import (
     witness_coverage,
 )
 from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
 # adding a state without deciding its class and its terminal category fails here,
@@ -653,6 +654,71 @@ def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
             {"act_a": forged},
             {1: {"outcome": "sealed"}},
             act_pages={"act_a": [1]},
+        )
+
+
+def _fact(attached, basis):
+    return {"attached": attached, "attachment_basis": basis}
+
+
+def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
+    """The shorthand carries no geometry, so it cannot claim the geometric basis.
+
+    `granularity_basis` says *how* the count was reached and travels in the
+    receipt. Derived from the mere presence of the argument, the booleans below
+    would have reported a native-overlap measurement nothing performed
+    (GOVERNANCE 10).
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
+        3,
+        attachments={"s1": True, "s2": False, "s3": True},
+    )
+
+    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
+
+
+def test_one_fact_without_a_basis_withdraws_the_native_claim_for_the_whole_act():
+    """The claim is about the act's count, so any undecided chair unmakes it."""
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read"},
+        2,
+        attachments={
+            "s1": _fact(True, "geometric-overlap"),
+            "s2": {"attached": True},
+        },
+    )
+
+    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
+
+
+def test_granularity_identity_is_executable_for_interim_and_native_bases():
+    """The receipt's reading chairs minus page-only count equals the writer's attachments."""
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
+        3,
+        attachments={
+            "s1": _fact(True, "geometric-overlap"),
+            "s2": _fact(False, "unattached"),
+            "s3": _fact(True, "presented-region"),
+        },
+    )
+    assert coverage["granularity_basis"] == outcomes.NATIVE_GRANULARITY_BASIS
+    assert (
+        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
+        - coverage["page_granularity_only"]
+        == 2
+    )
+    for basis in (outcomes.INTERIM_GRANULARITY_BASIS, outcomes.NATIVE_GRANULARITY_BASIS):
+        candidate = {**coverage, "granularity_basis": basis}
+        _validate_coverage(candidate, require_complete_granularity=True)
+    # Widening the accepted set from one basis to two must not widen it to any
+    # string: an unnamed basis would let a receipt claim a measurement nothing
+    # in this pipeline performs (GOVERNANCE 10).
+    with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
+        _validate_coverage(
+            {**coverage, "granularity_basis": "invented-basis"},
+            require_complete_granularity=True,
         )
 
 

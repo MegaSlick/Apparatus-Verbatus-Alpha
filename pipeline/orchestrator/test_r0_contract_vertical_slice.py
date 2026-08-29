@@ -778,7 +778,42 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
 
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
+    # The shared page contract now reconciles `page_ordinal` against the
+    # presentation, so it answers this forgery before the Perlector's own
+    # subject-vs-presentation check does. The stage-local refusal is still
+    # there and still needed -- it also compares `source_page_id` against the
+    # record's subject, which the shared contract cannot see.
+    assert "names a different page than the record" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_perlector_refuses_a_page_presentation_that_disowns_its_record_subject(tmp_path):
+    """The half of the stage-local check the shared page contract cannot make.
+
+    `page_ordinal` and `source_page_ordinal` are reconciled by the shared
+    contract, so a forgery has to keep them agreeing to get this far. What only
+    the Perlector can see is the record's own `subject_id`: a page Testimonium
+    filed under page 1 whose presentation claims to be some other sealed page
+    would hand page-1 coverage the ink of a page this chair never sat with.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "disowned-page")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry = next(row for row in manifest["artifacts"] if row["kind"] == "page-testimonium")
+    page = tree.read_artifact(ATTESTATORES, "page-testimonium", page_entry["artifact_id"])
+    presented = page["payload"]["presented"]
+    # Ordinals left untouched on both sides, so the shared reconciliation passes
+    # and this forgery is answered by the subject check rather than by it.
+    forged_page_id = presented["source_page_id"] + "-not-this-page"
+    presented["source_page_id"] = forged_page_id
+    presented["transform"]["source_page_id"] = forged_page_id
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+
+    result = invoke_stage(root, "disowned-page", "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
     assert "wrong page Testimonium" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
@@ -808,7 +843,11 @@ def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
     result = invoke_stage(root, "unhashable-role", "happy", "pipeline/4_perlector/run.py")
 
     assert result.returncode != 0
-    assert "page_role" in result.stderr and "contradicts" in result.stderr
+    # The shared page-testimonium validator now closes the record's scope facts
+    # before the Perlector's per-page contradiction check can run, so the forged
+    # list-valued role is refused there by name — earlier, and still never as a
+    # raw TypeError escaping through set membership.
+    assert "invalid page scope facts" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -863,8 +902,15 @@ def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "continuation-page attachment" in result.stderr
-    assert "has no page-specific anchor" in result.stderr
+    # Two independent refusals guard this forgery and either may answer first:
+    # the anchor rule ("continuation-page attachment ... has no page-specific
+    # anchor", pipeline/4_perlector/run.py) and Unit 10C's geometric
+    # re-derivation, which notices the forged `attached` fact does not derive
+    # from the witness's reported geometry before the anchor rule is consulted.
+    assert (
+        "continuation-page attachment" in result.stderr
+        and "has no page-specific anchor" in result.stderr
+    ) or "does not derive from that witness's reported geometry" in result.stderr
 
 
 def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
@@ -1112,6 +1158,11 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert attachment["attached"] is False
     assert attachment["content_health"] == current["payload"]["content_health"]
     attachment["attached"] = True
+    # A positive act-scoped attachment must also name the presentation basis
+    # that the native-witness contract now closes over.  Keep the forgery
+    # coherent on that independent axis so this test reaches the outcome
+    # reconciliation it is meant to prove.
+    attachment["attachment_basis"] = "presented-region"
     # The span must stay consistent with the current health, or the Perlector
     # refuses on the span before it reaches the outcome guard this test is named
     # for: a non-integer character count skips that span check entirely, and 0
