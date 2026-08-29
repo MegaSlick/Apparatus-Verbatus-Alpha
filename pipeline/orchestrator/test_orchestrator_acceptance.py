@@ -917,6 +917,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change, and happy is untouched.
+# Audit-round re-pin: each witness-derived flag-location basis row now carries
+# the span it accounts for, so the audit draft is bound to its flags by location
+# rather than by list length. Draft bytes move and the artifacts referencing them
+# follow; no artifact is added or removed, so happy stays 95/0 and review 118/3.
+# Both digests were re-measured twice in independent temporary roots through this
+# module's own `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
 #
 # Reading this log: it is chronological and append-only, and every entry states
 # the counts and the fixture shape as they stood when that entry was written.
@@ -926,8 +932,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 118
-HAPPY_RUN_TREE_DIGEST = "2597b8e269bcaf06a5fe6399f16a7fac81c96b2ce1867360cdb15cce055c5b52"
-REVIEW_RUN_TREE_DIGEST = "3cad9e17520140802c8afcf4eeb3a08db9f4b4c5463bc34df16ff0fa3cef9feb"
+HAPPY_RUN_TREE_DIGEST = "ae7d0957e8f8645101661109353911bb9a73fe9bb2879e65eb1a2efe25bb7396"
+REVIEW_RUN_TREE_DIGEST = "8e6f17db53a599d10fad548cddca51cdf38791fc728d933de0efcdb498096897"
 
 
 def orchestrate(
