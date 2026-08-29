@@ -293,7 +293,16 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     exactly, and let both the source and restored copy reach the same result.
     """
     volume = tmp_path / "mounted-volume" / "runs"
-    crashed = _crash_mid_recovery(volume, tmp_path)
+    _crash_mid_recovery(volume, tmp_path)
+
+    # Whether the kill lands mid-write, leaving a `.<target>.tmp-*` publication
+    # temporary behind, is a matter of timing -- so whether this test exercised
+    # the backup's exclusion of them was decided by the scheduler. It failed
+    # exactly once in a full-suite run for that reason. One is planted, so the
+    # exclusion path is measured on every run instead of occasionally.
+    planted = volume / "r" / ".run.json.tmp-interruptedpublication"
+    planted.write_bytes(b"an interrupted publication, mid-write when the driver died")
+    crashed = snapshot(volume)
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
@@ -306,16 +315,37 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     published = json.loads(
         (mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json").read_text()
     )
+    # A tree killed mid-write can hold a `.<target>.tmp-*` publication temporary,
+    # which the backup excludes by design and records by name so the exclusion
+    # cannot be silent. Comparing against the raw crashed set therefore fails
+    # whenever the SIGKILL happens to land mid-write -- as did the
+    # `copied == len(crashed)` count this replaced, for the same reason. The
+    # exclusions are subtracted from the expectation rather than ignored, and
+    # each one must really have been in the crashed tree, so an exclusion can
+    # never stand in for a file the backup lost.
+    excluded = {f"r/{name}" for name in published["excluded_publication_temporaries"]}
+    assert f"r/{planted.name}" in excluded, "the planted temporary was carried, not excluded"
+    assert excluded <= set(crashed), "the snapshot excluded something the tree never held"
     # `snapshot` keys are relative to the run root's parent; a backup inventory
     # names members relative to the run tree itself.
-    assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed)
+    assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed) - excluded
     assert report.reused == 0, "nothing was in the object store before this backup"
     assert report.copied + report.reused == len(published["files"])
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
-    assert snapshot(restored_root) == crashed
+    # The restore replays the published inventory, so a crashed tree holding an
+    # excluded temporary restores without it -- the tree, minus what the backup
+    # deliberately never carried.
+    assert snapshot(restored_root) == {
+        path: digest for path, digest in crashed.items() if path not in excluded
+    }
     _assert_every_reference_resolves(restored_root, "r")
+
+    # The planted temporary has done its work. Removing it leaves the two trees
+    # byte-identical going into the resume, so the comparison below stays an
+    # exact equality rather than one taught to overlook a set of paths.
+    planted.unlink()
 
     restored_run = _run(restored_root, "r", "review")
     assert restored_run.returncode == 3, restored_run.stderr
