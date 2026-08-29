@@ -612,10 +612,23 @@ def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_p
     destination = tmp_path / "staging"
     destination.mkdir()
 
+    # Unchanged bytes are not proof that nothing read them, and the claim in this
+    # test's name is about the read. `_copy_verified_file` is the only step that
+    # opens a returned file, and it opens through `os.open`, so a regression that
+    # copied the operator's secret and then refused for some later reason trips
+    # this guard rather than passing on an intact file.
+    real_open = os.open
+
+    def refuse_external_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == outside:
+            raise AssertionError("the external symlink target was opened")
+        return real_open(path, *args, **kwargs)
+
     with pytest.raises(DigestMismatchRefusal, match="external link targets are never read"):
-        HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
-            "fixture-org/pinned", "a" * 40, destination
-        )
+        with unittest.mock.patch.object(os, "open", refuse_external_open):
+            HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
+                "fixture-org/pinned", "a" * 40, destination
+            )
 
     assert outside.read_bytes() == b"must not enter model evidence"
     assert sorted(destination.iterdir()) == []

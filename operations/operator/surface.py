@@ -68,7 +68,12 @@ from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
 from .records import DescriptorStore, ReceiptStore, RecordError, sha256_file, utc_stamp
 from .volume_cost import volume_cost_lines
-from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
+from .volume_s3 import (
+    TRANSFER_CREDENTIAL_ENV,
+    S3VolumeTarget,
+    VolumeSpec,
+    VolumeTransferRefusal,
+)
 
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
@@ -80,7 +85,10 @@ MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 # the comparison fails silently, rehearsing a fixture door under a real
 # submission's name.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-_TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+# Read from the transfer that owns these names rather than spelled again here: a
+# second literal copy would keep this stripper green while a newly added upload
+# credential stayed in a stage's environment.
+_TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`

@@ -93,6 +93,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import read_register_file  # noqa: E402
+from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -466,7 +467,7 @@ def decide(
             "render_contract": {
                 **contract,
                 "derivative_page": {
-                    "kind": "sealed-derivative-page-v1",
+                    "kind": SEALED_DERIVATIVE_PAGE_KIND,
                     "parent_frame_sha256": whole_digest,
                     "parent_frame_page_index": frame_index,
                     "triage_manifest_row": source.triage_row,

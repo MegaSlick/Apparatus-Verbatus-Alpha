@@ -13,13 +13,13 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # 25, not 15: R4's legs already ran 14m51s against the old 15-minute cap,
-    # and R5b's audit pass pushed the suite over it — six consecutive leg
-    # cancels, one of them AT [100%] after 15m16s. At least some cancels
-    # previously read as the "hang-cancel flake" were this timeout margin.
-    # The cap still exists to catch a genuinely hung leg, with headroom for
-    # the suite to grow through the rest of the rebuild stack.
-    timeout-minutes: 25
+    # The cap exists to catch a genuinely hung leg, with headroom for the
+    # suite to grow through the rest of the rebuild stack — every time it has
+    # trailed the suite, timeouts were misread as flakes. History: 15 minutes
+    # fell to R5b's audit pass (six leg cancels, one AT [100%] after 15m16s);
+    # 25 fell to pr/03's review rounds (3.13 finished at 24m38s while 3.12
+    # and 3.14 were cancelled at 25m on four consecutive runs).
+    timeout-minutes: 45
     strategy:
       matrix:
         # 3.12 is the supported floor; later entries are cross-version coverage.
