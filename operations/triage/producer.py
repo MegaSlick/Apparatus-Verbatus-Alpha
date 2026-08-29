@@ -941,6 +941,12 @@ def append_confirmation_to_register(
                         "volume_id": page["volume_id"],
                         "designation": page["designation"],
                         "physical_page_id": page_id,
+                        # The same run that appends the membership beside it. A
+                        # declaration is append-only and permanent, so a folio typed
+                        # against the wrong volume stands for ever unless the register
+                        # can say which pass entered it. Not one of `physical_page_id`'s
+                        # bindings, so carrying it leaves page identity unchanged.
+                        "appending_run": confirmation["appending_run"],
                     }
                 )
                 existing_pages.add(page_id)

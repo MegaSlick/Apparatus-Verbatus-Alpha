@@ -13,7 +13,12 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import physical_page_id
-from common.corpus_register import append_records, members_of, register_digest
+from common.corpus_register import (
+    append_records,
+    members_of,
+    register_digest,
+    validate_register_bytes,
+)
 from operations.triage import instrument
 from operations.triage import producer as producer_module
 from operations.triage.producer import (
@@ -627,6 +632,16 @@ def test_confirmed_production_publishes_register_and_all_bound_documents(tmp_pat
     published = json.loads((tmp_path / "triage-confirmation.json").read_text(encoding="utf-8"))
     assert published == confirmed
     assert published["authority"] == confirmed["authority"]
+    # A declaration is permanent and append-only, so the register has to say which pass
+    # entered it — the same run that appended the membership beside it, not merely some
+    # non-empty string the closed schema would also accept.
+    declarations = [
+        record
+        for record in validate_register_bytes((tmp_path / "register.json").read_bytes())["records"]
+        if record["kind"] == "physical-page"
+    ]
+    assert declarations, "the confirmation declared no physical page"
+    assert {record["appending_run"] for record in declarations} == {confirmed["appending_run"]}
 
 
 def test_confirmation_authority_is_retained_before_a_register_append_is_attempted(
