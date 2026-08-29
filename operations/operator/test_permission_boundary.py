@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import importlib
 import inspect
 import io
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.approval import ApprovalRecordReference
+from common.contracts.approval import ApprovalRecordReference, build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.identities import artifact_id
@@ -627,6 +628,92 @@ def test_a_host_that_cannot_reach_landlock_refuses_instead_of_running_unconfined
     assert "could not be established, so nothing ran inside it" in refusal.value.detail
 
 
+def test_the_console_classifies_every_way_its_input_pipe_can_fail(monkeypatch, capsys):
+    """One of three failures was classified and the other two died on a traceback.
+
+    `json.load` on `sys.stdin` raises `JSONDecodeError` for malformed text,
+    `UnicodeDecodeError` when the pipe delivers bytes that are not UTF-8, and
+    `OSError` when the read itself fails. Exiting 1 with a traceback for the
+    last two is the exact outcome `PROJECTION_UNREADABLE_EXIT` exists to
+    prevent: the parent then reports this process's own pipe fault as a claim
+    about the run tree, and the operator is sent to preserve register evidence
+    that was never opened.
+    """
+
+    failures = (
+        json.JSONDecodeError("Expecting value", "", 0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        OSError(errno.EIO, "Input/output error"),
+    )
+    for failure in failures:
+
+        class _FailingPipe:
+            def read(self, *_arguments, _failure=failure):
+                raise _failure
+
+        monkeypatch.setattr(console.sys, "stdin", _FailingPipe())
+
+        assert console.main([]) == console.PROJECTION_UNREADABLE_EXIT, failure
+        assert "never read by this process" in capsys.readouterr().err, failure
+
+
+def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp_path, monkeypatch):
+    """`sealed_boundary` converts contract failures and passes `OSError` through.
+
+    Caught only for `ApprovalRefusal`, a seal artefact that could not be read
+    fell to the CLI's catch-all and told the operator to photograph an
+    unexpected error and find a maintainer -- when the answer is that this
+    boundary cannot be advanced because its own evidence could not be read.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+
+    def _unreadable(*_arguments, **_keywords):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(cli, "sealed_boundary", _unreadable)
+
+    with pytest.raises(OperatorError) as excinfo:
+        cli._advance_with_confirmation(
+            run_root, run_id, "armarium", reason="reviewed", workspace=ROOT
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "Input/output error" in (excinfo.value.detail or "")
+
+
+def test_the_credential_self_check_runs_on_the_mapping_that_could_actually_fail():
+    """On the six-name allowlist alone the check passed for the wrong reason.
+
+    `custody_environment` has already reduced the environment to presentation
+    facts, none of which can look like a credential, so a self-check on that
+    mapping could never fail and said nothing about whether the scrub works.
+    `credential_free_environment` is the claim that needs a witness.
+    """
+
+    with pytest.raises(OperatorError) as excinfo:
+        custody.require_no_provider_credentials({"RUNPOD_API_KEY": "a live secret"})
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+
+    # And the launch path reaches it with the broad mapping, not only the narrow
+    # one: a scrub that stopped matching a provider prefix must stop the launch.
+    original = custody.credential_free_environment
+    try:
+        custody.credential_free_environment = lambda *a, **k: {"RUNPOD_API_KEY": "a live secret"}
+        with pytest.raises(OperatorError) as launch_error:
+            custody.run_confined(
+                [str(Path(sys.executable).resolve())],
+                writable=None,
+                cwd=ROOT,
+                input_text="",
+            )
+    finally:
+        custody.credential_free_environment = original
+
+    assert launch_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "provider credential names" in (launch_error.value.detail or "")
+
+
 def test_console_rejects_actual_process_arguments(monkeypatch):
     monkeypatch.setattr(console.sys, "argv", ["verbatus-review", "/a/run/tree"])
 
@@ -1220,9 +1307,21 @@ def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_e
     } == receipts_before
 
 
-def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest():
-    stored = b"changed page bytes"
-    tree = types.SimpleNamespace(read_bytes=lambda _path: stored)
+def _tree_serving(tmp_path: Path, data: bytes) -> types.SimpleNamespace:
+    """A stand-in run tree whose one blob really is on disk.
+
+    The projection measures a file before it reads it, so a `read_bytes` stub
+    that returned bytes from nowhere would no longer be exercising the path the
+    console takes.
+    """
+
+    blob = tmp_path / "blob"
+    blob.write_bytes(data)
+    return types.SimpleNamespace(resolve=lambda _path: blob)
+
+
+def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest(tmp_path: Path):
+    tree = _tree_serving(tmp_path, b"changed page bytes")
     page = {
         "ordinal": 1,
         "page_id": "pg_example",
@@ -1329,6 +1428,23 @@ def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
     assert "exceeds the operator review limit" in (excinfo.value.detail or "")
 
 
+def test_no_archive_member_can_be_both_this_name_and_a_directory():
+    """Why the directory branch beside the size limit carries no test of its own.
+
+    `ZipInfo.is_dir()` is decided by a trailing separator, and the member filter
+    above accepts only the exact name `review-items.jsonl`. The two conditions
+    are therefore mutually exclusive: no bundle can reach that branch. It is
+    kept as a defensive check and given its own sentence -- a defensive check
+    that names the wrong fault is worse than none -- but the state it guards is
+    unconstructible, and a test claiming to reach it would be claiming more than
+    is true (GOVERNANCE 10).
+    """
+
+    for spelling in ("review-items.jsonl", "review-items.jsonl/"):
+        member = zipfile.ZipInfo(spelling)
+        assert not (member.filename == review._REVIEW_ITEMS_MEMBER and member.is_dir())
+
+
 def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -1383,7 +1499,39 @@ def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
         assert "Preserve the run tree" not in excinfo.value.render()
 
 
-def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
+def test_review_refuses_a_page_larger_than_the_budget_before_it_reads_the_page():
+    """The refusal has to happen before the bytes are in memory, not after.
+
+    `read_bytes` loaded the whole file and only then asked whether it fitted, so
+    an oversized page exhausted the console at the exact moment the limit
+    existed to refuse it. The stand-in path here reports its size and then
+    refuses to be opened, so a projection that reads first cannot pass.
+    """
+
+    class _MeasuredButUnreadable:
+        def stat(self):
+            return types.SimpleNamespace(st_size=1_000_000)
+
+        def open(self, *_args, **_kwargs):
+            raise AssertionError("the image was read before it was charged to the budget")
+
+    tree = types.SimpleNamespace(resolve=lambda _path: _MeasuredButUnreadable())
+    page = {
+        "ordinal": 1,
+        "page_id": "pg_example",
+        "outcome": "sealed",
+        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_sha256": "0" * 64,
+    }
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._image_row(tree, page, review._ImageBudget(limit=6000))
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "more than the console can project" in (excinfo.value.detail or "")
+
+
+def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold(tmp_path: Path):
     """The bounded review queue sat beside unbounded page and crop bytes.
 
     Each sealed page and each act crop is read whole, expanded to a base64
@@ -1395,7 +1543,7 @@ def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
     """
     data = b"x" * 4096
     digest = digest_bytes(data)
-    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    tree = _tree_serving(tmp_path, data)
     budget = review._ImageBudget(limit=6000)
     page = {
         "ordinal": 1,
@@ -1426,7 +1574,12 @@ def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
     assert "more than the console can project" in (excinfo.value.detail or "")
     assert "intact and unchanged" in (excinfo.value.detail or "")
-    assert review.MAX_PROJECTED_IMAGE_BYTES == 256 * 1024 * 1024
+    # Restating the constant measured nothing: changing a default is a decision,
+    # not a regression. What is worth proving is that the *default* allowance
+    # refuses at all, rather than only the narrow one this test constructs.
+    with pytest.raises(OperatorError) as default_budget:
+        review._ImageBudget().spend(review.MAX_PROJECTED_IMAGE_BYTES + 1, "one impossible page")
+    assert "more than the console can project" in (default_budget.value.detail or "")
 
 
 def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
@@ -2008,13 +2161,34 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
     one beside it. `ACTIONS` also admits `exclusion` and `salvage-promotion`,
     and GOVERNANCE 1 reserves an exclusion to Tyrel; a console that could mint
     one would be an automated agent standing in for the human in a rule.
+
+    **What this measures, and what it does not.** The source scan reads
+    spellings, so a module that resolved either name through `getattr` or
+    `importlib.import_module` inside a function body would write an approval
+    record and leave no matching text -- exactly the growth this test is named
+    against, and exactly what it cannot see. The attribute scan beneath it is a
+    second, different measurement: it imports each module and asks whether the
+    builder is reachable through it under *any* name, which catches an alias and
+    a module-level dynamic import that the text search would miss.
+    `write_approval_record` is a `RunTree` method rather than a module
+    attribute, so no attribute scan reaches it and the spelling is all there is.
+    The reachable write path itself is measured elsewhere, by
+    `test_an_advance_request_cannot_ask_the_worker_for_any_other_approval`,
+    which drives the real request channel rather than reading anything.
     """
-    offenders = [
-        path.relative_to(ROOT).as_posix()
+    candidates = [
+        path
         for path in sorted(OPERATOR_PACKAGE.rglob("*.py"))
         if not path.name.startswith("test_")
+        and path.name != "conftest.py"
         and path.relative_to(ROOT).as_posix() not in APPROVAL_MINTING_OPERATOR_MODULES
-        and (
+    ]
+    assert candidates, "the operator package scan found no modules to examine"
+
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for path in candidates
+        if (
             "build_approval_record" in path.read_text(encoding="utf-8")
             or "write_approval_record" in path.read_text(encoding="utf-8")
         )
@@ -2022,6 +2196,21 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
     assert not offenders, (
         f"{offenders} can mint or store an approval record from the operator surface; only "
         "the advance module may, and only for the advance action"
+    )
+
+    reachable = [
+        f"{path.relative_to(ROOT).as_posix()}:{name}"
+        for path in candidates
+        for name, value in vars(
+            importlib.import_module(
+                path.relative_to(ROOT).as_posix()[: -len(".py")].replace("/", ".")
+            )
+        ).items()
+        if value is build_approval_record
+    ]
+    assert not reachable, (
+        f"{reachable} bind the approval builder under another name, so the operator surface "
+        "reaches it without ever spelling it"
     )
 
 

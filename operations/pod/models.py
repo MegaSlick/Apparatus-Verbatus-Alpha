@@ -199,7 +199,7 @@ class PodCreateRequest:
         ):
             raise ValueError("metadata must contain non-blank string keys and values")
         for key in self.metadata:
-            if key != "VERBATUS_LAUNCH_TOKEN" and _looks_like_credential_field(key):
+            if key != "VERBATUS_LAUNCH_TOKEN" and looks_like_credential_field(key):
                 raise ValueError(
                     "pod metadata cannot carry a credential-like field; supply runtime capability out of tree"
                 )
@@ -319,7 +319,16 @@ def _required_timer_arguments(
 _CREDENTIAL_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
 
 
-def _looks_like_credential_field(value: str) -> bool:
+def looks_like_credential_field(value: str) -> bool:
+    """The one shared definition of "this name looks like a secret".
+
+    Public because two boundaries depend on it: the controller receipt scan
+    below, and `operations.operator.custody`, which keeps a credential out of
+    the confined child. Under a private name, a rename here broke the operator
+    at import and a changed marker list widened the custody scrub silently --
+    neither of which a caller can be expected to notice.
+    """
+
     normalized = value.lower().replace("-", "_")
     return any(marker in normalized for marker in _CREDENTIAL_MARKERS)
 
@@ -341,7 +350,7 @@ def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
     for item_key, item_value in value.items():
         if not isinstance(item_key, str):
             raise ValueError("controller receipt keys must be strings")
-        if _looks_like_credential_field(item_key):
+        if looks_like_credential_field(item_key):
             raise ValueError("controller receipt must not retain credential or token material")
         _assert_nonsecret_value(item_value)
 
