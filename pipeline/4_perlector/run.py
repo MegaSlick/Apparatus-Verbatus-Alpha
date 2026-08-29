@@ -942,7 +942,13 @@ def act_attachment_view(
                 "Text cannot count for an act when witness geometry did not attach to it. "
                 "Rebuild both facts from the retained Testimonium."
             )
-        elif not attachment["attached"] and (
+        # A plain `if`, not an `elif`. The two rules are independent -- one about
+        # comparable text without attachment, one about a span or basis an
+        # unattached view may not carry -- and chained, the second read as the
+        # alternative to the first, which is not what it checks. The outcomes are
+        # the same either way; what changes is where the next branch added here
+        # gets wired.
+        if not attachment["attached"] and (
             attachment["attachment_basis"] != "unattached" or span is not None
         ):
             raise SchemaRefusal("an unattached act view claims an alignment span")

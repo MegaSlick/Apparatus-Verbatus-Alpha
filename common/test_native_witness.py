@@ -1139,7 +1139,10 @@ def test_native_capture_accepts_a_genuine_blob_reference():
         "b" * 65,  # too long
         "g" * 64,  # non-hex character
         ("B" * 64),  # uppercase is not this pipeline's lowercase-hex shape
-        "not-a-digest-but-still-non-empty-and-sixty-four-characters-long",
+        # Exactly 64 characters, checked: at 63 this row was refused for its
+        # length like `"b" * 63` above, and reported coverage of the
+        # full-length non-hex case that it never exercised.
+        "not-a-digest-but-still-non-empty-and-sixty-four-characters-longg",
     ],
 )
 def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):

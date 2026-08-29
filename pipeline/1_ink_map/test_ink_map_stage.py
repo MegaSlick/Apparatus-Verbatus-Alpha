@@ -91,8 +91,15 @@ def test_ink_thresholds_remain_explicitly_unmeasured_without_a_calibration_claim
     # exact wrap, a reflow of either file turned the suite red over no change
     # in meaning.
     assert "PROPOSED, NOT YET MEASURED" in " ".join(source.split())
-    assert "PROPOSED, NOT YET MEASURED" in " ".join(handoff.split())
-    assert "calibrated" not in handoff.lower()
+    normalised_handoff = " ".join(handoff.split()).lower()
+    assert "proposed, not yet measured" in normalised_handoff
+    # The claim, not the word. Banning "calibrated" outright also failed
+    # "not calibrated" and "uncalibrated" -- so strengthening the handoff to
+    # say plainly that the band is not calibrated turned the suite red, and the
+    # cheapest way out of that is to delete the sentence.
+    assert "this stage claims no calibration" in normalised_handoff
+    for claim in ("is calibrated", "was calibrated", "has been calibrated"):
+        assert claim not in normalised_handoff
 
 
 class _StubTree:

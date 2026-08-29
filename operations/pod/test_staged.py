@@ -139,7 +139,15 @@ def test_each_stage_boot_needs_its_own_authorization_and_the_same_one_cannot_boo
         work=lambda _: "witness evidence",
     )
 
-    assert runtime.calls == 2, "the first confirmation did not create a second pod"
+    # The old message read "the first confirmation did not create a second pod",
+    # which describes the opposite of the failure this file exists to catch: a
+    # refused second boot leaking through makes the count 3, and an engineer
+    # reading that during a billing incident goes looking for a missing pod
+    # rather than an extra one.
+    assert runtime.calls == 2, (
+        "expected exactly one paid create per authorization; a different count means either "
+        "the second authorization did not create its pod or a refused boot reached the provider"
+    )
     assert [item.pod_id for item in provider.pods.values()] == [
         first_cost.pod_id,
         second_cost.pod_id,

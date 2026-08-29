@@ -1689,7 +1689,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
         if "payload" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(
-                    "reading page Testimonium has no retained derived payload for content coverage"
+                    "reading page Testimonium has no retained derived payload for content "
+                    f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
+                    "restore the retained Attestatores record"
                 )
             # A page witness that read nothing across every act on this page --
             # every configured act was `dead`, `not-run`, or otherwise non-reading

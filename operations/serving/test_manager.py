@@ -2491,6 +2491,11 @@ def test_real_catalogue_missing_row_refusal_names_the_exact_chair_and_tier() -> 
     assert removed.recipe in detail
     assert removed.chair in detail
     assert removed.tier in detail
+    # A refusal that dumps the whole catalogue satisfies every check above,
+    # because the removed row is a member of it. What an operator needs is the
+    # one row to add, so a retained row must NOT appear.
+    retained = next(profile for profile in incomplete.profiles if profile.chair != removed.chair)
+    assert retained.chair not in detail
 
 
 def test_for_identity_refuses_both_zero_and_multiple_matches() -> None:
