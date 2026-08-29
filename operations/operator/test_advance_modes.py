@@ -510,6 +510,39 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
     assert "Current boundary state" in rendered
 
 
+@pytest.mark.parametrize(
+    "missing", ["census", "config_digest", "artifact_inventory", "blob_inventory"]
+)
+def test_a_seal_payload_missing_a_displayed_key_is_a_named_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """Damaged evidence this tool can name must not arrive as an unclassified fault.
+
+    `stored_boundary` converts every read failure into a named refusal, but
+    `boundary_summary` then indexes five payload keys and `latest_attempt`
+    proves only `attempt_ordinal`. A payload that had lost one of the other four
+    raised a bare `KeyError`, which is not an `ApprovalRefusal`, so it passed
+    `_advance_with_confirmation`'s handler and reached the unclassified one --
+    the "photograph this and find a maintainer" path `_bound_run_tree`'s
+    docstring calls a tool that broke rather than a request that was refused.
+
+    Driven at this seam rather than through a rewritten artifact on disk: the
+    run tree's own envelope checks refuse a doctored payload earlier, so a
+    tree-level fixture would prove `read_artifact`'s guard and never reach this
+    one. The claim is only that this function refuses by name when handed such
+    a payload, which is what its caller depends on.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    seal, digest = advance.stored_boundary(tree, "designator")
+    damaged = {**seal, "payload": {k: v for k, v in seal["payload"].items() if k != missing}}
+    monkeypatch.setattr(advance, "stored_boundary", lambda _tree, _stage: (damaged, digest))
+
+    with pytest.raises(ApprovalRefusal, match="could not read designator's stored completion seal"):
+        advance.boundary_summary(tree, "designator")
+
+
 def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
