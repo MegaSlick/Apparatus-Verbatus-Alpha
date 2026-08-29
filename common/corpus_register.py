@@ -508,11 +508,6 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
 
 
-def _membership_assertion_identity(physical_page: str, member: str) -> str:
-    """The retractable assertion that one capture shows one physical page."""
-    return f"membership:{physical_page}->{member}"
-
-
 def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
     """Refuse a nested capture-preference claim, naming the record it was in.
 
