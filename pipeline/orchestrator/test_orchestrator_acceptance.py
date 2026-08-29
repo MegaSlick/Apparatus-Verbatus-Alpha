@@ -866,6 +866,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # crop-resize recipe); happy gains attestator_2's two retained DAI act
 # responses (88 -> 90) and review likewise (111 -> 113). Measured twice at
 # two independent run roots through this module's own helpers.
+#
+# Reading this log: it is chronological and append-only, and every entry states
+# the counts and the fixture shape as they stood when that entry was written.
+# Only the last entry describes the tree now; an earlier entry naming a
+# different count, or a different number of declared fixture rows, is the
+# measurement it superseded and not a competing claim about today. The two
+# literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 90
 HAPPY_RUN_TREE_DIGEST = "da199675689eae5707aa86c7300f05dba42bd26f8d51a28c4c6ad6d507b6f60e"
 REVIEW_RUN_TREE_DIGEST = "6b7ea777f27e9503052275c689fc0e9fe046b770af4169c54c22e9930c573a61"

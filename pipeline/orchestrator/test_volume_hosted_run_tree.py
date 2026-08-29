@@ -135,18 +135,25 @@ def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
     the tree changed under it.  It did, which is the condition this loop is
     waiting on.
 
-    Only that race is absorbed, and it is identified by its cause rather than
-    by its message: a name that was listed and is now gone raises ENOENT, and
-    the walk re-raises with that error chained.  A malformed manifest, a digest
-    mismatch, or any other persistent refusal has no such cause and is re-raised
-    here with its own reason, so it fails at once instead of being restated as
-    "no change" until the hang guard expires.  The quiescent counts either side
-    of this window refuse normally in every case.
+    Only that race is absorbed, and it has to match on both counts: the refusal
+    is chained to an ENOENT -- a name that was listed and is now gone -- and the
+    vanished name is a `.<target>.tmp-<unique>` publication temporary.  An
+    ordinary evidence file disappearing mid-run is not that, and neither is a
+    malformed manifest or a digest mismatch; each is re-raised here with its own
+    reason rather than restated as "no change" until the hang guard expires.
+    The quiescent counts either side of this window refuse normally in every
+    case.
     """
     try:
         return _region_count(root, run_id)
     except SchemaRefusal as refusal:
-        if isinstance(refusal.__cause__, FileNotFoundError):
+        cause = refusal.__cause__
+        vanished = getattr(cause, "filename", None)
+        if (
+            isinstance(cause, FileNotFoundError)
+            and isinstance(vanished, str)
+            and _is_publication_temporary_name(vanished)
+        ):
             return unchanged
         raise
 
@@ -326,24 +333,57 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
+
+    # `snapshot` hashes every file it finds; the backup deliberately leaves out
+    # `.<target>.tmp-*` publication temporaries, which a SIGKILL mid-publish can
+    # leave behind. Comparing the two directly makes a correct backup of an
+    # interrupted tree fail. The excluded names are compared instead of ignored:
+    # the manifest has to account for every file the snapshot did not carry, and
+    # each one has to be a publication temporary rather than lost evidence.
+    manifest = _snapshot_manifest(mac, report.snapshot_sha256)
+    # Manifest paths are relative to the run directory; `snapshot` keys are
+    # relative to the runs root, so they carry the run id as their first segment.
+    run = manifest["run_id"]
+    backed_up = {f"{run}/{row['relative_path']}" for row in manifest["files"]}
+    excluded = set(crashed) - backed_up
+    assert excluded == {f"{run}/{name}" for name in manifest["excluded_publication_temporaries"]}
+    assert all(_is_publication_temporary_name(name) for name in excluded), sorted(excluded)
+
+    published = {path: digest for path, digest in crashed.items() if path in backed_up}
     # Distinct run-tree paths may share verified bytes, so copied plus reused
     # objects—not copied objects alone—must account for every snapshot member.
-    assert report.copied + report.reused == len(crashed)
+    assert report.copied + report.reused == len(published)
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
-    assert snapshot(restored_root) == crashed
+    assert snapshot(restored_root) == published
     _assert_every_reference_resolves(restored_root, "r")
 
     assert _run(restored_root, "r", "review").returncode == 3
     assert _run(volume, "r", "review").returncode == 3
+    # After both resume, the temporaries are gone and the two trees are equal
+    # again -- so this comparison stays whole-tree with nothing filtered out.
     assert snapshot(restored_root) == snapshot(volume)
     _assert_every_reference_resolves(restored_root, "r")
 
 
+def _snapshot_manifest(mac: Path, snapshot_sha256: str) -> dict:
+    """The published snapshot record: what the backup carried, and what it left."""
+    return json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+
+
+def _is_publication_temporary_name(relative: str) -> bool:
+    """A same-directory `.<target>.tmp-<unique>` name, as `RunTree` publishes."""
+    name = Path(relative).name
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and target and unique)
+
+
 def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
     """Test-only: production restore must have its own run-tree custody boundary."""
-    record = json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+    record = _snapshot_manifest(mac, snapshot_sha256)
     for row in record["files"]:
         data = (mac / "objects" / "sha256" / row["sha256"]).read_bytes()
         assert hashlib.sha256(data).hexdigest() == row["sha256"], row
