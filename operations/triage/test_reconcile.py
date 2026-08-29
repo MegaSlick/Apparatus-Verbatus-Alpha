@@ -301,3 +301,23 @@ def test_every_dated_measured_pass_is_a_whole_pair_and_a_sealed_one_verifies():
             f"{dated.name} halves name different seats, so they are not one pass"
         )
         assert expected["seats"] and expected["facts"]
+        # The disagreement half is the failure evidence, and a v1 pair carries no
+        # seal to notice its loss: without this, a `disagreements.json` emptied of
+        # its fact groups would still pass on schema and seats alone, and a reader
+        # would hold a pass whose recorded failures had quietly gone.
+        assert set(disagreements["facts"]) == set(expected["facts"]), (
+            f"{dated.name} records disagreements for facts its expected half never names"
+        )
+        for fact_id, group in disagreements["facts"].items():
+            assert isinstance(group, dict) and group, (
+                f"{dated.name} carries an empty disagreement group for {fact_id}"
+            )
+            assert group.get("per_seat"), (
+                f"{dated.name} names a disagreement for {fact_id} without the seat readings"
+            )
+        # The 2026-08-22 pass read seven frames, and each is one fact group. The count
+        # is pinned because both halves losing one group together would otherwise
+        # agree with each other about evidence that is no longer there.
+        if dated.name == "2026-08-22_005469606_62-68":
+            assert len(disagreements["facts"]) == 7
+            assert len(expected["seats"]) == 3

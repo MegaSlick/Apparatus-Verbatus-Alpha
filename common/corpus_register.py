@@ -82,6 +82,34 @@ def read_register_file(register_path: str | Path) -> bytes:
     return _read_register_path(Path(register_path), missing_ok=False)
 
 
+def _resolved_register_path(register_path: str | Path, expected_digest: str) -> Path:
+    """Resolve one register pathname and refuse a malformed expected digest.
+
+    Both writers take this door, so a later tightening of either check cannot reach
+    the appending path and miss the no-op one: a register path that append refused
+    and a no-op confirmation accepted would be two safety rules wearing one name.
+    """
+    try:
+        supplied_path = Path(register_path)
+        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
+    except (OSError, RuntimeError, TypeError) as error:
+        raise SchemaRefusal("corpus-register path could not be resolved") from error
+    if not _is_sha256(expected_digest):
+        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    return path
+
+
+def _require_observed_head(current: bytes, expected_digest: str) -> str:
+    """The compare half of the compare-and-swap, in one wording for both writers."""
+    observed = register_digest(current)
+    if observed != expected_digest:
+        raise IncompatibleReuse(
+            "the corpus register changed after this writer read it; the append was "
+            "not written and must be rebuilt against the current register digest"
+        )
+    return observed
+
+
 def append_records(
     register_path: str | Path,
     records: list[dict[str, Any]],
@@ -101,13 +129,7 @@ def append_records(
     concurrent resolvers from both extending one predecessor and silently losing
     whichever append publishes first.
     """
-    try:
-        supplied_path = Path(register_path)
-        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
-    except (OSError, RuntimeError, TypeError) as error:
-        raise SchemaRefusal("corpus-register path could not be resolved") from error
-    if not _is_sha256(expected_digest):
-        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    path = _resolved_register_path(register_path, expected_digest)
     if (
         not isinstance(records, list)
         or not records
@@ -126,12 +148,7 @@ def append_records(
         except FileNotFoundError:
             current = empty_register()
             predecessor_identity = None
-        observed = register_digest(current)
-        if observed != expected_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
+        _require_observed_head(current, expected_digest)
         value = validate_register_bytes(current)
         successor = canonical_bytes({"schema": SCHEMA, "records": [*value["records"], *records]})
         successor_digest = register_digest(successor)
@@ -151,26 +168,14 @@ def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -
     the register has since withdrawn. This performs the same locked read-and-compare
     `append_records` performs, and returns the digest it proved.
     """
-    try:
-        supplied_path = Path(register_path)
-        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
-    except (OSError, RuntimeError, TypeError) as error:
-        raise SchemaRefusal("corpus-register path could not be resolved") from error
-    if not _is_sha256(expected_digest):
-        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    path = _resolved_register_path(register_path, expected_digest)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
         try:
             current = _read_register_path(path, missing_ok=False)
         except FileNotFoundError:
             current = empty_register()
-        observed = register_digest(current)
-        if observed != expected_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
-        return observed
+        return _require_observed_head(current, expected_digest)
 
 
 @contextmanager
