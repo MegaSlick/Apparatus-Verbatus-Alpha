@@ -251,10 +251,10 @@ def _write_refusal_report(path: Path, records: list[dict[str, str]]) -> Path:
     report = build_refusal_report(records)
     data = canonical_bytes(report)
     try:
-        _atomic_create(path, data)
+        atomic_create(path, data)
     except ExistingRecordRefusal:
         fallback = _content_addressed_report_path(path, report["self_hash"])
-        _atomic_create(fallback, data)
+        atomic_create(fallback, data)
         return fallback
     return path
 
@@ -264,7 +264,7 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
     return path.with_name(f"{path.stem}.{report_hash}{path.suffix}")
 
 
-def _atomic_create(target: Path, data: bytes) -> bool:
+def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
     GOVERNANCE 4: evidence is never overwritten. `os.replace` clobbered
@@ -278,6 +278,14 @@ def _atomic_create(target: Path, data: bytes) -> bool:
     this record sits upstream of any run tree and had no such protection. Identical
     bytes are a true no-op, so a byte-identical resubmission stays idempotent.
     Returns True when the file was created, False when an identical one was reused.
+
+    Public because `operations/operator/ingest_worker.py` depends on exactly this
+    three-way behaviour — created, reused-identical, or `ExistingRecordRefusal` —
+    and reads the False as its own refusal, since an entry appearing inside a
+    folder it just checked was empty is a concurrent change rather than a retry.
+    It reached that through the private name, which left this function looking
+    free to change its return convention when it is not. Renaming it is the whole
+    of that change; the behaviour is untouched.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -453,7 +461,7 @@ def submit(
         ) from error
     manifest = build_manifest(entries)
     data = canonical_bytes(manifest)
-    _atomic_create(resolved_manifest, data)
+    atomic_create(resolved_manifest, data)
     log("submission sealed", files=len(entries), digest=digest_bytes(data))
     return manifest
 
