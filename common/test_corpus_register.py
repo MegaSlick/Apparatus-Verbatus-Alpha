@@ -14,6 +14,7 @@ from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
     SCHEMA,
     append_records,
+    confirm_unchanged_head,
     empty_register,
     members_of,
     read_snapshot,
@@ -1028,3 +1029,25 @@ def test_a_cleanup_only_failure_says_the_register_was_already_published(tmp_path
     # The published half of the claim, not just its wording: the append is on disk.
     assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
     assert register_digest(path.read_bytes()) != first
+
+
+def test_both_writers_refuse_a_malformed_expected_digest_before_touching_the_register(tmp_path):
+    """The compare-and-swap's other half: what the writer claims it observed.
+
+    `append_records` and `confirm_unchanged_head` take one door to the register now,
+    and nothing had ever asserted that door refuses a digest that is not a digest —
+    so the check could be deleted from the shared helper without a failure, which is
+    exactly the risk of moving a safety rule into one place. An uppercase or truncated
+    digest can never equal a computed head, so accepting one would let a writer sail
+    past the comparison into a locked read on a claim that means nothing.
+    """
+    path = tmp_path / "register.json"
+    first = append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    original = path.read_bytes()
+    for malformed in ("", EMPTY_REGISTER_DIGEST.upper(), EMPTY_REGISTER_DIGEST[:63], "z" * 64):
+        with pytest.raises(SchemaRefusal, match="lowercase SHA-256"):
+            append_records(path, [_membership(["a" * 64])], expected_digest=malformed)
+        with pytest.raises(SchemaRefusal, match="lowercase SHA-256"):
+            confirm_unchanged_head(path, expected_digest=malformed)
+    assert path.read_bytes() == original
+    assert confirm_unchanged_head(path, expected_digest=first) == first
