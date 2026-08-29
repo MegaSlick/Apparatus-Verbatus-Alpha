@@ -1179,9 +1179,20 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             try:
                 existing = _read_existing_immutable(path, len(data))
             except OSError as error:
+                # The reason is carried, and the one recoverable cause is named. An
+                # earlier attempt that died between its `os.link` and its cleanup
+                # leaves this record with a second name — its own `.tmp-` sibling —
+                # and the unaliased check then refuses the byte-identical retry this
+                # function documents. "Choose a new path" is the wrong instruction
+                # for that case: the bytes on disk are already correct, and removing
+                # the leftover sibling restores the retry. Nothing is removed here,
+                # because a second link this code did not make is exactly the live
+                # mutation channel into immutable evidence the check exists to catch.
                 raise ProducerRefusal(
-                    f"confirmation authority path {path} already exists but cannot be verified; "
-                    "nothing was overwritten. Choose a new readable authority path."
+                    f"confirmation authority path {path} already exists but cannot be verified "
+                    f"({error}); nothing was overwritten. If an earlier publish was interrupted, "
+                    f"a .{path.name}.tmp-* sibling in {path.parent} is a second name for this "
+                    "record: remove it and retry. Otherwise choose a new readable authority path."
                 ) from error
             if existing != data:
                 raise ProducerRefusal(
