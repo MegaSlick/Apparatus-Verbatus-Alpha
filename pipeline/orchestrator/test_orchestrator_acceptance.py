@@ -1005,8 +1005,10 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     assert resolved.data_gate_policy.is_file()
 
 
-def test_orchestrator_upload_credentials_are_the_transfers_own() -> None:
-    """The stripped credential names must be the transfer's, not a stale copy.
+def test_orchestrator_upload_credentials_are_the_transfers_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both stripping helpers drop the transfer's own names and keep the rest.
 
     Both this orchestrator and the operator surface strip the upload-only
     credentials from a stage's environment, and the import boundary keeps this
@@ -1014,6 +1016,11 @@ def test_orchestrator_upload_credentials_are_the_transfers_own() -> None:
     transfer would go on reaching stages here while the whole suite stayed
     green -- a live secret in the environment of the process that decodes
     caller-supplied material.
+
+    Comparing the three sets is not enough on its own: three constants can agree
+    perfectly while a helper has stopped consulting its own. So each helper is
+    run against an environment holding every name, and what it returns is the
+    evidence.
     """
 
     orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
@@ -1023,6 +1030,22 @@ def test_orchestrator_upload_credentials_are_the_transfers_own() -> None:
     # match them today.
     spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")
     assert {spec.access_key_env, spec.secret_key_env} == set(volume_s3.TRANSFER_CREDENTIAL_ENV)
+
+    for name in volume_s3.TRANSFER_CREDENTIAL_ENV:
+        monkeypatch.setenv(name, f"upload-secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        # The stripper must remove those names and nothing else: an
+        # implementation that returned an empty environment, or one that dropped
+        # everything it did not recognise, would satisfy the assertion above
+        # while breaking every stage that reads its own settings.
+        assert built["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved", label
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
