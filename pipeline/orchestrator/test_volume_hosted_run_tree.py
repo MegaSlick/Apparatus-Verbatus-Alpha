@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Iterator, cast
 
+from common.contracts.errors import SchemaRefusal
 from common.runtree.store import RunTree
 from operations.operator.backup import sync_run_tree
 
@@ -121,6 +122,31 @@ def _region_count(root: Path, run_id: str) -> int:
     return sum(entry["kind"] == "region" for entry in manifest["artifacts"])
 
 
+def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
+    """Count regions while the driver writes, absorbing only its own renames.
+
+    The blob walk lists a directory and then stats every name it listed, and it
+    refuses any entry that vanished in between.  That refusal is correct and
+    stays: a stage manifest is built after its stage has finished writing, and
+    a file disappearing under a finished stage is a fault.  This poll is the
+    one caller that reads the tree while a live driver is still publishing into
+    it, and a publish is `.NAME.tmp-XXXX` followed by a rename -- so the poll
+    can list a temporary name whose rename lands before the stat, and be told
+    the tree changed under it.  It did, which is the condition this loop is
+    waiting on.
+
+    Absorbing it here changes what the loop waits for, never what it accepts:
+    the count is simply not available on that iteration, so the poll reports no
+    change and looks again.  A refusal that is not transient never becomes a
+    pass -- the loop keeps polling until the hang guard fires and names it --
+    and the quiescent counts either side of this window still refuse normally.
+    """
+    try:
+        return _region_count(root, run_id)
+    except SchemaRefusal:
+        return unchanged
+
+
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
     """Leave no recovery process group behind, including on an assertion path."""
 
@@ -188,7 +214,7 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     # scales to; it is not the window.
     hang_guard = time.monotonic() + 600
     try:
-        while _region_count(volume, "r") == region_count:
+        while _region_count_mid_write(volume, "r", unchanged=region_count) == region_count:
             if process.poll() is not None:
                 raise AssertionError(
                     "recovery exited before it appended a crop:\n"
