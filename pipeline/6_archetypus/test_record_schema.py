@@ -704,6 +704,11 @@ def _verify_rows(attachments: list[dict]) -> None:
                 "reference": _READING_REF,
                 "page_witness_count": 1,
                 "comparison_views": {},
+                # Required of the embedded view since sealed-proposal edge
+                # deltas joined it. Empty here on purpose: these two tests are
+                # about the row scope rules, and a fixture missing the field
+                # would be refused for its own shape before reaching them.
+                "edge_deltas": {},
             }
         },
     )
