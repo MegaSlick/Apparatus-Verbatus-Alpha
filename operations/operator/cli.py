@@ -184,6 +184,28 @@ def build_parser() -> PlainParser:
         "--source", type=Path, required=True, help="folder containing the submitted files"
     )
 
+    reuse = upload.add_mutually_exclusive_group(required=True)
+    reuse.add_argument(
+        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
+    )
+    reuse.add_argument(
+        "--manifest-out",
+        type=Path,
+        help="where Spec 03 should write a new sealed submission record",
+    )
+    upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
+    upload.add_argument(
+        "--network-volume",
+        metavar="DATACENTER:VOLUME_ID",
+        help=(
+            "send to a real RunPod network volume instead of the local fixture volume, "
+            "for example EU-CZ-1:abc123. This is the one thing this tool can do that "
+            "leaves your computer, so you have to name it; it needs no pod and uses no "
+            "GPU-hours. Credentials are read from RUNPOD_S3_ACCESS_KEY and "
+            "RUNPOD_S3_SECRET_KEY in your environment, never from a file here"
+        ),
+    )
+
     ingest = verbs.add_parser(
         "ingest",
         help="prepare one folder for the Door: ledger, data gate, triage evidence, and confirmation",
@@ -213,27 +235,6 @@ def build_parser() -> PlainParser:
         "--confirmation-file",
         type=Path,
         help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
-    )
-    reuse = upload.add_mutually_exclusive_group(required=True)
-    reuse.add_argument(
-        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
-    )
-    reuse.add_argument(
-        "--manifest-out",
-        type=Path,
-        help="where Spec 03 should write a new sealed submission record",
-    )
-    upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
-    upload.add_argument(
-        "--network-volume",
-        metavar="DATACENTER:VOLUME_ID",
-        help=(
-            "send to a real RunPod network volume instead of the local fixture volume, "
-            "for example EU-CZ-1:abc123. This is the one thing this tool can do that "
-            "leaves your computer, so you have to name it; it needs no pod and uses no "
-            "GPU-hours. Credentials are read from RUNPOD_S3_ACCESS_KEY and "
-            "RUNPOD_S3_SECRET_KEY in your environment, never from a file here"
-        ),
     )
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
