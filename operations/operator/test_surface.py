@@ -1455,6 +1455,17 @@ def test_every_declared_verb_with_a_required_flag_has_an_interactive_surface(
             for option in action.option_strings
             if action.required
         )
+        # A required mutually exclusive group is the same hazard by another
+        # spelling: argparse refuses "one of the arguments ... is required" and
+        # the person at the double-click window gets the same cryptic parse
+        # failure. `upload` declares one today over --sealed-manifest and
+        # --manifest-out, and `action.required` is False on both of its members,
+        # so walking actions alone would never see it.
+        required_groups = [
+            sorted(option for action in group._group_actions for option in action.option_strings)
+            for group in subparser._mutually_exclusive_groups
+            if group.required
+        ]
         answers = iter([verb, *(f"placeholder-{index}" for index in range(20))])
         monkeypatch.setattr("builtins.input", lambda _prompt, answers=answers: next(answers))
         arguments = cli._interactive_arguments()
@@ -1463,6 +1474,11 @@ def test_every_declared_verb_with_a_required_flag_has_an_interactive_surface(
             f"verb {verb!r} declares required flag(s) {missing} that the double-click "
             "interactive route never asks for or supplies"
         )
+        for options in required_groups:
+            assert any(option in arguments for option in options), (
+                f"verb {verb!r} declares a required choice between {options} that the "
+                "double-click interactive route never asks for or supplies"
+            )
 
 
 def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
@@ -3577,3 +3593,4 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
     saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]
     assert saved["preview"]["spend"]["pod_hourly_usd"] == "0.77"
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
+

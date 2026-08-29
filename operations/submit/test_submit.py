@@ -439,11 +439,16 @@ def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
     data = b"identical sealed bytes"
     referent.write_bytes(data)
     target.symlink_to(referent)
+    planted_destination = os.readlink(target)
 
     with pytest.raises(submit.ExistingRecordRefusal, match="Evidence is never overwritten"):
         submit._atomic_create(target, data)
 
     assert target.is_symlink()
+    # Still a link, still to the same place. Checking only `is_symlink` would
+    # pass a defect that re-pointed the planted link at something else, which is
+    # the very manipulation this test exists to pin.
+    assert os.readlink(target) == planted_destination
     assert referent.read_bytes() == data
 
 
