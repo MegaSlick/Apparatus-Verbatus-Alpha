@@ -1468,6 +1468,19 @@ def _validate_page_edge_overshoot_response_refs(
             "The rejected box cannot be traced back to the bytes that produced it. "
             "Retain the raw response reference before publishing the finding."
         )
+    # Closed before it is indexed. `reference["sha256"]` over a malformed entry
+    # raised KeyError or TypeError straight through this validator, and an
+    # escaping builtin is not the named refusal a page Testimonium's provenance
+    # contract owes its reader.
+    if any(
+        not isinstance(reference, dict) or not isinstance(reference.get("sha256"), str)
+        for reference in raw_response_refs
+    ):
+        raise SchemaRefusal(
+            "a page-edge finding names a malformed retained response reference. "
+            "The rejected box cannot be traced back to the bytes that produced it. "
+            "Retain the raw response reference before publishing the finding."
+        )
     known = {reference["sha256"] for reference in raw_response_refs}
     if any(finding["response_sha256"] not in known for finding in overshoots):
         raise SchemaRefusal(

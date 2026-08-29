@@ -2464,6 +2464,11 @@ def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(
 
     assert launcher.processes == []
     assert publisher.calls == []
+    # The claim is that the row is refused *before* the snapshot, not merely
+    # that nothing launched. Without this the refusal could move after
+    # `registry.ensure` and the test would stay green, while an operator saw a
+    # checkpoint or pin failure instead of the unimplemented-serving cause.
+    assert registry.ensure_calls == [], "the refusal reached the snapshot before naming its cause"
     assert "no serving process was started" in registry.refusals[0][1]
 
 

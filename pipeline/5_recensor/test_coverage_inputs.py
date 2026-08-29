@@ -93,7 +93,7 @@ def _no_expected_acts(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
 
-def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
+def _page_testimonium(*, outcome, retained=..., attempt_ordinal=1, artifact_id=None):
     subject_id = "page-1"
     chair = "attestator_1"
     # `page_role` is part of the closed page-Testimonium shape the producer
@@ -105,8 +105,11 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
         "chair": chair,
         "attempt_ordinal": attempt_ordinal,
     }
-    if reported is not ...:
-        payload["payload"] = reported
+    # `retained`, not `reported`: the page Testimonium's text field is
+    # `payload`, and a double whose parameter still said `reported` invited
+    # the next case here to build a record no producer can emit.
+    if retained is not ...:
+        payload["payload"] = retained
     return {
         "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
         "stage": RUN.ATTESTATORES,
@@ -232,7 +235,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
 
 
 def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
-    page = _page_testimonium(outcome="read", reported="page text")
+    page = _page_testimonium(outcome="read", retained="page text")
     conservation = _conservation("conservation-1")
     tree = _ArtifactTree([page, conservation])
 
@@ -300,7 +303,7 @@ def test_an_orphaned_page_testimonium_cannot_become_an_unowned_finding():
 
 
 def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding(monkeypatch):
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -405,7 +408,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
             "bounds_source": "native",
         }
     ]
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -449,7 +452,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
 def test_large_untrusted_page_text_does_not_allocate_a_character_bitmap(monkeypatch):
     """Coverage memory stays bounded by attachment spans, not response length."""
     text = "x" * 1_000_000
-    page = _page_testimonium(outcome="read", reported=text)
+    page = _page_testimonium(outcome="read", retained=text)
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
@@ -749,7 +752,7 @@ def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_ro
 
 def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch):
     """V2a: a genuine content shortfall is measured and reaches the hold route."""
-    page = _page_testimonium(outcome="read", reported="alphaXYZ \tQ")
+    page = _page_testimonium(outcome="read", retained="alphaXYZ \tQ")
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=5)
     monkeypatch.setattr(
@@ -778,8 +781,8 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
-    historical = _page_testimonium(outcome="read", reported="obsolete", attempt_ordinal=1)
-    current = _page_testimonium(outcome="read", reported="new", attempt_ordinal=2)
+    historical = _page_testimonium(outcome="read", retained="obsolete", attempt_ordinal=1)
+    current = _page_testimonium(outcome="read", retained="new", attempt_ordinal=2)
     context = _context(historical, current)
     context.tree.records["attachment-1"] = _attachment(
         context, end=3, testimonium_id="page-witness-2"
@@ -804,9 +807,9 @@ def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkey
 
 
 def test_ambiguous_current_page_testimonia_refuse():
-    first = _page_testimonium(outcome="read", reported="first", artifact_id="page-witness-a")
+    first = _page_testimonium(outcome="read", retained="first", artifact_id="page-witness-a")
     duplicate = _page_testimonium(
-        outcome="read", reported="duplicate", artifact_id="page-witness-b"
+        outcome="read", retained="duplicate", artifact_id="page-witness-b"
     )
 
     with pytest.raises(FatalAccounting, match="duplicate attempt ordinal 1"):
@@ -1030,7 +1033,7 @@ def test_a_non_textual_reported_page_body_is_named_as_its_own_fault(monkeypatch)
 
 def test_a_structured_native_page_payload_is_retained_without_text_coverage(monkeypatch):
     """A declared non-comparable native payload is not forged into text."""
-    context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
+    context = _context(_page_testimonium(outcome="read", retained={"lines": []}))
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
         RUN,

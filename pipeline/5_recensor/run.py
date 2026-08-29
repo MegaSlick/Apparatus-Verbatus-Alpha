@@ -1840,8 +1840,14 @@ def review_route_from_findings(
     preempted cause with no independent field, so an act simultaneously
     under-witnessed and scenario-held recorded only the floor cause.
     """
-    # Screen before truthiness so a malformed nested value cannot introduce
-    # witness-selection vocabulary into the routing decision.
+    # A shape guard, not a live filter: all four route inputs are booleans or
+    # None today, so the walk finds nothing to inspect and this call cannot
+    # currently refuse anything. Said plainly rather than left reading as a
+    # screen that catches something (GOVERNANCE 10). It is kept because the
+    # cost is four scalars and the day one of these becomes a nested fact is
+    # the day the routing decision could carry vocabulary. The screens that do
+    # bite are `publish_review` and the recovery payload, which see the nested
+    # coverage objects.
     refuse_capture_preference(
         {
             "testimony_shortfall": testimony_shortfall,

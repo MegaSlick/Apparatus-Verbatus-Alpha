@@ -2259,12 +2259,16 @@ def flag_location_basis(
     here to decide membership, so carrying it costs nothing and makes the
     binding checkable where the record is validated.
     """
-    testimony_diff_locations = {
-        (flag["location"]["start"], flag["location"]["end"])
-        for flag in flags
-        if flag.get("class") == "testimony-diff"
-    }
-    if not testimony_diff_locations:
+    # `audit.WITNESS_DERIVED_LOCATION_CLASSES`, not the literal it holds today.
+    # The validator expects a basis row for every flag of a witness-derived
+    # class; a producer filtering on a hardcoded name would emit none for a
+    # class added to that constant, and every draft carrying the new class
+    # would be refused with no Perlectio published for those acts.
+    located_classes: dict[tuple[int, int], str] = {}
+    for flag in flags:
+        if flag.get("class") in audit.WITNESS_DERIVED_LOCATION_CLASSES:
+            located_classes[(flag["location"]["start"], flag["location"]["end"])] = flag["class"]
+    if not located_classes:
         return []
     rows = dossier.get("testimonia", [])
     located = []
@@ -2277,11 +2281,11 @@ def flag_location_basis(
         ):
             continue
         span = audit.text_change_span(semi_final_text, row["reported"])
-        if span not in testimony_diff_locations:
+        if span not in located_classes:
             continue
         located.append(
             {
-                "class": "testimony-diff",
+                "class": located_classes[span],
                 "chair": row["witness_label"],
                 "derivation": row["reported_basis"],
                 "location": {"start": span[0], "end": span[1]},

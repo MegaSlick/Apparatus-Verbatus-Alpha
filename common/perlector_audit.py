@@ -53,6 +53,17 @@ AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
+# Kept exact, rather than widened from the current flag vocabulary: only a
+# text departure from retained testimony derives a witness location. Boundary
+# disagreement remains page evidence for the Recensor, and this declaration
+# deliberately settles neither the larger reproof question nor a new class.
+#
+# Declared here beside `validate_draft`, which requires a basis row for every
+# flag of one of these classes, and re-exported from `pipeline/4_perlector/
+# audit.py` for the producer that builds those rows. One declaration: a
+# producer filtering on a name the validator no longer agrees with would emit
+# no basis for a newly added class and have every such draft refused.
+WITNESS_DERIVED_LOCATION_CLASSES: Final = frozenset({"testimony-diff"})
 _DRAFT_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -374,9 +385,13 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     if not isinstance(basis, list) or any(
         not isinstance(row, dict)
         or set(row) != {"class", "chair", "derivation", "location"}
-        or row["class"] != "testimony-diff"
+        or row["class"] not in WITNESS_DERIVED_LOCATION_CLASSES
         or not isinstance(row["chair"], str)
         or not row["chair"]
+        # Typed before the membership test: an unhashable JSON value -- a list
+        # or an object at this field -- would otherwise escape `in` as a raw
+        # TypeError, and a traceback is not the named refusal this contract owes.
+        or not isinstance(row["derivation"], str)
         or row["derivation"] not in {"own-report", "page-slice"}
         for row in basis
     ):
@@ -406,7 +421,7 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     flagged = {
         (flag["location"]["start"], flag["location"]["end"])
         for flag in value["flags"]
-        if flag["class"] == "testimony-diff"
+        if flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
     }
     located = {(row["location"]["start"], row["location"]["end"]) for row in basis}
     if located != flagged:

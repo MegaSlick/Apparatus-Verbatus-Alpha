@@ -41,6 +41,7 @@ repository's tests.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, Sequence, TypeVar, cast
@@ -361,9 +362,20 @@ class StageCostStore:
         try:
             exclusive_write(target, data, strict=True)
         except FileExistsError:
+            # Read the scope back off the claim, never off the authorization
+            # just presented. The address is keyed on the grant reference
+            # alone, so the same grant offered for a second stage lands here --
+            # and reporting the presented scope sent the operator looking for a
+            # pod in a stage that never booted one. The refusal was right; only
+            # its address was wrong.
+            try:
+                spent = json.loads(target.read_bytes())
+                scope = f"collection {spent['collection_id']!r} stage {spent['stage']!r}"
+            except (OSError, ValueError, KeyError):
+                scope = "a boot whose durable claim could not be read back"
             raise StageBootRefusal(
                 f"authorization {authorization.authorization_ref!r} was already spent on a boot "
-                f"for collection {authorization.collection_id!r} stage {authorization.stage!r} "
+                f"for {scope} "
                 f"(durable claim {target}); a second pod needs a new independent authorization"
             ) from None
         # This second write is the conservative money floor. If it fails, the
