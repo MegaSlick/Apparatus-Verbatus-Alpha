@@ -1620,8 +1620,13 @@ cmd_report() {
     # says no whatever happens.
     [ -L "$report" ] && die "report at ${report} is a symlink — refusing to read through it"
     [ -f "$report" ] || die "no report at ${report}"
+    # The helper has already printed the precise reason to stderr, and it refuses
+    # an oversized report before writing a byte -- `copy_bounded` compares the
+    # opened file's size against the limit first, so nothing above is a truncated
+    # report. Saying "no safe regular report" alone contradicted that message
+    # whenever the cause was the size limit rather than the slot's kind.
     python3 "$SAFE_FILE" read "$report" "$MAX_REPORT_BYTES" ||
-        die "no safe regular report at ${report}"
+        die "the report at ${report} could not be read; its reason is printed above (a size refusal means the report is intact on disk and must be read directly)"
 }
 
 cmd_list() {

@@ -27,11 +27,11 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
-    _refuse_preference,
     append_records,
     empty_register,
     membership_heads,
     read_register_path,
+    refuse_capture_preference,
     register_digest,
     validate_register_bytes,
 )
@@ -656,7 +656,7 @@ def _confirmation_cluster_ids(
         used_members.update(members)
         used_pages.update(identities)
         result[cluster_id] = (sorted(members), page_records)
-    _refuse_preference(confirmation)
+    refuse_capture_preference(confirmation)
     return result
 
 
@@ -843,8 +843,8 @@ def produce(
         raise ProducerRefusal(
             f"manual refusal coverage: produced manifest cannot close: {error}"
         ) from error
-    _refuse_preference(manifest)
-    _refuse_preference(clusters)
+    refuse_capture_preference(manifest)
+    refuse_capture_preference(clusters)
     return ProducedTriage(manifest=manifest, clusters=clusters, rows_by_digest=by_digest)
 
 
@@ -865,7 +865,7 @@ def load_confirmation(path: str | Path) -> dict[str, Any]:
         raise ProducerRefusal("confirmation file must be canonical JSON")
     if not isinstance(value, dict) or value.get("schema") != CONFIRMATION_SCHEMA:
         raise ProducerRefusal("confirmation file has an unknown schema")
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     return value
 
 
@@ -964,7 +964,7 @@ def append_confirmation_to_register(
             }
             records.append(membership)
             heads[page_id] = (digest_of(membership), set(members))
-    _refuse_preference(records)
+    refuse_capture_preference(records)
     if not records:
         # Every membership this confirmation names is already in the register: either
         # a genuine no-op resubmission, or the register half of an earlier crash-split
@@ -1096,7 +1096,8 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
         raise failure from cause
     if cleanup_error is not None:
         raise ProducerRefusal(
-            f"confirmed triage document temporary {temporary} could not be removed"
+            f"confirmed triage document {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed. Remove it; do not rewrite the document"
         ) from cleanup_error
 
 
@@ -1179,9 +1180,20 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             try:
                 existing = _read_existing_immutable(path, len(data))
             except OSError as error:
+                # The reason is carried, and the one recoverable cause is named. An
+                # earlier attempt that died between its `os.link` and its cleanup
+                # leaves this record with a second name — its own `.tmp-` sibling —
+                # and the unaliased check then refuses the byte-identical retry this
+                # function documents. "Choose a new path" is the wrong instruction
+                # for that case: the bytes on disk are already correct, and removing
+                # the leftover sibling restores the retry. Nothing is removed here,
+                # because a second link this code did not make is exactly the live
+                # mutation channel into immutable evidence the check exists to catch.
                 raise ProducerRefusal(
-                    f"confirmation authority path {path} already exists but cannot be verified; "
-                    "nothing was overwritten. Choose a new readable authority path."
+                    f"confirmation authority path {path} already exists but cannot be verified "
+                    f"({error}); nothing was overwritten. If an earlier publish was interrupted, "
+                    f"a .{path.name}.tmp-* sibling in {path.parent} is a second name for this "
+                    "record: remove it and retry. Otherwise choose a new readable authority path."
                 ) from error
             if existing != data:
                 raise ProducerRefusal(
@@ -1211,8 +1223,13 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             raise failure from cause
         raise failure
     if cleanup_error is not None:
+        # The temporary here is a second *link* to the published record rather than a
+        # spare copy, so leaving it named is not tidiness: the unaliased check refuses
+        # every later byte-identical retry while it survives.
         raise ProducerRefusal(
-            f"confirmation authority record temporary {temporary} could not be removed"
+            f"confirmation authority record {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed, and it is a second name for that "
+            "record: remove it, or no retry of this publish can be verified"
         ) from cleanup_error
 
 

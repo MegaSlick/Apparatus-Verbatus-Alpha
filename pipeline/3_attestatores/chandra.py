@@ -97,11 +97,35 @@ def parse(raw_response: bytes) -> Any:
     return text
 
 
-def retain(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Retain Chandra's response before its parser inspects the retained bytes."""
+def retain(
+    tree: Any,
+    *,
+    view: dict[str, Any],
+    raw_response: bytes,
+    transport_stop_reason: str,
+    parser: str | None = None,
+) -> dict[str, Any]:
+    """Retain Chandra's response under its own registry identity only.
+
+    Forwarding `**kwargs` into `retain_model_view` let the caller supply
+    `adapter=`, so code that had resolved `chandra.v1` could file a Chandra
+    response as `churro.v1`. The retained record would then name the wrong
+    model boundary, and read-back would hand a Chandra page's layout blocks to
+    Churro's XML parser as an unparseable capture -- the sealed roster no longer
+    binding this chair's provenance (GOVERNANCE 6). Churro's and DAI's wrappers
+    pin their names for the same reason; this one now does too, and accepts no
+    `adapter` argument to pin.
+    """
     from feeding import retain_model_view
 
-    return retain_model_view(*args, **kwargs)
+    return retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view=view,
+        raw_response=raw_response,
+        transport_stop_reason=transport_stop_reason,
+        parser=parser,
+    )
 
 
 def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:

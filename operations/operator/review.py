@@ -24,6 +24,45 @@ MAX_REVIEW_ITEMS_BYTES = 16 * 1024 * 1024
 MAX_REVIEW_ITEMS = 50_000
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
+# The review queue was bounded and the images beside it were not. Every sealed
+# page and every act crop is read whole and expanded to a base64 data URL —
+# about a third larger again — and the whole structure is then serialised as
+# JSON across the custody boundary, so a parish-sized run met no limit, only
+# the memory of the machine. The evidence would be intact on disk and
+# unreadable on the one surface a person reads.
+#
+# This is a bound, not the eventual answer: a console for real parish volumes
+# should project a digest and a path and let the renderer fetch one image at a
+# time, which is a change to what the child receives rather than an audit
+# repair. The number is the largest that still passes through this pipe with
+# room for the base64 expansion and the JSON copy on both sides, so it refuses
+# only runs the embedded-image design could not have served anyway — and it
+# refuses them by name instead of by exhaustion (GOVERNANCE 2).
+MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
+
+
+class _ImageBudget:
+    """One running allowance over every image the projection embeds."""
+
+    __slots__ = ("_limit", "_spent")
+
+    def __init__(self, limit: int = MAX_PROJECTED_IMAGE_BYTES) -> None:
+        self._limit = limit
+        self._spent = 0
+
+    def spend(self, count: int, what: str) -> None:
+        self._spent += count
+        if self._spent > self._limit:
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"this run's page and crop images pass {self._limit} bytes at {what}, "
+                    "which is more than the console can project in one read-only view; the "
+                    "run tree is intact and unchanged, and a narrower selection can be "
+                    "reviewed while this limit stands"
+                ),
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewProjection:
@@ -88,9 +127,12 @@ class ReadOnlyRun:
                     }
                 )
             payload = _armarium_payload(tree)
-            pages = tuple(_image_row(tree, row) for row in payload.get("pages", []))
+            # One allowance across pages and crops together: the console holds
+            # them all at once, so bounding either alone would bound nothing.
+            budget = _ImageBudget()
+            pages = tuple(_image_row(tree, row, budget) for row in payload.get("pages", []))
             acts = tuple(
-                _act_row(tree, row)
+                _act_row(tree, row, budget)
                 for row in (*payload.get("delivered", []), *payload.get("non_delivered", []))
             )
             return ReviewProjection(
@@ -135,7 +177,8 @@ def _armarium_payload(tree: RunTree) -> dict[str, Any]:
     return payload
 
 
-def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
+def _image_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dict[str, Any]:
+    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium page is not an object"
@@ -154,6 +197,7 @@ def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
             detail=f"sealed page {row.get('ordinal')!r} has no immutable image reference",
         )
     data = tree.read_bytes(row["image_path"])
+    budget.spend(len(data), f"sealed page {row.get('ordinal')!r}")
     actual = digest_bytes(data)
     if actual != row["image_sha256"]:
         raise OperatorError(
@@ -170,12 +214,18 @@ def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
     }
 
 
-def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
+def _act_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dict[str, Any]:
+    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
         )
-    regions = row.get("source_regions", [])
+    # No `[]` default. An act whose export row omits `source_regions` would
+    # then reach the console as an act with an empty crop list, and the
+    # operator could not tell "this act records no crop" from "the crop list
+    # went missing" — they would be approving text they never saw against the
+    # ink (GOVERNANCE 2, GOALS 5). Absent is refused exactly like malformed.
+    regions = row.get("source_regions")
     if not isinstance(regions, list):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act has no crop list"
@@ -192,6 +242,7 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
                 detail="an act crop has no immutable image reference",
             )
         data = tree.read_bytes(region["image_path"])
+        budget.spend(len(data), f"act crop {region.get('region_id')!r}")
         actual = digest_bytes(data)
         if actual != region["image_sha256"]:
             raise OperatorError(
@@ -342,11 +393,26 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
 
 
 def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any], ...] | None:
+    # "Armarium recorded no bundle" and "Armarium recorded a bundle this
+    # module could not follow" are different facts and may not share an
+    # answer. Returning None for both showed the operator an empty review
+    # queue — no acts needing their attention — at the exact moment the list
+    # of acts the pipeline could not settle had gone unreadable (GOVERNANCE 2).
     bundle = payload.get("bundle")
-    reference = bundle.get("reference") if isinstance(bundle, dict) else None
+    if bundle is None:
+        return None
+    if not isinstance(bundle, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail="the Armarium export bundle is not an object",
+        )
+    reference = bundle.get("reference")
     path = reference.get("relative_path") if isinstance(reference, dict) else None
     if not isinstance(path, str):
-        return None
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail="the Armarium export bundle names no immutable reference",
+        )
     try:
         data = tree.read_bytes(path)
         expected = reference.get("sha256")
@@ -382,6 +448,12 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                 )
             with archive.open(member) as source:
                 review_bytes = source.read(MAX_REVIEW_ITEMS_BYTES + 1)
+            # Kept, and unreachable while the check above holds. `zipfile`
+            # bounds a member read by the `file_size` the central directory
+            # declares, so a header that lies small cannot decompress past it —
+            # measured, not assumed, and what a falsified header actually
+            # produces is a CRC failure caught below. This stays as the bound
+            # that does not depend on the archive library's own accounting.
             if len(review_bytes) > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,

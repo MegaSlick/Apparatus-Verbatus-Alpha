@@ -33,7 +33,7 @@ from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import PERLECTOR
-from common.corpus_register import refuse_preference
+from common.corpus_register import refuse_capture_preference
 
 SCHEMA: Final = "perlector-audit.v1"
 # The rendered instrument's own label. Separate from `SCHEMA` because the two
@@ -366,7 +366,7 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
 
 def validate_draft(payload: Any) -> dict[str, Any]:
     value = _closed(payload, _DRAFT_FIELDS, "audit draft")
-    refuse_preference(value, what="an audit draft")
+    refuse_capture_preference(value, what="an audit draft")
     if not isinstance(value["semi_final_text"], str):
         raise SchemaRefusal("an audit draft has no semi-final text")
     _validate_common(value, text_length=len(value["semi_final_text"]))
@@ -404,7 +404,7 @@ def validate_draft(payload: Any) -> dict[str, Any]:
 
 def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -> dict[str, Any]:
     value = _closed(payload, _FINDING_FIELDS, "audit finding")
-    refuse_preference(value, what="an audit finding")
+    refuse_capture_preference(value, what="an audit finding")
     if not isinstance(text, str):
         raise SchemaRefusal("an audit finding was validated without its final text")
     if flag_text is not None and not isinstance(flag_text, str):

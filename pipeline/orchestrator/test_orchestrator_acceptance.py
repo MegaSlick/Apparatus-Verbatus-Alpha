@@ -917,6 +917,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change, and happy is untouched.
+#
+# Reading this log: it is chronological and append-only, and every entry states
+# the counts and the fixture shape as they stood when that entry was written.
+# Only the last entry describes the tree now; an earlier entry naming a
+# different count, or a different number of declared fixture rows, is the
+# measurement it superseded and not a competing claim about today. The four
+# literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 118
 HAPPY_RUN_TREE_DIGEST = "2597b8e269bcaf06a5fe6399f16a7fac81c96b2ce1867360cdb15cce055c5b52"
@@ -5053,11 +5060,19 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 def test_recovery_stayed_inside_its_budget(review_run):
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # Each geometry-triggered request retains the same absolute policy cap.
+    # Each geometry-triggered request retains the same configured allowance:
+    # `fallback_recrop + page_level_reread`, 1 + 1 in config/recovery.toml, and
+    # separately bounded by `absolute_cap = 3`. The exact value, not merely
+    # "within the cap": `<= 3` is also satisfied by a budget that silently
+    # collapsed to 0 or 1, so it could not fail for the regression it names
+    # (GOVERNANCE 10).
     assert len(requests) == 2
-    assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
-        "the absolute cap is a ruling"
-    )
+    allowed = [request["payload"]["budget_allowed"] for request in requests]
+    assert allowed == [2, 2], "the configured recovery budget is one recrop plus one reread"
+    assert all(
+        value <= request["payload"]["recovery_policy"]["absolute_cap"]
+        for value, request in zip(allowed, requests, strict=True)
+    ), "the absolute cap is a ruling (config/recovery.toml absolute_cap)"
 
 
 # --- 6. The held act cannot look complete --------------------------------------

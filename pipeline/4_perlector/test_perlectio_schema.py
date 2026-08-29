@@ -390,9 +390,15 @@ def held_not_run_payload(tmp_path_factory):
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio"
     ]
-    record = next(record for record in records if record["outcome"] == "not-run")
-    assert record["outcome"] == "not-run"
-    return record["payload"]
+    # Selected by outcome rather than by manifest position: in this scenario a1
+    # reads and a2 is held, so taking the first entry could pick the read record.
+    # Counted rather than `next`-ed, because an empty match raises StopIteration,
+    # which pytest reports as an error instead of a readable failure — and the
+    # assertion that followed the old `next` could not fail, since the generator
+    # it consumed had already filtered on exactly that condition.
+    held = [record for record in records if record["outcome"] == "not-run"]
+    assert len(held) == 1, f"expected one held not-run Perlectio, got {len(held)}"
+    return held[0]["payload"]
 
 
 def test_a_real_held_not_run_perlectio_satisfies_the_closed_not_run_schema(

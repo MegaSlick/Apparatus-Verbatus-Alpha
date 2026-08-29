@@ -3765,7 +3765,7 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
     """A page token must not depend on preserving ambiguous whitespace glyphs."""
 
     assert len(witness) >= 32
-    with pytest.raises(ValueError, match="must contain no whitespace"):
+    with pytest.raises(ServingConfigurationError, match="must contain no whitespace"):
         VisionSmokeCall(witness)
 
 
@@ -3773,7 +3773,7 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
 def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
     witness: object,
 ) -> None:
-    with pytest.raises(ValueError, match="non-blank string between 32 and 128"):
+    with pytest.raises(ServingConfigurationError, match="non-blank string between 32 and 128"):
         VisionSmokeCall(witness)  # type: ignore[arg-type]
 
 
@@ -3781,7 +3781,7 @@ def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
 def test_vision_smoke_call_refuses_a_witness_that_is_not_a_visible_url_safe_token(
     witness: str,
 ) -> None:
-    with pytest.raises(ValueError, match="visible URL-safe ASCII"):
+    with pytest.raises(ServingConfigurationError, match="visible URL-safe ASCII"):
         VisionSmokeCall(witness)
 
 
@@ -3794,12 +3794,12 @@ def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> No
             return f"Reply with PAGE-WITNESS: {self.page_witness}"
 
     assert PAGE_WITNESS not in vision_smoke().prompt
-    with pytest.raises(ValueError, match="occurs in the smoke prompt"):
+    with pytest.raises(ServingConfigurationError, match="occurs in the smoke prompt"):
         LeakedWitnessPrompt(PAGE_WITNESS)
 
 
 def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() -> None:
-    with pytest.raises(ValueError, match="utilization sampler must be callable"):
+    with pytest.raises(ServingConfigurationError, match="utilization sampler must be callable"):
         VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]
 
 
@@ -3888,6 +3888,10 @@ def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
     fixture = tmp_path / "golden-page.png"
     fixture_bytes = write_golden_page(fixture)
     handle = manager.start(chair, TIER)
+    # The refusal below is driven by a lowered bound, so pin the real one too:
+    # the serving README states 64 MiB as a fact about this path, and without
+    # this the constant could move to any value with the suite still green.
+    assert smoke_module._MAXIMUM_PNG_BYTES == 64 * 1024 * 1024
     monkeypatch.setattr(smoke_module, "_MAXIMUM_PNG_BYTES", len(fixture_bytes) - 1)
 
     with pytest.raises(ServingConfigurationError, match="byte smoke request bound"):

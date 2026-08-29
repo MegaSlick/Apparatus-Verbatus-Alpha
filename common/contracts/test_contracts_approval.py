@@ -258,7 +258,14 @@ def test_no_pipeline_module_mints_its_own_approval_record():
     """
     root = Path(__file__).resolve().parents[2]
     offenders = []
+    # Fails closed on its own subject. `rglob` over a directory that is not there
+    # yields nothing and raises nothing, so a renamed or moved `pipeline/` would
+    # leave `offenders` empty and this guard green while it inspected no stage
+    # source at all — the one check on a stage minting its own approval, dead and
+    # reporting success. A check that cannot run is a failure, not a pass.
+    scanned = 0
     for area in ("pipeline", "common"):
+        assert (root / area).is_dir(), f"{area}/ is not where this guard looks for stage source"
         for path in sorted((root / area).rglob("*.py")):
             relative = path.relative_to(root).as_posix()
             if path.name.startswith("test_") or path.name == "conftest.py":
@@ -266,8 +273,10 @@ def test_no_pipeline_module_mints_its_own_approval_record():
             if relative in APPROVAL_MINTING_MODULES:
                 continue
             source = path.read_text(encoding="utf-8")
+            scanned += 1
             if "build_approval_record" in source or "write_approval_record" in source:
                 offenders.append(relative)
+    assert scanned > 20, f"only {scanned} modules were inspected; the scan lost its subject"
     assert not offenders, (
         f"{offenders} mint or store an approval record from pipeline code; only Tyrel "
         "approves, and a stage that writes its own approval has approved itself"

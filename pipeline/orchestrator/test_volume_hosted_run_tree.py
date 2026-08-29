@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Iterator, cast
 
+from common.contracts.errors import SchemaRefusal
 from common.runtree.store import RunTree
 from operations.operator.backup import sync_run_tree
 
@@ -53,11 +54,33 @@ def _run(
     )
 
 
+_REFERENCE_KEYS = frozenset({"relative_path", "sha256"})
+# The floor is the point: with only `assert matched`, one added field on a
+# reference shape would drop that whole class out of `_references` while the
+# count stayed comfortably above zero, and the test would go on reporting a
+# volume-hosted tree movable with an unverified set of references inside it.
+#
+# Measured on `synthetic-two-page-v0`, `review` scenario: a complete run
+# resolves 313 references, and the smallest tree this helper is asked about --
+# the staged door..recensor tree the crash test starts from -- resolves 162.
+# The floor sits below that and far above zero, so it catches a class leaving
+# the check without tracking every ordinary change in fixture size.
+MINIMUM_RESOLVED_REFERENCES = 150
+
+
 def _references(value: object) -> Iterator[dict[str, str]]:
+    """Exactly the two-key shape, which is the *run-tree-relative* reference.
+
+    Deliberately not a superset match. Measured: broadening it to "carries
+    both keys" also matches the fixture ingress row
+    `{"ordinal", "relative_path", "sha256"}`, whose `relative_path` is
+    relative to the repository rather than to the run tree, and
+    `RunTree.resolve` then fails on a reference that was never this test's
+    to resolve. Two vocabularies share two key names; the floor above, not a
+    wider match, is what catches a shape silently leaving this check.
+    """
     if isinstance(value, dict):
-        if set(value) == {"relative_path", "sha256"} and all(
-            isinstance(value[key], str) for key in value
-        ):
+        if set(value) == _REFERENCE_KEYS and all(isinstance(value[key], str) for key in value):
             yield cast(dict[str, str], value)
         for nested in value.values():
             yield from _references(nested)
@@ -75,9 +98,13 @@ def _assert_every_reference_resolves(root: Path, run_id: str) -> int:
             assert resolved.is_file(), reference
             assert hashlib.sha256(resolved.read_bytes()).hexdigest() == reference["sha256"]
             matched += 1
-    # Nonzero evidence is required; a broken traversal would otherwise prove
-    # mobility vacuously.
-    assert matched, f"no run-tree references were found under {tree.root}"
+    # A floor, not merely nonzero: a broken traversal would otherwise prove
+    # mobility vacuously, and a partly broken one would prove it on whatever
+    # references happened to survive the match.
+    assert matched >= MINIMUM_RESOLVED_REFERENCES, (
+        f"only {matched} run-tree references were resolved under {tree.root}; "
+        f"at least {MINIMUM_RESOLVED_REFERENCES} were expected"
+    )
     return matched
 
 
@@ -93,6 +120,42 @@ def _region_count(root: Path, run_id: str) -> int:
     """
     manifest = RunTree(root, run_id).build_manifest("designator", verify_inputs=False)
     return sum(entry["kind"] == "region" for entry in manifest["artifacts"])
+
+
+def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
+    """Count regions while the driver writes, absorbing only its own renames.
+
+    The blob walk lists a directory and then stats every name it listed, and it
+    refuses any entry that vanished in between.  That refusal is correct and
+    stays: a stage manifest is built after its stage has finished writing, and
+    a file disappearing under a finished stage is a fault.  This poll is the
+    one caller that reads the tree while a live driver is still publishing into
+    it, and a publish is `.NAME.tmp-XXXX` followed by a rename -- so the poll
+    can list a temporary name whose rename lands before the stat, and be told
+    the tree changed under it.  It did, which is the condition this loop is
+    waiting on.
+
+    Only that race is absorbed, and it has to match on both counts: the refusal
+    is chained to an ENOENT -- a name that was listed and is now gone -- and the
+    vanished name is a `.<target>.tmp-<unique>` publication temporary.  An
+    ordinary evidence file disappearing mid-run is not that, and neither is a
+    malformed manifest or a digest mismatch; each is re-raised here with its own
+    reason rather than restated as "no change" until the hang guard expires.
+    The quiescent counts either side of this window refuse normally in every
+    case.
+    """
+    try:
+        return _region_count(root, run_id)
+    except SchemaRefusal as refusal:
+        cause = refusal.__cause__
+        vanished = getattr(cause, "filename", None)
+        if (
+            isinstance(cause, FileNotFoundError)
+            and isinstance(vanished, str)
+            and _is_publication_temporary_name(vanished)
+        ):
+            return unchanged
+        raise
 
 
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
@@ -162,7 +225,7 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     # scales to; it is not the window.
     hang_guard = time.monotonic() + 600
     try:
-        while _region_count(volume, "r") == region_count:
+        while _region_count_mid_write(volume, "r", unchanged=region_count) == region_count:
             if process.poll() is not None:
                 raise AssertionError(
                     "recovery exited before it appended a crop:\n"
@@ -215,6 +278,11 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
             # A legitimate append rebuilds derived inventories and current-state
             # receipts; the immutable evidence they name must retain its bytes.
             continue
+        # Membership first. A deleted evidence file is the worst outcome this
+        # test can find -- an act removed from a parish, with nothing
+        # downstream able to say it happened -- and `finished[path]` alone
+        # would report it as a bare KeyError that reads like a broken test.
+        assert path in finished, f"resume deleted surviving evidence at {path}"
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
     # A resumed Recensor re-entry seals its own boundary: it adds one more
     # decode-environment/stage-seal attempt pair, and the stage's derived
@@ -265,24 +333,57 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
+
+    # `snapshot` hashes every file it finds; the backup deliberately leaves out
+    # `.<target>.tmp-*` publication temporaries, which a SIGKILL mid-publish can
+    # leave behind. Comparing the two directly makes a correct backup of an
+    # interrupted tree fail. The excluded names are compared instead of ignored:
+    # the manifest has to account for every file the snapshot did not carry, and
+    # each one has to be a publication temporary rather than lost evidence.
+    manifest = _snapshot_manifest(mac, report.snapshot_sha256)
+    # Manifest paths are relative to the run directory; `snapshot` keys are
+    # relative to the runs root, so they carry the run id as their first segment.
+    run = manifest["run_id"]
+    backed_up = {f"{run}/{row['relative_path']}" for row in manifest["files"]}
+    excluded = set(crashed) - backed_up
+    assert excluded == {f"{run}/{name}" for name in manifest["excluded_publication_temporaries"]}
+    assert all(_is_publication_temporary_name(name) for name in excluded), sorted(excluded)
+
+    published = {path: digest for path, digest in crashed.items() if path in backed_up}
     # Distinct run-tree paths may share verified bytes, so copied plus reused
     # objects—not copied objects alone—must account for every snapshot member.
-    assert report.copied + report.reused == len(crashed)
+    assert report.copied + report.reused == len(published)
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
-    assert snapshot(restored_root) == crashed
+    assert snapshot(restored_root) == published
     _assert_every_reference_resolves(restored_root, "r")
 
     assert _run(restored_root, "r", "review").returncode == 3
     assert _run(volume, "r", "review").returncode == 3
+    # After both resume, the temporaries are gone and the two trees are equal
+    # again -- so this comparison stays whole-tree with nothing filtered out.
     assert snapshot(restored_root) == snapshot(volume)
     _assert_every_reference_resolves(restored_root, "r")
 
 
+def _snapshot_manifest(mac: Path, snapshot_sha256: str) -> dict:
+    """The published snapshot record: what the backup carried, and what it left."""
+    return json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+
+
+def _is_publication_temporary_name(relative: str) -> bool:
+    """A same-directory `.<target>.tmp-<unique>` name, as `RunTree` publishes."""
+    name = Path(relative).name
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and target and unique)
+
+
 def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
     """Test-only: production restore must have its own run-tree custody boundary."""
-    record = json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+    record = _snapshot_manifest(mac, snapshot_sha256)
     for row in record["files"]:
         data = (mac / "objects" / "sha256" / row["sha256"]).read_bytes()
         assert hashlib.sha256(data).hexdigest() == row["sha256"], row

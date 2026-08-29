@@ -83,12 +83,27 @@ producing one, and a derivative's backlink names a row digest, so a consumer tha
 resolves a backlink against the wrong shard finds nothing rather than the wrong
 geometry.
 
-**Unit 7 owes one check this module cannot make.** `source_frame_sha256` is opaque
-bytes-identity: nothing here can tell the digest of a source frame from the digest of
-a ScanTailor crop output, and ScanTailor's output images are never submitted. The
-cheap structural guard is the row's own `frame` — the door should compare the decoded
-submitted image's dimensions against `frame.width`/`frame.height` and refuse a
-mismatch, which catches a row bound to a derivative rather than to its master.
+**Unit 7 still owes half of one check this module cannot make.**
+`source_frame_sha256` is opaque bytes-identity: nothing here can tell the digest of a
+source frame from the digest of a ScanTailor crop output, and ScanTailor's output
+images are never submitted. The cheap structural guard is the row's own `frame`,
+compared against the decoded submitted image's dimensions, which catches a row bound
+to a derivative rather than to its master.
+
+Two things now stand where nothing did. `common.imaging.render_triage_derivative`
+refuses a region that is not contained in the master it actually decoded, and
+`verify_triage_derivative` refuses a sealed derivative whose row declares a frame of
+a different size than the decoded master. Between them a row claiming a frame
+*larger* than its master is refused, at render time and again at the Exemplar
+boundary.
+
+What remains is the other direction, at the door. A row declaring a frame *smaller*
+than the submitted master still passes the door: its parts partition the small
+declared frame and every one of them lies inside the larger master, so containment
+has nothing to object to. Only the Exemplar boundary's equality check catches it,
+after the page is sealed. Closing it at the door means giving the render path the
+row's `frame` — the part alone does not carry it — which is a plumbing change Unit 6
+should make deliberately rather than a guard that can be dropped into the renderer.
 
 `triage-re-shoot-cluster-v1` is a corpus-scoped leaf record keyed by its member
 **frame source digests**. It has no run id, no shard id, and no cluster digest
@@ -176,7 +191,7 @@ frame set and instrument configuration that produced it. It binds a digest of th
 validated evidence-record contents as well as the pair set, so the pass detects both a
 missing pair and changed evidence for a retained pair. A duplicate frame digest, a
 duplicate emitted pair, a missing selected pair, or an evidence/recipe configuration mismatch
-is a whole-pass refusal. `_refuse_preference` remains mandatory on the recipe, every evidence
+is a whole-pass refusal. `refuse_capture_preference` remains mandatory on the recipe, every evidence
 record, the evidence manifest, confirmations, decision-manifest rows, cluster records, and
 both corpus-register record types.
 

@@ -65,8 +65,9 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
+from common.contracts.outcomes import ATTACHMENT_BASES  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
-from common.corpus_register import refuse_preference  # noqa: E402
+from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -546,13 +547,22 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "a Testimonium does not name exactly the bound proposal regions its presentation "
             "does not speak for"
         )
-    if presented["kind"] != "region":
+
+    # One spelling of this refusal, called from both paths rather than hoisted
+    # above them. Order is load-bearing: a forged region presentation also has
+    # the wrong inputs, and checking those first would answer "wrong blobs" for
+    # a record whose actual fault is that it presents a recovery crop as a
+    # witness basis. The specific fault has to be the one the operator reads.
+    def _require_bound_inputs() -> None:
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "an attempted Testimonium does not bind exactly its proposal and presentation "
                 "blobs. The consumer cannot prove which immutable pixels produced the report. "
                 "Restore the complete digest-bound input set and remove unrelated inputs"
             )
+
+    if presented["kind"] != "region":
+        _require_bound_inputs()
         return
     matches = [
         region
@@ -576,12 +586,7 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         or region["payload"].get("transform") != presented["transform"]
     ):
         raise SchemaRefusal("a Testimonium region presentation disagrees with its sealed proposal")
-    if record.get("inputs") != expected_inputs:
-        raise SchemaRefusal(
-            "an attempted Testimonium does not bind exactly its proposal and presentation "
-            "blobs. The consumer cannot prove which immutable pixels produced the report. "
-            "Restore the complete digest-bound input set and remove unrelated inputs"
-        )
+    _require_bound_inputs()
 
 
 def validate_page_testimonium_record(
@@ -781,6 +786,44 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+ATTACHMENT_FIELDS: Final = frozenset(
+    {
+        "chair",
+        "page_witness",
+        "page_ordinal",
+        "testimonium_ref",
+        "attached",
+        "comparable",
+        "attachment_basis",
+        "content_health",
+        "alignment",
+        "span",
+    }
+)
+
+
+def _validate_attachment_shape(attachment: Any) -> None:
+    """The one closed-shape rule for an attachment, applied wherever it is read.
+
+    `type(chair) is not str` rather than `isinstance`: the value becomes a set
+    and dict key below, and both set construction and refusal formatting invoke
+    subclass-defined behaviour, so the exact built-in string is required first.
+    Kept in one place because a second, looser copy of a closed schema is how a
+    field added to one list quietly escapes validation in the other.
+    """
+    if (
+        not isinstance(attachment, dict)
+        or set(attachment) != ATTACHMENT_FIELDS
+        or type(attachment.get("chair")) is not str
+        or not isinstance(attachment.get("page_witness"), bool)
+        or not isinstance(attachment.get("attached"), bool)
+        or not isinstance(attachment.get("comparable"), bool)
+        or attachment.get("attachment_basis") not in ATTACHMENT_BASES
+        or not isinstance(attachment.get("content_health"), dict)
+    ):
+        raise SchemaRefusal("an act-attachment record has a malformed attachment")
+
+
 def act_attachment_view(
     context,
     act: dict[str, Any],
@@ -838,31 +881,8 @@ def act_attachment_view(
     # unhashable JSON value would otherwise escape as a raw TypeError here. The
     # attachment is untrusted evidence read from disk, so neither may reach the
     # denominator as though it named a real page.
-    attachment_fields = {
-        "chair",
-        "page_witness",
-        "page_ordinal",
-        "testimonium_ref",
-        "attached",
-        "comparable",
-        "attachment_basis",
-        "content_health",
-        "alignment",
-        "span",
-    }
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment) != attachment_fields
-            or type(attachment.get("chair")) is not str
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or not isinstance(attachment.get("comparable"), bool)
-            or attachment.get("attachment_basis")
-            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        _validate_attachment_shape(attachment)
         page_ordinal = attachment["page_ordinal"]
         if attachment["page_witness"] and (
             not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
@@ -901,30 +921,7 @@ def act_attachment_view(
     comparison_views: dict[str, str] = {}
     edge_deltas: dict[str, list[dict[str, Any]]] = {}
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment)
-            != {
-                "chair",
-                "page_witness",
-                "page_ordinal",
-                "testimonium_ref",
-                "attached",
-                "comparable",
-                "attachment_basis",
-                "content_health",
-                "alignment",
-                "span",
-            }
-            or not isinstance(attachment.get("chair"), str)
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or not isinstance(attachment.get("comparable"), bool)
-            or attachment.get("attachment_basis")
-            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        _validate_attachment_shape(attachment)
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:
@@ -1729,7 +1726,7 @@ def validate_reading_payload(
     this is the matching check at the moment one is written, so a defect
     surfaces where it was introduced rather than one stage later.
     """
-    refuse_preference(payload, what="a Perlector reading")
+    refuse_capture_preference(payload, what="a Perlector reading")
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
     if missing or unexpected:
