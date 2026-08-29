@@ -58,7 +58,12 @@ def test_flag_location_basis_names_only_witnesses_that_located_a_frozen_diff():
     }
 
     assert perlector.flag_location_basis(dossier, flags, semi_final_text=text) == [
-        {"class": "testimony-diff", "chair": "departing", "derivation": "page-slice"}
+        {
+            "class": "testimony-diff",
+            "chair": "departing",
+            "derivation": "page-slice",
+            "location": {"start": 6, "end": 10},
+        }
     ]
 
 
@@ -81,8 +86,21 @@ def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_fl
 
     draft["flags"] = []
     draft["flag_location_basis"] = [
-        {"class": "testimony-diff", "chair": "witness-1", "derivation": "own-report"}
+        {
+            "class": "testimony-diff",
+            "chair": "witness-1",
+            "derivation": "own-report",
+            "location": {"start": 6, "end": 10},
+        }
     ]
+    with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
+        perlector.audit.validate_draft(draft)
+
+    # The case equal lengths could never catch: one flag, one basis row, and
+    # the row accounting for a span no flag names. Read by count alone this
+    # draft was well formed, and the record said a chair located a flag it
+    # did not.
+    draft["flags"] = [{"class": "testimony-diff", "location": {"start": 0, "end": 5}}]
     with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
         perlector.audit.validate_draft(draft)
 

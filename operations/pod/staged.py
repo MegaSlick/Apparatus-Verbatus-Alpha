@@ -24,10 +24,13 @@ failure. A close that raised is the case where a pod is most likely to be
 *still* billing, so it is the last case that may vanish behind an exception.
 
 Adoption stays on the lease-backed ``PodRuntime.adopt`` path, which has its own
-typed confirmation gate. This layer supplies the binding that path cannot:
-which collection stage and grant a pod id belonged to. The binding is durable
-from the moment the pod exists, so recovery can reconcile an adopted pod
-without treating adoption as another stage boot.
+typed confirmation gate, and **this layer has no adoption path of its own.**
+``StageRuntime`` declares only ``create``, and a ``stage-pod-boot.v1`` record is
+written only inside ``boot``, so an adopted pod has no stage/grant binding here
+at all. That is a gap, named rather than implied: whoever reconciles an adopted
+pod after a crash will find no durable collection/stage/grant record for it, and
+should read that as never written rather than as lost. Supplying one means
+adding the adoption path, which is paid-infrastructure work under GOVERNANCE 8.
 
 The schedule starts with volume ingest because transfer needs no pod or GPU
 hours. ``run`` attempts the close even when stage work raises, and retaining a
@@ -419,7 +422,15 @@ def _reraise_control_flow_signal(error: BaseException) -> None:
     """
 
     if not isinstance(error, Exception):
-        raise
+        # `raise error`, never a bare `raise`: bare re-raises whichever
+        # exception the interpreter is currently handling, which is this one
+        # only because every call site today sits directly inside its own
+        # `except BaseException as error`. Nothing here enforces that. Called
+        # after a nested handler finished, a bare `raise` would re-raise the
+        # wrong exception and let the operator's stop request be converted into
+        # a StageBootRefusal -- the exact disappearance this function exists to
+        # prevent; called outside a handler it would raise RuntimeError.
+        raise error
 
 
 class PerStagePodLifecycle:

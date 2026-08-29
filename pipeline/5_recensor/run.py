@@ -2240,30 +2240,41 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # stage does not request an operation nothing downstream can honor,
             # because a request the orchestrator can only refuse turns a graceful
             # hold into a hard failure for no gain.
+            # Screened inline rather than behind a `publish_recovery_request`
+            # helper. This stage's fourth durable record carries the same nested
+            # coverage objects `publish_review` screens, and unscreened it was
+            # the one shape where a preference field reached disk. But the
+            # quality firewall in `test_quality_firewall.py` finds this write by
+            # its literal `kind="recovery-request"` and reads the conditionals
+            # around it; moving the call into a helper would put the request
+            # outside every gate as far as that scan could see, and a firewall
+            # taught to follow wrappers is a firewall that can be walked around.
+            recovery_payload = {
+                "act_key": act_key,
+                "attempt_ordinal": ordinal,
+                "recovery_kind": FALLBACK_RECROP,
+                "reason": recovery_request_reason(
+                    declared_crop=act_key in scenario["recover_acts"],
+                    unclaimed_observation=bool(content_coverage.get("unclaimed_observations")),
+                ),
+                "budget_allowed": budget["allowed"],
+                "budget_used": used_total,
+                "kind_budget_allowed": allowed_fallback,
+                "kind_budget_used": used_fallback,
+                "coverage": coverage,
+                "geometry_coverage": geometry_coverage,
+                "testimony_content_coverage": content_coverage,
+                "perlectio_ref": reading_ref,
+                "recovery_policy": budget,
+            }
+            refuse_capture_preference(recovery_payload, what="a Recensor recovery request")
             request = context.publish(
                 kind="recovery-request",
                 subject_id=act_id,
                 outcome="recovery-requested",
                 attempt=attempt_id(act_id, "recover", ordinal),
                 inputs=[reading_ref],
-                payload={
-                    "act_key": act_key,
-                    "attempt_ordinal": ordinal,
-                    "recovery_kind": FALLBACK_RECROP,
-                    "reason": recovery_request_reason(
-                        declared_crop=act_key in scenario["recover_acts"],
-                        unclaimed_observation=bool(content_coverage.get("unclaimed_observations")),
-                    ),
-                    "budget_allowed": budget["allowed"],
-                    "budget_used": used_total,
-                    "kind_budget_allowed": allowed_fallback,
-                    "kind_budget_used": used_fallback,
-                    "coverage": coverage,
-                    "geometry_coverage": geometry_coverage,
-                    "testimony_content_coverage": content_coverage,
-                    "perlectio_ref": reading_ref,
-                    "recovery_policy": budget,
-                },
+                payload=recovery_payload,
             )
             request_ref = context.input_ref(request.relative_path)
             publish_review(

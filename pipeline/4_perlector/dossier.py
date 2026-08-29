@@ -425,7 +425,11 @@ def build_dossier(
                     "a colliding pseudonym would silently replace one chair's view"
                 )
             relabeled_views[label] = text
-        deltas = act_attachment.get("edge_deltas", {})
+        # No `{}` default: an absent key would have been read as "no chair's
+        # ink sat outside the sealed proposal", which is a measurement, and
+        # nothing measured it. The refusal below says "with no edge-deltas
+        # mapping" and could not fire for the case that wording describes.
+        deltas = act_attachment.get("edge_deltas")
         if not isinstance(deltas, dict):
             raise SchemaRefusal(
                 "an act attachment reached the dossier with no edge-deltas mapping. "

@@ -2251,6 +2251,13 @@ def flag_location_basis(
     evidence in the dossier, but it did not locate that flag and must not be
     attributed as though it did.  This records a location basis only; it does
     not promote testimony into a reading or make boundary geometry a text flag.
+
+    Each row names the location it accounts for.  Without it the record could
+    not say *which* flag a chair located: two rows beside two flags proved only
+    that the lists were the same length, and a basis row could be read against
+    the wrong flag with nothing able to detect it.  The span is already computed
+    here to decide membership, so carrying it costs nothing and makes the
+    binding checkable where the record is validated.
     """
     testimony_diff_locations = {
         (flag["location"]["start"], flag["location"]["end"])
@@ -2260,21 +2267,34 @@ def flag_location_basis(
     if not testimony_diff_locations:
         return []
     rows = dossier.get("testimonia", [])
-    return sorted(
-        [
+    located = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("reported"), str)
+            or row.get("reported_basis") not in {"own-report", "page-slice"}
+            or row["reported"] == semi_final_text
+        ):
+            continue
+        span = audit.text_change_span(semi_final_text, row["reported"])
+        if span not in testimony_diff_locations:
+            continue
+        located.append(
             {
                 "class": "testimony-diff",
                 "chair": row["witness_label"],
                 "derivation": row["reported_basis"],
+                "location": {"start": span[0], "end": span[1]},
             }
-            for row in rows
-            if isinstance(row, dict)
-            and isinstance(row.get("reported"), str)
-            and row.get("reported_basis") in {"own-report", "page-slice"}
-            and row["reported"] != semi_final_text
-            and audit.text_change_span(semi_final_text, row["reported"]) in testimony_diff_locations
-        ],
-        key=lambda row: (row["chair"], row["derivation"]),
+        )
+    return sorted(
+        located,
+        key=lambda row: (
+            row["location"]["start"],
+            row["location"]["end"],
+            row["chair"],
+            row["derivation"],
+        ),
     )
 
 

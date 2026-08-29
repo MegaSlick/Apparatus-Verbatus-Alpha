@@ -373,7 +373,7 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     basis = value["flag_location_basis"]
     if not isinstance(basis, list) or any(
         not isinstance(row, dict)
-        or set(row) != {"class", "chair", "derivation"}
+        or set(row) != {"class", "chair", "derivation", "location"}
         or row["class"] != "testimony-diff"
         or not isinstance(row["chair"], str)
         or not row["chair"]
@@ -383,17 +383,33 @@ def validate_draft(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "the audit draft has no closed witness-derived flag-location basis. "
             "A testimony-diff location cannot be traced to the testimony that located it. "
-            "Rebuild the draft with class, chair, and derivation for each such flag."
+            "Rebuild the draft with class, chair, derivation, and location for each such flag."
         )
-    identities = [(row["class"], row["chair"], row["derivation"]) for row in basis]
+    for row in basis:
+        _location(row["location"], text_length=len(value["semi_final_text"]), label="basis")
+    # The binding is by location, not by list position or list length. Equal
+    # lengths proved only that two lists were the same size: which chair
+    # located which flag was not expressible, so a row could sit against the
+    # wrong flag undetected. Keying on the span also lets one chair account for
+    # two different flags, and two chairs for one, both of which the earlier
+    # (class, chair, derivation) uniqueness wrongly refused.
+    identities = [
+        (row["chair"], row["derivation"], row["location"]["start"], row["location"]["end"])
+        for row in basis
+    ]
     if len(identities) != len(set(identities)):
         raise SchemaRefusal(
             "the audit draft repeats a witness-derived flag-location basis. "
             "One witness would be recorded twice as the source of one location. "
             "Remove the duplicate basis row and rebuild the draft."
         )
-    testimony_diff_count = sum(flag["class"] == "testimony-diff" for flag in value["flags"])
-    if len(basis) != testimony_diff_count:
+    flagged = {
+        (flag["location"]["start"], flag["location"]["end"])
+        for flag in value["flags"]
+        if flag["class"] == "testimony-diff"
+    }
+    located = {(row["location"]["start"], row["location"]["end"]) for row in basis}
+    if located != flagged:
         raise SchemaRefusal(
             "the audit draft's testimony-diff flags and witness-derived location basis disagree. "
             "At least one witness-derived flag or its source would be unaccounted. "

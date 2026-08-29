@@ -86,8 +86,12 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
 def test_ink_thresholds_remain_explicitly_unmeasured_without_a_calibration_claim():
     source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
     handoff = (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8")
-    assert "PROPOSED, NOT YET MEASURED" in source
-    assert "PROPOSED, NOT YET\nMEASURED" in handoff
+    # Matched on normalised whitespace. The claim is "no calibration is
+    # asserted", not "this sentence occupies these two lines": pinned to the
+    # exact wrap, a reflow of either file turned the suite red over no change
+    # in meaning.
+    assert "PROPOSED, NOT YET MEASURED" in " ".join(source.split())
+    assert "PROPOSED, NOT YET MEASURED" in " ".join(handoff.split())
     assert "calibrated" not in handoff.lower()
 
 
@@ -276,7 +280,9 @@ def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
 
     source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
     assert EDGE_BAND_PIXELS == 64
-    assert "not a\n# claim that 64 pixels is a calibrated cross-page-act threshold" in source
+    # Comment markers and wrapping normalised away, for the same reason as above.
+    normalised = " ".join(source.replace("#", " ").split())
+    assert "not a claim that 64 pixels is a calibrated cross-page-act threshold" in normalised
 
 
 def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
@@ -290,28 +296,33 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
     assert classify(INK_MAP, "mapped") is OutcomeClass.COMPLETED
 
 
+# One definition, used by both publishing tests below. Kept at module level
+# because two byte-identical copies of a stage-context stub drift: the copy
+# nobody updates keeps testing the old `publish`/`seal_boundary` contract
+# while still passing.
+class _PublishingContext:
+    def __init__(self):
+        self.tree = object()
+        self.published = []
+        self.sealed = False
+        self.finished = False
+
+    def input_ref(self, path):
+        return {"relative_path": path, "sha256": "0" * 64}
+
+    def publish(self, **record):
+        self.published.append(record)
+
+    def seal_boundary(self):
+        self.sealed = True
+
+    def finish(self):
+        self.finished = True
+
+
 def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     page = _sealed_page(1)
-
-    class _PublishingContext:
-        def __init__(self):
-            self.tree = object()
-            self.published = []
-            self.sealed = False
-            self.finished = False
-
-        def input_ref(self, path):
-            return {"relative_path": path, "sha256": "0" * 64}
-
-        def publish(self, **record):
-            self.published.append(record)
-
-        def seal_boundary(self):
-            self.sealed = True
-
-        def finish(self):
-            self.finished = True
 
     context = _PublishingContext()
 
@@ -347,25 +358,6 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     2's silent loss with extra steps.
     """
     page = _sealed_page(1)
-
-    class _PublishingContext:
-        def __init__(self):
-            self.tree = object()
-            self.published = []
-            self.sealed = False
-            self.finished = False
-
-        def input_ref(self, path):
-            return {"relative_path": path, "sha256": "0" * 64}
-
-        def publish(self, **record):
-            self.published.append(record)
-
-        def seal_boundary(self):
-            self.sealed = True
-
-        def finish(self):
-            self.finished = True
 
     context = _PublishingContext()
 

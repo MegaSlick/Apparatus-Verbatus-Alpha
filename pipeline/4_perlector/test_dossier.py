@@ -266,6 +266,35 @@ def test_edge_deltas_refuse_a_colliding_witness_label(evidence, monkeypatch):
         )
 
 
+def test_an_attachment_with_no_edge_deltas_key_at_all_is_refused_not_read_as_empty(evidence):
+    """An absent mapping is unmeasured geometry, not measured-and-clean geometry.
+
+    Read through a `{}` default, an attachment that never carried the key
+    produced a well-formed dossier saying no chair's ink sat outside the sealed
+    proposal for this act -- boundary evidence deleted from the one record a
+    human reads, with nothing downstream able to tell (GOVERNANCE 2). Every
+    other case here supplies the key explicitly, so only this pins the absence.
+    """
+    context, act_id, act_key, regions, testimonia = evidence
+
+    with pytest.raises(SchemaRefusal, match="no edge-deltas mapping"):
+        dossier.build_dossier(
+            context,
+            act_id=act_id,
+            act_key=act_key,
+            regions=regions,
+            testimonia=testimonia,
+            regime="blinded",
+            page_renders=[],
+            witness_context=dossier.load_witness_context(DECLARATION),
+            act_attachment={
+                "reference": {"relative_path": "unused", "sha256": "0" * 64},
+                "page_witness_count": 0,
+                "comparison_views": {},
+            },
+        )
+
+
 def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")
