@@ -587,7 +587,9 @@ def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch
     context = _context(_attachment_fact_record(rows))
     _patched_page_geometry(monkeypatch, context, {1: True, 2: False})
 
-    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
@@ -614,7 +616,9 @@ def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases, mo
     context = _context(_attachment_fact_record(rows))
     _patched_page_geometry(monkeypatch, context, {1: True, 2: True})
 
-    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
 
     assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
 
