@@ -25,6 +25,8 @@ from operations.operator import advance, advance_worker, cli, console, custody, 
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
 
+from .conftest import requires_absent_landlock, requires_host_boundary, requires_landlock
+
 _EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), None, ())
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -202,6 +204,7 @@ def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
+@requires_host_boundary
 def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path, monkeypatch):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -563,7 +566,7 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
     assert "never read by this process" in truncated.stderr
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+@requires_landlock("Landlock must be reachable for the kernel to refuse anything")
 def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Path):
     """Split from the import-boundary test so its absence reports as a skip.
 
@@ -571,6 +574,11 @@ def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Pa
     silently did not run anywhere else, while the suite printed one pass for
     both. A reader of the results could not tell which of the two claims had
     actually been measured (GOVERNANCE 10).
+
+    "Nonzero, and the file is absent" is satisfied twice over: by the kernel
+    refusing the write, and by a launcher that rejected its own arguments and
+    never started the child. Only the first is this test's claim, so the
+    launcher's own failure is excluded before the refusal is read.
     """
     target = tmp_path / "evidence-mutation.txt"
     blocked = subprocess.run(
@@ -587,8 +595,35 @@ def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Pa
         text=True,
         check=False,
     )
+    assert custody.confinement("linux").launcher_failure(blocked) is None, blocked.stderr
+    assert "setpriv:" not in blocked.stderr, blocked.stderr
     assert blocked.returncode != 0
+    assert "Traceback" in blocked.stderr, blocked.stderr
+    assert "OSError" in blocked.stderr or "PermissionError" in blocked.stderr, blocked.stderr
     assert not target.exists()
+
+
+@requires_absent_landlock
+def test_a_host_that_cannot_reach_landlock_refuses_instead_of_running_unconfined():
+    """The other side of the skip above, proven where the skip actually applies.
+
+    A Linux host whose `setpriv` predates Landlock is not a host this console
+    may open on: nothing would confine the child. The stub-driven seams prove
+    the classification; this proves it against the real launcher on the real
+    host, so the hosts that skip the boundary tests still measure something
+    rather than reporting an untested pass (GOVERNANCE 10).
+    """
+
+    with pytest.raises(OperatorError) as refusal:
+        custody.verify_confinement(
+            custody.confinement("linux"),
+            writable=None,
+            cwd=ROOT,
+            environment=custody.custody_environment({}),
+        )
+
+    assert refusal.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "could not be established, so nothing ran inside it" in refusal.value.detail
 
 
 def test_console_rejects_actual_process_arguments(monkeypatch):
@@ -935,7 +970,7 @@ def _exit(returncode: int, *, stdout: str = "", stderr: str = "") -> subprocess.
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires the native Landlock backend")
+@requires_landlock("requires the native Landlock backend")
 def test_a_run_root_containing_a_colon_still_names_one_permitted_path(tmp_path):
     """The Landlock rule is colon-delimited and the run root is operator-chosen.
 
@@ -1053,7 +1088,7 @@ def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_pat
     assert "workspace" not in inspect.signature(custody.python_module_command).parameters
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires the native Landlock backend")
+@requires_landlock("requires the native Landlock backend")
 def test_linux_child_sees_exactly_the_closed_cross_platform_environment():
     """Landlock must not replace the scrubbed mapping with setpriv's account defaults."""
 
@@ -1069,7 +1104,7 @@ def test_linux_child_sees_exactly_the_closed_cross_platform_environment():
     assert json.loads(completed.stdout) == custody.custody_environment()
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux procfs and Landlock")
+@requires_landlock("requires Linux procfs and Landlock")
 def test_linux_child_cannot_recover_the_launchers_original_environment_from_proc():
     """A scrubbed env is not custody if the child can reread its parent's secret env."""
 
@@ -1094,9 +1129,7 @@ def test_linux_child_cannot_recover_the_launchers_original_environment_from_proc
     assert completed.stdout.strip() == "REFUSED"
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="requires Landlock plus the Linux seccomp filter"
-)
+@requires_landlock("requires Landlock plus the Linux seccomp filter")
 def test_linux_child_cannot_delegate_around_landlock_through_a_socket():
     """A privileged local service must not become the compromised UI's writer."""
 
@@ -1460,6 +1493,7 @@ def test_review_refuses_a_bundle_member_whose_declared_size_is_false():
     assert "could not be read" in (excinfo.value.detail or "")
 
 
+@requires_host_boundary
 def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
     """Digest binding must be proven against a boundary that actually changed."""
     run_root, run_id = _make_run(tmp_path)
@@ -1492,6 +1526,7 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
         advance.verify_advance(tree, "armarium", reference)
 
 
+@requires_host_boundary
 def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visible(tmp_path):
     """Append-only means the second advance is a new record, not a silent overwrite.
 
@@ -1527,6 +1562,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     )
 
 
+@requires_host_boundary
 def test_review_refuses_an_advance_record_copied_under_a_false_content_address(tmp_path):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -1548,6 +1584,7 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
     assert "content-addressed filename is false" in excinfo.value.detail
 
 
+@requires_host_boundary
 def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(tmp_path):
     """An immutable receipt is a regular file, not an alias to equivalent bytes."""
 
@@ -1596,6 +1633,7 @@ def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
     assert "seal digest" in capsys.readouterr().out
 
 
+@requires_host_boundary
 def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_record(
     tmp_path, monkeypatch, capsys
 ):
@@ -1703,6 +1741,7 @@ def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeyp
     assert "SECURITY REFUSAL: reviewed run-tree inode changed" in (excinfo.value.detail or "")
 
 
+@requires_host_boundary
 def test_advance_verb_is_the_confirmed_operator_path_to_the_external_worker(
     tmp_path, monkeypatch, capsys
 ):
@@ -1781,6 +1820,7 @@ def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tm
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@requires_host_boundary
 def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_text(
     tmp_path, monkeypatch, capsys
 ):
@@ -1955,6 +1995,7 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@requires_host_boundary
 def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tree(
     tmp_path, monkeypatch
 ):
@@ -1990,6 +2031,7 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
     advance.verify_advance(tree, "armarium", reference)
 
 
+@requires_host_boundary
 def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_reads(tmp_path):
     """`verify_advance` refuses a moved boundary; the surface has to say so too.
 

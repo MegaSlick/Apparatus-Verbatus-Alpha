@@ -15,6 +15,7 @@ import pytest
 from . import backup as backup_module
 from . import backup_worker, cli
 from .backup import SCHEMA, BackupRefusal, sync_run_tree
+from .conftest import requires_landlock
 from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError
 
@@ -215,7 +216,7 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
     }
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="the chamber proves the Landlock worker")
+@requires_landlock("the chamber proves the Landlock worker")
 def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
