@@ -17,7 +17,7 @@ from typing import Iterator, cast
 import pytest
 
 from common.runtree.store import RunTree
-from operations.operator.backup import sync_run_tree
+from operations.operator.backup import _is_publication_temporary, sync_run_tree
 
 # Stage code may not import `pipeline` by dotted path; the boundary test permits
 # an explicit path load for a same-stage test helper.
@@ -30,6 +30,50 @@ snapshot = _acceptance.snapshot
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+
+
+def _partition_publication_temporaries(
+    tree_snapshot: dict[str, str], run_id: str = "r"
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Split a snapshot into published evidence and `.<target>.tmp-*` residue.
+
+    A driver killed mid-write leaves the publication temporary it was writing, and
+    where the kill lands is decided by the scheduler: the same SIGKILL leaves residue
+    on one platform's run and not on another's, with a fresh `mkstemp` suffix each
+    time. Two trees that differ only by such a name hold identical evidence, and an
+    equality over raw snapshots reads that as a mismatch — which is how these
+    comparisons failed on Linux while passing on macOS.
+
+    The rule is `operations.operator.backup`'s own, imported rather than respelled:
+    the backup excludes exactly these names from a snapshot and records them under
+    `excluded_publication_temporaries` so the exclusion cannot be silent. Callers here
+    do the same — every dropped name is returned, and asserted on, never ignored.
+    """
+    scope = RunTree(Path("/nonexistent"), run_id).inventory_scope()
+    prefix = f"{run_id}/"
+    residue = {
+        path: digest
+        for path, digest in tree_snapshot.items()
+        if path.startswith(prefix) and _is_publication_temporary(path[len(prefix) :], scope)
+    }
+    published = {path: digest for path, digest in tree_snapshot.items() if path not in residue}
+    return published, residue
+
+
+def _plant_publication_temporary(volume: Path, run_id: str = "r") -> Path:
+    """Leave the residue a mid-write kill leaves, so the exclusion is always measured.
+
+    The backup half of this file already plants one for the same reason: whether a
+    real SIGKILL lands mid-write is the scheduler's decision, so a path exercised only
+    when it does is a path tested only sometimes. Planted before the resume, so the
+    resume is also shown to tolerate residue rather than only the assertions below.
+    """
+    planted = (
+        volume / run_id / "2_designator" / "artifacts" / "decode-environment"
+    ) / ".art_plantedresidue.json.tmp-plantedbythistest"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_bytes(b"a publication interrupted mid-write when the driver was killed")
+    return planted
 
 
 def _run(
@@ -234,6 +278,7 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     uninterrupted = snapshot(local)
 
     crashed = _crash_mid_recovery(volume, tmp_path)
+    planted = _plant_publication_temporary(volume)
 
     resumed = _run(volume, "r", "review")
     assert resumed.returncode == 3, resumed.stderr
@@ -262,17 +307,32 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     )
 
     def _comparable(tree_snapshot):
+        published, _residue = _partition_publication_temporaries(tree_snapshot)
         return {
             path: digest
-            for path, digest in tree_snapshot.items()
+            for path, digest in published.items()
             if not path.startswith(recensor_seal_prefixes) and path != "r/5_recensor/manifest.json"
         }
 
-    assert _comparable(finished) == _comparable(uninterrupted)
-    extra = set(finished) - set(uninterrupted)
-    assert extra <= {path for path in finished if path.startswith(recensor_seal_prefixes)}, (
-        f"resume added unexpected artifacts: {sorted(extra)}"
+    # The residue is named before it is set aside, and the planted one must be in it:
+    # a kill mid-write leaves a `.<target>.tmp-*` name with a fresh random suffix, so
+    # two trees holding identical evidence differ by that name alone. Dropping it is
+    # not the same as overlooking it — every dropped path is checked to be residue of
+    # this run tree, and the resume is shown to have carried none of it into evidence.
+    finished_published, finished_residue = _partition_publication_temporaries(finished)
+    planted_key = str(planted.relative_to(volume))
+    assert planted_key in finished_residue, (
+        "the planted publication temporary was read as published evidence"
     )
+    assert planted_key not in finished_published
+    assert _partition_publication_temporaries(uninterrupted)[1] == {}, (
+        "an uninterrupted run left a publication temporary behind"
+    )
+    assert _comparable(finished) == _comparable(uninterrupted)
+    extra = set(finished_published) - set(uninterrupted)
+    assert extra <= {
+        path for path in finished_published if path.startswith(recensor_seal_prefixes)
+    }, f"resume added unexpected artifacts: {sorted(extra)}"
     matched = _assert_every_reference_resolves(volume, "r")
 
     # A volume reached through a symlink is the ordinary Mac and Linux mount
@@ -345,16 +405,33 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     }
     _assert_every_reference_resolves(restored_root, "r")
 
-    # The planted temporary has done its work. Removing it leaves the two trees
-    # byte-identical going into the resume, so the comparison below stays an
-    # exact equality rather than one taught to overlook a set of paths.
+    # That temporary has done its work at the run root. Removing it and planting one
+    # inside a stage's artifacts directory keeps the residue where a killed driver
+    # actually leaves it, and only in the source: the backup excluded the crashed
+    # tree's temporaries by design, so the restored copy never had them. The two trees
+    # are therefore byte-identical in evidence and cannot be byte-identical in residue,
+    # which is what the equality below has to say. It failed on Linux and passed on
+    # macOS while it said otherwise, because where a SIGKILL lands is the scheduler's
+    # decision and the surviving `.tmp-` name carries a fresh random suffix.
     planted.unlink()
+    source_residue_path = _plant_publication_temporary(volume)
 
     restored_run = _run(restored_root, "r", "review")
     assert restored_run.returncode == 3, restored_run.stderr
     source_run = _run(volume, "r", "review")
     assert source_run.returncode == 3, source_run.stderr
-    assert snapshot(restored_root) == snapshot(volume)
+    restored_published, restored_residue = _partition_publication_temporaries(
+        snapshot(restored_root)
+    )
+    source_published, source_residue = _partition_publication_temporaries(snapshot(volume))
+    # Named, not overlooked: the source's residue is exactly what was planted plus
+    # anything the crash left, the restored copy carries none, and every published
+    # byte matches.
+    assert str(source_residue_path.relative_to(volume)) in source_residue
+    assert restored_residue == {}, (
+        "the restore replayed a publication temporary as published evidence"
+    )
+    assert restored_published == source_published
     _assert_every_reference_resolves(restored_root, "r")
 
 
