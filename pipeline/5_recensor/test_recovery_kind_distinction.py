@@ -117,6 +117,22 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
     by_act = {review["payload"]["act_key"]: review for review in reviews}
     assert by_act["a1"]["payload"]["continuation"]["is_continuation"] is False
 
+    # The other half of the claim above, and the half nothing checked: a2 is
+    # still accounted for and is HELD, not quietly absent. Counting only the
+    # recovery-requested reviews, an a2 that vanished entirely -- no request and
+    # no review -- left both counts above at 1 and this test green. GOALS 1: a
+    # missed act is worse than a poorly read one, so the act that was refused a
+    # recrop must be named as refused.
+    every_review = [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
+    ]
+    a2_outcomes = {
+        review["outcome"] for review in every_review if review["payload"]["act_key"] == "a2"
+    }
+    assert a2_outcomes == {"held-for-review"}, a2_outcomes
+
 
 # --- recovery_state: an isolated tree, so a malformed kind is the only thing
 # under test rather than something a cross-referenced digest catches first ----
