@@ -325,14 +325,24 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
         pytest.param({"x": 0, "y": 0, "w": 10, "h": 10, "z": 1}, id="extra-side"),
         pytest.param({"x": 0, "y": 0, "w": 10, "h": True}, id="boolean-height"),
         pytest.param({"x": 0, "y": 0, "w": 10, "h": "10"}, id="string-height"),
+        pytest.param({"x": -1, "y": 0, "w": 10, "h": 10}, id="negative-x"),
+        pytest.param({"x": 0, "y": -1, "w": 10, "h": 10}, id="negative-y"),
+        pytest.param({"x": 0, "y": 0, "w": 0, "h": 10}, id="zero-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 0}, id="zero-height"),
+        pytest.param({"x": 0, "y": 0, "w": -10, "h": 10}, id="negative-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": -10}, id="negative-height"),
     ),
 )
 def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(monkeypatch, bounds):
-    """These rectangles travel on as `proposal_boxes` and into
-    `unrouted_observations`, and both index the four sides by name. Without the
-    check the stage that decides whether recovery runs leaves as a bare
-    `KeyError` naming neither page nor act, which is the traceback an operator
-    cannot repair a region from."""
+    """Two failures, one refusal. A rectangle missing a side travels on as a
+    proposal box into `unrouted_observations`, which indexes all four by name,
+    and leaves the stage that decides recovery as a bare `KeyError` naming
+    neither page nor act. A rectangle that is merely degenerate -- off-page
+    origin, or zero/negative extent -- is worse: it indexes cleanly and overlaps
+    nothing, so ink a real proposal covers is published as an unrouted
+    observation and drives bounded recovery on evidence the run manufactured.
+    Every case here is a rectangle `_proposal_geometry_by_page` already refuses
+    of the same sealed proposals."""
     page = _page_testimonium(outcome="read", reported="ink")
     page["payload"].update(
         {

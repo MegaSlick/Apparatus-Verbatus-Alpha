@@ -1464,13 +1464,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            # All four numbers, as `_proposal_geometry_by_page` and
-            # `regions_by_source_page` already require of the same sealed
-            # rectangles. These regions travel on as `proposal_boxes` and into
-            # `unrouted_observations`, both of which index `x`, `y`, `w` and `h`
-            # by name; a rectangle that is a dict and nothing more would leave
-            # the stage that decides recovery as a bare `KeyError`, naming
-            # neither page nor act.
+            # The same rectangle `_proposal_geometry_by_page` requires of these
+            # same sealed proposals: four integer sides, on the page, with
+            # positive area. Two distinct failures follow from accepting less.
+            # A rectangle that is a dict and nothing more reaches
+            # `unrouted_observations`, which indexes all four sides by name, and
+            # leaves the stage that decides recovery as a bare `KeyError` naming
+            # neither page nor act. Worse, a *degenerate* rectangle -- zero or
+            # negative width, or an off-page origin -- indexes cleanly and
+            # overlaps nothing, so `_overlaps` reports that no proposal accounts
+            # for ink a proposal does in fact cover, and the witness's
+            # observation is published as an unrouted-observation finding. That
+            # is manufactured coverage evidence driving bounded recovery
+            # (GOVERNANCE 10, 11), which is why the range checks belong here and
+            # not only in the sibling reader.
             if (
                 not isinstance(bounds, dict)
                 or set(bounds) != {"x", "y", "w", "h"}
@@ -1478,6 +1485,10 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
                     for side in ("x", "y", "w", "h")
                 )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
             ):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
