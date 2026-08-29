@@ -550,5 +550,9 @@ def test_the_mask_argument_has_no_fail_open_default():
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
-    with pytest.raises(TypeError):
+    # Bound to the signature. A bare `TypeError` also matches one raised while
+    # measuring the observation, so a later change that gave the mask a default
+    # and failed in the arithmetic would keep this green and let the over-count
+    # back in unnoticed.
+    with pytest.raises(TypeError, match="unclaimed_ink_observations"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1)

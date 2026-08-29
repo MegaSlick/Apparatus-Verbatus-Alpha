@@ -35,7 +35,7 @@ from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
-from common.residual_ink import MINIMUM_INK_PIXELS
+from common.residual_ink import MINIMUM_FRACTION_OUTSIDE_COVERAGE, MINIMUM_INK_PIXELS
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 
@@ -370,6 +370,15 @@ def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
     # 1,000 is 2.4%, over `MINIMUM_FRACTION_OUTSIDE_COVERAGE`, while 23 is under
     # `MINIMUM_INK_PIXELS` and 24 of 10,000 would be under the fraction. Both
     # halves of the shared gate are exercised, neither is assumed.
+    # The pixel counts move with `MINIMUM_INK_PIXELS`, but the 1,000 denominator
+    # is a literal, so the relationship the third case depends on is stated
+    # rather than left in the comment. A fraction gate raised past 2.4% would
+    # otherwise turn the held case into a released one and fail while naming
+    # ink counts instead of the gate that actually moved.
+    assert MINIMUM_INK_PIXELS / 1_000 >= MINIMUM_FRACTION_OUTSIDE_COVERAGE, (
+        "the 1,000-pixel total no longer puts MINIMUM_INK_PIXELS over the fraction "
+        "gate; rebuild these cases around the new gate"
+    )
     for outside, held in ((0, []), (MINIMUM_INK_PIXELS - 1, []), (MINIMUM_INK_PIXELS, [1])):
         bundle = build_armarium_bundle(
             _otherwise_complete(ink_map_pages=(_edge_page(outside=outside, total=1_000),)),

@@ -219,16 +219,29 @@ def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
     """
 
     seal, digest = stored_boundary(tree, stage)
-    payload = seal["payload"]
-    return {
-        "stage": stage,
-        "seal_digest": digest,
-        "attempt_ordinal": payload["attempt_ordinal"],
-        "config_digest": payload["config_digest"],
-        "artifact_inventory": payload["artifact_inventory"],
-        "blob_inventory": payload["blob_inventory"],
-        "census": payload["census"],
-    }
+    # Inside the guard, like every other read of this seal. `stored_boundary`
+    # converts a damaged seal into a named refusal, but `latest_attempt` proves
+    # only `attempt_ordinal`; the other four keys were indexed raw. A payload
+    # that had lost its census or one of its digests raised a bare KeyError,
+    # which is not an `ApprovalRefusal`, so it passed the caller's handler and
+    # reached the unclassified one -- telling the operator to photograph the
+    # message and find a maintainer over evidence this tool can name exactly.
+    try:
+        payload = seal["payload"]
+        return {
+            "stage": stage,
+            "seal_digest": digest,
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "config_digest": payload["config_digest"],
+            "artifact_inventory": payload["artifact_inventory"],
+            "blob_inventory": payload["blob_inventory"],
+            "census": payload["census"],
+        }
+    except (KeyError, TypeError) as error:
+        raise ApprovalRefusal(
+            f"advance could not read {stage}'s stored completion seal ({error}); "
+            "no boundary was advanced"
+        ) from error
 
 
 def held_boundaries_for_mode(

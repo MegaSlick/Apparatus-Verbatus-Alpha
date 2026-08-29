@@ -442,7 +442,9 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
         "This declared selection can require a person-held advance at: armarium, attestatores."
         in rendered
     )
-    assert "This invocation waits" not in rendered
+    # The surface never emits the word "waits", so asserting its absence could
+    # not fail. Assert the line it does emit for the declared mode instead.
+    assert "as you declared it: auto." in rendered
     assert "Advance record:" in rendered
 
 
@@ -499,7 +501,11 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
 
     assert "needs both the first and last stage" in (refusal.value.detail or "")
     rendered = capsys.readouterr().out
-    assert "waits at" not in rendered
+    # The claim line this test exists to keep off the screen is the one the
+    # console actually prints. "waits at" appears nowhere in the surface, so
+    # the previous spelling was true however the code behaved -- printing the
+    # boundary claim before validating the range would not have failed it.
+    assert "person-held advance at" not in rendered
     assert "None" not in rendered
     assert "Current boundary state" in rendered
 

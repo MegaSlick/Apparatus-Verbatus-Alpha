@@ -725,9 +725,24 @@ def run_aggregate(
             "resolved it and no artifact records it"
         )
 
+    # Reconciled against the census like every other denominator here, and for
+    # the same reason: a hold naming a page the run never counted would print a
+    # partial reason about a page that does not exist. Not reachable from
+    # today's Armarium callers, which validate ink-map ordinals against the
+    # sealed census first, but the rule belongs in the module that owns the
+    # denominator rather than in each caller that happens to observe it.
+    unknown_holds = sorted(set(edge_hold_pages or ()) - set(page_census or {}))
+    if unknown_holds:
+        raise FatalAccounting(
+            f"an edge hold names page(s) {unknown_holds}, which the run's page census does not "
+            "account for; edge holds and the page census must describe the same page denominator"
+        )
+
     # A page-scoped hold: the ink at its edge belongs to no act yet, so the page
-    # cannot reconcile even when every act cut from it was delivered.
-    for ordinal in sorted(edge_hold_pages or ()):
+    # cannot reconcile even when every act cut from it was delivered. Counted as
+    # a set: a repeated ordinal is one held page, and listing it twice would
+    # report one page as two in the reasons a person reads.
+    for ordinal in sorted(set(edge_hold_pages or ())):
         reasons.append(
             f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
             "Designator crop on the page claims, so its coverage is not reconciled"
