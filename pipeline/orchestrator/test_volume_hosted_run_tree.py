@@ -382,17 +382,20 @@ def _process_has_terminated(pid: int) -> bool:
     has no procfs -- disappearance is the only available answer and is used.
     """
 
+    # Only the two answers that are evidence of termination. A `PermissionError`
+    # says the pid exists and belongs to someone else, and an `EACCES` or `EIO`
+    # reading procfs says nothing about the process at all -- reporting either
+    # as "gone" would let this test pass without ever establishing that the kill
+    # worked. They are left to surface as the failures they are.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return True
-    except PermissionError:  # pragma: no cover - the pid was recycled by another user
         return True
     if sys.platform != "linux":
         return False
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except FileNotFoundError:
         # The entry went away between the two reads, which is the pid being
         # reaped -- the outcome this function is asked about.
         return True

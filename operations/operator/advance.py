@@ -497,11 +497,23 @@ def trigger_advance(
         # is exactly what this note exists to carry, so sanitizing here threw
         # away the evidence and left the operator no copy of it (GOVERNANCE 2).
         # This makes the line safe to print and changes nothing else about it.
-        print(
-            "Note: the advance record was written and verified, and the advance worker also "
-            f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
-            file=sys.stderr,
-        )
+        try:
+            print(
+                "Note: the advance record was written and verified, and the advance worker also "
+                f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
+                file=sys.stderr,
+            )
+        except OSError:
+            # The record is written, verified against the exact request, and
+            # about to be returned. A `BrokenPipeError` here would escape to the
+            # CLI's catch-all and exit 2, telling the operator the advance
+            # failed and inviting a retry of a boundary that is already
+            # advanced and cannot be retracted -- the same fault the worker's
+            # own report had, one process further out. Nothing is silently lost
+            # by swallowing it: a diagnostic channel that cannot be written to
+            # cannot carry a complaint about itself either, and the reference
+            # this returns is what the caller prints.
+            pass
     return reference
 
 

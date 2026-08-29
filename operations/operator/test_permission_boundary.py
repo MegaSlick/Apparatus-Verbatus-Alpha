@@ -1937,6 +1937,52 @@ def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
     assert "[technical trace omitted from this message]" in excinfo.value.render()
 
 
+def test_a_broken_stderr_cannot_turn_a_recorded_advance_into_a_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """The note is a courtesy; the advance it describes is already permanent.
+
+    A `BrokenPipeError` writing the note escaped to the CLI's catch-all and
+    exited 2, telling the operator the advance failed and inviting a retry of a
+    boundary that is already advanced and cannot be retracted -- the same fault
+    the worker's own report had, one process further out.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _verified_and_noisy(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree, "armarium", reason="a note nobody can read", expected_digest=expected_digest
+        )
+        return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
+            [], 0, json.dumps(reference.to_record()), "something the operator will never see"
+        )
+
+    class _BrokenStderr:
+        def write(self, _text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def flush(self):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+    monkeypatch.setattr(advance, "run_confined", _verified_and_noisy)
+    monkeypatch.setattr(advance.sys, "stderr", _BrokenStderr())
+
+    returned = advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="a note nobody can read",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    assert returned.sha256
+    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+
+
 def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
     tmp_path, monkeypatch
 ) -> None:
