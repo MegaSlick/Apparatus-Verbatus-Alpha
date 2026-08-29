@@ -1464,7 +1464,21 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            if not isinstance(bounds, dict):
+            # All four numbers, as `_proposal_geometry_by_page` and
+            # `regions_by_source_page` already require of the same sealed
+            # rectangles. These regions travel on as `proposal_boxes` and into
+            # `unrouted_observations`, both of which index `x`, `y`, `w` and `h`
+            # by name; a rectangle that is a dict and nothing more would leave
+            # the stage that decides recovery as a bare `KeyError`, naming
+            # neither page nor act.
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
+                    for side in ("x", "y", "w", "h")
+                )
+            ):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
                 )

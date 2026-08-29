@@ -318,6 +318,57 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
     ]
 
 
+@pytest.mark.parametrize(
+    "bounds",
+    (
+        pytest.param({"x": 0, "y": 0, "h": 10}, id="missing-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 10, "z": 1}, id="extra-side"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": True}, id="boolean-height"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": "10"}, id="string-height"),
+    ),
+)
+def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(monkeypatch, bounds):
+    """These rectangles travel on as `proposal_boxes` and into
+    `unrouted_observations`, and both index the four sides by name. Without the
+    check the stage that decides whether recovery runs leaves as a bare
+    `KeyError` naming neither page nor act, which is the traceback an operator
+    cannot repair a region from."""
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": bounds,
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    with pytest.raises(FatalAccounting, match="has no page-pixel bounds"):
+        RUN.testimony_content_findings(context)
+
+
 def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
     """A failed page has no text to diff, and must not look like a covered one.
 
