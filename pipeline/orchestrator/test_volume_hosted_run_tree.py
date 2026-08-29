@@ -135,16 +135,20 @@ def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
     the tree changed under it.  It did, which is the condition this loop is
     waiting on.
 
-    Absorbing it here changes what the loop waits for, never what it accepts:
-    the count is simply not available on that iteration, so the poll reports no
-    change and looks again.  A refusal that is not transient never becomes a
-    pass -- the loop keeps polling until the hang guard fires and names it --
-    and the quiescent counts either side of this window still refuse normally.
+    Only that race is absorbed, and it is identified by its cause rather than
+    by its message: a name that was listed and is now gone raises ENOENT, and
+    the walk re-raises with that error chained.  A malformed manifest, a digest
+    mismatch, or any other persistent refusal has no such cause and is re-raised
+    here with its own reason, so it fails at once instead of being restated as
+    "no change" until the hang guard expires.  The quiescent counts either side
+    of this window refuse normally in every case.
     """
     try:
         return _region_count(root, run_id)
-    except SchemaRefusal:
-        return unchanged
+    except SchemaRefusal as refusal:
+        if isinstance(refusal.__cause__, FileNotFoundError):
+            return unchanged
+        raise
 
 
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:

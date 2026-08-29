@@ -434,8 +434,15 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
 
     A sealed ``pillow-lanczos`` recipe must reproduce the operation that ran.
     Bilevel and palette sources are therefore promoted before Pillow can replace
-    LANCZOS with nearest-neighbour; palette alpha is retained. An identity-sized
-    request returns the source bytes because no resampler ran.
+    LANCZOS with nearest-neighbour; palette alpha is retained.
+
+    An identity-sized request runs no resampler and skips the mode promotion
+    with it, but it is still written out through this module's deterministic
+    framing rather than handed back untouched. For the only bytes the pipeline
+    ever passes here -- a crop this module encoded -- re-encoding reproduces the
+    input exactly, which is what the identity cases assert. Bytes framed by some
+    other encoder would come back re-framed, so this is not a passthrough and
+    must not be relied on as one.
     """
     if (
         not isinstance(width, int)

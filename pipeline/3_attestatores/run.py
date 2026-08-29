@@ -2660,12 +2660,17 @@ def publish_page_testimonia_and_attachments(
                     unjoined_act_attempts, join.joined_act_attempts
                 )
             else:
-                page_attempt, native_capture = captured
-                native_payload, outcome = page_attempt.native_payload, page_attempt.outcome
+                # Not `page_attempt`: that name is rebound below to this page
+                # record's attempt *identity* string, and one name meaning both
+                # an Attempt and an attempt id is how a page record ends up
+                # published under the wrong identity when this loop is edited.
+                captured_attempt, native_capture = captured
+                native_payload = captured_attempt.native_payload
+                outcome = captured_attempt.outcome
                 unjoined_act_attempts = []
-                failure_reason = page_attempt.reason
-                health = page_attempt.health
-                page_attempts[(page_ordinal, chair)] = page_attempt
+                failure_reason = captured_attempt.reason
+                health = captured_attempt.health
+                page_attempts[(page_ordinal, chair)] = captured_attempt
             reading = outcome in WITNESS_READING_OUTCOMES
             if native_capture is None:
                 health = content_health(native_payload, completed=reading)
