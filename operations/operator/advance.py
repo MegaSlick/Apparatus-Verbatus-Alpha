@@ -29,7 +29,7 @@ from .custody import (
     python_module_command,
     run_confined,
 )
-from .errors import ErrorCode, OperatorError, sanitize_detail
+from .errors import ErrorCode, OperatorError, strip_control_bytes
 
 ADVANCE_ACTION = "advance"
 ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
@@ -490,16 +490,29 @@ def trigger_advance(
     # the exact request, so this is a note beside a real advance rather than a
     # verdict on it, and it is the operator who decides what to do about it.
     if completed.stderr.strip():
+        # `strip_control_bytes`, not `sanitize_detail`. That function's own
+        # contract is "called in exactly one place: `render`, on the way to a
+        # person" -- it truncates at 2000 characters, rewrites vocabulary, and
+        # replaces a structured traceback with a placeholder. A worker traceback
+        # is exactly what this note exists to carry, so sanitizing here threw
+        # away the evidence and left the operator no copy of it (GOVERNANCE 2).
+        # This makes the line safe to print and changes nothing else about it.
         print(
             "Note: the advance record was written and verified, and the advance worker also "
-            f"wrote to its diagnostic channel: {sanitize_detail(completed.stderr)}",
+            f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
             file=sys.stderr,
         )
     return reference
 
 
 def _worker_stderr_clause(completed: subprocess.CompletedProcess) -> str:
-    """Carry the worker's own diagnostic into a refusal that was decided elsewhere."""
+    """Carry the worker's own diagnostic into a refusal that was decided elsewhere.
+
+    Raw, like every other raise site in this module. A detail is persisted whole
+    and shortened only by `render` on its way to a person, so sanitizing it here
+    would discard the one copy of the diagnostic that exists anywhere -- and
+    would do it twice over, since `render` sanitizes again afterwards.
+    """
 
     text = completed.stderr.strip()
-    return f" (the worker also wrote: {sanitize_detail(text)})" if text else ""
+    return f" (the worker also wrote: {text})" if text else ""

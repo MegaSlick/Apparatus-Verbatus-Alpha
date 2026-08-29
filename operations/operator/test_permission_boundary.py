@@ -654,7 +654,13 @@ def test_the_console_classifies_every_way_its_input_pipe_can_fail(monkeypatch, c
         monkeypatch.setattr(console.sys, "stdin", _FailingPipe())
 
         assert console.main([]) == console.PROJECTION_UNREADABLE_EXIT, failure
-        assert "never read by this process" in capsys.readouterr().err, failure
+        printed = capsys.readouterr().err
+        assert "never read by this process" in printed, failure
+        # The shared clause alone would pass for all three even if the message
+        # never said which one happened, and telling them apart is the whole
+        # point of widening the catch -- so the exception's own name is what is
+        # asserted, per failure.
+        assert type(failure).__name__ in printed, failure
 
 
 def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp_path, monkeypatch):

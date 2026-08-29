@@ -47,12 +47,32 @@ def _linux_landlock_gap() -> str | None:
         return None
     if not _SETPRIV.is_file():
         return f"this host has no {_SETPRIV}"
-    probe = subprocess.run(
-        [str(_SETPRIV), "--no-new-privs", "--landlock-access", "fs:write-file", "--", "true"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+
+    # An absolute program, never a PATH lookup. `setpriv` reports a failed
+    # `execvp` with the same exit 127 that a refused Landlock ruleset produces,
+    # so a scrubbed or unusual PATH that could not find the program would have
+    # read as "this kernel refused Landlock" and skipped every boundary test on
+    # a host that was perfectly capable of running them. The interpreter running
+    # this suite is the one program guaranteed to be here.
+    program = [str(Path(sys.executable).resolve()), "-I", "-S", "-c", ""]
+
+    def _setpriv(*options: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(_SETPRIV), "--no-new-privs", *options, "--", *program],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    # Exit 127 stays ambiguous on its own, so the ambiguity is removed by
+    # measurement rather than by reading the message: run the identical command
+    # without the Landlock request first. If that cannot exec either, nothing
+    # here is a statement about Landlock, and no gap is reported -- the tests
+    # then run and fail loudly, which is this module's default everywhere.
+    if _setpriv().returncode != 0:
+        return None
+
+    probe = _setpriv("--landlock-access", "fs:write-file")
     if probe.returncode == 0:
         return None
     diagnostic = (probe.stderr or probe.stdout or "").strip()

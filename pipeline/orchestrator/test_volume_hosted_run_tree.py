@@ -336,6 +336,39 @@ def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
         target.write_bytes(data)
 
 
+def _process_has_terminated(pid: int) -> bool:
+    """Has this pid stopped running -- reaped, or dead and awaiting its parent?
+
+    Signal zero asks whether the pid exists, and a zombie still does: it holds
+    its slot until someone reaps it. On Linux that is a real interval, because
+    the grandchild's own parent is being killed in the same signal and cannot
+    reap it; the pid only disappears once it is reparented and init collects it.
+    Waiting for disappearance alone therefore spends the full deadline and then
+    reports a leak after a kill that worked perfectly.
+
+    Linux answers the actual question through procfs, where state ``Z`` is
+    "terminated, not yet reaped". The comm field can contain spaces and
+    parentheses, so the state is read after the last ``)``. Elsewhere -- macOS
+    has no procfs -- disappearance is the only available answer and is used.
+    """
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:  # pragma: no cover - the pid was recycled by another user
+        return True
+    if sys.platform != "linux":
+        return False
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # The entry went away between the two reads, which is the pid being
+        # reaped -- the outcome this function is asked about.
+        return True
+    return stat_line.rpartition(")")[2].split()[:1] == ["Z"]
+
+
 def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:
     """A real session, a real grandchild, and a real check that the group is gone.
 
@@ -370,20 +403,15 @@ def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:
     ) as process:
         assert process.stdout is not None
         grandchild = int(process.stdout.readline())
-        os.kill(grandchild, 0)  # alive, and outside the child's own lifetime
+        # Running, and outside the child's own lifetime.
+        assert not _process_has_terminated(grandchild)
 
         assert _kill_and_reap(process) == -signal.SIGKILL
 
         # The grandchild is not this process's child, so it is never reaped here
-        # and cannot be mistaken for gone by a `waitpid` race. Signal zero is the
-        # question "does this pid still exist"; a `SIGKILL` delivered to the
-        # group has already answered it.
+        # and cannot be mistaken for gone by a `waitpid` race.
         deadline = time.monotonic() + 30
-        while True:
-            try:
-                os.kill(grandchild, 0)
-            except ProcessLookupError:
-                break
+        while not _process_has_terminated(grandchild):
             assert time.monotonic() < deadline, (
                 f"grandchild {grandchild} survived the group kill, so a recovery driver "
                 "would have been left running on the machine"
