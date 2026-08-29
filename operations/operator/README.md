@@ -26,14 +26,15 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The eleven words
+## The twelve words
 
-Ten things this tool can do, in the order a normal run uses them, plus one you can run
+Eleven things this tool can do, in the order a normal run uses them, plus one you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
+| `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
@@ -85,8 +86,9 @@ dense pass into a named refusal before proxy retention or full comparisons can g
 a bound; prepare that material as smaller submitted folders.
 
 **Neither `ingest` nor `upload` needs a rented machine**, so a normal order is: `ingest`
-the submitted folder if you are preparing source masters, `upload` your images (zero
-machine cost while you do either), then `launch` when you are ready to actually process
+the submitted folder if you are preparing source masters, work its queue with `triage`,
+`upload` your images (zero machine cost while you do any of that), then `launch` when you
+are ready to actually process
 them, `boot`, `run`, `export`, `backup` your run tree to keep a local copy, and `close`
 the moment you are done. Use `review` to read one run tree without changing anything in
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import tracemalloc
@@ -3594,3 +3595,43 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
     assert saved["preview"]["spend"]["pod_hourly_usd"] == "0.77"
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
 
+
+def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> None:
+    """The word table is the operator's map; a verb missing from it is invisible.
+
+    `triage` shipped with a subcommand, an interactive prompt entry and no row
+    here, so the console offered a word its own manual did not contain — and the
+    "N words" heading counted the table rather than the parser, which meant the
+    number read as confirmation while being wrong. Reconciling the two lists is
+    the same guard `common/chairs` puts between `models.toml` and the
+    materialization inventory: two places name one set, so a test holds them
+    together instead of a reviewer noticing.
+    """
+    readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^\| `([a-z]+)` \|", readme, flags=re.MULTILINE))
+    subparsers_action = next(
+        action
+        for action in cli.build_parser()._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    declared = set(subparsers_action.choices)
+
+    assert documented == declared, (
+        f"the operator README's word table and the parser disagree: "
+        f"undocumented verbs {sorted(declared - documented)}, "
+        f"documented non-verbs {sorted(documented - declared)}"
+    )
+
+    counted = len(declared)
+    spelled = {
+        11: ("eleven", "Ten"),
+        12: ("twelve", "Eleven"),
+        13: ("thirteen", "Twelve"),
+    }
+    assert counted in spelled, (
+        f"{counted} verbs: extend this test's number words so the heading stays checkable"
+    )
+    total, doers = spelled[counted]
+    # The heading counts every word; the sentence counts every word but `status`.
+    assert f"## The {total} words" in readme
+    assert f"\n{doers} things this tool can do," in readme
