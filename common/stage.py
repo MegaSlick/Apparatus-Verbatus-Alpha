@@ -173,6 +173,36 @@ def _read_triage_modes_config(path: str | Path) -> bytes:
     return raw
 
 
+def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
+    """The closed triage-mode schema, checked in one place.
+
+    `run_config_bindings` seals the digest of these bytes into `config_digest` and
+    `require_triage_modes` rechecks them at the point of use; before this was
+    shared, only the second one parsed. A file declaring `[automatic]` therefore
+    sealed cleanly into `run.json` and the run walked several stages before the
+    first triage recheck refused it — a run tree that looks legitimate and can
+    never complete. The same validator on both sides means the binding cannot
+    admit a vocabulary the recheck will reject.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
+    try:
+        record = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
+    if set(record) != set(TRIAGE_MODES) or any(
+        not isinstance(policy, dict)
+        or set(policy) != {"review_at_or_below_confidence"}
+        or not isinstance(policy["review_at_or_below_confidence"], int)
+        or isinstance(policy["review_at_or_below_confidence"], bool)
+        or not 0 <= policy["review_at_or_below_confidence"] <= 4
+        for policy in record.values()
+    ):
+        raise ContractError("triage modes configuration has the wrong closed schema")
+
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -1210,11 +1240,16 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
-    if payload.get("config_digest") != tree.read_run().get("config_digest"):
+    # One read, both comparisons. Two reads can straddle a rewrite, and a seal
+    # that matched no single run authority would pass this boundary -- the same
+    # two-read fault this file already names for `pdf_render.toml` and
+    # `recovery.toml`.
+    run_authority = tree.read_run()
+    if payload.get("config_digest") != run_authority.get("config_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
         )
-    if payload.get("register_digest") != tree.read_run().get("register_digest"):
+    if payload.get("register_digest") != run_authority.get("register_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
         )
@@ -1716,7 +1751,12 @@ def run_config_bindings(
     # binds the path its caller named, and `require_triage_modes` already accepts
     # one at the point of use. Sealing the default while the recheck read a caller's
     # file would have reported drift on two files that had each never changed.
-    triage_modes_config_digest = digest_bytes(_read_triage_modes_config(triage_modes_config_path))
+    # Validated, not merely hashed. Sealing bytes the point-of-use recheck will
+    # refuse produces a run whose `run.json` is well formed and which cannot reach
+    # triage; the refusal belongs at run creation, where nothing has been written.
+    triage_modes_raw = _read_triage_modes_config(triage_modes_config_path)
+    _validate_triage_modes_config(triage_modes_raw, triage_modes_config_path)
+    triage_modes_config_digest = digest_bytes(triage_modes_raw)
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -1897,23 +1937,7 @@ def require_triage_modes(
             "the triage modes configuration changed between run binding and its "
             f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
         )
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
-    try:
-        record = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
-    if set(record) != set(TRIAGE_MODES) or any(
-        not isinstance(policy, dict)
-        or set(policy) != {"review_at_or_below_confidence"}
-        or not isinstance(policy["review_at_or_below_confidence"], int)
-        or isinstance(policy["review_at_or_below_confidence"], bool)
-        or not 0 <= policy["review_at_or_below_confidence"] <= 4
-        for policy in record.values()
-    ):
-        raise ContractError("triage modes configuration has the wrong closed schema")
+    _validate_triage_modes_config(raw, path)
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.

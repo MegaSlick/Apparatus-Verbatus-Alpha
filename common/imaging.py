@@ -29,6 +29,7 @@ PNG and DEFLATE specifications decide any byte.
 """
 
 import hashlib
+import math
 import struct
 import zlib
 from collections.abc import Mapping
@@ -745,6 +746,35 @@ def _png_colour_mode(png_bytes: bytes) -> str:
     )
 
 
+def _expanded_rotation_size(width: int, height: int, angle_degrees: float) -> tuple[int, int]:
+    """The size `Image.rotate(angle, expand=True)` would allocate, without allocating it.
+
+    Pillow decides the expanded canvas by transforming the four corners of the
+    source rectangle and taking `ceil(max) - floor(min)` on each axis; the same
+    arithmetic is restated here so the bound can be applied *before* the rotation
+    materialises the result. The multiples of 90 are Pillow's own fast paths,
+    which transpose rather than transform.
+    """
+    angle = angle_degrees % 360.0
+    if angle in (0.0, 180.0):
+        return width, height
+    if angle in (90.0, 270.0):
+        return height, width
+    radians = -math.radians(angle)
+    cos = round(math.cos(radians), 15)
+    sin = round(math.sin(radians), 15)
+    centre_x, centre_y = width / 2.0, height / 2.0
+    offset_x = cos * -centre_x + sin * -centre_y + centre_x
+    offset_y = -sin * -centre_x + cos * -centre_y + centre_y
+    corners = ((0, 0), (width, 0), (width, height), (0, height))
+    xs = [cos * x + sin * y + offset_x for x, y in corners]
+    ys = [-sin * x + cos * y + offset_y for x, y in corners]
+    return (
+        math.ceil(max(xs)) - math.floor(min(xs)),
+        math.ceil(max(ys)) - math.floor(min(ys)),
+    )
+
+
 def render_triage_derivative(
     source_bytes: bytes,
     *,
@@ -819,8 +849,19 @@ def render_triage_derivative(
             )
             # Pillow's positive degrees are counter-clockwise, while the sealed
             # recipe records clockwise millidegrees.
+            angle_degrees = -rotation["rotation_millidegrees"] / 1000
+            # `expand=True` grows the canvas to the rotated bounding box, so a crop
+            # that sits inside `MAX_PIXELS` before the rotation can land far outside
+            # it after: a 200000x2 strip is 400000 pixels, and at 45 degrees its
+            # bounding box is over four hundred times the whole bound. The Door only
+            # inspects the geometry of the page it is handed, so without a check here
+            # the allocation happens first and the run dies where a recorded refusal
+            # belongs.
+            _refuse_past_pixel_bound(
+                *_expanded_rotation_size(crop_box["w"], crop_box["h"], angle_degrees)
+            )
             rotated = cropped.rotate(
-                -rotation["rotation_millidegrees"] / 1000,
+                angle_degrees,
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
             )

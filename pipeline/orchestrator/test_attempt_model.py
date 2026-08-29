@@ -506,6 +506,28 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
     tree = through_attestatores(root, "r", "reread-success")
     before = snapshot(root)
 
+    # The refusal's basis, proved from sealed run state rather than from the
+    # sentence the refusal prints: asserting only on stderr would pass on a
+    # handler that printed the right words about the wrong chair.
+    #
+    # Page evidence is keyed by (page_ordinal, chair), never by chair alone --
+    # this chair contributes a record per page, so collapsing them by chair
+    # lets a record about some other page answer for this act. Each of this
+    # chair's rows on this act is therefore followed through the digest-checked
+    # reference it actually carries, and the record found at the end of it must
+    # be that chair's, page-scoped, on that row's page.
+    attachment = artifacts(tree, ATTESTATORES, "act-attachment", act)[-1]
+    rows = [row for row in attachment["payload"]["attachments"] if row["chair"] == "attestator_1"]
+    assert rows, attachment["payload"]["attachments"]
+    for row in rows:
+        assert row["page_witness"] is True, row
+        record = tree.read_artifact_reference(
+            row["testimonium_ref"], stage=ATTESTATORES, kind="page-testimonium"
+        )
+        assert record["payload"]["chair"] == "attestator_1", record["payload"]
+        assert record["payload"]["scope"] == "page", record["payload"]
+        assert record["payload"]["page_ordinal"] == row["page_ordinal"], (record["payload"], row)
+
     result = reread(root, "r", "reread-success", act, "attestator_1")
 
     assert result.returncode != 0, "an act-targeted reread of a page witness was accepted"
