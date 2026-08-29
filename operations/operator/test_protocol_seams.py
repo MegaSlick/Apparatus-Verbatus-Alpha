@@ -10,6 +10,7 @@ implementations that production and the operator fixture actually construct.
 from __future__ import annotations
 
 import inspect
+from typing import Protocol
 
 import pytest
 
@@ -129,12 +130,103 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
             missing.append(name)
             continue
         if isinstance(member, property):
-            # Reading a property off the class returns the descriptor, which is
-            # not callable; its own presence is the whole obligation.
+            # Reading a property off the class returns the descriptor, so the
+            # `callable` check below cannot be applied here -- but presence
+            # alone is not the obligation either. A protocol property is an
+            # attribute a caller reads; answering it with a plain `def` gives
+            # every caller a bound method where a value was promised, and
+            # accepting that would let exactly the drift this matrix exists to
+            # catch through under the name of a defined member.
+            concrete = vars(owner)[name]
+            if inspect.isfunction(concrete) or isinstance(concrete, (staticmethod, classmethod)):
+                missing.append(name)
             continue
         if not callable(getattr(implementation, name, None)):
             missing.append(name)
     return sorted(missing)
+
+
+class _DescriptorSeam(Protocol):
+    """Not a real seam: the shapes `_missing_concrete_methods` must judge.
+
+    No pair in `SEAMS` declares a descriptor member today, so the walker's
+    handling of one is exercised nowhere else and could be wrong -- or could be
+    broken later -- without a single test noticing.
+    """
+
+    @property
+    def label(self) -> str:
+        """An attribute a caller reads, not a method it invokes."""
+
+    @staticmethod
+    def build() -> None:
+        """A staticmethod the implementation must define."""
+
+    @classmethod
+    def make(cls) -> None:
+        """A classmethod the implementation must define."""
+
+    def read(self) -> None:
+        """An ordinary method, for the contrast."""
+
+
+class _AnswersEveryShape:
+    label = "a value"
+
+    @staticmethod
+    def build() -> None: ...
+
+    @classmethod
+    def make(cls) -> None: ...
+
+    def read(self) -> None: ...
+
+
+class _AnswersThePropertyWithAProperty(_AnswersEveryShape):
+    @property
+    def label(self) -> str:
+        return "a value"
+
+
+class _AnswersThePropertyWithASlot:
+    __slots__ = ("label",)
+
+    @staticmethod
+    def build() -> None: ...
+
+    @classmethod
+    def make(cls) -> None: ...
+
+    def read(self) -> None: ...
+
+
+class _AnswersThePropertyWithAMethod(_AnswersEveryShape):
+    def label(self) -> str:  # type: ignore[override]
+        return "a bound method where a value was promised"
+
+
+class _DefinesOnlyTheOrdinaryMethod:
+    def read(self) -> None: ...
+
+
+@pytest.mark.parametrize(
+    ("implementation", "expected"),
+    [
+        (_AnswersEveryShape, []),
+        (_AnswersThePropertyWithAProperty, []),
+        (_AnswersThePropertyWithASlot, []),
+        # The one this walker used to accept: a defined member of the wrong
+        # shape, which reads as present to any check that only asks whether the
+        # name resolves.
+        (_AnswersThePropertyWithAMethod, ["label"]),
+        (_DefinesOnlyTheOrdinaryMethod, ["build", "label", "make"]),
+    ],
+    ids=lambda value: getattr(value, "__name__", str(value)),
+)
+def test_the_seam_walker_judges_descriptor_members_by_shape(
+    implementation: type, expected: list[str]
+) -> None:
+    assert _missing_concrete_methods(_DescriptorSeam, implementation) == expected
 
 
 @pytest.mark.parametrize(
