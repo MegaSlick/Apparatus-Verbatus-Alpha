@@ -226,7 +226,8 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     """
     local = tmp_path / "local-runs"
     volume = tmp_path / "mounted-volume" / "runs"
-    assert _run(local, "r", "review").returncode == 3
+    baseline = _run(local, "r", "review")
+    assert baseline.returncode == 3, baseline.stderr
     uninterrupted = snapshot(local)
 
     crashed = _crash_mid_recovery(volume, tmp_path)
@@ -296,15 +297,30 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
-    assert report.copied == len(crashed) and report.reused == 0
+    # Two facts, asserted separately, and the published list rather than a count.
+    # `copied` counts files written as new objects and `reused` counts digests
+    # the store already held, so two identical files anywhere in the run tree
+    # make `copied` smaller than the crashed set with the backup behaving
+    # correctly -- and the joined assertion would then fail without saying which
+    # half broke, leaving a reader unable to tell a lost file from de-duplication.
+    published = json.loads(
+        (mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json").read_text()
+    )
+    # `snapshot` keys are relative to the run root's parent; a backup inventory
+    # names members relative to the run tree itself.
+    assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed)
+    assert report.reused == 0, "nothing was in the object store before this backup"
+    assert report.copied + report.reused == len(published["files"])
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
     assert snapshot(restored_root) == crashed
     _assert_every_reference_resolves(restored_root, "r")
 
-    assert _run(restored_root, "r", "review").returncode == 3
-    assert _run(volume, "r", "review").returncode == 3
+    restored_run = _run(restored_root, "r", "review")
+    assert restored_run.returncode == 3, restored_run.stderr
+    source_run = _run(volume, "r", "review")
+    assert source_run.returncode == 3, source_run.stderr
     assert snapshot(restored_root) == snapshot(volume)
     _assert_every_reference_resolves(restored_root, "r")
 
@@ -320,20 +336,56 @@ def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
         target.write_bytes(data)
 
 
-def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group(monkeypatch) -> None:
-    observed: list[object] = []
+def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:
+    """A real session, a real grandchild, and a real check that the group is gone.
 
-    class Process:
-        pid = 123
+    Driven through stubs -- a `Process` that always reports itself alive, an
+    `os.killpg` replaced by a list append, a `wait` that returns whatever the
+    stub says -- this proved only that `_kill_and_reap` calls two functions in
+    one order. It would have stayed green if the wrong group were killed, or if
+    a real child survived on the machine, and a leaked recovery driver
+    accumulating through a parish-sized run is the thing it is named for.
 
-        def poll(self):
-            return None
+    The child starts its own session and forks a grandchild that outlives it, so
+    killing the process alone leaves the grandchild running: only a group-wide
+    signal ends both. The grandchild reports its pid, and its death is what this
+    asserts, rather than the call sequence that was supposed to cause it.
+    """
 
-        def wait(self, *, timeout):
-            observed.append(("wait", timeout))
-            return -signal.SIGKILL
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys, time\n"
+            "child = os.fork()\n"
+            "if child == 0:\n"
+            "    time.sleep(600)\n"
+            "    os._exit(0)\n"
+            "sys.stdout.write(f'{child}\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(600)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        assert process.stdout is not None
+        grandchild = int(process.stdout.readline())
+        os.kill(grandchild, 0)  # alive, and outside the child's own lifetime
 
-    monkeypatch.setattr(os, "killpg", lambda pid, sent: observed.append(("killpg", pid, sent)))
+        assert _kill_and_reap(process) == -signal.SIGKILL
 
-    assert _kill_and_reap(Process()) == -signal.SIGKILL
-    assert observed == [("killpg", 123, signal.SIGKILL), ("wait", 120)]
+        # The grandchild is not this process's child, so it is never reaped here
+        # and cannot be mistaken for gone by a `waitpid` race. Signal zero is the
+        # question "does this pid still exist"; a `SIGKILL` delivered to the
+        # group has already answered it.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, (
+                f"grandchild {grandchild} survived the group kill, so a recovery driver "
+                "would have been left running on the machine"
+            )
+            time.sleep(0.01)
