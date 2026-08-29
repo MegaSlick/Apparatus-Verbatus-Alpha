@@ -255,6 +255,12 @@ def held_advance_boundaries(
         if from_stage is not None or to_stage is not None:
             raise ContractError("manual mode names one stage, not a range")
         return frozenset({stage})
+    # Named, not reached by falling through. `RUN_MODES` is `TRIAGE_MODES`, a
+    # vocabulary that grows in `common/contracts/stages.py` for the triage
+    # manifest's sake; a mode added there would arrive here as a range mode and
+    # the operator would be told semi mode needs a range it never had.
+    if mode != "semi":
+        raise ContractError(f"staged run mode {mode!r} names no held-boundary rule")
     if from_stage is None or to_stage is None:
         raise ContractError("semi mode needs both the first and last stage of its range")
     first = STAGES.index(_named_boundary(from_stage, "the semi-mode range start"))

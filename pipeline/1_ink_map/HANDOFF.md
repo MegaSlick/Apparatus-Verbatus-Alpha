@@ -12,6 +12,18 @@ changes, and a page's ink evidence lands against the wrong act. The stage refuse
 the whole census rather than publish a record it cannot bind to exactly one
 submitted source.
 
+`payload["edge_findings"]` retains this stage's lossless page-space ink runs so
+the Armarium can re-measure the same pixels rather than decode the page again
+under a possibly different measurement. **Its size on a real page is PROPOSED,
+NOT YET MEASURED.** What is measured is the fixture: page 1 of
+`proof.synthetic_pages` is 200x260, carries 2,880 runs, and serializes to about
+21.8 KiB of JSON. That figure says nothing about a 300-DPI register page, whose
+larger raster and denser handwriting move both terms, and this stage's shard is
+described elsewhere in units of a thousand pages. Extrapolating from the fixture
+would be exactly the unmeasured claim GOVERNANCE 10 forbids, so the shard disk
+budget stays an open question against real material and is named here rather
+than assumed away.
+
 `payload["edge"]` is the bounded `unclaimed-edge-ink` detector: it measures only
 the 64-pixel page perimeter using that same implementation. A flagged record is
 unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for an

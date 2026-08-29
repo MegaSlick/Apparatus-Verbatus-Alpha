@@ -168,9 +168,24 @@ def test_a_page_slice_derivation_is_named_as_the_double_derivation_it_is():
 
 
 def test_no_departure_means_no_witness_derived_location_at_all():
-    """Every chair agreeing is the correct zero, not an empty-looking claim."""
+    """Every chair agreeing is the correct zero, not an empty-looking claim.
+
+    The flag below is placed at the span an *agreeing* chair would compute for
+    itself, so the departure check is the only thing that can exclude it. With
+    an empty flag list the function returns early on `located_classes` and this
+    would pass however the dossier were read; both calls are kept because the
+    early return is also worth pinning.
+    """
     perlector = _perlector()
     dossier = _dossier(("attestator_1", "the reading", "own-report"))
+    agreeing_span = audit.text_change_span("the reading", "the reading")
+    flags = [
+        {
+            "class": "testimony-diff",
+            "location": {"start": agreeing_span[0], "end": agreeing_span[1]},
+        }
+    ]
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == []
     assert perlector.flag_location_basis(dossier, [], semi_final_text="the reading") == []
 
 
