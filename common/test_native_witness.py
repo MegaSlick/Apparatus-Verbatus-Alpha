@@ -788,6 +788,49 @@ def _page_payload(**changes):
     return value
 
 
+@pytest.mark.parametrize(
+    "reference",
+    (
+        {"relative_path": "3_attestatores/blobs/sha256/deadbeef"},
+        {"relative_path": "3_attestatores/blobs/sha256/deadbeef", "sha256": None},
+        "not a reference at all",
+        None,
+    ),
+)
+def test_a_page_edge_finding_refuses_a_malformed_retained_reference_by_name(reference):
+    """Its provenance check indexed the reference before proving it was one.
+
+    A rejected box is traced to the bytes that produced it by matching its
+    `response_sha256` against the page record's retained references. Read
+    straight through, a reference that is not a mapping, or carries no string
+    digest, escaped this validator as a bare `KeyError` or `TypeError` -- and a
+    traceback out of a provenance contract is not the named refusal it owes the
+    reader who has to act on it.
+    """
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    overshoots = [
+        {
+            "kind": "page-edge-overshoot",
+            "response_sha256": digest,
+            "ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 201, "h": 260},
+            "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        }
+    ]
+    value = _page_payload(raw_response_refs=[reference])
+    value["partition_disagreement"] = partition_disagreement(
+        {"artifact_id": "page-testimonium", "payload": value},
+        [],
+        page_edge_overshoots=overshoots,
+    )
+
+    with pytest.raises(SchemaRefusal, match="malformed retained response reference"):
+        validate_page_testimonium_payload(
+            value, testimonium_id="page-testimonium", read_bytes=lambda _path: raw
+        )
+
+
 def test_a_valid_page_testimonium_passes_its_closed_contract():
     """The refusals below must be about the change, not about the baseline."""
     value = _page_payload()
