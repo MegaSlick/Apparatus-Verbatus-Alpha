@@ -137,6 +137,28 @@ def _mode_independent_held_stages() -> frozenset[str]:
         and isinstance(tail.value.orelse, ast.Name)
         and tail.value.orelse.id == "EXIT_HELD"
     ):
+        # The tail is only *about* the Armarium because an earlier guard has
+        # already returned for every selection whose last member is something
+        # else. Naming the stage from this file's constant alone would let that
+        # guard be widened or deleted -- the tail would then hold other stages,
+        # the derived set would be wrong, and this test would still be green on
+        # its own assumption. So the guard is read out of the driver too.
+        guards_last_member = any(
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.ops[0], ast.NotEq)
+            and isinstance(node.test.comparators[0], ast.Constant)
+            and node.test.comparators[0].value == stage_names.ARMARIUM
+            and isinstance(node.test.left, ast.Subscript)
+            and isinstance(node.test.left.value, ast.Name)
+            and node.test.left.value.id == "names"
+            for node in ast.walk(function)
+        )
+        assert guards_last_member, (
+            "run_sequence's terminal hold no longer sits behind a guard that returns "
+            "for any selection whose last member is not the Armarium, so the tail can "
+            "hold other stages and this derivation no longer describes the driver"
+        )
         held.add(stage_names.ARMARIUM)
     return frozenset(held)
 

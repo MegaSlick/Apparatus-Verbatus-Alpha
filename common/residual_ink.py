@@ -258,8 +258,9 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
             previous_end = end
 
         total_ink += sum(end - start for start, end in runs)
-        if band == 0:
-            continue
+        # No `band == 0` guard: the floor above makes the band at least 1 for
+        # every image the validation admits, and the interval arithmetic below
+        # is a no-op at band 0 anyway -- both edge intervals collapse to empty.
         edge_intervals = (
             [(0, width)] if y < band or y >= height - band else [(0, band), (width - band, width)]
         )

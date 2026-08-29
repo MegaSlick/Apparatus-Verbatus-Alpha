@@ -331,10 +331,6 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
         assert released["flagged"] is False
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 @pytest.mark.parametrize(
     ("width", "height"),
     [(1, 40), (40, 1), (1, 1)],
@@ -363,3 +359,7 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     # two detectors reach the same outcome.
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"]
     assert remeasured["flagged"] == initial["flagged"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

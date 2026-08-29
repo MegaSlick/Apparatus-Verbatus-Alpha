@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting
+from common.residual_ink import MINIMUM_INK_PIXELS
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -218,9 +219,11 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
 def test_ink_below_the_minimum_pixel_floor_still_refuses():
     """A pointer with a trace of ink, short of `MINIMUM_INK_PIXELS`, is not evidence."""
     recensor = _recensor()
-    box = {"x": 0, "y": 0, "w": 20, "h": 1}  # 20 px < MINIMUM_INK_PIXELS (24)
+    # One pixel short of the floor, derived rather than written out: a changed
+    # floor must move this box with it, not silently invert what the test proves.
+    box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
 
 
@@ -258,6 +261,15 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     ]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, cut) == []
+    # These two straddle the floor: 20 px is under it and 30 px is over. The
+    # geometry is written out because whole rows of a 10-wide box read more
+    # plainly than an expression, so the straddle is asserted against the
+    # constant instead -- a changed floor fails here, naming the real cause,
+    # rather than quietly turning one of the two cases into the other.
+    assert 20 < MINIMUM_INK_PIXELS <= 30, (
+        "MINIMUM_INK_PIXELS moved out of the 20/30 px straddle these cut regions "
+        "are built to sit either side of; rebuild the geometry around the new floor"
+    )
     partial = {1: [{"x": 0, "y": 0, "w": 10, "h": 8}]}  # leaves 2 rows = 20 px
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, partial) == []
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
