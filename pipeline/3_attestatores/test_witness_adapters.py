@@ -62,16 +62,43 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     assert chandra.retain is adapters.chandra.retain
 
 
-def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
-    """The registry name remains the retained model-view provenance.
+@pytest.mark.parametrize("name", ("churro.v1", "chandra.v1", "dai.v1"))
+def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
+    """No registry retain seam may accept an ``adapter`` argument at all.
 
     Returning the generic ``retain_model_view`` function exposed its
-    ``adapter=`` argument to the caller. A caller could resolve ``churro.v1``
-    and then retain the same bytes under another adapter's name, making the
-    sealed registry advisory precisely where it is meant to bind provenance.
+    ``adapter=`` argument to the caller. Code that had resolved one adapter
+    could then retain those bytes under another adapter's name, making the
+    sealed registry advisory precisely where it is meant to bind provenance
+    (GOVERNANCE 6) and handing the bytes to the wrong parser on read-back.
+    Chandra's wrapper forwarded ``**kwargs`` and permitted exactly that while
+    Churro's and DAI's did not, so every runnable adapter is checked here.
+
+    The refusal is at the signature, before any model view is inspected, which
+    is why DAI is covered without building its own closed view shape.
     """
     adapters = _load_local_adapters()
-    spec = adapters.resolve_runnable_adapter("churro.v1")
+    spec = adapters.resolve_runnable_adapter(name)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'adapter'"):
+        spec.retain(
+            SimpleNamespace(put_blob=lambda _stage, payload: None),
+            adapter="another.v1",
+            view={"kind": "fixture"},
+            raw_response=b"<output>text</output>",
+            transport_stop_reason="complete",
+        )
+
+
+@pytest.mark.parametrize("name", ("churro.v1", "chandra.v1"))
+def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled(name):
+    """A successful retention records the name the caller resolved, not another.
+
+    The two adapters whose model view is a plain mapping are checked end to end;
+    DAI's view has its own closed schema and is exercised in its own cases.
+    """
+    adapters = _load_local_adapters()
+    spec = adapters.resolve_runnable_adapter(name)
     blobs: list[bytes] = []
 
     def put_blob(_stage, payload):
@@ -85,16 +112,8 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
         transport_stop_reason="complete",
     )
 
-    assert retained["adapter"] == "churro.v1"
+    assert retained["adapter"] == name
     assert blobs == [b"<output>text</output>"]
-    with pytest.raises(TypeError, match="unexpected keyword argument 'adapter'"):
-        spec.retain(
-            SimpleNamespace(put_blob=put_blob),
-            adapter="another.v1",
-            view={"kind": "fixture"},
-            raw_response=b"<output>text</output>",
-            transport_stop_reason="complete",
-        )
 
 
 class _Published:

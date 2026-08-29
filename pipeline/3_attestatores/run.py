@@ -2103,7 +2103,8 @@ def resolve_attempt(
                 adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
                 retained = adapter.retain(
                     context.tree,
-                    adapter="chandra.v1",
+                    # No adapter argument: Chandra's retain wrapper pins its own
+                    # registry identity, as Churro's and DAI's do.
                     view={"prompt": adapter.prompt()},
                     raw_response=raw_response,
                     transport_stop_reason="fixture-complete",
