@@ -145,6 +145,40 @@ def test_external_trigger_refuses_an_unsealed_boundary_before_creating_its_write
     assert not (tree.root / "receipts").exists()
 
 
+def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(tmp_path):
+    """Isolate the digest comparison from the seal verification beside it.
+
+    `test_advance_modes.py`'s reseal test accepts either refusal message,
+    because forging a census both moves the digest and breaks verification. So
+    the digest comparison could be deleted and that test would stay green on
+    the verification branch alone. Here the sealed boundary is untouched and
+    still verifies; only the supplied digest is wrong, so this refusal can come
+    from nothing else.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    current = _boundary_digest(run_root, run_id)
+    wrong = "c" * 64
+    assert wrong != current
+
+    with pytest.raises(OperatorError) as refusal:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed a boundary and named the wrong digest",
+            workspace=ROOT,
+            expected_digest=wrong,
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "changed after it was shown for confirmation" in (refusal.value.detail or "")
+    # The boundary was never disturbed, so it still verifies afterwards.
+    assert advance.sealed_boundary(tree, "armarium")[1] == current
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
+
+
 def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(tmp_path):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -230,7 +264,11 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
-        expected_digest=_boundary_digest(run_root, run_id),
+        # The digest observed before the spy was installed, which is what this
+        # test's name claims the advance binds. Re-reading it here instead bound
+        # a digest taken after the worker ran, so the observation above proved
+        # nothing.
+        expected_digest=observed_digest,
     )
 
     after = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}

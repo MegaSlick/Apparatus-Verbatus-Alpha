@@ -230,7 +230,12 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
     ):
         raise ValueError("ink-run evidence has invalid dimensions")
 
-    band = min(EDGE_BAND_PIXELS, width // 2, height // 2)
+    # The same band `page_edge_ink` records, including its smallest-legal-image
+    # floor. Without `max(1, ...)` a one-pixel-wide or one-pixel-high page gets
+    # band 0 here and band 1 there, so the Ink Map flags the page and the
+    # Armarium re-measures it clean; `ink_map_page_rows` then refuses the whole
+    # export over two detectors disagreeing rather than over the page.
+    band = min(EDGE_BAND_PIXELS, max(1, width // 2), max(1, height // 2))
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):

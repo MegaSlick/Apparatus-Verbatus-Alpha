@@ -287,7 +287,18 @@ def build_parser() -> PlainParser:
     advance.add_argument("--run-id", required=True, help="the sealed run to advance")
     advance.add_argument("--stage", required=True, help="the sealed stage boundary to pass")
     advance.add_argument("--reason", required=True, help="why Tyrel chose to advance this boundary")
-    advance.add_argument("--mode", choices=RUN_MODES, default="manual")
+    advance.add_argument(
+        "--mode",
+        choices=RUN_MODES,
+        default="manual",
+        help=(
+            "the run mode this confirmation is declared under, which decides whether "
+            "--stage can require a person-held advance at all: 'manual' holds the one "
+            "named stage, 'semi' the inclusive --from-stage/--to-stage range, and "
+            "'auto' passes its selected boundaries without a person-held record except "
+            "the boundaries where a run can stop in every mode"
+        ),
+    )
     advance.add_argument("--from-stage", help="first stage of the inclusive semi-mode range")
     advance.add_argument("--to-stage", help="last stage of the inclusive semi-mode range")
     backup = verbs.add_parser(

@@ -339,9 +339,21 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
         {"kind": "unrouted-observation"},
         {"kind": "unrouted-observation", "bounds": None},
         {"kind": "unrouted-observation", "bounds": [0, 0, 5, 5]},
+        # The two shapes that clear `isinstance(bounds, dict)` and reach the
+        # arithmetic: a rectangle missing a side, and one whose side is not a
+        # number. Both used to escape as a bare KeyError or TypeError.
+        {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5}},
+        {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5, "h": "5"}},
         "not-even-a-mapping",
     ],
-    ids=["missing-bounds", "null-bounds", "list-bounds", "non-mapping-observation"],
+    ids=[
+        "missing-bounds",
+        "null-bounds",
+        "list-bounds",
+        "partial-bounds",
+        "non-integer-bounds",
+        "non-mapping-observation",
+    ],
 )
 def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(observation):
     """A malformed pointer is a fatal accounting gap, exactly like a missing map row.

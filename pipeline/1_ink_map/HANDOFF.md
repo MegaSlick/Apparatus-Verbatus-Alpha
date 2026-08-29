@@ -35,17 +35,21 @@ informative on its own. The field this record exists to carry forward is
 derives from. The alarm on this record is the *outcome* —
 `unclaimed-edge-ink` — which is measured against a real central rectangle.
 
-**A flagged edge record does not make the run `partial` yet, by design.**
-`run_aggregate` (`common/contracts/outcomes.py`) reconciles act categories, the
-page census, witness coverage and text status; it does not read ink-map
-records, so a page whose perimeter carries unclaimed ink still lets a run whose
-acts all reconcile report `complete`. That is the deferral this unit chose, not
-an oversight: `unclaimed-edge-ink` classifies UNRESOLVED at this boundary and
-terminates nothing, and Unit 14's own definition of done is the one that
-requires the hold be *visible in the Armarium aggregate*. Until Unit 14 lands,
-the evidence lives in the record and this paragraph, which is what GOVERNANCE 2
-asks of it — but no run may be described as having accounted for edge ink on
-the strength of a `complete` status alone.
+**A flagged edge record does not by itself make the run `partial`, but an
+unreleased one now does.** `unclaimed-edge-ink` still classifies UNRESOLVED at
+*this* boundary and terminates nothing here: this stage measures before any
+proposal exists, so it cannot know whether an act claims that ink. What decides
+the run is the Armarium's re-measure against the Designator's verified crops —
+see the Unit 14B ledger below. `run_aggregate`
+(`common/contracts/outcomes.py`) takes `edge_hold_pages` and appends a named
+partial reason for every page whose edge ink no crop released, so a run
+carrying one cannot report `complete`. A page whose ink the crops did claim is
+released and adds no reason.
+
+This paragraph previously recorded the opposite, as the deferral this unit had
+chosen while Unit 14 was outstanding. Unit 14B has landed; the sentence is kept
+here corrected rather than deleted because this file is the stage interface and
+a consumer who built against the old contract needs to see that it moved.
 
 ## The fixture is a degenerate case for the edge detector
 

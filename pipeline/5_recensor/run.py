@@ -1438,7 +1438,16 @@ def unclaimed_ink_observations(
     requests = []
     for observation in unclaimed_observations:
         bounds = observation.get("bounds") if isinstance(observation, dict) else None
-        if not isinstance(bounds, dict):
+        # Each of x, y, w and h is required, and required to be a real integer.
+        # `isinstance(bounds, dict)` alone let a partial rectangle through to
+        # `_ink_outside_cuts_in_box`, which indexes `box["x"]` and ended the
+        # stage with a bare KeyError -- an unnamed crash in place of the named
+        # refusal this gate exists to give, for the one malformed shape that
+        # actually reaches the arithmetic.
+        if not isinstance(bounds, dict) or any(
+            key not in bounds or not isinstance(bounds[key], int) or isinstance(bounds[key], bool)
+            for key in ("x", "y", "w", "h")
+        ):
             raise FatalAccounting(
                 f"page {page_ordinal} has a retained unclaimed witness observation with no "
                 "{x, y, w, h} bounds. Skipping it would read a malformed pointer as one that "

@@ -719,16 +719,18 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
-    for ordinal in sorted(edge_hold_pages or ()):
-        reasons.append(
-            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "Designator crop on the page claims, so its coverage is not reconciled"
-        )
-
     for chair in sorted(unaddressed_chairs or ()):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "
             "resolved it and no artifact records it"
+        )
+
+    # A page-scoped hold: the ink at its edge belongs to no act yet, so the page
+    # cannot reconcile even when every act cut from it was delivered.
+    for ordinal in sorted(edge_hold_pages or ()):
+        reasons.append(
+            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+            "Designator crop on the page claims, so its coverage is not reconciled"
         )
 
     for act in sorted(act_categories):

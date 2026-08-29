@@ -124,10 +124,15 @@ projection configuration. The bundle may contain these plainly specified formats
   flagged, because writing zeros would record a measurement nobody took).
   The `unclaimed-edge-ink` held set is DERIVED from those counts by the ink
   map's own gate, on both sides — never carried beside them as a boolean, and
-  never read back out of the manifest claim it produced. Every other package
-  member is byte-identical whether or not a page is held, so a manifest built
-  with the hold simply dropped verified clean until the evidence entered the
-  source graph.
+  never read back out of the manifest claim it produced. `sources.json` itself
+  therefore differs between a held and a released page — it carries the counts
+  the hold is derived from — and so does the manifest claim derived from them;
+  `test_armarium_export.py`'s
+  `test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine` asserts
+  exactly that difference. The hold changes no established text: it is a
+  coverage finding about a page, not a reading. Before those counts entered the
+  source graph a manifest built with the hold dropped verified clean, which is
+  the hole that derivation closed.
   The clean verifier uses these to require every selected projection to retain
   the exact delivered provenance, every continuation region, and every held or
   refused reason; it does not treat a merely nonempty replacement as equivalent.

@@ -115,6 +115,15 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # Spending an unconfirmed witness pointer here would be exactly the
     # picker GOVERNANCE 3 forbids.
     assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
+    # The ordinals prove a second Designator pass happened, not whose it was:
+    # if the recovery moved from a1 to a2 they would still read [1, 2]. Name
+    # the act, which is the fact the comment above is actually about.
+    requests = [
+        tree.read_artifact("recensor", "recovery-request", entry["artifact_id"])
+        for entry in tree.build_manifest("recensor")["artifacts"]
+        if entry["kind"] == "recovery-request"
+    ]
+    assert [request["payload"]["act_key"] for request in requests] == ["a1"]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):
