@@ -24,7 +24,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-REQUIRED_PYTHON_VERSIONS = {"3.12", "3.13", "3.14"}
+# 3.13 was dropped from the contract on 2026-08-29 by Tyrel's in-session
+# ruling: 3.12 is the floor and 3.14 the newest supported, and no failure in
+# the pr/ queue's CI runs was ever unique to the middle leg. The documents the
+# assertion once cited (R0_CONTRACT_NOTE.md, GAMEPLAN_v3.md) are no longer in
+# the tree; this comment is the contract's record now.
+REQUIRED_PYTHON_VERSIONS = {"3.12", "3.14"}
 
 
 def _check_job_python_versions() -> set[str]:
@@ -64,8 +69,8 @@ def test_the_ci_check_job_runs_the_r0_python_matrix():
     missing = REQUIRED_PYTHON_VERSIONS - versions
     assert not missing, (
         f"the CI test matrix runs Python version(s) {sorted(versions)}, missing "
-        f"{sorted(missing)}; R0_CONTRACT_NOTE.md and GAMEPLAN_v3.md both require "
-        f"the matrix {sorted(REQUIRED_PYTHON_VERSIONS)}"
+        f"{sorted(missing)}; the contract (see the note beside "
+        f"REQUIRED_PYTHON_VERSIONS) requires the matrix {sorted(REQUIRED_PYTHON_VERSIONS)}"
     )
 
 
