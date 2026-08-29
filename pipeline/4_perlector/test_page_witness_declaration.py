@@ -210,9 +210,7 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
         ),
     ),
 )
-def test_each_unattached_fault_is_refused_by_the_field_that_caused_it(
-    monkeypatch, change, message
-):
+def test_each_unattached_fault_is_refused_by_the_field_that_caused_it(monkeypatch, change, message):
     """One message per fault. A single refusal naming only `span` sent the
     operator to a field that was already null whenever the real fault was the
     basis, and left them to guess the rest from a stage exit."""
