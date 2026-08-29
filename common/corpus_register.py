@@ -296,8 +296,14 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             )
         raise failure from cause
     if cleanup_error is not None:
+        # The replacement and the directory fsync both succeeded, so the new register is
+        # live and this refusal is about the leftover alone. It has to say so: a caller
+        # that reads "could not be removed" as "nothing was written" rebuilds its append
+        # against the previous digest, which the moved head then refuses as a concurrent
+        # change — two refusals for one durable, successful publish.
         raise SchemaRefusal(
-            f"corpus-register temporary {temporary} could not be removed"
+            f"the corpus register was replaced and is durable; only the temporary {temporary} "
+            "could not be removed. Do not retry this append against the previous digest"
         ) from cleanup_error
 
 
@@ -731,10 +737,14 @@ def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
                 "of its page's chain; every successor contains the captures it declared, so "
                 "withdrawing it would leave them asserted anyway. Retract from the head."
             )
+        # Its own wording, not the generic branch's. The two are reached by different
+        # routes — a target that opened with `membership:` was searched for among the
+        # links, and one that did not was searched for among the correspondences — and
+        # a message that cannot tell an operator which namespace was searched also
+        # cannot tell a test that the routing above still exists.
         raise SchemaRefusal(
-            f"retraction names {row['retracts']!r}, which no earlier correspondence or "
-            "membership link in this register declares; a retraction that corrects "
-            "nothing is not a correction"
+            f"retraction names membership link {target!r}, which this register never declares; "
+            "a retraction that corrects nothing is not a correction"
         )
     chain = reading.membership_chain[page]
     chain.pop()

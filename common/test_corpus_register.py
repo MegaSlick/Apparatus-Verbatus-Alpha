@@ -1,6 +1,7 @@
 """The corpus register declares correspondence without choosing a capture."""
 
 import json
+import pathlib
 import sys
 
 import pytest
@@ -888,10 +889,12 @@ def test_a_membership_retraction_must_name_the_head_of_its_chain():
 
 
 def test_a_membership_retraction_naming_no_link_in_this_register_is_refused():
-    # The unique half of the message, not the tail all three refusals share: an
-    # operator told "already retracted" for a digest that was never here looks for
-    # a retraction that does not exist instead of for the typo in the digest.
-    with pytest.raises(SchemaRefusal, match="no earlier correspondence or membership link"):
+    # The membership branch's own wording, not the tail every refusal shares and not
+    # the sentence the generic branch also raises: an operator told "already retracted"
+    # for a digest that was never here looks for a retraction that does not exist
+    # instead of for the typo, and a test matching the shared half would pass with the
+    # `membership:` routing deleted.
+    with pytest.raises(SchemaRefusal, match="membership link .* never declares"):
         validate_register_bytes(
             canonical_bytes(
                 {
@@ -978,3 +981,31 @@ def test_a_fresh_act_may_reappend_the_members_of_a_retracted_link():
         }
     )
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
+
+
+def test_a_cleanup_only_failure_says_the_register_was_already_published(tmp_path, monkeypatch):
+    """The head moved, so the refusal may not read as "nothing was written".
+
+    `os.replace` and the directory fsync have both succeeded by the time the leftover
+    is removed. A caller that reads a bare "temporary could not be removed" as a failed
+    append rebuilds it against the previous digest, and the moved head then refuses that
+    as a concurrent change — two refusals, no explanation, for one durable publish.
+    """
+    path = tmp_path / "register.json"
+    first = append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    original_unlink = pathlib.Path.unlink
+
+    def refuse_temporary_unlink(self, *args, **kwargs):
+        if ".tmp-" in self.name:
+            raise OSError("simulated cleanup refusal")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", refuse_temporary_unlink)
+    membership = _membership(["a" * 64])
+    with pytest.raises(SchemaRefusal, match="was replaced and is durable") as refusal:
+        append_records(path, [membership], expected_digest=first)
+    assert "do not retry this append against the previous digest" in str(refusal.value).lower()
+
+    # The published half of the claim, not just its wording: the append is on disk.
+    assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
+    assert register_digest(path.read_bytes()) != first

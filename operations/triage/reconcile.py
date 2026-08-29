@@ -524,7 +524,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise failure from cause
     if cleanup_error is not None:
         raise ReconciliationRefusal(
-            f"structural reconciliation temporary {temporary} could not be removed"
+            f"structural reconciliation output {path} was replaced and is durable; only the "
+            f"temporary {temporary} could not be removed"
         ) from cleanup_error
 
 

@@ -1096,7 +1096,8 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
         raise failure from cause
     if cleanup_error is not None:
         raise ProducerRefusal(
-            f"confirmed triage document temporary {temporary} could not be removed"
+            f"confirmed triage document {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed. Remove it; do not rewrite the document"
         ) from cleanup_error
 
 
@@ -1222,8 +1223,13 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             raise failure from cause
         raise failure
     if cleanup_error is not None:
+        # The temporary here is a second *link* to the published record rather than a
+        # spare copy, so leaving it named is not tidiness: the unaliased check refuses
+        # every later byte-identical retry while it survives.
         raise ProducerRefusal(
-            f"confirmation authority record temporary {temporary} could not be removed"
+            f"confirmation authority record {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed, and it is a second name for that "
+            "record: remove it, or no retry of this publish can be verified"
         ) from cleanup_error
 
 
