@@ -18,8 +18,10 @@ jobs:
     # trailed the suite, timeouts were misread as flakes. History: 15 minutes
     # fell to R5b's audit pass (six leg cancels, one AT [100%] after 15m16s);
     # 25 fell to pr/03's review rounds (3.13 finished at 24m38s while 3.12
-    # and 3.14 were cancelled at 25m on four consecutive runs).
-    timeout-minutes: 45
+    # and 3.14 were cancelled at 25m on four consecutive runs); 45 fell to
+    # pr/07's (3.12 cancelled at 45m while its siblings passed at 37-38m).
+    # 75 buys the rest of the queue's growth outright.
+    timeout-minutes: 75
     strategy:
       matrix:
         # 3.12 is the supported floor; later entries are cross-version coverage.
