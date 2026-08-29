@@ -167,6 +167,8 @@ def test_offline_producer_actor_requires_a_resolved_identity_and_revision():
 
 
 def test_a_non_utf8_actor_identity_stays_inside_the_typed_refusal_algebra():
+    # `canonical_bytes` turns the lone surrogate into TypeError, so this proves the
+    # crossing into `SchemaRefusal`, not a Unicode-specific branch of `_row_digest`.
     malformed = row()
     malformed["actor"] = {"kind": "producer", "identity": "\ud800", "revision": "v1"}
     with pytest.raises(SchemaRefusal, match="cannot be canonically serialized"):

@@ -147,14 +147,16 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except (TypeError, ValueError, RecursionError, UnicodeError) as error:
+    except (TypeError, ValueError, RecursionError) as error:
         # `canonical_bytes` refuses unsupported values with TypeError, circular
         # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError; JSON can also carry a lone Unicode surrogate which
-        # cannot enter the canonical UTF-8 record. A caller building a row is
-        # inside this contract's refusal algebra, so each is one here too; a
-        # bare built-in exception would escape
-        # every `except SchemaRefusal` in the pipeline.
+        # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
+        # has no form for — arrives as TypeError too, because `canonical_bytes`
+        # converts it there deliberately; naming `UnicodeError` here would neither
+        # widen this clause (it is a `ValueError` subclass) nor be reachable, while
+        # reading as a branch a test had covered. A caller building a row is inside
+        # this contract's refusal algebra, so each is one here too; a bare built-in
+        # exception would escape every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 

@@ -888,7 +888,10 @@ def test_a_membership_retraction_must_name_the_head_of_its_chain():
 
 
 def test_a_membership_retraction_naming_no_link_in_this_register_is_refused():
-    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+    # The unique half of the message, not the tail all three refusals share: an
+    # operator told "already retracted" for a digest that was never here looks for
+    # a retraction that does not exist instead of for the typo in the digest.
+    with pytest.raises(SchemaRefusal, match="no earlier correspondence or membership link"):
         validate_register_bytes(
             canonical_bytes(
                 {
@@ -975,4 +978,3 @@ def test_a_fresh_act_may_reappend_the_members_of_a_retracted_link():
         }
     )
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
-
