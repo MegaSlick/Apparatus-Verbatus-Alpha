@@ -221,7 +221,19 @@ def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
 
 
 def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monkeypatch):
-    """A successful compatibility act row cannot turn a failed page attempt into coverage."""
+    """A successful compatibility act row cannot turn a failed page attempt into coverage.
+
+    Both the page attempt's outcome and the page-witness attachment row are
+    mutated below, and they have to be: the Recensor re-derives `attached` from
+    the attempt outcome and the reported geometry, and refuses any record where
+    the stored flag disagrees. Leaving the row attached beside a failed attempt
+    therefore never reaches this coverage computation at all -- it stops as a
+    named `FatalAccounting`, which is exactly what
+    `test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways`
+    asserts for both polarities. So the pair here is the only well-formed way to
+    pose a failed page attempt, and the sibling test is what stops the two
+    signals from drifting apart unnoticed.
+    """
     root = tmp_path / "runs"
     through_perlector(root, "page-outcome", "happy")
     recensor = _load_recensor()
