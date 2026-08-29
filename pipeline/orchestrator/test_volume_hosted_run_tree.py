@@ -366,7 +366,30 @@ def _process_has_terminated(pid: int) -> bool:
         # The entry went away between the two reads, which is the pid being
         # reaped -- the outcome this function is asked about.
         return True
+    return _procfs_state_is_zombie(stat_line)
+
+
+def _procfs_state_is_zombie(stat_line: str) -> bool:
+    """Read the state field of a `/proc/<pid>/stat` line.
+
+    Split out so the parse is measurable on a host without procfs. The comm
+    field is parenthesised and may itself contain spaces and parentheses, so the
+    state is the first token after the *last* `)`, never `split()[2]`.
+    """
+
     return stat_line.rpartition(")")[2].split()[:1] == ["Z"]
+
+
+def test_the_procfs_state_parse_survives_a_command_name_full_of_parentheses() -> None:
+    """`split()[2]` is the parse this must not be, and a stat line says why."""
+
+    assert _procfs_state_is_zombie("42 (python3) Z 1 42 42 0 -1 4194560 0 0")
+    assert not _procfs_state_is_zombie("42 (python3) S 1 42 42 0 -1 4194560 0 0")
+    # A real command name this repository could produce: spaces and brackets.
+    assert _procfs_state_is_zombie("42 (run.py --stage recovery) Z 1 42 42")
+    assert not _procfs_state_is_zombie("42 (run.py --stage recovery) R 1 42 42")
+    assert _procfs_state_is_zombie("42 (weird )(name) Z 1 42 42")
+    assert not _procfs_state_is_zombie("42 (weird )(name) S 1 42 42")
 
 
 def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:

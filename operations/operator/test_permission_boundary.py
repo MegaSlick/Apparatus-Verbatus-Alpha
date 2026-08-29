@@ -1862,6 +1862,81 @@ def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_ref
     assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
 
 
+def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Neither channel may shorten or rewrite the one copy of the diagnostic.
+
+    `sanitize_detail` truncates at 2000 characters, rewrites vocabulary, and
+    replaces a structured traceback with a placeholder -- it exists for `render`
+    alone, on the way to a person. Used here it discarded exactly what these two
+    channels are for. The note is only made safe to print, and the refusal
+    detail is raw, so `render` shortens it once at the end rather than twice.
+    """
+
+    tail = "the last thing the worker said"
+    noisy = (
+        "Traceback (most recent call last):\n"
+        '  File "advance_worker.py", line 1, in <module>\n'
+        + ("filler that pushes this past the sanitizer's bound. " * 60)
+        + f"\nRuntimeError: shutdown {tail}\n"
+    )
+    assert len(noisy) > 2000, "the fixture must exceed the sanitizer's default bound"
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _verified_but_noisy(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree, "armarium", reason="a noisy but correct worker", expected_digest=expected_digest
+        )
+        completed = subprocess.CompletedProcess([], 0, json.dumps(reference.to_record()), noisy)
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _verified_but_noisy)
+
+    advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="a noisy but correct worker",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    printed = capsys.readouterr().err
+    assert tail in printed, "the end of the diagnostic was truncated away"
+    assert "Traceback (most recent call last):" in printed, "the trace was replaced"
+    assert "shutdown" in printed, "the sanitizer rewrote the worker's own vocabulary"
+    assert "detail truncated" not in printed
+
+    # The same text, raw, on the refusal path -- `render` is what shortens it.
+    def _unreadable_but_noisy(*_args, **_kwargs):
+        return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
+            [], 0, "not a decision reference", noisy
+        )
+
+    monkeypatch.setattr(advance, "run_confined", _unreadable_but_noisy)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="a noisy but correct worker",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    detail = excinfo.value.detail or ""
+    assert tail in detail
+    assert "Traceback (most recent call last):" in detail
+    assert "detail truncated" not in detail
+    # And the render on the way to a person is still the place it is shortened.
+    assert "[technical trace omitted from this message]" in excinfo.value.render()
+
+
 def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
     tmp_path, monkeypatch
 ) -> None:
