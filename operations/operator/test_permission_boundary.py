@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import types
@@ -23,6 +24,8 @@ from common.runtree.store import RunTree
 from operations.operator import advance, advance_worker, cli, console, custody, review
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
+
+_EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), None, ())
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -94,9 +97,12 @@ def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shap
         row["image_data_url"].startswith("data:image/png;base64,") for row in projected.pages
     )
     assert all(act["crops"] for act in projected.acts)
-    # A complete fixture produces no review rows, but the shape remains visible
-    # when Armarium includes it rather than being inferred from an empty outcome.
-    assert projected.review_items in (None, ())
+    # A complete fixture produces no review rows. `in (None, ())` accepted both
+    # answers and so could not tell the two apart: `()` means Armarium's bundle
+    # was read and held no review list, `None` means there was no bundle to
+    # read at all. Measured against this fixture the answer is `()`; pinning it
+    # is what makes a populated list silently becoming `None` a failure.
+    assert projected.review_items == ()
 
 
 def test_unsealed_boundary_is_refused_before_an_advance_record_is_written(tmp_path: Path):
@@ -197,10 +203,25 @@ def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path):
+def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path, monkeypatch):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+
+    # A spy that delegates, not a stub: the record below is still written by
+    # the real confined worker through the real boundary. Searching
+    # `inspect.getsource(trigger_advance)` for "run_confined" was what this
+    # line replaced, and that search passes on a comment — delete the call,
+    # leave the sentence, and a test named "is external" still goes green
+    # while the record is minted in-process with no custody boundary at all.
+    confined_calls = []
+    real_run_confined = advance.run_confined
+
+    def recording_run_confined(*args, **kwargs):
+        confined_calls.append((args, kwargs))
+        return real_run_confined(*args, **kwargs)
+
+    monkeypatch.setattr(advance, "run_confined", recording_run_confined)
 
     reference = advance.trigger_advance(
         run_root,
@@ -220,7 +241,9 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
     assert digest == digest_bytes(
         tree.read_bytes(tree.artifact_path("armarium", "stage-seal", seal["artifact_id"]))
     )
-    assert "run_confined" in inspect.getsource(advance.trigger_advance)
+    assert len(confined_calls) == 1
+    _arguments, keywords = confined_calls[0]
+    assert keywords["writable"] == (tree.root / "receipts" / "sha256")
 
 
 # Seatbelt grants file reads but denies the executable libffi trampolines that
@@ -446,18 +469,110 @@ def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launc
     } == receipts_before
 
 
-def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_path: Path):
-    source = inspect.getsource(console)
-    assert "RunTree" not in source
-    assert "write_approval_record" not in source
-    assert "build_approval_record" not in source
-    assert "trigger_advance" not in source
+def test_console_process_cannot_import_writers_or_keep_provider_credentials():
+    """Measure what importing the console actually loads, not what its text says.
+
+    Reading `inspect.getsource(console)` for forbidden names left two ways to
+    break the boundary and keep the test green: the console imports a small
+    helper and the helper imports `RunTree`, or it resolves a writer through
+    `importlib.import_module` and no forbidden spelling appears at all. The
+    module set after a real import in a child interpreter is the fact the
+    boundary is about, and a helper-shaped regression fails here.
+    """
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            *custody.CHILD_INTERPRETER_FLAGS,
+            "-c",
+            "import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import operations.operator.console\n"
+            "print(json.dumps(sorted(sys.modules)))\n",
+            str(ROOT),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert loaded.returncode == 0, loaded.stderr
+    modules = set(json.loads(loaded.stdout))
+    forbidden = {
+        "common.runtree.store",
+        "common.contracts.approval",
+        "operations.operator.advance",
+        "operations.operator.advance_worker",
+        "operations.operator.backup",
+        "operations.operator.backup_worker",
+        "operations.operator.cli",
+        "operations.operator.review",
+    }
+    assert modules & forbidden == set(), sorted(modules & forbidden)
+    # The negative would hold vacuously if the child had imported nothing at
+    # all, so name the module the boundary is about.
+    assert "operations.operator.console" in modules
     assert custody.credential_free_environment({"RUNPOD_API_KEY": "secret", "SAFE": "yes"}) == {
         "SAFE": "yes"
     }
 
-    if sys.platform != "linux":
-        return
+
+def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_path, monkeypatch):
+    """The console's own input failure must not send anyone to freeze a parish.
+
+    Exit 2 for a truncated projection was indistinguishable from "the console
+    read the tree and could not make sense of it", so the operator was told to
+    preserve the run tree unchanged and investigate its evidence because two
+    of this tool's processes had mishandled a pipe between them.
+    """
+    backend = _StubConfinement(lambda command: command)
+
+    def _truncated(*_args, **_kwargs):
+        return backend, subprocess.CompletedProcess(
+            [], console.PROJECTION_UNREADABLE_EXIT, "", "the projection was not complete JSON"
+        )
+
+    monkeypatch.setattr(cli, "run_confined", _truncated)
+    monkeypatch.setattr(
+        cli, "ReadOnlyRun", lambda *_args: types.SimpleNamespace(projection=lambda: _EMPTY_VIEW)
+    )
+    monkeypatch.setattr(cli, "_bound_run_tree", lambda *_args: None)
+
+    with pytest.raises(OperatorError) as excinfo:
+        cli._review_in_custody(tmp_path, "reviewed", ROOT)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_PROJECTION_UNREADABLE
+    rendered = excinfo.value.render()
+    assert "Preserve the run tree unchanged" not in rendered
+    assert "never opened by that process" in rendered
+    assert "not complete JSON" in rendered
+
+    # The status has to be distinct from the ordinary failure exit, and the
+    # real child has to use it. Asserting only through the constant would keep
+    # this test green if it were set back to 2, which is the exact collision
+    # that made a pipe fault read as damaged evidence.
+    assert console.PROJECTION_UNREADABLE_EXIT not in (0, 2)
+    truncated = subprocess.run(
+        [sys.executable, "-m", "operations.operator.console"],
+        cwd=ROOT,
+        input='{"run_id": "reviewed"',
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert truncated.returncode == console.PROJECTION_UNREADABLE_EXIT
+    assert "never read by this process" in truncated.stderr
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Path):
+    """Split from the import-boundary test so its absence reports as a skip.
+
+    Folded into that test behind an early `return`, this half ran on Linux and
+    silently did not run anywhere else, while the suite printed one pass for
+    both. A reader of the results could not tell which of the two claims had
+    actually been measured (GOVERNANCE 10).
+    """
     target = tmp_path / "evidence-mutation.txt"
     blocked = subprocess.run(
         custody.landlock_command(
@@ -605,10 +720,19 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
 
 
 def test_writable_directory_identity_is_rechecked_after_policy_construction(tmp_path, monkeypatch):
-    writable = tmp_path / "receipts" / "sha256"
-    writable.mkdir(parents=True)
+    allowance = tmp_path / "receipts" / "sha256"
+    allowance.mkdir(parents=True)
 
     class _SwappingBackend(_StubConfinement):
+        """The swap acts on the test's own path, never on the seam's argument.
+
+        The parameter is still named `writable` because that is the seam's
+        signature, but the body must not reach through it: `run_confined` is
+        free to pass a resolved copy, or `None`, and the test would then
+        rename some other directory or die on `NoneType.with_name` — a failure
+        saying nothing about the identity recheck under test.
+        """
+
         def __init__(self):
             super().__init__(lambda command: command)
             self.calls = 0
@@ -621,9 +745,8 @@ def test_writable_directory_identity_is_rechecked_after_policy_construction(tmp_
                     "-c",
                     "print('WRITE_REFUSED\\nNETWORK_REFUSED')",
                 ]
-            moved = writable.with_name("original-sha256")
-            writable.rename(moved)
-            writable.mkdir()
+            allowance.rename(allowance.with_name("original-sha256"))
+            allowance.mkdir()
             return list(command)
 
     backend = _SwappingBackend()
@@ -632,7 +755,7 @@ def test_writable_directory_identity_is_rechecked_after_policy_construction(tmp_
     with pytest.raises(OperatorError) as excinfo:
         custody.run_confined(
             [sys.executable, *custody.CHILD_INTERPRETER_FLAGS, "-c", "print('child')"],
-            writable=writable,
+            writable=allowance,
             cwd=ROOT,
             input_text="",
         )
@@ -856,6 +979,21 @@ def test_a_run_root_containing_a_colon_still_names_one_permitted_path(tmp_path):
     assert inside.is_file() and not outside.exists()
 
 
+def _module_command_operands(command: list[str]) -> tuple[Path, str, list[str]]:
+    """Read `python_module_command`'s three operands by anchor, not by index.
+
+    Fixed positions (`command[5]`, `command[7]`) broke in a way that lied:
+    adding one interpreter flag moved everything, and an assertion such as
+    `Path(command[5]) != other.resolve()` would then quietly hold against
+    whatever argument slid into position 5 while the assertion beside it
+    failed. The `-c` flag and the source it introduces are the stable anchor,
+    and the three operands follow it in the order the runner pops them.
+    """
+    marker = command.index("-c")
+    checkout, module, package_roots = command[marker + 2 : marker + 5]
+    return Path(checkout), module, json.loads(package_roots)
+
+
 def test_the_confined_child_inherits_no_interpreter_or_loader_hook(tmp_path):
     """Whoever controls the worker's imports controls what it writes.
 
@@ -887,7 +1025,8 @@ def test_the_confined_child_inherits_no_interpreter_or_loader_hook(tmp_path):
         command = custody.python_module_command("operations.operator.console")
     finally:
         custody.sys.path[:] = original_path
-    assert str(attacker_packages.resolve()) not in json.loads(command[7])
+    _checkout, _module, package_roots = _module_command_operands(command)
+    assert str(attacker_packages.resolve()) not in package_roots
 
 
 def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_path):
@@ -907,8 +1046,10 @@ def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_pat
 
     command = custody.python_module_command("operations.operator.advance_worker")
 
-    assert Path(command[5]) == ROOT
-    assert Path(command[5]) != other.resolve()
+    checkout, module, _package_roots = _module_command_operands(command)
+    assert checkout == ROOT
+    assert checkout != other.resolve()
+    assert module == "operations.operator.advance_worker"
     assert str(other) not in command
     assert "workspace" not in inspect.signature(custody.python_module_command).parameters
 
@@ -1148,7 +1289,11 @@ def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload)
 
-    assert "review limit" in (excinfo.value.detail or "")
+    # The distinguishing verb, not the shared phrase: `_review_items` raises
+    # "exceeds the operator review limit" for the declared member size and
+    # "expands beyond" for the post-read recheck, and "review limit" matched
+    # either — so this test stayed green whichever bound was deleted.
+    assert "exceeds the operator review limit" in (excinfo.value.detail or "")
 
 
 def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
@@ -1160,7 +1305,9 @@ def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload)
 
-    assert "records" in (excinfo.value.detail or "")
+    assert f"more than the operator review limit of {review.MAX_REVIEW_ITEMS} records" in (
+        excinfo.value.detail or ""
+    )
 
 
 def test_review_refuses_ambiguous_duplicate_review_members():
@@ -1175,6 +1322,143 @@ def test_review_refuses_ambiguous_duplicate_review_members():
         review._review_items(tree, payload)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
+
+
+def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
+    """A mistyped or escaping run id is a refused request, not an unclassified fault.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root, both as `ContractError`. Built above the guard, a
+    typed `--run-id My-Run` reached the blanket handler and told the operator
+    to photograph the message and find help over a capital letter, and an
+    attempted escape from the approved run root reported itself the same way.
+    """
+    for act in (
+        lambda: cli._advance_with_confirmation(
+            tmp_path, "My-Run", "armarium", reason="typed with a capital", workspace=ROOT
+        ),
+        lambda: cli._review_in_custody(tmp_path, "My-Run", ROOT),
+    ):
+        with pytest.raises(OperatorError) as excinfo:
+            act()
+        # `INVALID_COMMAND`, not a verb-specific refusal: nothing was read and
+        # nothing was changed, and a tree-unreadable code would send the
+        # operator to preserve evidence that was never opened.
+        assert excinfo.value.code == ErrorCode.INVALID_COMMAND
+        assert "My-Run" in (excinfo.value.detail or "")
+        assert "could not classify" not in excinfo.value.render()
+        assert "Preserve the run tree" not in excinfo.value.render()
+
+
+def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
+    """The bounded review queue sat beside unbounded page and crop bytes.
+
+    Each sealed page and each act crop is read whole, expanded to a base64
+    data URL a third larger again, and serialised as JSON across the custody
+    boundary. Nothing limited that, so a parish-sized run met the machine's
+    memory rather than a refusal, and the operator got a killed console over
+    evidence that was intact on disk. The allowance is one running total
+    across pages and crops, because the console holds them all at once.
+    """
+    data = b"x" * 4096
+    digest = digest_bytes(data)
+    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    budget = review._ImageBudget(limit=6000)
+    page = {
+        "ordinal": 1,
+        "page_id": "pg_example",
+        "outcome": "sealed",
+        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_sha256": digest,
+    }
+    act = {
+        "act_id": "act_example",
+        "act_key": "a1",
+        "source_regions": [
+            {
+                "source_page_ordinal": 1,
+                "region_id": "rgn_example",
+                "image_path": "2_designator/blobs/sha256/example",
+                "image_sha256": digest,
+            }
+        ],
+    }
+
+    # The page alone fits; the crop that follows it on the same allowance does
+    # not, which is the accounting a per-kind limit would have missed.
+    review._image_row(tree, page, budget)
+    with pytest.raises(OperatorError) as excinfo:
+        review._act_row(tree, act, budget)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "more than the console can project" in (excinfo.value.detail or "")
+    assert "intact and unchanged" in (excinfo.value.detail or "")
+    assert review.MAX_PROJECTED_IMAGE_BYTES == 256 * 1024 * 1024
+
+
+def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
+    """Absent and empty are different facts and may not share an answer.
+
+    `row.get("source_regions", [])` projected an act whose crop list had gone
+    missing as an act with no crops. The operator would see the text, see no
+    image, and have no way to tell "this act records no crop" from "the record
+    of what I would be approving against the ink is gone" (GOVERNANCE 2).
+    """
+    with pytest.raises(OperatorError) as excinfo:
+        review._act_row(types.SimpleNamespace(), {"act_id": "act_example", "act_key": "a1"})
+    assert "no crop list" in (excinfo.value.detail or "")
+
+    # An act that genuinely records an empty crop list is still projected.
+    projected = review._act_row(
+        types.SimpleNamespace(), {"act_id": "act_example", "act_key": "a1", "source_regions": []}
+    )
+    assert projected["crops"] == []
+
+
+def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_queue():
+    """A broken bundle reference must not read as "nothing needs your attention".
+
+    Review items are the acts the pipeline could not settle. Returning `None`
+    for a malformed reference gave the operator the same screen as a run with
+    no bundle at all, so a lost queue and an empty queue were indistinguishable
+    on the one surface a person reads (GOVERNANCE 2).
+    """
+    tree = types.SimpleNamespace(read_bytes=lambda _path: b"")
+
+    assert review._review_items(tree, {}) is None
+
+    for broken, expected in (
+        ({"bundle": "not an object"}, "not an object"),
+        ({"bundle": {}}, "no immutable reference"),
+        ({"bundle": {"reference": {"sha256": "0" * 64}}}, "no immutable reference"),
+        ({"bundle": {"reference": {"relative_path": 7}}}, "no immutable reference"),
+    ):
+        with pytest.raises(OperatorError) as excinfo:
+            review._review_items(tree, broken)
+        assert expected in (excinfo.value.detail or ""), broken
+
+
+def test_review_refuses_a_bundle_member_whose_declared_size_is_false():
+    """A lying zip header is refused; it cannot expand past the declared size.
+
+    `zipfile` bounds a member read by the `file_size` its central directory
+    declares, so the `MAX_REVIEW_ITEMS_BYTES` recheck after the bounded read
+    cannot fire while the `member.file_size` check above it holds — measured
+    here rather than assumed. What a falsified header actually produces is a
+    CRC failure, and that has to reach the operator as a refusal rather than
+    as a short read silently accepted as the review queue.
+    """
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"real"}\n' * 4096)
+    data = bytearray(bundle.getvalue())
+    entry = data.rfind(b"PK\x01\x02")
+    struct.pack_into("<I", data, entry + 24, 8)  # central-directory uncompressed size
+
+    tree, payload = _review_bundle_payload(bytes(data))
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload)
+    assert "could not be read" in (excinfo.value.detail or "")
 
 
 def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
@@ -1375,24 +1659,31 @@ def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeyp
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
 
+    worker_returned = False
+
     def _success(*_args, **_kwargs):
+        nonlocal worker_returned
         reference = advance.record_advance(
             tree,
             "armarium",
             reason="identity changed after the worker returned",
             expected_digest=expected_digest,
         )
+        worker_returned = True
         return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
             [], 0, json.dumps(reference.to_record()), ""
         )
 
     real_require = advance.require_directory_identity
-    calls = 0
 
+    # Keyed on the worker having returned, not on a call count. `if calls == 3`
+    # named the post-worker recheck only by arithmetic over every identity
+    # check on the path: add or remove one anywhere and the injected refusal
+    # fires at a different moment, and the test either proves something else
+    # while staying green or fails with a message about an inode that never
+    # changed. Neither would tell a reader that this recheck stopped working.
     def _refuse_after_worker(path, expected, label):
-        nonlocal calls
-        calls += 1
-        if calls == 3:
+        if worker_returned:
             raise ApprovalRefusal("SECURITY REFUSAL: reviewed run-tree inode changed")
         return real_require(path, expected, label)
 

@@ -53,6 +53,7 @@ class ErrorCode(StrEnum):
     STATUS_UNREADABLE = "status-unreadable"
     CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
+    CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
     INGEST_REFUSED = "ingest-refused"
@@ -258,6 +259,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The operator console could not read the selected run tree safely.",
         "It did not guess at missing evidence or change the run tree.",
         "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
+    ),
+    ErrorCode.CONSOLE_PROJECTION_UNREADABLE: ErrorCopy(
+        "The operator console could not read the view this command handed it.",
+        "The run tree was never opened by that process, so nothing about the evidence is in question and nothing was changed.",
+        "Run the same `verbatus review` again. If it repeats, keep the saved detail below and report it; do not alter the run tree, which is not what failed.",
     ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",

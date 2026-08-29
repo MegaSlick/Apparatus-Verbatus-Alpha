@@ -19,7 +19,14 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, verify_sel
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR, TRIAGE_MODES
+from common.contracts.stages import (
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    MAX_TRIAGE_SPLIT_PARTS,
+    RECENSOR,
+    TRIAGE_MODES,
+)
 from common.imaging import (
     carries_only_image_chunks,
     crop_png,
@@ -419,11 +426,12 @@ def verify_exemplar_crop_lineage(
     _validate_exemplar_transform(transform)
     if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
         raise ContractError("a crop region carries no complete Exemplar transform")
+    # The operation is settled by the two checks above rather than here: the
+    # closed vocabulary gives "split", "deskew" and "convert" key sets of their
+    # own, so nothing but a validated crop survives the four-key shape check.
     ordinal = transform["source_page_ordinal"]
     source_page_id = transform["source_page_id"]
     bounds = transform["bounds"]
-    if transform["operation"] != "crop":
-        raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
     _verify_act_identity_binding(tree, region, payload)
@@ -764,7 +772,10 @@ def _verify_admission(
     parent_digest = parent["sha256"]
     parent_path = parent["stored_at"]
     if (
-        parent_digest != source["sha256"]
+        # `.get`, because a submitted-source row that carries no digest at all is
+        # the boundary's business to refuse, not to raise KeyError over: this
+        # function's callers convert ContractError into a refusal and nothing else.
+        parent_digest != source.get("sha256")
         or parent_path != tree.blob_path(DOOR, parent_digest)
         or not isinstance(parent["source_frame_index"], int)
         or isinstance(parent["source_frame_index"], bool)
@@ -786,7 +797,7 @@ def _verify_admission(
         raise ContractError("a sealed derivative page does not input exactly its pixels and master")
     parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
     sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
-    _verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
+    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
 def _verify_rendered_source_link(
@@ -885,6 +896,15 @@ def _validate_embedded_triage_row(row: Any) -> None:
         )
     ):
         raise ContractError("a sealed derivative page's triage row has no closed split record")
+    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
+        # Bounded here as well as in the pre-door contract, and before the pairwise
+        # overlap loop below rather than after it: this boundary exists precisely
+        # because the row reaching it is not taken on trust, and the loop it guards
+        # is quadratic in the number of parts.
+        raise ContractError(
+            f"a sealed derivative page's triage row exceeds the "
+            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
+        )
     frame = row["frame"]
     if (
         not isinstance(frame, dict)
@@ -929,7 +949,7 @@ def _validate_embedded_triage_row(row: Any) -> None:
         raise ContractError("a sealed derivative page's triage row does not partition its frame")
 
 
-def _verify_triage_derivative(
+def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
     parent: dict[str, Any],

@@ -200,7 +200,7 @@ def dai_model_view(
         for value in (width_px, height_px)
     ):
         raise SchemaRefusal("DAI input dimensions must be positive integers")
-    resized_width, resized_height = _dai_dimensions(width_px, height_px)
+    resized_width, resized_height = dai_dimensions(width_px, height_px)
     resized = (resized_width, resized_height) != (width_px, height_px)
     if resized and source_image_ref["sha256"] == model_image_ref["sha256"]:
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
@@ -295,7 +295,7 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
     ):
         raise SchemaRefusal("DAI model view transform dimensions must be positive integers")
     source_width, source_height, target_width, target_height = dimensions_px
-    expected_target = _dai_dimensions(source_width, source_height)
+    expected_target = dai_dimensions(source_width, source_height)
     resized = expected_target != (source_width, source_height)
     expected_transform_facts = (
         ("resize-preserve-aspect", "pillow-lanczos", "floor")
@@ -331,11 +331,16 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
     return value
 
 
-def _dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
+def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     """Largest integer aspect-preserving view within every DAI ceiling.
 
     Height and area must remain search predicates: pre-flooring a height-derived
     width can undercut the largest feasible view by one pixel.
+
+    Public because it decides which pixels a DAI witness is actually shown, and
+    the presentation writer and the read-back validator in `witness_adapters`
+    both have to reach exactly this rule. Under a private name, renaming it here
+    would break those two together with nothing to say they were coupled.
     """
     upper_width = min(width_px, DAI_MAX_WIDTH_PX)
     if upper_width < 1:

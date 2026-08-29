@@ -29,6 +29,7 @@ from common.imaging import (
     dimensions,
     encode_grayscale_png,
     grayscale_rows,
+    render_triage_derivative,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -321,6 +322,95 @@ def test_grayscale_rows_refuses_undecodable_input_rather_than_guessing():
     for bad in (b"", b"not an image", PNG_SIGNATURE):
         with pytest.raises(ValueError):
             grayscale_rows(bad)
+
+
+def triage_part(width: int = 4, height: int = 4) -> dict:
+    return {
+        "region": {"space": "frame", "x": 0, "y": 0, "w": width, "h": height},
+        "crop_box": {"space": "part", "x": 0, "y": 0, "w": width, "h": height},
+        "rotation": {
+            "rotation_millidegrees": 0,
+            "direction": "clockwise",
+            "origin": "crop-centre",
+            "canvas": "expand",
+        },
+        "colour_mode": "grayscale",
+    }
+
+
+def test_the_triage_render_refuses_a_declared_size_past_the_pixel_bound():
+    """The triage render was the module's one Pillow decode that opened, sought and
+    loaded a frame without `_refuse_past_pixel_bound`, so a master between
+    `MAX_PIXELS` and Pillow's own 2x hard-raise ceiling was materialised under a
+    warning while every sibling path refused the same bytes. Declared rather than
+    materialised, as in the `crop_png` fallback case above: the check runs on the
+    IHDR's dimensions before `load`, so a compact IDAT reaches it by the same route
+    and the refusal must name the bound rather than the truncation `load` would
+    otherwise report. Found by CodeRabbit."""
+    width, height = 10_050, 10_000
+    assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
+
+    with pytest.raises(ValueError, match="pixel bound"):
+        render_triage_derivative(
+            repack(width, height, b"", color_type=2), page_index=0, part=triage_part()
+        )
+
+
+def test_the_triage_render_refuses_a_page_index_past_the_last_frame_as_a_decode_failure():
+    """`Image.seek` past the end raises `EOFError`, which descends from `Exception`
+    rather than `OSError` and so left this function by a route the module's stated
+    contract does not have. The Exemplar boundary converts only `ValueError` into a
+    refusal, so the escape arrived there as an unhandled error."""
+    single_frame = BytesIO()
+    Image.new("L", (8, 8), 200).save(single_frame, format="PNG")
+
+    with pytest.raises(ValueError, match="not a decodable image"):
+        render_triage_derivative(single_frame.getvalue(), page_index=7, part=triage_part())
+
+
+@pytest.mark.parametrize(
+    ("forge", "names"),
+    [
+        pytest.param(
+            lambda p: p["region"].update(w=40, h=40), "split region", id="region-past-the-master"
+        ),
+        pytest.param(
+            lambda p: p["region"].update(x=2, y=2), "split region", id="region-offset-past-the-edge"
+        ),
+        pytest.param(
+            lambda p: p["crop_box"].update(w=9, h=9), "crop box", id="crop-past-its-own-region"
+        ),
+    ],
+)
+def test_the_triage_render_refuses_geometry_that_falls_outside_what_it_decoded(forge, names):
+    """`Image.crop` pads rather than refuses, filling anything past the edge with
+    black. A part declaring a frame larger than the master it was cut from therefore
+    rendered a page that was almost entirely invented pixels, and sealed it: the
+    probe that found this produced a 40x40 page from a 4x4 master, 99% of it black.
+    The Exemplar boundary does reconcile the declared frame against the decoded
+    master, but only after this function has already rendered the padded page, and
+    the door's producing path (`render_raster_page`) reconciles nothing at all.
+    Found by CodeRabbit."""
+    master = BytesIO()
+    Image.new("L", (4, 4), 255).save(master, format="PNG")
+    part = triage_part()
+    forge(part)
+
+    with pytest.raises(ValueError, match=f"{names}.*falls outside.*invented pixels"):
+        render_triage_derivative(master.getvalue(), page_index=0, part=part)
+
+
+def test_the_triage_render_still_applies_geometry_that_is_contained():
+    """The refusal above must not have closed the ordinary path with it."""
+    master = BytesIO()
+    Image.new("L", (4, 4), 255).save(master, format="PNG")
+    part = triage_part()
+    part["crop_box"].update(x=1, y=1, w=2, h=2)
+
+    _rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
+
+    assert (geometry["width"], geometry["height"]) == (2, 2)
+    assert (geometry["source_width"], geometry["source_height"]) == (4, 4)
 
 
 def test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages():

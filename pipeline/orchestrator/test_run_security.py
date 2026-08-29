@@ -31,7 +31,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         scenario="happy",
         fixture_root="proof",
         models_config="config/models.toml",
-        serving_recipes_config="config/serving_recipes_real.toml",
+        serving_recipes_config="config/serving_recipes.toml",
         pdf_render_config="config/pdf_render.toml",
         designator_padding_config="config/designator_padding.toml",
         designator_geometry_config="config/designator_geometry.toml",

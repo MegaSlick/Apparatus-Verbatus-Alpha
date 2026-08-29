@@ -106,7 +106,19 @@ def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None
         # existing target. Unlike opening the target with O_EXCL and then
         # filling it, no reader can observe an empty or partially written final
         # record, and a process death before this line leaves no false claim.
-        os.link(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            # The name is published, but *this* call has proved nothing about
+            # its directory entry. That is exactly the retry path: a strict
+            # sync failure leaves the record linked and unsynced, the caller
+            # refuses the paid action, and the operator runs it again --
+            # `StageCostStore._append` then sees FileExistsError, compares the
+            # bytes, and reports success. Without a sync here that success is a
+            # claim nothing established, and the record it covers is the one
+            # that tells a human a pod may still be billing.
+            sync_directory(path.parent, strict=strict)
+            raise
     finally:
         try:
             os.unlink(temporary)

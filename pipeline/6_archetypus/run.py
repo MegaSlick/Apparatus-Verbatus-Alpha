@@ -286,12 +286,28 @@ def _verify_act_attachment_view(
         # act's own page and can be `attached`. The duplicate-row refusal below and
         # the per-chair comparison-view refusal further down are both kept: between
         # them nothing a repeated chair could silently replace survives.
+        # Scope decides which rule applies, in the same words the Recensor uses on
+        # the same artifact. Accepting a page-witness row with no ordinal — which
+        # this check did while `page_ordinal is not None` gated it — left two
+        # consumers of one act-attachment disagreeing about whether that row is
+        # valid, and keyed it as `(chair, None)`, so a chair with one row on page 2
+        # and one row missing the field made two distinct keys and passed the
+        # duplicate guard below as two contributing pages when nobody could say
+        # what the second page was. A stock run is protected only because the
+        # Recensor refuses first, and this function documents itself as the whole
+        # of the boundary for a caller that resolved its arguments another way.
         page_ordinal = item.get("page_ordinal")
-        if page_ordinal is not None and (
-            not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
-        ):
+        if item["page_witness"]:
+            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
+                raise SchemaRefusal(
+                    f"act {act_id} referenced act-attachment page witness {item['chair']!r} "
+                    "has no integer page ordinal; its attachment cannot be placed"
+                )
+        elif page_ordinal is not None:
             raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment has malformed witness scope"
+                f"act {act_id} referenced act-attachment act-scoped witness "
+                f"{item['chair']!r} carries page ordinal {page_ordinal!r}; its scope "
+                "is contradictory"
             )
         row = (item["chair"], page_ordinal)
         if row in seen_rows:
@@ -320,7 +336,11 @@ def _verify_act_attachment_view(
         testimony = context.tree.read_artifact_reference(
             testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
         )
-        reported = testimony.get("payload", {}).get("payload")
+        # Guarded like `alignment` above: a payload that is present but not a
+        # mapping would otherwise reach `.get` and raise AttributeError, and a
+        # traceback is not a refusal -- this stage's contract is a named one.
+        testimony_payload = testimony.get("payload")
+        reported = testimony_payload.get("payload") if isinstance(testimony_payload, dict) else None
         if (
             not isinstance(reported, str)
             or not isinstance(span, dict)

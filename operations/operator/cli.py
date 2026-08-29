@@ -15,7 +15,7 @@ from typing import Sequence
 
 from operations.pod.models import PodCreateRequest, require_utc
 
-from . import notify_bridge
+from . import console, notify_bridge
 from .advance import sealed_boundary, trigger_advance
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
@@ -53,8 +53,21 @@ def _account_state_dir(workspace: Path | None = None) -> Path:
         environment_home = Path.home()
     except RuntimeError:
         environment_home = Path()
-    homes = (environment_home, Path(pwd.getpwuid(os.getuid()).pw_dir))
-    for home in homes:
+
+    def homes():
+        yield environment_home
+        try:
+            yield Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except KeyError:
+            # No passwd entry for this UID -- a container running as an unmapped
+            # user, for instance. Building the tuple eagerly ran this lookup
+            # before the loop had even looked at the environment home, so every
+            # `verbatus` word ended in the unclassified message even when HOME
+            # was absolute and perfectly usable. A missing fallback is not a
+            # reason to fail a command that never needed it.
+            return
+
+    for home in homes():
         candidate = home / ".local" / "state" / "verbatus"
         if home.is_absolute() and (workspace is None or not _is_within(candidate, workspace)):
             return candidate
@@ -130,7 +143,17 @@ def build_parser() -> PlainParser:
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
-        "--state-dir", type=Path, default=_default_state_dir(), help="where local receipts are kept"
+        "--state-dir",
+        type=Path,
+        # No computed default here. `main` resolves the durable default against
+        # the *resolved* workspace, and `None` is how it knows the operator did
+        # not name a path. Deciding that from a scan of raw argv could not work:
+        # argparse accepts unambiguous abbreviations, so `--state-di /records`
+        # set this value and the scan missed it -- the named folder was parsed
+        # and then silently overwritten with the default, and `status` afterwards
+        # read a different set of records than the operator had asked for.
+        default=None,
+        help="where local receipts are kept",
     )
     parser.add_argument(
         "--notify",
@@ -311,10 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
-        explicit_state = any(
-            argument == "--state-dir" or argument.startswith("--state-dir=")
-            for argument in arguments
-        )
+        explicit_state = args.state_dir is not None
         if explicit_state:
             state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
         else:
@@ -422,6 +442,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
+    """Bind one run before any verb acts on it, and name a bad id as a bad id.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root; both arrive as `ContractError`. Constructed outside
+    a guard, a typed `--run-id My-Run` reached the unclassified handler and
+    told the operator to photograph the message and find a maintainer over one
+    capital letter, and an attempted escape from the approved run root
+    reported itself the same way — a tool that broke rather than a request
+    that was refused.
+
+    The code is `INVALID_COMMAND` rather than a verb-specific refusal because
+    that is what happened: the instruction named no run this tool could bind,
+    nothing was read, and nothing was changed. A tree-unreadable code would
+    send the operator to preserve and investigate register evidence that was
+    never opened.
+    """
+
+    from common.contracts.errors import ContractError
+
+    try:
+        return run_tree_class(Path(run_root).resolve(), run_id)
+    except (ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+
+
 def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     """Exec the renderer with no credential and a kernel-enforced no-write policy."""
 
@@ -429,6 +475,9 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     # immutable value stream, never a run-tree path or a ``RunTree`` object.
     # It can deceive its viewer about those bytes if compromised, but cannot
     # reopen the evidence to mutate it or reach any pipeline/provider module.
+    from common.runtree.store import RunTree
+
+    _bound_run_tree(RunTree, run_root, run_id)
     projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
     command = python_module_command("operations.operator.console")
     backend, completed = run_confined(
@@ -444,6 +493,13 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
             # platform-enforcement refusal rather than a claim that the run
             # tree itself is unreadable.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
+        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
+            # The console never opened the run tree, so this must not tell the
+            # operator to preserve and investigate its evidence.
+            raise OperatorError(
+                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+                detail=completed.stderr or completed.stdout,
+            )
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
         )
@@ -456,8 +512,8 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     from .backup import (
         BackupRefusal,
         BackupReport,
-        _prepare_backup_layout,
         destination_identities,
+        prepare_backup_layout,
         required_identity,
         resolve_backup_paths,
         verify_backup_snapshot,
@@ -469,7 +525,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     # directory creation, so the checked closed layout must exist first.
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        _prepare_backup_layout(source, destination)
+        prepare_backup_layout(source, destination)
         source_identity = required_identity(source, what="source run tree")
         destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
@@ -576,7 +632,7 @@ def _advance_with_confirmation(
     from common.contracts.errors import ApprovalRefusal
     from common.runtree.store import RunTree
 
-    tree = RunTree(run_root.resolve(), run_id)
+    tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
         _seal, digest = sealed_boundary(tree, stage)
     except ApprovalRefusal as error:

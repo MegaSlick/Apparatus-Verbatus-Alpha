@@ -1355,8 +1355,10 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         assert held.is_dir()
     finally:
         release.touch()
-        first.wait(timeout=30)
-    assert first.returncode == 0, first.stderr.read()
+        # `communicate`, not `wait`: both of this child's streams are pipes, and
+        # waiting without draining them deadlocks the suite if either buffer fills.
+        _held_stdout, held_stderr = first.communicate(timeout=30)
+    assert first.returncode == 0, held_stderr
     assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
@@ -1421,8 +1423,10 @@ def test_an_invalid_dispatch_names_its_argument_even_while_the_task_is_locked(
         assert (tmp_path / "workbench" / "autoclave" / "task-x").is_dir()
     finally:
         release.touch()
-        first.wait(timeout=30)
-    assert first.returncode == 0, first.stderr.read()
+        # `communicate`, not `wait`: both of this child's streams are pipes, and
+        # waiting without draining them deadlocks the suite if either buffer fills.
+        _held_stdout, held_stderr = first.communicate(timeout=30)
+    assert first.returncode == 0, held_stderr
     assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
@@ -2434,6 +2438,79 @@ class TestTheUntrustedDrawer:
         assert str(source) in result.stderr
         assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
+    def test_an_unreadable_external_brief_is_not_reported_as_a_drawer_problem(self, tmp_path):
+        """A fault on the session's own file must not send the operator to the drawer.
+
+        The external open sat inside the guard whose handler rewrites every
+        OSError as "cannot safely open <source> beneath <drawer>". A standing
+        brief with the wrong permissions, or one that vanished between the
+        shell's `[ -f ]` test and this open, therefore reported that the file was
+        unsafely inside the chamber's own output drawer, and the launcher added
+        its line about an agent-controlled symlink. The refusal is loud either
+        way; it named the wrong file.
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        source = tmp_path / "standing-brief.md"
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert str(source) in result.stderr
+        assert "beneath" not in result.stderr
+        assert str(drawer) not in result.stderr
+
+    def test_an_external_fifo_source_is_refused_rather_than_waiting_for_a_writer(self, tmp_path):
+        """Outside the drawer is still bounded, and still only regular files.
+
+        The external open was a plain `open(source, "rb")`, which dropped both
+        guards the drawer path has. A FIFO at that path waited for a writer
+        forever: `dispatch` printed nothing, never returned, and held the task
+        lifecycle lock the whole time, so no other launcher could touch that task
+        either. And for any non-regular source `st_size` is 0, which both the
+        byte ceiling and `copy_bounded` read -- so an oversized input was
+        reported as "input changed size while being read".
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        source = tmp_path / "standing-brief.md"
+        os.mkfifo(source)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "not a regular file" in result.stderr
+
     def test_an_outside_alias_to_the_drawer_does_not_make_agent_bytes_trusted(self, tmp_path):
         """Containment follows directory identity, including aliases and APFS case variants."""
 
@@ -2543,7 +2620,12 @@ class TestTheUntrustedDrawer:
         assert read.stdout == b""
         assert write.returncode != 0
         assert not destination.exists()
-        assert "8-byte limit" in read.stderr.decode() + write.stderr
+        # Each stream separately: joining them let the read path's message
+        # satisfy the assertion on its own, so the write path could stop naming
+        # the limit -- losing the operator-facing reason for a refused
+        # publication -- without this test failing.
+        assert "8-byte limit" in read.stderr.decode()
+        assert "8-byte limit" in write.stderr
 
     def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
         repository = tmp_path / "repository"
@@ -2839,7 +2921,8 @@ class TestMakingAChamber:
             assert "rmdir" in second.stderr
         finally:
             release.touch()
-            first.wait(timeout=30)
+            # Both streams are pipes; draining them is what makes this wait safe.
+            first.communicate(timeout=30)
 
     def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
         """Staged, unstaged, deleted and untracked, and nothing that is ignored.

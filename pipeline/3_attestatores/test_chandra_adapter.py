@@ -293,7 +293,28 @@ def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeyp
     assert chandra.observe(_presented(), raw) == []
 
 
-def test_chandra_names_excessive_json_nesting_and_non_byte_input():
+def test_chandra_names_excessive_json_nesting_with_a_fixed_outcome(monkeypatch):
+    """The refusal name is pinned, not left to the interpreter's spare stack.
+
+    Asserting `parse(deep) in ("x", {...})` accepted whichever branch happened
+    to run, so a renamed outcome -- or a parser that silently began accepting
+    the deep value -- kept passing. The scanner's `RecursionError` is raised
+    directly here instead, so the name this adapter answers with is the thing
+    under test.
+    """
+    chandra = _load_stage_module("chandra")
+
+    def _exhausts_the_stack(_text):
+        raise RecursionError("maximum recursion depth exceeded while decoding")
+
+    monkeypatch.setattr(chandra.json, "loads", _exhausts_the_stack)
+    raw = b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[]}'
+
+    assert chandra.parse(raw) == {"parse_outcome": "excessive-json-nesting"}
+
+
+def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
+    """Whichever branch the real interpreter takes, neither is a crash."""
     chandra = _load_stage_module("chandra")
     nested = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
@@ -304,8 +325,8 @@ def test_chandra_names_excessive_json_nesting_and_non_byte_input():
     )
     # Parse-time recursion exhaustion is stack-dependent: when the interpreter's
     # C recursion headroom runs out the nesting is named, and when the parser
-    # survives the depth the declared markdown parses normally. Either way the
-    # adapter never lets pathological nesting escape as a crash.
+    # survives the depth the declared markdown parses normally. This case is
+    # only about the absence of an escaping error; the name is pinned above.
     assert chandra.parse(nested) in ("x", {"parse_outcome": "excessive-json-nesting"})
     assert chandra.observe(_presented(), nested) == []
     assert chandra.parse("not bytes") == {"parse_outcome": "raw-response-not-bytes"}

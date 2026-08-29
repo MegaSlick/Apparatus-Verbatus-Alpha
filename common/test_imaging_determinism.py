@@ -611,8 +611,23 @@ def test_a_palette_resize_preserves_transparency_while_making_lanczos_run():
     encoded = BytesIO()
     image.save(encoded, format="PNG")
 
+    # The alpha assertion below does catch a deleted promotion today -- without
+    # it the transparency does not survive to the re-read and alpha comes back
+    # all-255. But it catches it indirectly, through what happens to the palette
+    # rather than through which resampler ran, and the property in this test's
+    # name is that LANCZOS ran. Compare against the nearest-neighbour result the
+    # bilevel case already compares against, so the substitution is observed
+    # rather than inferred.
+    with Image.open(BytesIO(encoded.getvalue())) as opened:
+        opened.load()
+        assert opened.mode == "P", "the fixture stopped exercising the substitution"
+        decimated = _encode_crop_deterministic(
+            opened.resize((2, 2), resample=Image.Resampling.NEAREST)
+        )
+
     resized = resize_png_lanczos(encoded.getvalue(), 2, 2)
 
+    assert resized != decimated
     with Image.open(BytesIO(resized)) as reread:
         assert reread.mode == "RGBA"
         assert min(reread.getchannel("A").getextrema()) < 255

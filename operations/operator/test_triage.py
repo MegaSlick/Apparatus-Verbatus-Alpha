@@ -350,8 +350,9 @@ def test_write_shown_confirmation_refuses_a_malformed_schema(tmp_path: Path):
 def test_a_tuple_wrapped_payload_cannot_carry_a_preference_field_onto_disk(tmp_path: Path):
     """The check must walk what the serializer writes, not what the object looks like.
 
-    `canonical_bytes` renders a tuple as a JSON array, while `_refuse_preference`
-    walks dicts and lists. Reparse-before-validation closes that shape divergence.
+    `canonical_bytes` renders a tuple as a JSON array, while
+    `refuse_capture_preference` walks dicts and lists. Reparse-before-validation
+    closes that shape divergence.
     """
     pinned = _pinned_draft(tmp_path)
     cluster = dict(pinned["clusters"][0])

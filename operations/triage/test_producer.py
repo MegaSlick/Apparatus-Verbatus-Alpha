@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -966,3 +967,33 @@ def test_retraction_and_confirmation_append_never_silently_resurrect_stale_membe
     assert clusters_path.read_bytes() == canonical_bytes(republished.clusters)
     assert authority_path.read_bytes() == canonical_bytes(confirmed)
     assert reconfirmed_authority.read_bytes() == canonical_bytes(reconfirmed)
+
+
+def test_an_interrupted_publish_leaves_a_retry_the_refusal_can_actually_direct(tmp_path: Path):
+    """A crash between `os.link` and cleanup must not lock out the documented retry.
+
+    The authority record then carries a second name — the publisher's own `.tmp-`
+    sibling — and the unaliased check refuses the byte-identical retry it is meant
+    to accept. Nothing may be removed on the record's behalf, because an alias this
+    code did not make is the mutation channel that check exists to catch; so the
+    refusal has to name the one cause an operator can clear, and clearing it has to
+    work.
+    """
+    value = {"schema": "triage-confirmation-v1", "appending_run": "synthetic"}
+    path = tmp_path / "authority.json"
+    producer_module._publish_immutable_canonical(path, value)
+    published = path.read_bytes()
+
+    leftover = tmp_path / f".{path.name}.tmp-interrupted"
+    os.link(path, leftover)
+    with pytest.raises(ProducerRefusal, match="remove it and retry") as refusal:
+        producer_module._publish_immutable_canonical(path, value)
+    assert "not one unaliased regular file" in str(refusal.value)
+    assert f".{path.name}.tmp-*" in str(refusal.value)
+    assert path.read_bytes() == published
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == [leftover.name, path.name]
+
+    leftover.unlink()
+    producer_module._publish_immutable_canonical(path, value)
+    assert path.read_bytes() == published
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == [path.name]

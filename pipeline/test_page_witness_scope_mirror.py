@@ -61,25 +61,45 @@ def _context(scopes: dict[str, str], *, roster=None, absent=(), fixture=None):
     )
 
 
+# Each case carries the set the sealed roster actually implies. Agreement alone
+# would be satisfied by two readers sharing one bug -- both returning everything,
+# or both returning nothing -- so the expected set is what makes this a
+# measurement rather than a consistency check (GOVERNANCE 10). Case 0 is the
+# scope layout shipped in config/models.toml.
 AGREED = (
-    _context({"attestator_1": "page", "attestator_2": "act", "attestator_3": "page"}),
-    _context({"attestator_1": "act", "attestator_2": "act"}),
-    _context({"attestator_1": "page", "attestator_2": "page"}),
-    _context({"attestator_1": "page"}, absent=("attestator_2",)),
-    _context(
-        {"attestator_1": "page", "attestator_2": "act"},
-        fixture={"page_witness_chairs": ["attestator_2"]},
+    (
+        _context({"attestator_1": "page", "attestator_2": "act", "attestator_3": "page"}),
+        {"attestator_1", "attestator_3"},
+    ),
+    (_context({"attestator_1": "act", "attestator_2": "act"}), set()),
+    (
+        _context({"attestator_1": "page", "attestator_2": "page"}),
+        {"attestator_1", "attestator_2"},
+    ),
+    # An explicit absence parses no scope at all, so it is never page-scoped.
+    (_context({"attestator_1": "page"}, absent=("attestator_2",)), {"attestator_1"}),
+    # The retired fixture key must not reach the answer from either side.
+    (
+        _context(
+            {"attestator_1": "page", "attestator_2": "act"},
+            fixture={"page_witness_chairs": ["attestator_2"]},
+        ),
+        {"attestator_1"},
     ),
 )
 
 
-@pytest.mark.parametrize("context", AGREED, ids=range(len(AGREED)))
-def test_both_stages_derive_the_same_page_scoped_set(context):
+@pytest.mark.parametrize(("context", "expected"), AGREED, ids=range(len(AGREED)))
+def test_both_stages_derive_the_same_page_scoped_set(context, expected):
     answers = [reader(context) for reader in READERS]
     assert answers[0] == answers[1], (
         "the Attestatores and the Perlector disagree about which occupants are "
         "page-scoped; the page join and the attachment it is validated against "
         "would then be built on two different rosters"
+    )
+    assert answers[0] == expected, (
+        "both stages agree on a set the sealed roster does not imply; agreement "
+        "between two readers is not evidence that either read the roster right"
     )
 
 

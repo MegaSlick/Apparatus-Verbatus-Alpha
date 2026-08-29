@@ -26,9 +26,9 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The nine words
+## The eleven words
 
-Eight things this tool can do, in the order a normal run uses them, plus one you can run
+Ten things this tool can do, in the order a normal run uses them, plus one you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
@@ -39,6 +39,8 @@ any time to check on things.
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
 | `run` | Processes the images through the pipeline. This build runs the declared synthetic fixture. | No new cost beyond the machine already running. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
+| `review` | Opens one run tree read-only and shows its sealed boundaries, page and act images, review queue and recorded decisions. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
+| `advance` | Appends Tyrel's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record it appends is permanent and is never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
@@ -82,11 +84,13 @@ sit above the instrument suite's 1,200-frame corpus-order case and turn a larger
 dense pass into a named refusal before proxy retention or full comparisons can grow without
 a bound; prepare that material as smaller submitted folders.
 
-**`upload` needs no rented machine**, so a normal order is: `upload` your images first
-(zero machine cost while you do), then `launch` when you are ready to actually process
+**Neither `ingest` nor `upload` needs a rented machine**, so a normal order is: `ingest`
+the submitted folder if you are preparing source masters, `upload` your images (zero
+machine cost while you do either), then `launch` when you are ready to actually process
 them, `boot`, `run`, `export`, `backup` your run tree to keep a local copy, and `close`
-the moment you are done. Run `status` any time you are unsure what is happening or
-costing money.
+the moment you are done. Use `review` to read one run tree without changing anything in
+it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
+time you are unsure what is happening or costing money.
 
 ## Before anything bills, it asks
 
@@ -157,7 +161,8 @@ appears.
 ## Where it keeps its own records
 
 Everything this tool writes for itself lives in `~/.local/state/verbatus/` by default (or
-`$XDG_STATE_HOME/verbatus/` when set), outside the project checkout; `--state-dir` moves it.
+`$XDG_STATE_HOME/verbatus/` when that variable holds an absolute path; a relative
+value is ignored), outside the project checkout; `--state-dir` moves it.
 Each record is written once and named after a
 checksum of its own contents, so a record cannot be quietly edited afterwards and still
 read back. You do not need to look in there — `status` shows you what matters.

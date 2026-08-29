@@ -61,7 +61,12 @@ def main() -> int:
                 request["destination_identities"]
             ),
         )
-    except (BackupRefusal, OSError, TypeError, ValueError) as error:
+    # `RecursionError` is listed for the same reason `advance_worker` lists it:
+    # `json.loads` raises it, not `ValueError`, on a deeply nested request, and
+    # the 64 KiB bound still admits tens of thousands of nesting levels. Left
+    # out, the worker dies with a traceback and the operator's saved detail is
+    # a stack trace instead of the one-line refusal every other failure prints.
+    except (BackupRefusal, OSError, RecursionError, TypeError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2
     print(json.dumps(report.to_record(), sort_keys=True))
