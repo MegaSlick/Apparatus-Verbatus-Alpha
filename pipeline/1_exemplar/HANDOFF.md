@@ -267,7 +267,10 @@ master's.
   "not reproducible" alone would send an operator looking for forgery.
 
 **What binds a triage decision to a run.** The byte digests of the decision
-manifest and of any cluster records are bound into `config_digest`. A triage pass
+manifest, of any cluster records, and of any producer recipe supplied with them are
+bound into `config_digest`, alongside the digest of `config/triage_modes.toml`. The
+recipe is validated against the producer's own closed schema before it is bound, so a
+run cannot seal a recipe no triage pass could have emitted. A triage pass
 re-run between two attempts at one run id can move a gutter without changing the
 part count, leaving `source_manifest` byte-identical; the digests are what make
 `RunTree.create` refuse that reuse by name rather than leaving it to be caught

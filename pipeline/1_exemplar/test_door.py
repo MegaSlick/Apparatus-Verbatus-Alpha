@@ -3952,8 +3952,10 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
 def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
     """Binding and point-of-use checks must resolve the same triage-modes bytes.
 
-    The paths are independently spelled in the Door and shared stage module; drift
-    would otherwise compare a run against bytes that did not govern it.
+    Both sides now resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
+    weaker remaining coupling: that the binding digest and the point-of-use check
+    still agree about the bytes, whatever that constant later names. Drift would
+    otherwise compare a run against bytes that did not govern it.
     """
 
     class Models:

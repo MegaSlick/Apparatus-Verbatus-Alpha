@@ -100,6 +100,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    DEFAULT_TRIAGE_MODES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
@@ -2218,7 +2219,12 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
-    triage_modes_config_path = ROOT / "config" / "triage_modes.toml"
+    # The shared constant, not a second spelling of it: `require_triage_modes` reads
+    # this same file at its point of use through the default below, and a moved path
+    # would otherwise refuse every real submission carrying triage geometry with
+    # "changed between run binding" — pointing the operator at a rewrite that never
+    # happened.
+    triage_modes_config_path = Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     try:
         triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
     except OSError as error:
