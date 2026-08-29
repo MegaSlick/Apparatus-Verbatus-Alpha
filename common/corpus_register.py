@@ -140,6 +140,39 @@ def append_records(
         return successor_digest
 
 
+def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -> str:
+    """Prove, under the writer lock, that the register is still the head a caller read.
+
+    An append of no records is still a compare-and-swap. A writer that computes "there
+    is nothing new to append" from bytes it read earlier has read them outside the
+    lock, and a retraction published in between moves the head without changing what
+    that writer would have appended — so returning its own stale digest reports a head
+    that no longer exists, and whatever the caller publishes beside it names memberships
+    the register has since withdrawn. This performs the same locked read-and-compare
+    `append_records` performs, and returns the digest it proved.
+    """
+    try:
+        supplied_path = Path(register_path)
+        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
+    except (OSError, RuntimeError, TypeError) as error:
+        raise SchemaRefusal("corpus-register path could not be resolved") from error
+    if not _is_sha256(expected_digest):
+        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _register_lock(path):
+        try:
+            current = _read_register_path(path, missing_ok=False)
+        except FileNotFoundError:
+            current = empty_register()
+        observed = register_digest(current)
+        if observed != expected_digest:
+            raise IncompatibleReuse(
+                "the corpus register changed after this writer read it; the append was "
+                "not written and must be rebuilt against the current register digest"
+            )
+        return observed
+
+
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
     """Serialize pathname replacement across writers; a crash releases the lock.

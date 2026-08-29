@@ -23,16 +23,16 @@ from typing import Any, Final, Mapping, Sequence
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
-from common.contracts.errors import IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
     append_records,
+    confirm_unchanged_head,
     empty_register,
     membership_heads,
     read_register_path,
     refuse_capture_preference,
-    register_digest,
     validate_register_bytes,
 )
 from common.imaging import ENCODER_LOSSLESS_MODES
@@ -974,15 +974,14 @@ def append_confirmation_to_register(
     if not records:
         # Every membership this confirmation names is already in the register: either
         # a genuine no-op resubmission, or the register half of an earlier crash-split
-        # commit. Either way there is nothing new to append. A caller whose expected
-        # digest is stale still gets the ordinary concurrent-write refusal below.
-        current_digest = register_digest(current_bytes)
-        if current_digest != expected_register_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
-        return current_digest
+        # commit. Either way there is nothing new to append — but that is still a
+        # compare-and-swap, and `current_bytes` was read outside the writer lock. A
+        # retraction published since then moves the head without changing what this
+        # pass would append, so comparing our own stale bytes would return a digest
+        # the register no longer has, and the manifest and cluster records written
+        # next would name a membership that has been withdrawn. The confirmation is
+        # proved against a locked read instead.
+        return confirm_unchanged_head(register_path, expected_digest=expected_register_digest)
     return append_records(register_path, records, expected_digest=expected_register_digest)
 
 

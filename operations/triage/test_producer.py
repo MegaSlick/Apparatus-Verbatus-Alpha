@@ -1012,3 +1012,73 @@ def test_an_interrupted_publish_leaves_a_retry_the_refusal_can_actually_direct(t
     producer_module._publish_immutable_canonical(path, value)
     assert path.read_bytes() == published
     assert sorted(entry.name for entry in tmp_path.iterdir()) == [path.name]
+
+
+def test_a_no_op_confirmation_proves_the_head_under_the_lock_not_from_its_own_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An append of nothing is still a compare-and-swap.
+
+    The producer reads the register before it decides there is nothing new to append,
+    and that read is outside the writer lock. A retraction published in between moves
+    the head without changing what this pass would append, so a check against its own
+    stale bytes would return a digest the register no longer has — and the manifest and
+    clusters written next would name a membership that has been withdrawn. The stale
+    read is simulated directly, because the race cannot be scheduled from a test.
+    """
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    register_path = tmp_path / "register.json"
+    arguments = {
+        "instrument_recipe": recipe,
+        "evidence_manifest": manifest,
+        "evidence_records": evidence,
+        "register_path": register_path,
+    }
+    produced = produce(
+        frames,
+        corpus_id="synthetic",
+        mode="auto",
+        confirmation=confirmed,
+        instrument_recipe=recipe,
+        evidence_manifest=manifest,
+        evidence_records=evidence,
+    )
+    first_head = append_confirmation_to_register(confirmed, produced, **arguments)
+    stale_bytes = register_path.read_bytes()
+
+    # Replaying it against the current head is the honest no-op: nothing to append,
+    # and the head it returns is the head that is there.
+    assert (
+        append_confirmation_to_register(
+            confirmed, produced, expected_register_digest=first_head, **arguments
+        )
+        == first_head
+    )
+
+    page_id = physical_page_id("synthetic", "v1", "opening-31-left")
+    link = next(
+        record
+        for record in json.loads(register_path.read_text(encoding="utf-8"))["records"]
+        if record["kind"] == "membership" and record["physical_page_id"] == page_id
+    )
+    corrected_head = append_records(
+        register_path,
+        [
+            {
+                "kind": "retraction",
+                "retracts": f"membership:{digest_of(link)}",
+                "reason": "the confirmation joined two different blank forms",
+                "appending_run": "triage-correction-1",
+            }
+        ],
+        expected_digest=first_head,
+    )
+    assert members_of(register_path.read_bytes(), page_id) == []
+
+    monkeypatch.setattr(producer_module, "read_register_path", lambda _path: stale_bytes)
+    with pytest.raises(IncompatibleReuse, match="the corpus register changed"):
+        append_confirmation_to_register(
+            confirmed, produced, expected_register_digest=first_head, **arguments
+        )
+    assert register_digest(register_path.read_bytes()) == corrected_head
