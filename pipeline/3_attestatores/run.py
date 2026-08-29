@@ -2126,7 +2126,14 @@ def resolve_attempt(
                     health,
                     recording_problem,
                 ) = prepared_response({**response, "payload": native_payload})
-                health = content_health(native_payload, completed=True)
+                # The health the response boundary produced is kept as it came.
+                # Recomputing it here repeated the same call for every
+                # recordable payload, and on the unrecordable branch -- where
+                # `prepared_response` returns a `None` payload with the honest
+                # unrecordable health -- it would have overwritten that with the
+                # health of `None`, reporting a recordable null channel and
+                # leaving the unrecordable-channel accounting with nothing to
+                # fire on (GOVERNANCE 2).
                 if parsed["state"] != "parsed":
                     outcome = "failed"
                     reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"

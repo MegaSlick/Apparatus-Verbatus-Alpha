@@ -445,6 +445,12 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # Churro-native differs through response declarations, not recovery policy.
     assert by_name["churro-native"]["recover_acts"] == []
     assert by_name["churro-native"]["hold_acts"] == []
+    # Churro-truncation's whole point is that a visibly cut but parseable
+    # response is retained as it came. A recovery route or a hold here would
+    # re-ask or withhold it, which is the thing the scenario exists to refuse
+    # (GOVERNANCE 11: recovery recovers coverage, never content quality).
+    assert by_name["churro-truncation"]["recover_acts"] == []
+    assert by_name["churro-truncation"]["hold_acts"] == []
     assert [
         row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
     ] == [
