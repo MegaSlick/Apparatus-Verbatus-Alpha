@@ -1015,6 +1015,45 @@ def test_a_recorded_decision_makes_its_directory_entry_durable(
     ]
 
 
+def test_the_double_click_triage_route_shows_the_queue_and_records_no_decision(monkeypatch):
+    """Display-only is the design here, so it is held rather than left to drift.
+
+    Acceptance is pinned to `--preview-sha256`, the digest of the draft the
+    operator was shown. A blind prompt chain cannot honestly produce that: it
+    would ask someone to confirm a digest they never saw, which is the single
+    thing that confirmation exists to prevent. Decline is withheld alongside it
+    rather than shipping half a decision surface where a queue item can be
+    dismissed before its evidence is on screen.
+
+    If a later change does build a real interactive review surface, this test is
+    the thing it has to come and change on purpose — which is the point.
+    """
+    from operations.operator import cli
+
+    answers = iter(
+        (
+            "triage",
+            "/approved/manifest.json",
+            "/approved/evidence.json",
+            "/approved/proxies.json",
+            "semi",
+            "batch-1",
+            "Tyrel",
+            "/approved/mode.json",
+        )
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    arguments = cli._interactive_arguments()
+
+    assert arguments[0] == "triage"
+    for flag in ("--queue-state", "--accept", "--decline", "--draft", "--preview-sha256"):
+        assert flag not in arguments, (
+            f"the double-click triage route offered {flag}; a decision recorded there "
+            "would be made without the queue and its digests on screen"
+        )
+
+
 def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -1105,6 +1144,52 @@ def test_an_incomplete_triage_decision_writes_no_mode_record(
     assert refusal in capsys.readouterr().out
     assert not mode_record.exists()
     assert not mode_record.parent.joinpath(".mode.json.lock").exists()
+
+
+def test_an_unloadable_batch_writes_no_mode_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The same claim, one step further out: a batch that will not load.
+
+    `load_queue` refuses an unreadable or non-canonical manifest, evidence map
+    or proxy map. With the declaration persisted ahead of that load, a plain
+    typo in a path left the batch's mode declared by a command that showed the
+    operator nothing — and since the mode is not rewritten, the corrected
+    invocation could no longer choose a different one.
+    """
+    from operations.operator import cli
+
+    mode_record = tmp_path / "mode.json"
+    for name in ("manifest", "evidence", "proxies"):
+        (tmp_path / f"{name}.json").write_bytes(b"{ not canonical json")
+
+    result = cli.main(
+        [
+            "--workspace",
+            str(MODES.parents[1]),
+            "--state-dir",
+            str(tmp_path / "receipts"),
+            "triage",
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--evidence",
+            str(tmp_path / "evidence.json"),
+            "--proxy-paths",
+            str(tmp_path / "proxies.json"),
+            "--mode",
+            "semi",
+            "--batch-id",
+            "batch-1",
+            "--operator",
+            "Tyrel",
+            "--mode-record",
+            str(mode_record),
+        ]
+    )
+
+    assert result == 2
+    assert "manifest-unreadable" in capsys.readouterr().out
+    assert not mode_record.exists()
 
 
 def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Path):

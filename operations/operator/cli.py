@@ -595,7 +595,12 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                     "triage refusal preview-confirmation-required: accept needs the shown preview digest"
                 )
         declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
-        triage.write_mode_declaration(args.mode_record, declaration)
+        # The queue loads before the declaration is persisted, for the same
+        # reason the flag checks run before both: `load_queue` refuses an
+        # unreadable or non-canonical manifest, evidence or proxy map, and a
+        # mode record written ahead of it claimed the batch for a command that
+        # then refused. `declare_mode` above only builds and validates the
+        # record; nothing durable happens until the batch is known to load.
         queue = triage.load_queue(
             args.manifest,
             args.evidence,
@@ -605,6 +610,7 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
             operator=args.operator,
             triage_modes_path=workspace / "config" / "triage_modes.toml",
         )
+        triage.write_mode_declaration(args.mode_record, declaration)
         if args.decline is not None:
             triage.append_decision(
                 args.queue_state, queue, item_digest=args.decline, decision="decline"
@@ -858,6 +864,15 @@ def _interactive_arguments() -> list[str]:
                 "and mode-record path. One was left blank, so nothing changed."
             )
             return []
+        # Display only, deliberately. This route shows the queue and records no
+        # decision. Acceptance is pinned to `--preview-sha256`, the digest of the
+        # draft the operator was actually shown, and a blind prompt chain cannot
+        # honestly produce that — it would be asking someone to confirm a digest
+        # they have not seen, which is the one thing that confirmation exists to
+        # prevent. Decline is withheld with it rather than offering half a
+        # decision surface where a queue item can be dismissed before its
+        # evidence is on screen. Both are recorded at the command line, where the
+        # digests are visible and checkable.
         return [
             "triage",
             "--manifest",
