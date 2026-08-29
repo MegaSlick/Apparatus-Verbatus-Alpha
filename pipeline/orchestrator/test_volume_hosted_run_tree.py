@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterator, cast
+
+import pytest
 
 from common.runtree.store import RunTree
 from operations.operator.backup import sync_run_tree
@@ -411,6 +414,28 @@ def _procfs_state_is_zombie(stat_line: str) -> bool:
     """
 
     return stat_line.rpartition(")")[2].split()[:1] == ["Z"]
+
+
+def test_only_evidence_of_termination_counts_as_termination(monkeypatch) -> None:
+    """A pid we may not signal is a pid that still exists.
+
+    Reporting `PermissionError` as "gone" would let the process-group test pass
+    without ever establishing that the kill worked, which is the one thing it
+    exists to establish.
+    """
+
+    def _denied(_pid, _signal):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", _denied)
+    with pytest.raises(PermissionError):
+        _process_has_terminated(1)
+
+    def _absent(_pid, _signal):
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(os, "kill", _absent)
+    assert _process_has_terminated(1)
 
 
 def test_the_procfs_state_parse_survives_a_command_name_full_of_parentheses() -> None:
