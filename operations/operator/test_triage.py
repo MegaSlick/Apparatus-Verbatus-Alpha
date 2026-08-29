@@ -1053,6 +1053,60 @@ def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
     assert not mode_record.exists()
 
 
+@pytest.mark.parametrize(
+    ("flags", "refusal"),
+    (
+        (("--accept", "a" * 64), "acceptance-incomplete"),
+        (("--decline", "a" * 64), "queue-state-required"),
+    ),
+)
+def test_an_incomplete_triage_decision_writes_no_mode_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flags: tuple[str, ...], refusal: str
+):
+    """A command that refuses must not have claimed the batch's mode on its way.
+
+    The mode declaration was written before these flag sets were checked, and
+    `write_mode_declaration` refuses to rewrite a batch's declared mode once it
+    exists. So an operator whose first attempt was incomplete had the record
+    already standing, and correcting the invocation to a different `--mode` was
+    then refused by the abandoned attempt rather than accepted. The paths below
+    do not exist on purpose: the refusal has to arrive before anything is read
+    or written at all.
+    """
+    from operations.operator import cli
+
+    mode_record = tmp_path / "mode.json"
+    result = cli.main(
+        [
+            "--workspace",
+            str(MODES.parents[1]),
+            "--state-dir",
+            str(tmp_path / "receipts"),
+            "triage",
+            "--manifest",
+            str(tmp_path / "missing-manifest.json"),
+            "--evidence",
+            str(tmp_path / "missing-evidence.json"),
+            "--proxy-paths",
+            str(tmp_path / "missing-proxies.json"),
+            "--mode",
+            "semi",
+            "--batch-id",
+            "batch-1",
+            "--operator",
+            "Tyrel",
+            "--mode-record",
+            str(mode_record),
+            *flags,
+        ]
+    )
+
+    assert result == 2
+    assert refusal in capsys.readouterr().out
+    assert not mode_record.exists()
+    assert not mode_record.parent.joinpath(".mode.json.lock").exists()
+
+
 def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Path):
     """The operator's actual path through the console, including the resume.
 

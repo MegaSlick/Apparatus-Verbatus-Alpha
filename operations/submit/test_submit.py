@@ -452,6 +452,54 @@ def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
     assert referent.read_bytes() == data
 
 
+def test_an_uncomparable_target_is_not_reported_as_a_changed_submission(tmp_path):
+    """The two refusals must stay distinguishable, or the message misdirects.
+
+    A planted symlink and a genuinely different sealed record both refuse and
+    neither is overwritten, but they are different problems and only one of them
+    is about the submission. When both produced "seals different content", the
+    operator was sent to diff a manifest that was never the issue.
+    """
+    linked = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    data = b"identical sealed bytes"
+    referent.write_bytes(data)
+    linked.symlink_to(referent)
+
+    with pytest.raises(submit.ExistingRecordRefusal) as uncomparable:
+        submit._atomic_create(linked, data)
+
+    directory = tmp_path / "a-directory.json"
+    directory.mkdir()
+    with pytest.raises(submit.ExistingRecordRefusal) as also_uncomparable:
+        submit._atomic_create(directory, data)
+
+    changed = tmp_path / "changed.json"
+    changed.write_bytes(b"a genuinely different sealed record")
+    with pytest.raises(submit.ExistingRecordRefusal) as differs:
+        submit._atomic_create(changed, data)
+
+    for caught in (uncomparable, also_uncomparable):
+        assert "could not be read as a regular file" in str(caught.value)
+        assert "seals different content" not in str(caught.value)
+    assert "seals different content" in str(differs.value)
+    assert "could not be read as a regular file" not in str(differs.value)
+    # Whichever refusal fired, GOVERNANCE 4 holds and nothing was written.
+    assert os.readlink(linked) == str(referent)
+    assert directory.is_dir() and not any(directory.iterdir())
+    assert changed.read_bytes() == b"a genuinely different sealed record"
+
+
+def test_a_same_length_difference_is_a_difference_not_a_failure_to_compare(tmp_path):
+    """A readable regular file of equal size was really compared; say so."""
+    data = b"identical sealed bytes"
+    target = tmp_path / "sealed.json"
+    target.write_bytes(b"x" * len(data))
+
+    with pytest.raises(submit.ExistingRecordRefusal, match="seals different content"):
+        submit._atomic_create(target, data)
+
+
 # --- The walk is bounded in every direction an attacker shapes -------------------
 
 
