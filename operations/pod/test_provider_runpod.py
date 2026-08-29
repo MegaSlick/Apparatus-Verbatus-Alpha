@@ -144,6 +144,58 @@ def test_a_balance_source_that_never_answers_becomes_a_named_timeout_refusal() -
     assert transport.calls == []
 
 
+def test_a_source_that_overran_its_deadline_is_never_called_again() -> None:
+    """One abandoned thread per adapter, and no second stall on a money path.
+
+    The blocked call cannot be cancelled -- it is an arbitrary injected callable
+    -- so the only question is what the next gate does. Calling again would pay
+    the deadline a second time while a pod may already be billing, and abandon a
+    second thread. Refusing at once is fail-closed in the direction that
+    matters, and it cannot strand a running pod: closing goes through
+    `VerifiedShutdown`, which never assesses spend.
+    """
+
+    transport = ScriptedTransport([])
+    blocked = threading.Event()
+    calls = 0
+
+    def never_answers() -> AccountBalanceObservation:
+        nonlocal calls
+        calls += 1
+        blocked.wait()
+        raise AssertionError("released only by this test's cleanup")
+
+    adapter = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_observer=never_answers,
+        balance_timeout_seconds=0.05,
+        now=lambda: NOW,
+    )
+
+    # Taken here rather than at module scope: this file's other blocked observer
+    # may still be unwinding, and an upper bound measured from now tolerates
+    # that while still catching accumulation.
+    baseline = threading.active_count()
+    try:
+        with pytest.raises(ProviderFailure, match="did not answer within"):
+            adapter.observe_account_balance()
+        assert calls == 1
+        for _ in range(4):
+            with pytest.raises(ProviderFailure, match="not consulted again"):
+                adapter.observe_account_balance()
+        # The refusal is immediate and the source is untouched: four more gates
+        # would otherwise be four more abandoned threads and four more deadlines
+        # spent while a created pod billed.
+        assert calls == 1
+        assert threading.active_count() <= baseline + 1
+    finally:
+        blocked.set()
+
+    assert transport.calls == []
+
+
 def test_a_failing_balance_source_still_raises_its_own_error_not_the_timeout() -> None:
     """Bounding the call must not rewrite the cause of an ordinary failure."""
 

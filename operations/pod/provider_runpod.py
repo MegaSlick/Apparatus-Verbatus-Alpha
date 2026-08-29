@@ -216,6 +216,11 @@ class RunPodProvider:
         self.balance_observer = balance_observer
         self.balance_timeout_seconds = balance_timeout_seconds
         self.now = now
+        # Set once, by the first observation that overran its deadline. See
+        # `observe_account_balance`: after that the source is not called again,
+        # so at most one abandoned thread can ever exist per adapter.
+        self._balance_abandoned: str | None = None
+        self._balance_lock = threading.Lock()
 
     # -- the seven verbs ---------------------------------------------------
 
@@ -236,10 +241,39 @@ class RunPodProvider:
         interpreter's exit; the deadline is what the caller sees, and it arrives
         as an ordinary `ProviderFailure` naming the timeout rather than as a
         stall with nothing recorded.
+
+        **A source that overruns its deadline is not consulted again**, and the
+        reason is billing safety rather than tidiness. The alternatives were:
+
+        *Cancel the blocked call.* Not available. The observer is an arbitrary
+        injected zero-argument callable, and nothing here can interrupt a
+        syscall inside it. Buying cancellation means changing the seam so every
+        source must accept and honour a deadline — placing the guarantee in the
+        one component that has just demonstrated it does not honour one.
+
+        *Let a bounded number accumulate.* This keeps paying the full deadline
+        at every later gate while a pod may already be billing, and still leaks
+        threads up to the cap. It is worse on both axes than refusing.
+
+        *Refuse from then on*, which is this. At most one thread is ever
+        abandoned per adapter, and every later gate refuses at once instead of
+        stalling another `balance_timeout_seconds` on a money path. That is
+        fail-closed in the direction that matters: the refusal denies paid
+        actions and closes a created pod, because `_observe_balance` turns any
+        raised error into "balance unobservable" and the callers already fail
+        closed on it. It cannot strand a running pod — `_close_and_record`
+        closes through `VerifiedShutdown`, which never assesses spend, so no
+        shutdown path passes through here at all. A stale answer arriving late
+        would be unusable anyway: an observation over sixty seconds old is
+        already refused.
         """
 
         if self.balance_observer is None:
             raise ProviderFailure("RunPod account balance source was not configured")
+        with self._balance_lock:
+            abandoned = self._balance_abandoned
+        if abandoned is not None:
+            raise ProviderFailure(abandoned)
         observed: list[AccountBalanceObservation] = []
         failed: list[BaseException] = []
 
@@ -253,10 +287,14 @@ class RunPodProvider:
         worker.start()
         worker.join(self.balance_timeout_seconds)
         if worker.is_alive():
-            raise ProviderFailure(
+            overran = (
                 "RunPod account balance source did not answer within "
-                f"{self.balance_timeout_seconds} seconds"
+                f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
+                "every later paid action is refused on this same reason"
             )
+            with self._balance_lock:
+                self._balance_abandoned = overran
+            raise ProviderFailure(overran)
         if failed:
             raise failed[0]
         if not observed:
