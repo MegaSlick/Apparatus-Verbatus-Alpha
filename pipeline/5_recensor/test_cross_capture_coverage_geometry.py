@@ -802,4 +802,10 @@ def test_a_view_spanning_two_pages_is_unmeasured_not_measured_on_a_merged_grid()
     # And it is an absent instrument, not a measured shortfall, so it does not
     # become an occluded-everywhere hold on evidence that was never taken.
     assert set(capture["finding_codes"]) <= module.INSTRUMENT_ABSENT_CODES
-    assert result["act_state"] != "occluded-everywhere"
+    # Pinned to the honest state, not merely away from the wrong one. An
+    # inequality here would also admit "full", which is the worse outcome: the
+    # act would be recorded as completely covered, no review raised, and the
+    # occluded half of a continuation act never recovered.
+    (component_row,) = result["components"]
+    assert component_row["union_state"] == "unresolved"
+    assert result["act_state"] == "unresolved"

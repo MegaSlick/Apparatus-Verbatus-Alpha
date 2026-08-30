@@ -59,16 +59,25 @@ def _refuse_preference(value: Any) -> None:
 
 
 def _refuse_textual(value: Any) -> None:
-    if isinstance(value, dict):
-        if set(value) & _TEXTUAL_FIELDS:
-            raise SchemaRefusal(
-                "correspondence proposal: textual evidence cannot match physical acts"
-            )
-        for child in value.values():
-            _refuse_textual(child)
-    elif isinstance(value, list):
-        for child in value:
-            _refuse_textual(child)
+    """Refuse textual evidence anywhere in an untrusted proposal payload.
+
+    Iterative for the same reason the preference screens are: the value is
+    caller input, screened before any shape check closes it, so a deep payload
+    walked recursively exhausted the interpreter stack and raised
+    ``RecursionError`` -- a crash naming nothing, where this module's whole
+    purpose is to refuse by name. Depth is this walk's own list now.
+    """
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if set(current) & _TEXTUAL_FIELDS:
+                raise SchemaRefusal(
+                    "correspondence proposal: textual evidence cannot match physical acts"
+                )
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:

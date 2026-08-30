@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import common.physical_act_partition as _partition_module
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id, physical_act_id, physical_page_id
@@ -2029,3 +2030,24 @@ def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
     payload["self_hash"] = self_hash(payload)
     with pytest.raises(SchemaRefusal, match="escapes the run tree"):
         validate_physical_act_partition(payload)
+
+
+def test_the_textual_screen_walks_a_deep_payload_instead_of_the_interpreter_stack():
+    """The sibling of the preference screens, and it had the same defect.
+
+    This guard runs over caller-supplied proposal payloads before any shape
+    check closes them, so a deeply nested one walked recursively exhausted the
+    stack and raised RecursionError -- a crash naming nothing, in a module whose
+    entire purpose is to refuse textual evidence by name.
+    """
+    deep = {"leaf": 1}
+    for _ in range(50_000):
+        deep = {"nested": deep}
+    # Clean to the bottom: depth alone must not stop the walk.
+    _partition_module._refuse_textual(deep)
+
+    buried = {"ocr": "a reading"}
+    for _ in range(50_000):
+        buried = {"nested": [buried]}
+    with pytest.raises(SchemaRefusal, match="textual evidence cannot match physical acts"):
+        _partition_module._refuse_textual(buried)

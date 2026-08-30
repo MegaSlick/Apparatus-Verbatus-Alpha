@@ -129,6 +129,18 @@ def test_no_textual_or_scoring_field_is_read_by_the_correspondence_module():
             and isinstance(node.slice.value, str)
         ):
             read.add(node.slice.value)
+        elif isinstance(node, ast.Call):
+            # A field can be read through an argument rather than a subscript:
+            # `component.get("ocr")` and `row.pop("text", None)` put the banned
+            # name where neither the subscript branch nor the name branch looks.
+            # That is precisely the shape this guard exists to stop, because
+            # this module decides durable physical-act identity and a
+            # text-derived match here turns a witness reading into a corpus mint.
+            read.update(
+                argument.value
+                for argument in node.args
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            )
     banned = {
         "confidence",
         "iou",
