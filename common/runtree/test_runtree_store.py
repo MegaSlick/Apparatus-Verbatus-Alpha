@@ -295,6 +295,41 @@ def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
             make_run(tmp_path, source_manifest=[{"relative_path": "p.png", **bad}])
 
 
+def test_a_source_page_ordinal_below_one_is_refused(tmp_path):
+    """An ordinal is a page number, and page numbers start at one here.
+
+    The integer check above accepts 0 and -1, which every producer in this tree
+    is incapable of writing: the Door increments before it assigns, and the
+    fixture declarations follow it. Accepting one anyway seals it into the
+    corpus frame membership, which gold re-derives from the same field, so the
+    run would carry a page numbering nothing else in the system shares.
+
+    Each row below is otherwise well formed, so the ordinal is the only thing
+    the refusal can be about, and the message names the offending values rather
+    than only the rule -- an operator holding a hand-built manifest needs to
+    know which row to fix.
+    """
+    for bad_ordinal in (0, -1, -12):
+        with pytest.raises(SchemaRefusal, match="counted from one"):
+            make_run(
+                tmp_path,
+                source_manifest=[
+                    {"relative_path": "p.png", "sha256": "a" * 64, "ordinal": bad_ordinal}
+                ],
+            )
+
+    # A good row beside a bad one is still refused: the check is over the
+    # manifest, not over whichever row happens to be read first.
+    with pytest.raises(SchemaRefusal, match=r"ordinal\(s\) \[0\]"):
+        make_run(
+            tmp_path,
+            source_manifest=[
+                {"relative_path": "p1.png", "sha256": "a" * 64, "ordinal": 1},
+                {"relative_path": "p0.png", "sha256": "b" * 64, "ordinal": 0},
+            ],
+        )
+
+
 def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
     """Invariant #14: the refusals above must not have bought their strictness by
     refusing good input too."""
