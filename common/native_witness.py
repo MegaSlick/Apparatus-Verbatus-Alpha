@@ -622,9 +622,7 @@ def validate_retained_response_refs(
                 or set(reference) != {"relative_path", "sha256"}
                 or not isinstance(reference["relative_path"], str)
                 or not reference["relative_path"]
-                or not isinstance(reference["sha256"], str)
-                or len(reference["sha256"]) != 64
-                or any(character not in "0123456789abcdef" for character in reference["sha256"])
+                or not is_sha256(reference["sha256"])
                 or reference["relative_path"] != expected_prefix + reference["sha256"]
             ):
                 raise SchemaRefusal(
@@ -1057,11 +1055,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         )
     digest = reference["sha256"]
     expected_path = f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
-    if (
-        len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-        or reference["relative_path"] != expected_path
-    ):
+    if not is_sha256(digest) or reference["relative_path"] != expected_path:
         raise SchemaRefusal(
             "a page Testimonium native capture raw-response reference is not its "
             "content-addressed Attestatores blob path and digest"
