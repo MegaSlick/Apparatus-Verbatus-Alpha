@@ -1242,8 +1242,6 @@ class OperatorSurface:
                             + (summary if isinstance(summary, str) else "saved record")
                         )
                         lines.extend(_status_projection(action, payload))
-                        if action == "upload":
-                            lines.extend(_status_manifest_projection(payload))
                     except RecordError as error:
                         label = f"{action} record {number}"
                         unreadable.append(f"{label}: {error}")
@@ -2008,22 +2006,6 @@ def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
     if isinstance(reasons, list):
         rows.extend(f"Recorded reason: {reason}" for reason in reasons)
     return rows
-
-
-def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Show the upload's manifest identity without retaining a local path.
-
-    The receipt proves exactly which sealed record governed the transfer by
-    digest.  Local source and manifest paths are operator-machine details, not
-    durable evidence, so status cannot and must not reopen them later.
-    """
-
-    recorded_sha256 = payload.get("submission_manifest_sha256")
-    if recorded_sha256 is None:
-        return []
-    if not isinstance(recorded_sha256, str):
-        raise RecordError("saved upload record does not bind its submission record digest")
-    return [f"  Sealed submission record digest: {recorded_sha256}."]
 
 
 def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:

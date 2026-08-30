@@ -949,13 +949,23 @@ class PodRuntime:
         except OSError as error:
             return _unproven_lease_root(f"the lease directory could not be listed: {error}")
         for path in paths:
-            if path.is_symlink():
-                return _unproven_lease_root(f"lease {path} is a symlink")
+            # Inside the guard for the same reason as `_reserved_liability`:
+            # `is_symlink` re-raises a permission error rather than answering
+            # False, and an unreadable lease used to throw out of the paid gate
+            # instead of refusing through it.
             try:
+                if path.is_symlink():
+                    return _unproven_lease_root(f"lease {path} is a symlink")
                 lease = LeaseStore(path).load()
             except Exception as error:
                 return _unproven_lease_root(f"lease {path} could not be read: {error}")
-            if lease is None or lease.phase == "closed-verified":
+            if lease is None:
+                # `glob` listed it, so something was accounted for here a moment
+                # ago and may still be billing; an empty answer is not a clear one.
+                return _unproven_lease_root(
+                    f"a listed lease vanished before it could be read: {path}"
+                )
+            if lease.phase == "closed-verified":
                 continue
             named = "" if lease.pod_id is None else f" for pod {lease.pod_id}"
             return (

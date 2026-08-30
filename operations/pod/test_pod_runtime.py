@@ -1086,9 +1086,18 @@ def test_two_racing_processes_cannot_create_two_billing_pods(tmp_path: Path) -> 
         )
         for index in (0, 1)
     ]
-    for process in processes:
-        stdout, stderr = process.communicate(timeout=120)
-        assert process.returncode == 0, f"racing launcher failed: {stdout}{stderr}"
+    try:
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=120)
+            assert process.returncode == 0, f"racing launcher failed: {stdout}{stderr}"
+    finally:
+        # A hung first launcher must not leave the second alive holding the
+        # shared spend-gate flock: one stuck drill would cascade into slow,
+        # unrelated money-path failures with the real cause invisible.
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
 
     results = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
     assert all(result["met_peer"] for result in results), (
@@ -1181,6 +1190,69 @@ def test_an_unreadable_lease_never_reads_as_an_empty_lease_root(tmp_path: Path) 
     assert "could not be proved clear of an open paid action" in refusal
     assert "corrupt.json" in refusal
     assert "is already armed" not in refusal
+
+
+def test_a_vanished_lease_refuses_through_the_gate_instead_of_reading_as_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease `glob` listed but `load` no longer finds may still be billing.
+
+    Reading it as an empty lease root would silently drop a liability; the
+    gate must refuse with the vanished path named, exactly as
+    `_reserved_liability` already does for the same shape.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    (tmp_path / "gone.json").write_text("{}", encoding="utf-8")
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+
+    class _VanishedStore:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def load(self) -> None:
+            return None
+
+    monkeypatch.setattr(launch_module, "LeaseStore", _VanishedStore)
+
+    refusal = pod_runtime._open_lease_refusal()
+
+    assert refusal is not None
+    assert "vanished before it could be read" in refusal
+    assert "gone.json" in refusal
+
+
+def test_a_lease_whose_link_test_faults_refuses_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`is_symlink` re-raises a permission fault rather than answering False.
+
+    That fault must refuse through the paid gate -- past `create`'s own
+    `_SpendGateLockFailure` catch -- not escape it as a traceback with no
+    LaunchResult and no record of a pod that may still be billing.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    lease_path = tmp_path / "guarded.json"
+    lease_path.write_text("{}", encoding="utf-8")
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+
+    real_is_symlink = Path.is_symlink
+
+    def faulting_is_symlink(self: Path) -> bool:
+        if self.name == "guarded.json":
+            raise PermissionError("operation not permitted")
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", faulting_is_symlink)
+
+    refusal = pod_runtime._open_lease_refusal()
+
+    assert refusal is not None
+    assert "could not be proved clear of an open paid action" in refusal
+    assert "guarded.json" in refusal
 
 
 def test_minted_challenges_are_unpredictable_and_do_not_repeat() -> None:

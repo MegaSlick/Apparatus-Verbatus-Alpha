@@ -81,9 +81,16 @@ def test_two_geometries_for_one_page_refuses_rather_than_picking(tmp_path: Path)
         scantailor_worker.parse(offering_two_variants, tmp_path / "two-variants.ScanTailor")
 
 
-def test_surface_names_the_external_gap_and_imports_only_through_the_worker(
+def test_parent_sequences_preview_then_commit_through_a_stand_in_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The parent's plumbing only: `run_confined` is a stand-in here.
+
+    The real worker's document contents are proven by
+    `test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point`;
+    this test would stay green if `scantailor_worker.main` regressed, and its
+    name may not claim otherwise.
+    """
     project = tmp_path / "scan.ScanTailor"
     output = tmp_path / "geometry"
     project.write_bytes(PROJECT)
