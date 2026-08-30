@@ -49,7 +49,6 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
         perlector_protocol_config="config/perlector_protocol.toml",
-        serving_recipes_config="config/serving_recipes_real.toml",
         decoding_config="config/decoding.toml",
         perlector_audit_config="config/perlector_audit.toml",
         draft_fed=True,
