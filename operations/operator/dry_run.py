@@ -9,7 +9,6 @@ read without needing a configured provider account.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import tempfile
@@ -20,6 +19,7 @@ from common.contracts.canonical import canonical_bytes
 from operations.pod.models import PodCreateRequest
 from operations.submit.submit import build_manifest, walk_folder
 
+from .cli import _is_within
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import OperatorFakeProvider
 from .surface import OperatorSurface
@@ -34,7 +34,7 @@ def _scratch_root() -> Path:
 
     checkout = ROOT.resolve()
     configured = Path(tempfile.gettempdir()).resolve()
-    if not _contains_directory(configured, checkout):
+    if not _is_within(configured, checkout):
         return configured
 
     # tempfile honours TMPDIR/TEMP/TMP, any of which may point into the
@@ -42,26 +42,29 @@ def _scratch_root() -> Path:
     # if the checkout itself contains it, refuse rather than make the promise
     # false. This operator already supports POSIX only (cli.py uses pwd).
     fallback = Path("/tmp").resolve()
-    if _contains_directory(fallback, checkout):
-        raise RuntimeError("no temporary directory outside the checkout is available")
+    if _is_within(fallback, checkout):
+        # Every other failure in this module leaves through the three-part
+        # operator contract. `OperatorError` derives from `RuntimeError`, not the
+        # reverse, so a plain one was caught by nothing here and reached the
+        # operator as a bare traceback. The refusal was right; only its shape was.
+        raise OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail="no temporary directory outside the checkout is available",
+        )
     return fallback
 
 
-def _contains_directory(path: Path, directory: Path) -> bool:
-    """Compare existing ancestors by identity, not case-sensitive spelling."""
-
-    try:
-        directory_stat = os.stat(directory)
-    except OSError:
-        return False
-    for spelling in (Path(os.path.abspath(path)), path.resolve(strict=False)):
-        for ancestor in (spelling, *spelling.parents):
-            try:
-                if os.path.samestat(os.stat(ancestor), directory_stat):
-                    return True
-            except OSError:
-                continue
-    return False
+# One containment rule, not two. This decides whether the rehearsal's scratch
+# folder lands in the checkout; the same question decides where operator records
+# go, and `cli._is_within` was already the identical algorithm. Two copies drift:
+# correcting one -- for a mount point, or a missing ancestor -- would leave the
+# other answering the old way, and the two decisions would disagree in silence.
+#
+# Used under its own name, not aliased: `_is_within(path, directory)` answers
+# "is path inside directory", and reading an alias called `_contains_directory`
+# as the opposite relation invites swapping the arguments -- which would pass the
+# guard for a TMPDIR inside the checkout and write the rehearsal's scratch
+# workspace into the repository, the one placement this exists to prevent.
 
 
 def make_transcript(output: str | Path) -> Path:
@@ -100,7 +103,7 @@ def make_transcript(output: str | Path) -> Path:
         spend.write_text(
             "\n".join(
                 (
-                    'schema = "pod-spend.v2"',
+                    'schema = "pod-spend.v3"',
                     'state = "configured"',
                     'currency = "USD"',
                     'max_hourly_usd = "1.00"',

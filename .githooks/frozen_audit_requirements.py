@@ -13,6 +13,16 @@ import sys
 from importlib.metadata import distributions
 
 PROJECT_DISTRIBUTION = "verbatus"
+"""This project's own distribution name, excluded from the audited inventory.
+
+It must match `project.name` in pyproject.toml, and `.githooks/
+test_ci_workflow.py` names the same literal again. Renaming the distribution
+without changing all three emits a pin for something with no PyPI advisory
+identity, and `pip_audit --strict` then fails the whole gate with a message
+about an unresolvable requirement rather than about the rename. It is not read
+from pyproject.toml here because this helper must run with nothing beyond the
+standard library and must not depend on the checkout's layout.
+"""
 NAME = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
 VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 

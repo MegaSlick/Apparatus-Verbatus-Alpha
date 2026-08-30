@@ -1006,36 +1006,22 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
 
 
-def test_manifest_validates_and_digests_one_artifact_read(tmp_path, monkeypatch):
-    tree = make_run(tmp_path)
-    published = tree.publish_artifact(make_envelope())
-    artifact = tree.resolve(published.relative_path)
-    original = artifact.read_bytes()
-    forged = canonical_bytes(make_envelope(proposals=99))
-    original_read_text = Path.read_text
-
-    def swap_after_validation(path, *args, **kwargs):
-        text = original_read_text(path, *args, **kwargs)
-        if path == artifact:
-            path.write_bytes(forged)
-        return text
-
-    monkeypatch.setattr(Path, "read_text", swap_after_validation)
-    manifest = tree.build_manifest(DESIGNATOR)
-
-    assert manifest["artifacts"][0]["sha256"] == digest_bytes(original)
-    assert artifact.read_bytes() == original
-
-
 def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, monkeypatch):
     """A replacement at the read seam may not splice two artifacts into one row.
 
-    Driven at `_read_manifest_artifact` rather than at `Path.read_bytes`: the
+    Driven at `_read_manifest_artifact` rather than at `Path.read_text`: the
     merged reader reaches the file through a no-follow descriptor chain and never
     calls the `Path` method, so patching that would have made this test pass
     without ever substituting anything. What is asserted is the property either
     branch's reader owes -- the row's metadata and its digest describe the same
     bytes -- against whichever bytes the one read actually returned.
+
+    A second test used to sit above this one doing exactly the patch this
+    docstring warns against: it hooked `Path.read_text`, the hook never fired,
+    its forged bytes were never written, and both of its assertions compared the
+    original bytes with themselves. It was named for this seam and would have
+    stayed green if the seam broke, so it was removed rather than counted as
+    coverage.
     """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope(outcome="proposed"))
@@ -1056,6 +1042,12 @@ def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, mo
 
 
 def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_path):
+    """Containment, which is what this one actually pins — see the test below.
+
+    `_raise_manifest_symlink` resolves the path first, and a target outside the
+    tree fails that before any link-specific message is built. So this stays green
+    with the `S_ISLNK` check deleted, and the link guard needs its own case.
+    """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope())
     artifact_path = tree.resolve(published.relative_path)
@@ -1064,6 +1056,24 @@ def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_pat
     artifact_path.symlink_to(outside)
 
     with pytest.raises(SchemaRefusal, match="outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifact_symlink_that_stays_inside_the_run_tree(tmp_path):
+    """The link guard itself, on the case containment cannot reach.
+
+    A link to a sibling artifact resolves inside the tree, so only the `S_ISLNK`
+    check stands between it and the inventory — and this is the case that matters,
+    because it is how one artifact comes to answer for two rows.
+    """
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    sibling = tree.publish_artifact(make_envelope(subject="pg_fedcba9876543210"))
+    aliased = tree.resolve(published.relative_path)
+    aliased.unlink()
+    aliased.symlink_to(tree.resolve(sibling.relative_path))
+
+    with pytest.raises(SchemaRefusal, match="never an alias"):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -1253,7 +1263,15 @@ def test_a_manifest_refuses_a_unique_directory_link_inside_the_run_tree(tmp_path
 
 @pytest.mark.parametrize("alias_name", ("also-proposal", "z-proposal-alias"))
 def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path, alias_name):
-    """Alias refusal must not depend on which directory name sorts first."""
+    """Alias refusal must not depend on which directory name sorts first.
+
+    This covers the *symlink* alias and says so. The walk's other alias guard --
+    two names resolving to one inode, `identity in walked` -- cannot be reached
+    from here, because a symlink trips the link refusal first and a second
+    non-symlink name for one directory needs a directory hard link or a bind
+    mount, neither of which a portable test can make. Asserting the two messages
+    as an alternation let this read as coverage of both; it never was.
+    """
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -1262,7 +1280,7 @@ def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_pa
     ).parent
     (kind_directory.parent / alias_name).symlink_to(kind_directory)
 
-    with pytest.raises(SchemaRefusal, match="is a link|are the same directory"):
+    with pytest.raises(SchemaRefusal, match="is a link"):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -1409,7 +1427,12 @@ def test_the_artifact_walk_does_not_recurse_once_per_directory(tmp_path):
         deepest.mkdir()
 
     limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(len(inspect.stack(0)) + 64)
+    # Headroom well under the 200 directories built above, so a walk that
+    # recursed once per directory still exhausts it and fails -- but far enough
+    # above the walk's own constant needs (JSON validation, `Path.resolve`)
+    # that incidental frames cannot raise `RecursionError` and be misread as
+    # the defect this hunts.
+    sys.setrecursionlimit(len(inspect.stack(0)) + 128)
     try:
         manifest = tree.build_manifest(DESIGNATOR)
     finally:
@@ -1563,6 +1586,21 @@ def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypa
         return real_fdopen(descriptor, *args, **kwargs)
 
     monkeypatch.setattr(os, "fdopen", counted_fdopen)
+    # `os.fdopen` is not the only way to read the file. Counting that route
+    # alone, a change that hashed via `Path.read_bytes` would leave `reads` at
+    # 1 and the digest still correct -- the file does not change during the
+    # test -- so the manifest could hash bytes it never verified and this would
+    # still report success.
+    real_read_bytes = Path.read_bytes
+
+    def counted_read_bytes(path):
+        nonlocal reads
+        named = path.stat()
+        if (named.st_dev, named.st_ino) == artifact_identity:
+            reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
 
     entry = tree.build_manifest(DESIGNATOR)["artifacts"][0]
 
@@ -1674,7 +1712,35 @@ def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkey
         (artifacts_root / name).write_bytes(b"publication residue")
     monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 2)
 
-    with pytest.raises(SchemaRefusal, match="entry manifest walk limit"):
+    with pytest.raises(SchemaRefusal, match="entry manifest walk limit") as refusal:
+        tree.build_manifest(DESIGNATOR)
+    # One listing carries every entry, so this is the per-directory guard in
+    # `_listing_fd`. Named here so the cumulative case below cannot be mistaken
+    # for a duplicate of it.
+    assert not str(refusal.value).startswith("artifact inventory")
+
+
+def test_a_manifest_bounds_the_whole_walk_not_only_each_directory(tmp_path, monkeypatch):
+    """The cumulative walk bound is a guard in its own right.
+
+    Every directory here lists under the limit, so the per-directory refusal
+    never fires and only the running `examined` count in `_walk_artifact_json`
+    can stop the walk. Both bounds read `_MAX_MANIFEST_WALK_ENTRIES`, so without
+    a case that separates them an implementation that counted per directory and
+    reset between them would satisfy the suite while an artifact tree of
+    unbounded *total* size walked to the end.
+    """
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    for directory in ("first", "second"):
+        nested = artifacts_root / directory
+        nested.mkdir(parents=True)
+        for name in ("one", "two"):
+            (nested / name).write_bytes(b"publication residue")
+    # Six entries in all; no single directory lists more than two.
+    monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 3)
+
+    with pytest.raises(SchemaRefusal, match="artifact inventory exceeds"):
         tree.build_manifest(DESIGNATOR)
 
 

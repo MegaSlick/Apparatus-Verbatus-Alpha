@@ -29,8 +29,10 @@ PNG and DEFLATE specifications decide any byte.
 """
 
 import hashlib
+import math
 import struct
 import zlib
+from collections.abc import Mapping
 from io import BytesIO
 from typing import Final, NamedTuple, TypedDict
 
@@ -433,8 +435,15 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
 
     A sealed ``pillow-lanczos`` recipe must reproduce the operation that ran.
     Bilevel and palette sources are therefore promoted before Pillow can replace
-    LANCZOS with nearest-neighbour; palette alpha is retained. An identity-sized
-    request returns the source bytes because no resampler ran.
+    LANCZOS with nearest-neighbour; palette alpha is retained.
+
+    An identity-sized request runs no resampler and skips the mode promotion
+    with it, but it is still written out through this module's deterministic
+    framing rather than handed back untouched. For the only bytes the pipeline
+    ever passes here -- a crop this module encoded -- re-encoding reproduces the
+    input exactly, which is what the identity cases assert. Bytes framed by some
+    other encoder would come back re-framed, so this is not a passthrough and
+    must not be relied on as one.
     """
     if (
         not isinstance(width, int)
@@ -754,6 +763,23 @@ def imaging_library_versions() -> dict[str, str]:
     }
 
 
+def _refuse_uncontained_rectangle(
+    rectangle: Mapping[str, int], width: int, height: int, what: str
+) -> None:
+    """Refuse a rectangle Pillow would silently pad instead of rejecting."""
+    if (
+        rectangle["x"] < 0
+        or rectangle["y"] < 0
+        or rectangle["x"] + rectangle["w"] > width
+        or rectangle["y"] + rectangle["h"] > height
+    ):
+        raise ValueError(
+            f"{what} of {rectangle['w']}x{rectangle['h']} at "
+            f"({rectangle['x']}, {rectangle['y']}) falls outside its {width}x{height} source, "
+            "so the page it describes would be part invented pixels"
+        )
+
+
 def _png_colour_mode(png_bytes: bytes) -> str:
     """The Pillow mode of a PNG this module wrote, read out of its own IHDR.
 
@@ -769,6 +795,35 @@ def _png_colour_mode(png_bytes: bytes) -> str:
             return mode
     raise ValueError(
         f"a derivative page declares PNG layout {layout}, which this module never writes"
+    )
+
+
+def _expanded_rotation_size(width: int, height: int, angle_degrees: float) -> tuple[int, int]:
+    """The size `Image.rotate(angle, expand=True)` would allocate, without allocating it.
+
+    Pillow decides the expanded canvas by transforming the four corners of the
+    source rectangle and taking `ceil(max) - floor(min)` on each axis; the same
+    arithmetic is restated here so the bound can be applied *before* the rotation
+    materialises the result. The multiples of 90 are Pillow's own fast paths,
+    which transpose rather than transform.
+    """
+    angle = angle_degrees % 360.0
+    if angle in (0.0, 180.0):
+        return width, height
+    if angle in (90.0, 270.0):
+        return height, width
+    radians = -math.radians(angle)
+    cos = round(math.cos(radians), 15)
+    sin = round(math.sin(radians), 15)
+    centre_x, centre_y = width / 2.0, height / 2.0
+    offset_x = cos * -centre_x + sin * -centre_y + centre_x
+    offset_y = -sin * -centre_x + cos * -centre_y + centre_y
+    corners = ((0, 0), (width, 0), (width, height), (0, height))
+    xs = [cos * x + sin * y + offset_x for x, y in corners]
+    ys = [-sin * x + cos * y + offset_y for x, y in corners]
+    return (
+        math.ceil(max(xs)) - math.floor(min(xs)),
+        math.ceil(max(ys)) - math.floor(min(ys)),
     )
 
 
@@ -797,6 +852,12 @@ def render_triage_derivative(
         colour_mode = part["colour_mode"]
         with Image.open(BytesIO(source_bytes)) as image:
             image.seek(page_index)
+            # Before `load`, and after `seek`, so the bound is enforced against the
+            # frame actually being decoded. Without it this path was the one Pillow
+            # decode in the module with no `MAX_PIXELS` check of its own, and a
+            # master between the bound and Pillow's own 2x hard ceiling materialised
+            # here under nothing worse than a warning.
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             source_mode = image.mode
             source_bands = list(image.getbands())
@@ -810,6 +871,18 @@ def render_triage_derivative(
                     "conversion this page needs ('grayscale', 'rgb' or 'bitonal') so it is "
                     "recorded, or submit the frame without a split decision"
                 )
+            # `Image.crop` pads rather than refuses: a rectangle past the master's
+            # edge comes back filled with black, so a part declaring a frame larger
+            # than the master it was actually cut from produced a page of mostly
+            # invented pixels and sealed them. The Exemplar boundary reconciles the
+            # declared frame against the decoded master, but only after this
+            # function has already rendered the padded page, and the door's
+            # producing path reconciles nothing at all. Refused here instead, at the
+            # one place both paths pass through, the way `crop_png` already refuses.
+            _refuse_uncontained_rectangle(
+                region, source_width, source_height, "a triage split region"
+            )
+            _refuse_uncontained_rectangle(crop_box, region["w"], region["h"], "a triage crop box")
             split = image.crop(
                 (
                     region["x"],
@@ -828,8 +901,19 @@ def render_triage_derivative(
             )
             # Pillow's positive degrees are counter-clockwise, while the sealed
             # recipe records clockwise millidegrees.
+            angle_degrees = -rotation["rotation_millidegrees"] / 1000
+            # `expand=True` grows the canvas to the rotated bounding box, so a crop
+            # that sits inside `MAX_PIXELS` before the rotation can land far outside
+            # it after: a 200000x2 strip is 400000 pixels, and at 45 degrees its
+            # bounding box is over four hundred times the whole bound. The Door only
+            # inspects the geometry of the page it is handed, so without a check here
+            # the allocation happens first and the run dies where a recorded refusal
+            # belongs.
+            _refuse_past_pixel_bound(
+                *_expanded_rotation_size(crop_box["w"], crop_box["h"], angle_degrees)
+            )
             rotated = cropped.rotate(
-                -rotation["rotation_millidegrees"] / 1000,
+                angle_degrees,
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
             )
@@ -864,5 +948,10 @@ def render_triage_derivative(
                 "source_width": source_width,
                 "source_height": source_height,
             }
-    except (*_DECODE_FAILURES, KeyError, TypeError) as error:
+    # `EOFError` beside the shared decode failures because this is the one path that
+    # seeks: a `page_index` past the last frame of a container raises it, and it
+    # descends from `Exception` rather than `OSError`, so it escaped this module's
+    # contract that an undecodable frame raises `ValueError` and reached the
+    # Exemplar boundary as an unhandled error instead of a refusal.
+    except (*_DECODE_FAILURES, EOFError, KeyError, TypeError) as error:
         raise ValueError(f"source frame bytes are not a decodable image ({error})") from error

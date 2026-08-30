@@ -1325,7 +1325,12 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
     raise SchemaRefusal(f"{schema!r} is not a gold record schema")
 
 
-def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[dict[str, Any]]:
+def validate_corpus(
+    records: Any,
+    run_path: str | Path | None = None,
+    *,
+    require_closure: bool = True,
+) -> list[dict[str, Any]]:
     """Validate a whole gold corpus, which one record at a time cannot establish.
 
     Disjointness is enforced by construction across corpus frames: `set_for_page`
@@ -1362,6 +1367,17 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     exist, so deletion of an entire act chain leaves no local fact to contradict.
     The retained draw is the narrower exception: it enumerates seeded pages, so
     their disappearance is detectable below.
+
+    Closure is the one check a *publication* may waive, and `require_closure`
+    waives only that. An act's custody chain is legitimately open between its
+    first transcription and its adjudication, so a writer that reconciled the
+    whole corpus before every append could never publish the first of two
+    readings. Every other rule here holds at publication time: a second reading
+    from the same transcriber, a conflicting adjudication, an instrument
+    membership naming an absent sample, and a contradicted act page are all
+    facts about records that already exist, and each stays refused. Records are
+    immutable once written, so a contradiction discovered afterwards cannot be
+    withdrawn -- it has to be caught before the byte lands.
 
     Draw membership is checked here too, and here is the only place it can be.
     `verify-sampling` reads the sample records in a directory; a layout or padding
@@ -1632,14 +1648,15 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             f"act {record['act_identity']} has two conflicting adjudications; gold has "
             "one established reading per act",
         )
-    unadjudicated = sorted(set(transcriptions_by_act) - set(adjudications))
-    _refuse(
-        bool(unadjudicated),
-        f"{len(unadjudicated)} act(s) have independently stored transcriptions but no "
-        f"adjudication (first unadjudicated {unadjudicated[:1]}). The started gold-reading "
-        "custody chain is incomplete. Collect the second independent transcription if "
-        "needed, adjudicate the exact stored pair, and retry",
-    )
+    if require_closure:
+        unadjudicated = sorted(set(transcriptions_by_act) - set(adjudications))
+        _refuse(
+            bool(unadjudicated),
+            f"{len(unadjudicated)} act(s) have independently stored transcriptions but no "
+            f"adjudication (first unadjudicated {unadjudicated[:1]}). The started gold-reading "
+            "custody chain is incomplete. Collect the second independent transcription if "
+            "needed, adjudicate the exact stored pair, and retry",
+        )
     return validated
 
 

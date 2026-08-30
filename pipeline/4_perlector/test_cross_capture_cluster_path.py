@@ -108,6 +108,7 @@ def _register(tmp_path: Path, fixture: dict[str, Any]) -> tuple[Path, str, str]:
                 "kind": "physical-page",
                 **page,
                 "physical_page_id": physical_page,
+                "appending_run": "triage",
             },
             first_membership,
             both_membership,

@@ -350,8 +350,16 @@ def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, 
     assert len(set(keys)) == len(keys), "two responses declared for one (scenario, page, chair)"
 
 
-def test_the_pinned_reference_run_exercises_the_churro_capture_path(skeleton):
-    """The pinned run exercises capture without moving its reading text."""
+def test_the_happy_scenario_declares_a_churro_response_per_page_matching_its_reading(skeleton):
+    """A declaration check, not a run: nothing here invokes an adapter or a stage.
+
+    The named property is that `happy` declares one Churro page response per
+    page for the Churro chair, and that each one reproduces the reading text
+    that scenario already asserts elsewhere -- so turning the capture path on
+    moved no act's reading. Whether the pipeline still *consumes* these rows is
+    the acceptance suite's pinned run, which would move its file count and
+    digest if the path were disabled.
+    """
     happy = [row for row in skeleton["churro_page_response"] if row["scenario"] == "happy"]
     assert {(row["page_ordinal"], row["chair"]) for row in happy} == {
         (1, "attestator_3"),
@@ -366,8 +374,14 @@ def test_the_pinned_reference_run_exercises_the_churro_capture_path(skeleton):
         assert row["transport_stop_reason"] == "eos"
 
 
-def test_the_churro_native_scenario_reaches_all_three_parse_states(skeleton):
-    """The scenario declares success, visible truncation, and parse failure."""
+def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failure(skeleton):
+    """A declaration check, not a run: the three shapes are read from the fixture.
+
+    `churro-native` declares a parseable response and one the provider cut
+    mid-element; `churro-truncation` declares the visibly cut but still closed
+    one. That the parser then classifies each as parsed, failed, and truncated
+    is `test_feeding.py`'s and the acceptance pin's to prove, not this file's.
+    """
     rows = {
         (row["page_ordinal"], row["chair"]): row
         for row in skeleton["churro_page_response"]
@@ -446,6 +460,12 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # Churro-native differs through response declarations, not recovery policy.
     assert by_name["churro-native"]["recover_acts"] == []
     assert by_name["churro-native"]["hold_acts"] == []
+    # Churro-truncation's whole point is that a visibly cut but parseable
+    # response is retained as it came. A recovery route or a hold here would
+    # re-ask or withhold it, which is the thing the scenario exists to refuse
+    # (GOVERNANCE 11: recovery recovers coverage, never content quality).
+    assert by_name["churro-truncation"]["recover_acts"] == []
+    assert by_name["churro-truncation"]["hold_acts"] == []
     assert [
         row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
     ] == [

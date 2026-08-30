@@ -115,24 +115,50 @@ def open_write_source(source: Path, drawer: Path):
         try:
             match = _drawer_ancestor(source, drawer_descriptor)
             if match is None:
-                return open(source, "rb")
-            directory, relative_parts = match
-            try:
-                for component in relative_parts[:-1]:
-                    child = os.open(component, directory_flags, dir_fd=directory)
+                # Outside the drawer the path is the session's own, so its open
+                # happens after this guard. Inside the guard, an ordinary
+                # permission error or vanished standing brief was rewritten as
+                # "cannot safely open ... beneath <drawer>", and the launcher then
+                # blamed an agent-controlled symlink -- sending the operator to
+                # inspect the chamber's drawer over a fault on their own file.
+                external = True
+            else:
+                external = False
+                directory, relative_parts = match
+            if not external:
+                try:
+                    for component in relative_parts[:-1]:
+                        child = os.open(component, directory_flags, dir_fd=directory)
+                        os.close(directory)
+                        directory = child
+                    descriptor = os.open(
+                        relative_parts[-1],
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                        dir_fd=directory,
+                    )
+                finally:
                     os.close(directory)
-                    directory = child
-                descriptor = os.open(
-                    relative_parts[-1],
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-                    dir_fd=directory,
-                )
-            finally:
-                os.close(directory)
         finally:
             os.close(drawer_descriptor)
     except OSError as error:
         raise OSError(f"cannot safely open {source} beneath {drawer}: {error}") from error
+    if external:
+        # The session's own path may legitimately be a standing-brief symlink, so
+        # this open follows links -- but it keeps the two guards the drawer path
+        # has. `O_NONBLOCK`: a FIFO left at that path would otherwise wait for a
+        # writer forever, with `dispatch` printing nothing and still holding the
+        # task lifecycle lock, so no other launcher could touch that task either.
+        # The regular-file check below: `st_size` is 0 for anything else, and the
+        # byte ceiling and `copy_bounded` both read it, so an oversized input
+        # would be reported as "input changed size while being read".
+        external_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(external_descriptor).st_mode):
+                raise OSError(f"{source} is not a regular file")
+            return os.fdopen(external_descriptor, "rb")
+        except BaseException:
+            os.close(external_descriptor)
+            raise
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError(f"{source} is not a regular file")

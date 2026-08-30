@@ -264,6 +264,78 @@ def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
     verify_sealed_page_pixels(tree, run, run["source_manifest"][0], page)
 
 
+def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_path):
+    """The parent-frame back-link must name the master this row actually submitted.
+
+    That comparison sat unpinned: replacing it with `False` left 427 tests green.
+    Its siblings in the same conjunction hide it under the obvious forgeries —
+    editing `source["sha256"]` trips the earlier Door-admission comparison, and
+    editing the back-link's digest alone trips the sibling `stored_at` check with
+    the very same message. So the forgery here is made *internally consistent*:
+    the back-link names another digest and the blob path that digest would have,
+    leaving the submitted row the only thing it disagrees with.
+
+    The admission is re-sealed rather than edited in place, and the page's own
+    input reference is re-pointed at the forged bytes, because `_read_checked`
+    holds the admission to the digest the page recorded for it.
+    """
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    assert run_exemplar(tmp_path / "runs").returncode == 0
+    run = tree.read_run()
+    source = run["source_manifest"][0]
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    )
+    # The honest tree verifies, so the refusal below is the forgery's doing.
+    verify_sealed_page_pixels(tree, run, source, page)
+
+    other_digest = digest_bytes(encode_image_deterministic(Image.new("L", (4, 3), 91)))
+    assert other_digest != digest
+    admission_path = tree.artifact_path(
+        DOOR, "admission", artifact_id(DOOR, "admission", "source-1")
+    )
+    admission = json.loads(tree.read_bytes(admission_path).decode("utf-8"))
+    admission["payload"]["parent_frame"]["sha256"] = other_digest
+    admission["payload"]["parent_frame"]["stored_at"] = tree.blob_path(DOOR, other_digest)
+    admission["self_hash"] = self_hash(admission)
+    forged = canonical_bytes(admission)
+    (tree.root / admission_path).write_bytes(forged)
+    forged_page = json.loads(json.dumps(page))
+    for reference in forged_page["inputs"]:
+        if reference["relative_path"] == admission_path:
+            reference["sha256"] = digest_bytes(forged)
+
+    with pytest.raises(ContractError, match="parent frame disagrees with its submitted master"):
+        verify_sealed_page_pixels(tree, run, source, forged_page)
+
+
 def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebind_stage_seal):
     """A rehashed but false Door recipe cannot acquire an Exemplar seal.
 
@@ -740,6 +812,7 @@ def test_a_register_that_drifted_since_run_creation_refuses_before_anything_seal
                     "volume_id": "volume-1",
                     "designation": "12r",
                     "physical_page_id": physical_page_id("corpus", "volume-1", "12r"),
+                    "appending_run": "triage-1",
                 }
             ],
         }

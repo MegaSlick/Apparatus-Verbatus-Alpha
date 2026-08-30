@@ -105,6 +105,13 @@ class _RecordingContext:
 
         def build_manifest(stage: str) -> dict:
             if stage != INK_MAP:
+                # An empty manifest is the truthful answer, not a swallowed
+                # lookup: the code under test polls this method for stages this
+                # synthetic context deliberately stores nothing for (the
+                # Designator, most plainly), and an empty inventory is what an
+                # unpopulated stage really has. `read_artifact` below refuses
+                # instead because it is only ever called with an artifact id
+                # that must already exist.
                 return {"artifacts": []}
             return {
                 "artifacts": [

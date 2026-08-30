@@ -18,7 +18,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_capture_preference
 from operations.pod.durable import sync_directory
 from operations.triage import instrument
 from operations.triage.producer import (
@@ -42,10 +42,12 @@ def _refuse_preference_named(value: Any, what: str) -> None:
     """Hard rule 8's refusal, in this console's own operator-facing vocabulary.
 
     The CLI boundary handles `TriageRefusal`, not the `SchemaRefusal` raised by
-    `_refuse_preference`; without this translation a picker attempt loses its name.
+    `refuse_capture_preference`; without this translation a picker attempt loses
+    its name. `what` is forwarded so the inner refusal names the triage record
+    that carried the field, rather than blaming the corpus register for it.
     """
     try:
-        _refuse_preference(value)
+        refuse_capture_preference(value, what=what)
     except SchemaRefusal as error:
         raise TriageRefusal(f"triage refusal {what}-expresses-preference: {error}") from error
 
@@ -73,7 +75,7 @@ def _persisted_form(value: Mapping[str, Any], what: str) -> tuple[bytes, dict[st
     Every durable write in this module validates *this* structure, never the
     caller's in-memory object. The two can differ, and the difference is a
     smuggling channel: `canonical_bytes` serializes a tuple as a JSON array
-    while `_refuse_preference` walks only dicts and lists, so a forbidden
+    while `refuse_capture_preference` walks only dicts and lists, so a forbidden
     preference field wrapped in a tuple satisfied the exact-object check and
     still reached disk as an ordinary array member. Re-reading the bytes closes
     that divergence and every other one of its shape at once, instead of
@@ -365,6 +367,18 @@ def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
         raise TriageRefusal("triage refusal queue-invalid: queue is not a closed review queue")
     _check_mode_declaration(persisted["mode_declaration"])
     return data, persisted
+
+
+def load_confirmation_draft(path: str | Path) -> dict[str, Any]:
+    """Read the canonical confirmation draft the operator was shown.
+
+    The console needs this one read and had been reaching through
+    `_read_canonical`, which meant the CLI also carried the "confirmation-draft"
+    label by hand. That label is not decoration: it is the `what` that names the
+    record in every refusal this read can raise, so a copy of it living at the
+    call site is a second place for the operator-facing text to drift from.
+    """
+    return _read_canonical(path, "confirmation-draft")
 
 
 def load_queue(

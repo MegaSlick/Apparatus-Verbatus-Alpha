@@ -767,6 +767,14 @@ class RunTree:
         what the tree holds. That is why a manifest is never evidence on its own:
         if it disagrees with the artifacts, the artifacts are right and the
         manifest was stale.
+
+        ``verify_inputs=False`` still applies the envelope, run, and path checks,
+        but not ``_verify_artifact_inputs``. An artifact whose upstream blob has
+        since changed is then listed and reads as present. That option is for a
+        caller whose own boundary owns lineage -- one already verifying the
+        chain, or one deliberately reading a tree it is about to refuse -- and
+        never for speed. A caller that wants a manifest it can trust about
+        lineage leaves it alone.
         """
         # A manifest is a read route too. In particular, an empty directory must
         # not make a missing run authority look like an empty, trustworthy run.

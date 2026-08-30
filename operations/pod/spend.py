@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 from pathlib import Path
 
 from .models import (
@@ -20,7 +21,22 @@ from .models import (
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
-SPEND_SCHEMA = "pod-spend.v2"
+SPEND_SCHEMA = "pod-spend.v3"
+
+RETIRED_SPEND_SCHEMAS = {
+    "pod-spend.v2": (
+        "a configured pod-spend.v2 policy predates the required "
+        "account_balance_alert_usd warning threshold"
+    ),
+}
+"""Schemas this loader once accepted, and what changed under each name.
+
+``account_balance_alert_usd`` became a required ceiling, so a file that was a
+valid configured v2 policy is now an incomplete v3 one. Left at the same schema
+name, that file failed as "missing a required ceiling" and blamed the operator's
+configuration for a change in this code. The version identifier is what tells
+those two apart, so it moves when the required shape moves.
+"""
 MAX_BALANCE_OBSERVATION_AGE_SECONDS = 60
 """A gate may use only a current observation, never an indefinitely cached balance."""
 
@@ -192,6 +208,21 @@ class SpendPolicy:
             raise SpendRefusal(str(error)) from error
 
 
+class SpendRefusalCause(StrEnum):
+    """Why a spend assessment refused, recorded where the reason is raised.
+
+    ``launch._spend_refusal_state`` turns this into the ``LaunchState`` an
+    operator reads, and it used to derive it by matching the text of
+    ``reasons``. Reflowing one of those strings -- fixing a typo, rewrapping a
+    line -- silently reclassified a money-safety refusal as a price-ceiling one,
+    and no test could catch it because the tests assert on the same prose. The
+    wording is for people; this is what the code decides on.
+    """
+
+    HARD_FLOOR = "hard-floor"
+    BALANCE_UNOBSERVABLE = "balance-unobservable"
+
+
 @dataclass(frozen=True, slots=True)
 class SpendAssessment:
     """The exact ceilings and current estimate shown at both paid-action gates."""
@@ -206,6 +237,7 @@ class SpendAssessment:
     policy: SpendPolicy
     balance_observation: AccountBalanceObservation | None = None
     reserved_liability_usd: Decimal = Decimal("0")
+    refusal_causes: frozenset[SpendRefusalCause] = frozenset()
     alerts: tuple[str, ...] = ()
     alert_notifications: tuple[str, ...] = ()
     """What the notification seam actually did with each alert above.
@@ -218,13 +250,7 @@ class SpendAssessment:
 
     @property
     def hard_floor_triggered(self) -> bool:
-        return any(
-            reason == "observed account balance is at or below the hard floor"
-            or reason.startswith(
-                "other reserved paid-action liability plus the estimated cost of this action "
-            )
-            for reason in self.reasons
-        )
+        return SpendRefusalCause.HARD_FLOOR in self.refusal_causes
 
     @property
     def balance_unobservable_triggered(self) -> bool:
@@ -236,17 +262,7 @@ class SpendAssessment:
         ceiling breach; each is the floor mechanism failing closed on missing proof.
         """
 
-        return any(
-            reason.startswith(
-                (
-                    "available account balance was not observed",
-                    "balance observation is stale",
-                    "balance observation is dated in the future",
-                    "balance safety could not be established",
-                )
-            )
-            for reason in self.reasons
-        )
+        return SpendRefusalCause.BALANCE_UNOBSERVABLE in self.refusal_causes
 
     @property
     def balance_observation_usable(self) -> bool:
@@ -325,6 +341,12 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
     state = raw.get("state")
     schema = raw.get("schema")
     if schema != SPEND_SCHEMA:
+        retired = RETIRED_SPEND_SCHEMAS.get(schema) if isinstance(schema, str) else None
+        if retired is not None:
+            raise SpendRefusal(
+                f"spend policy schema {schema!r} is retired: {retired}. Add that ceiling "
+                f"deliberately and rename the schema to {SPEND_SCHEMA!r}"
+            )
         raise SpendRefusal(f"spend policy schema must be {SPEND_SCHEMA!r}")
     if state == "unconfigured":
         if set(raw) != {"schema", "state"}:
@@ -409,6 +431,7 @@ def assess_spend(
     reserved_liability = as_decimal(reserved_liability_usd, "other reserved liability")
     metered_hourly = estimate.pod_hourly_usd + estimate.volume_hourly_usd
     reasons: list[str] = []
+    causes: set[SpendRefusalCause] = set()
     alerts: list[str] = []
     if not policy.configured:
         reasons.append("spend policy is unconfigured; paid actions are refused")
@@ -434,12 +457,14 @@ def assess_spend(
         assert policy.account_balance_floor_usd is not None
         assert policy.account_balance_alert_usd is not None
         if balance_safety_unavailable_detail:
+            causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
             reasons.append(
                 "balance safety could not be established ("
                 + _one_line(balance_safety_unavailable_detail)
                 + "); paid actions are refused"
             )
         elif balance_observation is None:
+            causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
             cause = _one_line(balance_unavailable_detail)
             reasons.append(
                 "available account balance was not observed"
@@ -450,19 +475,23 @@ def assess_spend(
             available = balance_observation.available_usd
             observation_age = (start - balance_observation.observed_at).total_seconds()
             if observation_age < 0:
+                causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
                 reasons.append(
                     "balance observation is dated in the future; paid actions are refused"
                 )
             elif observation_age > MAX_BALANCE_OBSERVATION_AGE_SECONDS:
+                causes.add(SpendRefusalCause.BALANCE_UNOBSERVABLE)
                 reasons.append(
                     f"balance observation is stale by {observation_age:g} seconds; "
                     "paid actions are refused"
                 )
             elif available <= policy.account_balance_floor_usd:
+                causes.add(SpendRefusalCause.HARD_FLOOR)
                 reasons.append("observed account balance is at or below the hard floor")
             elif available - reserved_liability - total_cost <= policy.account_balance_floor_usd:
                 # No balance gate runs after create/adopt, so the reserve must
                 # survive this action's maximum cost through its hard deadline.
+                causes.add(SpendRefusalCause.HARD_FLOOR)
                 reasons.append(
                     "other reserved paid-action liability plus the estimated cost of this "
                     "action would take the observed account balance to or below the hard floor"
@@ -480,6 +509,7 @@ def assess_spend(
         policy=policy,
         balance_observation=balance_observation,
         reserved_liability_usd=reserved_liability,
+        refusal_causes=frozenset(causes),
         alerts=tuple(alerts),
     )
 

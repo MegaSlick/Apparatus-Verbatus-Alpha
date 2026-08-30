@@ -13,13 +13,20 @@ prevents an export after pixels changed between stages.
 """
 
 import json
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR, TRIAGE_MODES
+from common.contracts.stages import (
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    MAX_TRIAGE_SPLIT_PARTS,
+    RECENSOR,
+    TRIAGE_MODES,
+)
 from common.imaging import (
     carries_only_image_chunks,
     crop_png,
@@ -29,6 +36,12 @@ from common.imaging import (
     render_triage_derivative,
 )
 from common.runtree.store import RunTree
+
+# The one name for a triage derivative's kind. The Door writes it, this boundary
+# and the Exemplar stage read it, and each of the three used to spell it out
+# separately; a producer and its two consumers agreeing by coincidence is what
+# `is_triage_derivative_contract` below exists to stop.
+SEALED_DERIVATIVE_PAGE_KIND: Final = "sealed-derivative-page-v1"
 
 
 def verify_sealed_page_pixels(
@@ -419,11 +432,12 @@ def verify_exemplar_crop_lineage(
     _validate_exemplar_transform(transform)
     if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
         raise ContractError("a crop region carries no complete Exemplar transform")
+    # The operation is settled by the two checks above rather than here: the
+    # closed vocabulary gives "split", "deskew" and "convert" key sets of their
+    # own, so nothing but a validated crop survives the four-key shape check.
     ordinal = transform["source_page_ordinal"]
     source_page_id = transform["source_page_id"]
     bounds = transform["bounds"]
-    if transform["operation"] != "crop":
-        raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
     _verify_act_identity_binding(tree, region, payload)
@@ -754,7 +768,8 @@ def _verify_admission(
                 "a sealed Exemplar page's Door admission disagrees with the filename ledger"
             )
     rendered = _verify_rendered_source_link(page_rendered, payload.get("rendered_from"), source)
-    if not _is_triage_derivative(rendered):
+    render_contract = rendered.get("render_contract") if isinstance(rendered, dict) else None
+    if not is_triage_derivative_contract(render_contract):
         if admission.get("inputs") != [blob_ref]:
             raise ContractError("a sealed Exemplar page's Door admission has the wrong pixel input")
         return
@@ -764,7 +779,10 @@ def _verify_admission(
     parent_digest = parent["sha256"]
     parent_path = parent["stored_at"]
     if (
-        parent_digest != source["sha256"]
+        # `.get`, because a submitted-source row that carries no digest at all is
+        # the boundary's business to refuse, not to raise KeyError over: this
+        # function's callers convert ContractError into a refusal and nothing else.
+        parent_digest != source.get("sha256")
         or parent_path != tree.blob_path(DOOR, parent_digest)
         or not isinstance(parent["source_frame_index"], int)
         or isinstance(parent["source_frame_index"], bool)
@@ -786,7 +804,7 @@ def _verify_admission(
         raise ContractError("a sealed derivative page does not input exactly its pixels and master")
     parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
     sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
-    _verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
+    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
 def _verify_rendered_source_link(
@@ -809,13 +827,23 @@ def _verify_rendered_source_link(
     return admission_rendered
 
 
-def _is_triage_derivative(rendered: Any) -> bool:
+def is_triage_derivative_contract(render_contract: Any) -> bool:
+    """Whether a render contract describes a sealed triage derivative.
+
+    One function rather than two. This decides which validation a page gets — a
+    derivative is checked against its parent frame and re-derived, an ordinary
+    render against the render contract — and the Exemplar stage asked the same
+    question with its own copy. Two copies is one kind vocabulary too many: teach
+    one of them a `sealed-derivative-page-v2` and the other keeps saying no, and
+    the disagreement is not a crash. It is a page sealed as an ordinary render
+    whose pixels nobody re-derived, or a re-derivation demanded of a page that has
+    no parent. Both callers pass the render contract, which is the smaller of the
+    two shapes they had between them.
+    """
     return (
-        isinstance(rendered, dict)
-        and isinstance(rendered.get("render_contract"), dict)
-        and isinstance(rendered["render_contract"].get("derivative_page"), dict)
-        and rendered["render_contract"]["derivative_page"].get("kind")
-        == "sealed-derivative-page-v1"
+        isinstance(render_contract, dict)
+        and isinstance(render_contract.get("derivative_page"), dict)
+        and render_contract["derivative_page"].get("kind") == SEALED_DERIVATIVE_PAGE_KIND
     )
 
 
@@ -885,6 +913,15 @@ def _validate_embedded_triage_row(row: Any) -> None:
         )
     ):
         raise ContractError("a sealed derivative page's triage row has no closed split record")
+    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
+        # Bounded here as well as in the pre-door contract, and before the pairwise
+        # overlap loop below rather than after it: this boundary exists precisely
+        # because the row reaching it is not taken on trust, and the loop it guards
+        # is quadratic in the number of parts.
+        raise ContractError(
+            f"a sealed derivative page's triage row exceeds the "
+            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
+        )
     frame = row["frame"]
     if (
         not isinstance(frame, dict)
@@ -929,7 +966,7 @@ def _validate_embedded_triage_row(row: Any) -> None:
         raise ContractError("a sealed derivative page's triage row does not partition its frame")
 
 
-def _verify_triage_derivative(
+def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
     parent: dict[str, Any],

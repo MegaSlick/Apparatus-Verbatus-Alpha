@@ -1,24 +1,5 @@
 # Armarium — handoff
 
-# Stage-completion seal
-
-Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
-this pass's disk inventory and blob contents, and binds the exact decode-environment
-bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
-held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
-orchestrator correctly refuses a missing final boundary. Every difference in
-decoders, platform, machine, `decode_paths_used`, and `produced_pixels` is
-reported by field or decoder name. A valid difference is report-only and never
-refuses; Unit 17 owns any fatal policy.
-
-Seals are compared as the SET the stored inventory names, on both sides of the
-boundary: the producer refuses to re-seal, and the successor refuses to read,
-when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
-so removing the latest leaves a prefix that still looks whole — and the earlier
-statement would then answer for a boundary it never witnessed.
-
 The Armarium's two boundary records carry the same non-terminal `sealed` and
 `recorded` outcomes as every other stage. They are completed bookkeeping, never
 `delivered` output; only the `export` record may make that terminal claim.
@@ -46,6 +27,26 @@ about the package, so the last gate before a recipient makes that comparison rat
 than asserting it. The published summary reports what each check actually did,
 including the search-fold recomputation's own honest "not run under a different
 Unicode database" — a check that declined to run must not read like one that ran.
+
+## Stage-completion seal
+
+Before this producer's final manifest it publishes one `decode-environment` and
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+held after publishing stage evidence seals it (holds remain in its census); a
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
+orchestrator correctly refuses a missing final boundary. Every difference in
+decoders, platform, machine, `decode_paths_used`, and `produced_pixels` is
+reported by field or decoder name. A valid difference is report-only and never
+refuses; Unit 17 owns any fatal policy.
+
+Seals are compared as the SET the stored inventory names, on both sides of the
+boundary: the producer refuses to re-seal, and the successor refuses to read,
+when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
+so removing the latest leaves a prefix that still looks whole — and the earlier
+statement would then answer for a boundary it never witnessed.
 
 ## Export contract
 
@@ -123,10 +124,15 @@ projection configuration. The bundle may contain these plainly specified formats
   flagged, because writing zeros would record a measurement nobody took).
   The `unclaimed-edge-ink` held set is DERIVED from those counts by the ink
   map's own gate, on both sides — never carried beside them as a boolean, and
-  never read back out of the manifest claim it produced. Every other package
-  member is byte-identical whether or not a page is held, so a manifest built
-  with the hold simply dropped verified clean until the evidence entered the
-  source graph.
+  never read back out of the manifest claim it produced. `sources.json` itself
+  therefore differs between a held and a released page — it carries the counts
+  the hold is derived from — and so does the manifest claim derived from them;
+  `test_armarium_export.py`'s
+  `test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine` asserts
+  exactly that difference. The hold changes no established text: it is a
+  coverage finding about a page, not a reading. Before those counts entered the
+  source graph a manifest built with the hold dropped verified clean, which is
+  the hole that derivation closed.
   The clean verifier uses these to require every selected projection to retain
   the exact delivered provenance, every continuation region, and every held or
   refused reason; it does not treat a merely nonempty replacement as equivalent.

@@ -425,7 +425,11 @@ def build_dossier(
                     "a colliding pseudonym would silently replace one chair's view"
                 )
             relabeled_views[label] = text
-        deltas = act_attachment.get("edge_deltas", {})
+        # No `{}` default: an absent key would have been read as "no chair's
+        # ink sat outside the sealed proposal", which is a measurement, and
+        # nothing measured it. The refusal below says "with no edge-deltas
+        # mapping" and could not fire for the case that wording describes.
+        deltas = act_attachment.get("edge_deltas")
         if not isinstance(deltas, dict):
             raise SchemaRefusal(
                 "an act attachment reached the dossier with no edge-deltas mapping. "
@@ -453,12 +457,30 @@ def build_dossier(
                     "Choose a collision-free witness label derivation and rebuild the dossier."
                 )
             relabeled_deltas[label] = copy.deepcopy(rows)
+        # The absent-mapping refusal above, applied one chair at a time. A
+        # `.get(label, [])` here restored the same false clean for any witness
+        # the mapping does not name: the dossier would state that this chair's
+        # ink was compared against the sealed proposal and sat entirely inside
+        # it, when nothing measured it, and no reader could tell the two apart.
+        # `reported` has no such spelling -- a chair with no comparison view
+        # keeps `reported_basis: "none"`, which is an honest absence.
+        missing = sorted(
+            row["witness_label"]
+            for row in testimonia_rows
+            if row["witness_label"] not in relabeled_deltas
+        )
+        if missing:
+            raise SchemaRefusal(
+                f"an act attachment names no edge-deltas entry for witness(es) {missing}. "
+                "Their geometry would be recorded as measured and clean when nothing measured it. "
+                "Rebuild the attachment view with one list for every contributing chair."
+            )
         for row in testimonia_rows:
             label = row["witness_label"]
             if label in relabeled_views:
                 row["reported"] = relabeled_views[label]
                 row["reported_basis"] = "page-slice"
-            row["edge_deltas"] = relabeled_deltas.get(label, [])
+            row["edge_deltas"] = relabeled_deltas[label]
         dossier["act_attachment"] = {
             **act_attachment,
             "comparison_views": relabeled_views,

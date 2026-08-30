@@ -216,25 +216,31 @@ def test_an_unresealed_payload_change_is_refused_when_the_identity_is_unchanged(
     assert validate_envelope(reseal(changed))["payload"] == {"proposals": 99}
 
 
-@pytest.mark.parametrize("payload", ({"scale": 1.5}, {"box": [1, 2.0]}, {"nested": {"deep": 0.1}}))
-def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_boundary(payload):
-    """Unsupported JSON numbers must not escape the consumer as a serializer traceback."""
+@pytest.mark.parametrize(
+    "payload,path",
+    (
+        ({"scale": 1.5}, "$.payload.scale"),
+        ({"box": [1, 2.0]}, "$.payload.box[1]"),
+        ({"nested": {"deep": 0.1}}, "$.payload.nested.deep"),
+    ),
+)
+def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_boundary(payload, path):
+    """Unsupported JSON numbers must not escape the consumer as a serializer traceback.
+
+    Each shape asserts the field path, not merely that something mentioning
+    "self-hash" was raised. The generic self-hash message contains that word, so
+    matching on it alone would keep passing if the named diagnostic regressed and
+    every unhashable payload went back to being reported as a post-publication
+    edit — telling an operator an artifact was tampered with when the real cause
+    was a float.
+    """
     parsed = json.loads(json.dumps(sound_envelope()))
     parsed["payload"] = payload
-
-    with pytest.raises(SchemaRefusal, match="self-hash"):
-        validate_envelope(parsed)
-
-
-def test_the_float_refusal_names_the_offending_field_and_value():
-    """Unhashable content must not be reported as a verified digest mismatch."""
-    parsed = json.loads(json.dumps(sound_envelope()))
-    parsed["payload"] = {"nested": {"scale": 1.5}}
 
     with pytest.raises(SchemaRefusal) as caught:
         validate_envelope(parsed)
     message = str(caught.value)
-    assert "float at $.payload.nested.scale" in message
+    assert f"float at {path}" in message
     assert "changed after publication" not in message
 
 
@@ -352,8 +358,29 @@ def test_a_nul_path_is_refused_before_it_reaches_the_filesystem():
         )
 
 
+def test_unicode_form_variant_input_paths_cannot_split_accounting_either():
+    """macOS hands back the decomposed spelling of a name Linux stored composed.
+
+    Different strings, different casefolds, different dictionary keys — so one
+    scanned page would enter the lineage twice and the duplicate refusal above
+    would never fire.
+    """
+    composed = "proof/\N{LATIN CAPITAL LETTER E WITH ACUTE}tienne-1.png"
+    decomposed = "proof/E\N{COMBINING ACUTE ACCENT}tienne-1.png"
+    assert composed.casefold() != decomposed.casefold(), "case folding alone cannot see it"
+    with pytest.raises(SchemaRefusal, match="Unicode-normalising filesystem"):
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    {"relative_path": composed, "sha256": "a" * 64},
+                    {"relative_path": decomposed, "sha256": "b" * 64},
+                ]
+            )
+        )
+
+
 def test_case_variant_input_paths_cannot_split_accounting_on_default_apfs():
-    with pytest.raises(SchemaRefusal, match="case-insensitive filesystem"):
+    with pytest.raises(SchemaRefusal, match="case-insensitive"):
         validate_envelope(
             sound_envelope(
                 inputs=[

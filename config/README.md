@@ -137,9 +137,13 @@ stage context and records them in its launch audit.
 Every row declares its `kind`. A `fixture` row is the offline walking skeleton's
 stand-in: it holds only its recipe, chair, tier and a reason, because a chair
 that is never launched has no flags, and the serving manager refuses one by that
-name rather than by a version pin it could not satisfy. Today every committed
-row is a fixture row, and a `vllm` row appearing here would mean a real chair had
-been configured to serve. That is not a config edit: it needs the real roster
+name rather than by a version pin it could not satisfy. Every committed row in
+`serving_recipes.toml` is a fixture row, and a `vllm` row appearing in *that*
+file would mean a real chair had been configured to serve by default.
+(`serving_recipes_real.toml` holds locked but unproven `vllm` rows and is
+reached only when both real-config flags select it, which is why the sentence
+above is bound to the default catalogue rather than to the directory.) Putting
+a `vllm` row in the default file is not a config edit: it needs the real roster
 uncommented in `models.toml`, a verified manifest per chair, and reviewed,
 locked vLLM and model-stack versions proven on real silicon.
 `operations/serving/config.py::verify_recipes_cover_chairs` reconciles the selected file

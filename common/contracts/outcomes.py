@@ -77,6 +77,13 @@ WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
 NATIVE_GRANULARITY_BASIS: Final = "native-observation-overlap"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
+# Which evidence decided one attachment. Producer and consumer must agree, and
+# the floor arithmetic below reads it to decide whether the native granularity
+# claim may be made at all -- so it belongs beside that arithmetic for the same
+# reason the reading outcomes do.
+ATTACHMENT_BASES: Final = frozenset(
+    {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
+)
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
@@ -163,8 +170,21 @@ BOUNDARY_OUTCOMES: Final = {
 # category. They use the ordinary envelope at every producer, including
 # Armarium; calling its boundary records ``delivered`` would falsely present
 # bookkeeping as exported text.
+#
+# The loop writes into a table declared by hand above, and Exemplar already
+# declares ``sealed`` itself -- with the same class, which is the only reason
+# the overwrite is invisible today. A declaration that disagreed would be
+# rewritten in silence, and a failed act would be accounted as completed while
+# the file above still read ``FAILED``. So a differing entry stops the import
+# rather than losing the declaration.
 for _stage in VOCABULARIES:
     for _outcome in BOUNDARY_OUTCOMES.values():
+        _declared = VOCABULARIES[_stage].get(_outcome)
+        if _declared is not None and _declared is not _C.COMPLETED:
+            raise FatalAccounting(
+                f"stage {_stage!r} declares boundary outcome {_outcome!r} as "
+                f"{_declared.value!r}, which the boundary vocabulary would overwrite"
+            )
         VOCABULARIES[_stage][_outcome] = _C.COMPLETED
 
 # --- The transition table: (stage, outcome) -> terminal category, or None -------
@@ -211,8 +231,16 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
 }
 
+# The same overwrite, and the same guard: `(EXEMPLAR, "sealed")` is declared
+# above as transitive, and a declaration naming a category here would otherwise
+# be replaced by ``None`` without a word.
 for _stage in VOCABULARIES:
     for _outcome in BOUNDARY_OUTCOMES.values():
+        if TERMINAL_CATEGORY.get((_stage, _outcome), None) is not None:
+            raise FatalAccounting(
+                f"stage {_stage!r} declares boundary outcome {_outcome!r} as terminal, "
+                "which the boundary vocabulary would overwrite"
+            )
         TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
 # The Perlector's failures are transitive on purpose: a truncated or failed reading
@@ -414,6 +442,15 @@ def witness_coverage(
     attached_chairs: set[str] = set()
     health_unrecorded = 0
     shortfalls = {"failed": 0, "truncated": 0, "unaligned": 0}
+    # Two different questions, and they were being answered by one test.
+    # *Whether* act-granularity facts were supplied decides the arithmetic below
+    # and is answered by `attachments is not None`. *How* those facts were
+    # decided is a claim that travels in the receipt, and the boolean shorthand
+    # accepted below carries no geometry at all: read from the argument's mere
+    # presence, it earned the native-overlap claim for free. A caller that does
+    # not say which basis decided its facts gets the older, weaker interim name
+    # rather than a measurement nothing performed (GOVERNANCE 10).
+    native_evidence = attachments is not None
     if attachments is not None:
         unknown = set(attachments) - set(chair_outcomes)
         if unknown:
@@ -436,6 +473,10 @@ def witness_coverage(
                     "The act-level witness floor cannot be derived from an ambiguous attachment. "
                     "Rebuild the attachment from the retained Testimonia before retrying."
                 )
+            # A fact that names no basis was not decided by the native
+            # derivation, whatever else it carries.
+            if fact.get("attachment_basis") not in ATTACHMENT_BASES:
+                native_evidence = False
             if fact.get("health_unrecorded") is True:
                 health_unrecorded += 1
             truncated = fact.get("truncated")
@@ -481,9 +522,14 @@ def witness_coverage(
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
         # Attachments are computed facts: page testimony counts only where its
-        # reported geometry overlaps the act's sealed proposal geometry.
+        # reported geometry overlaps the act's sealed proposal geometry. The
+        # claim is made only when every fact says which basis decided it.
         "granularity_basis": (
-            NATIVE_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
+            NATIVE_GRANULARITY_BASIS
+            if native_evidence
+            else INTERIM_GRANULARITY_BASIS
+            if attachments is not None
+            else LEGACY_GRANULARITY_BASIS
         ),
     }
 
@@ -694,16 +740,40 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
-    for ordinal in sorted(edge_hold_pages or ()):
-        reasons.append(
-            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "Designator crop on the page claims, so its coverage is not reconciled"
-        )
-
-    for chair in sorted(unaddressed_chairs or ()):
+    # Counted as a set, for the same reason the edge holds below are. The
+    # in-process producer walks `models.chairs`, so its roles are unique, but the
+    # clean-machine verifier rebuilds this list out of the retained aggregate
+    # basis and checks only that it is a list of non-empty strings. A repeated
+    # entry there would report one unaddressed chair as two in the reasons a
+    # person reads. The ink-map rows on that same path are refused for a
+    # repeated ordinal; this list had no such guard at either site.
+    for chair in sorted(set(unaddressed_chairs or ())):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "
             "resolved it and no artifact records it"
+        )
+
+    # Reconciled against the census like every other denominator here, and for
+    # the same reason: a hold naming a page the run never counted would print a
+    # partial reason about a page that does not exist. Not reachable from
+    # today's Armarium callers, which validate ink-map ordinals against the
+    # sealed census first, but the rule belongs in the module that owns the
+    # denominator rather than in each caller that happens to observe it.
+    unknown_holds = sorted(set(edge_hold_pages or ()) - set(page_census or {}))
+    if unknown_holds:
+        raise FatalAccounting(
+            f"an edge hold names page(s) {unknown_holds}, which the run's page census does not "
+            "account for; edge holds and the page census must describe the same page denominator"
+        )
+
+    # A page-scoped hold: the ink at its edge belongs to no act yet, so the page
+    # cannot reconcile even when every act cut from it was delivered. Counted as
+    # a set: a repeated ordinal is one held page, and listing it twice would
+    # report one page as two in the reasons a person reads.
+    for ordinal in sorted(set(edge_hold_pages or ())):
+        reasons.append(
+            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+            "Designator crop on the page claims, so its coverage is not reconciled"
         )
 
     for act in sorted(act_categories):
