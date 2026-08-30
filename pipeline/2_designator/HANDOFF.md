@@ -239,13 +239,13 @@ stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconci
 against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
 found. The cut rectangles are what is passed as `claimed_bounds`
-(`pipeline/2_designator/run.py:1534`), and the counts and residual components are
-published from that scan (`:1544-1570`). Ink that no crop covers is not merely counted:
+(`pipeline/2_designator/run.py:1535`), and the counts and residual components are
+published from that scan (`:1546-1572`). Ink that no crop covers is not merely counted:
 on a successful pass every residual component becomes its own held act
-(`_publish_residual_holds`, `pipeline/2_designator/run.py:1277-1330`), so a mark
+(`_publish_residual_holds`, `pipeline/2_designator/run.py:1279-1332`), so a mark
 structural grouping never proposed is visible rather than absent. If two components
 share a bounding box and therefore cannot receive distinct act identities, the stage
-refuses before minting either instead of collapsing their evidence (`:1300-1311`).
+refuses before minting either instead of collapsing their evidence (`:1302-1313`).
 
 The accounting cannot detect ink fainter than `background - SECONDARY_MARGIN` or a mark
 with no contrast against its background; neither enters the denominator. A page whose

@@ -64,8 +64,8 @@ between the three and fail.
 
 **Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
 or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
-`common/contracts/stages.py:111-113` declares that triple once as `TRIAGE_MODES`, and
-`common/stage.py:200-202` aliases it as `RUN_MODES`; `pipeline/0_triage/HANDOFF.md:49-53`
+`common/contracts/stages.py:113-115` declares that triple once as `TRIAGE_MODES`, and
+`common/stage.py:230-232` aliases it as `RUN_MODES`; `pipeline/0_triage/HANDOFF.md:49-53`
 records the same join.
 
 The selections have different lifetimes. Triage persists its member as a batch property;
