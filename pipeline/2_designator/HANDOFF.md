@@ -208,11 +208,11 @@ delivers the page whole, and N acts would be an act count invented from a grid.
 The act is **`proposed`, not `held`**. A held act is terminal and is never read
 (`recovery_pass`; and `_publish_residual_holds`'s own "never witnessed and never
 read"), and crops nobody reads are precisely what the ruling forbids producing.
-Its identity is `act_bindings(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)`,
-using the one ordinal reserved in `common/stage.py` beside the residual space —
-which is now bounded below (`RESIDUAL_ACT_ORDINAL_FLOOR`) so the two minted-act
-ordinal spaces are disjoint by construction rather than by an argument about
-which values are unlikely to be reached. `common/stage.py::_verify_page_fallback_act_row`
+Its identity is `act_bindings(page_id, "page-fallback", page_bounds)` — the
+`"page-fallback"` act class is its own namespace in the identity ladder, beside
+the `"residual"` class, so the two minted-act identity spaces are disjoint by
+construction rather than by an argument about which values are unlikely to be
+reached. `common/stage.py::_verify_page_fallback_act_row`
 recomputes that identity and then reads this record's single input — the page's
 own `structure-status`, through the digest-checked reference hop — to confirm
 that page really does record `structure_evidence == "fallback-tiles"`. A
@@ -297,8 +297,9 @@ equal the fixture's declared acts exactly — every fixture act is still a floor
 that must appear, but the seal may also carry additional rows a residual
 minted, each `held` from the moment it exists (never `proposed`: nothing
 witnessed or read ink no structural pass claimed), each independently
-recomputable from its own hold record's `residual_ordinal` and
-`residual_bounds` rather than trusted because the seal names it. This
+recomputable from its own hold record's `residual_bounds` through
+`act_id(page_id, "residual", bounds)` rather than trusted because the seal
+names it. This
 additive denominator path is not evidence that prior artifact digests remain
 unchanged: `run_config_bindings` now seals
 `designator_padding_config_sha256` into every run's `config_digest`, and later

@@ -10,8 +10,8 @@ checked direct inputs.
 
 **Successors consume this stage's artifacts, not its implementation.** Recensor reviews
 the Perlectio it names, Archetypus establishes only that exact accepted reading
-(`pipeline/6_archetypus/run.py:515-575`), and Armarium rechecks the established record
-against it (`pipeline/7_armarium/run.py:1042-1216`). No successor imports Perlector code.
+(`pipeline/6_archetypus/run.py:522-582`), and Armarium rechecks the established record
+against it (`pipeline/7_armarium/run.py:1045-1219`). No successor imports Perlector code.
 
 ## Stage-completion seal
 
@@ -591,14 +591,14 @@ test that fails if the two ever part again.
   by Recensor's own bounded recovery loop (already never a pick).
 - **No consumer refuses a Perlectio without a `dissent` record.** Perlector's closed
   `_PERLECTIO_FIELDS` requires it only when this stage seals a reading
-  (`pipeline/4_perlector/run.py:2304-2312`, `:3357-3365`). Archetypus sets
-  `dissent_ref` to the accepted reading's reference and checks that it equals
-  `perlectio_ref` (`pipeline/6_archetypus/run.py:847-850`, `:1607-1608`); that proves reference
+  (`pipeline/4_perlector/run.py:1648`, sealed at `:2319` and `:3394`). Archetypus sets
+  `dissent_ref` to the accepted reading's reference (`pipeline/6_archetypus/run.py:1633`)
+  and checks that it equals `perlectio_ref` (`:873-876`); that proves reference
   identity, not the Perlectio payload. `accepted_primed_perlectio` checks the reading kind,
   explicit `primed` flag, salvage tier, regions, retained Testimonium basis,
   act-attachment view, and prior draft, but not `dissent`
-  (`pipeline/6_archetypus/run.py:579-780`). The logical-act path validates a sibling
-  cross-capture dissent artifact, not this record (`:1264-1284`). A reading without the
+  (`pipeline/6_archetypus/run.py:605-806`). The logical-act path validates a sibling
+  cross-capture dissent artifact, not this record (`:1290-1345`). A reading without the
   dissent instrument could therefore still be established; closing that gap belongs in
   `6_archetypus`.
 - A real vLLM launch declaration (pinned `--revision` and `--tokenizer-revision`,
@@ -612,20 +612,20 @@ test that fails if the two ever part again.
 - Spec 10's `text_status` is now an Archetypus field, distinct from that record's
   fixed `status = "established"` literal. Archetypus re-derives it from the text,
   annotations, and uncertainty before accepting the record
-  (`pipeline/6_archetypus/run.py:826-839`).
+  (`pipeline/6_archetypus/run.py:824-861`).
 - **Pass-C can emit an `uncertain_span`, but only under a zero cap.** The predicate is
   `unresolved = bool(flags) and audit_policy["round_cap"] == 0`
-  (`pipeline/4_perlector/run.py:3148`), so spans appear only when the sealed policy allows
+  (`pipeline/4_perlector/run.py:3181`), so spans appear only when the sealed policy allows
   no re-proof round, not after a permitted round is spent. Each non-empty frozen flag
   location then becomes a low-confidence `audit-round-cap-exhausted` span on the finding
-  and Perlectio (`:3293-3299`, `:3330-3333`). A zero-width flag remains explicit in the
+  and Perlectio (`:3327-3333`, sealed at `:3343` and `:3371`). A zero-width flag remains explicit in the
   frozen flags and `unresolved` state because it cannot become a span; Recensor routes it
-  to review (`pipeline/4_perlector/test_audit_pass.py:1092-1122`). **The committed policy
+  to review (`pipeline/4_perlector/test_audit_pass.py:1168`). **The committed policy
   cannot fire this path:**
   `config/perlector_audit.toml:12` sets `round_cap = 1`, so every reading carries an empty
   `uncertain_spans` list. Only a run sealed with `round_cap = 0` can produce one; the
   focused assertions are in `test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review`
-  (`pipeline/4_perlector/test_audit_pass.py:1060-1089`).
+  (`pipeline/4_perlector/test_audit_pass.py:1136-1167`).
 - **`gaps` and `uncertain_spans` have downstream consumers.** Archetypus validates the
   uncertainty and annotations before deriving `text_status`
   (`pipeline/6_archetypus/run.py:832-839`). Armarium independently re-derives it before

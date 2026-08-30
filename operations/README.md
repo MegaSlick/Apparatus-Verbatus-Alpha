@@ -65,14 +65,14 @@ its logic is tested against an injected client and its network behaviour is unte
 
 The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
 manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
-(`pipeline/7_armarium/run.py:1482-1508`), and `bundle.py` publishes that sealed blob to a
-chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:87-128`).
+(`pipeline/7_armarium/run.py:1497-1523`), and `bundle.py` publishes that sealed blob to a
+chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:97-137`).
 The remaining Spec 11 semantic-annotation contract has no producer, so its refusal cannot
-yet be recorded (`pipeline/7_armarium/HANDOFF.md:254-271`).
+yet be recorded (`pipeline/7_armarium/HANDOFF.md:279-283`).
 
 **The operator's `export` verb is not that bundle.** It copies `run.json` and the
 `7_armarium` directory out of the run tree as a base Armarium evidence bundle
-(`operations/operator/surface.py:955-1020`), prints the reconciliation table, and says on
+(`operations/operator/surface.py:963-1042`), prints the reconciliation table, and says on
 screen that what it made is not the Spec 11 product bundle.
 
 Every problem is shown in three short parts: what happened, what it means, and what to

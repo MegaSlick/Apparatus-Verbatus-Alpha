@@ -49,13 +49,14 @@ accepted later review.
 - an unprimed or differently primed reading is refused — `lectio_kind` must be exactly
   `primed-with-prior`, so Lectio nuda, `lectio-prior`, and `primed-without-prior` are all
   refused, as is a contradictory explicit `primed: false`
-  (`pipeline/6_archetypus/run.py:632-648`);
+  (`pipeline/6_archetypus/run.py:658-677`);
 - `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
   boundary);
 - the reading must retain a non-empty Testimonium basis, and every entry's reference
   must be a direct sealed input of that reading and resolve as an
   `(attestatores, testimonium)` artifact for this act
-  (`pipeline/6_archetypus/run.py:662-668`). This custody check does not substitute for the
+  (`pipeline/6_archetypus/run.py:689-696` requires the basis; `:776-796` makes the
+  per-entry custody check). This custody check does not substitute for the
   priming discriminator.
 
 ## `kind="archetypus"`
