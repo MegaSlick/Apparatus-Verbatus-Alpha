@@ -953,4 +953,13 @@ def test_a_restarted_lifecycle_closes_a_recovered_pod_against_its_original_grant
 
     assert settled.pod_id == active.record.pod_id
     assert settled.close.verified
-    assert len(cost_records(tmp_path, "stage-pod-cost.v1")) == 1
+    closes = cost_records(tmp_path, "stage-pod-cost.v1")
+    assert len(closes) == 1
+    # The record itself must settle against the ORIGINAL grant — a close that
+    # persisted a different authorisation reference, collection, or stage would
+    # have kept this test green while billing the wrong ledger line.
+    assert closes[0]["collection_id"] == "parish-17"
+    assert closes[0]["stage"] == "attestatores"
+    assert closes[0]["authorization_ref"] == "grant-witnesses"
+    # And recovery through close must create no second pod.
+    assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls
