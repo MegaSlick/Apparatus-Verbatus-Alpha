@@ -401,6 +401,31 @@ def test_an_edge_hold_forces_partial_and_names_the_page_once():
     ]
 
 
+def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
+    """The chair list is a set of roles, like the edge holds beside it.
+
+    `common/stage.py::unaddressed_chairs` walks `models.chairs`, so in-process
+    its roles are unique. The clean-machine verifier rebuilds this list out of
+    the retained aggregate basis and validates only that it is a list of
+    non-empty strings, so a repeated entry reaches here and would report one
+    unaddressed chair as two. The ink-map rows on that same verifier path are
+    refused outright for a repeated ordinal; this list had no guard at either
+    site while the edge holds it sits beside had two.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        unaddressed_chairs=["attestator_9", "attestator_9"],
+    )
+    assert aggregate["status"] == "partial"
+    assert [reason for reason in aggregate["reasons"] if "attestator_9" in reason] == [
+        "chair attestator_9 is configured and no stage addresses that role, so nothing "
+        "resolved it and no artifact records it"
+    ]
+
+
 def test_an_edge_hold_naming_a_page_the_run_never_counted_is_fatal():
     """The hold list shares the page denominator, like every other input here.
 

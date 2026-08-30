@@ -719,7 +719,14 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
-    for chair in sorted(unaddressed_chairs or ()):
+    # Counted as a set, for the same reason the edge holds below are. The
+    # in-process producer walks `models.chairs`, so its roles are unique, but the
+    # clean-machine verifier rebuilds this list out of the retained aggregate
+    # basis and checks only that it is a list of non-empty strings. A repeated
+    # entry there would report one unaddressed chair as two in the reasons a
+    # person reads. The ink-map rows on that same path are refused for a
+    # repeated ordinal; this list had no such guard at either site.
+    for chair in sorted(set(unaddressed_chairs or ())):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "
             "resolved it and no artifact records it"
