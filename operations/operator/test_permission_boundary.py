@@ -30,7 +30,7 @@ from operations.operator.review import ReviewProjection
 
 from .conftest import requires_absent_landlock, requires_host_boundary, requires_landlock
 
-_EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), None, ())
+_EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), (), None, ())
 
 ROOT = Path(__file__).resolve().parents[2]
 _EXPORT_REF = {"relative_path": "7_armarium/artifacts/export/art_test.json", "sha256": "e" * 64}
@@ -1564,9 +1564,11 @@ def test_unreadable_tree_recovery_never_instructs_an_evidence_repair():
     assert "repair the named evidence" not in rendered
 
 
-def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference():
+def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference(tmp_path: Path):
+    blob = tmp_path / "bundle-blob"
+    blob.write_bytes(b"changed bundle")
     tree = types.SimpleNamespace(
-        read_bytes=lambda _path: b"changed bundle",
+        resolve=lambda _path: blob,
         blob_path=lambda stage, value: f"7_armarium/blobs/sha256/{value}",
     )
     payload = {
@@ -1584,10 +1586,12 @@ def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference():
     assert "but its bytes have digest" in (excinfo.value.detail or "")
 
 
-def _review_bundle_payload(data: bytes) -> tuple[types.SimpleNamespace, dict]:
+def _review_bundle_payload(data: bytes, tmp_path: Path) -> tuple[types.SimpleNamespace, dict]:
     digest = digest_bytes(data)
+    blob = tmp_path / "bundle-blob"
+    blob.write_bytes(data)
     tree = types.SimpleNamespace(
-        read_bytes=lambda _path: data,
+        resolve=lambda _path: blob,
         blob_path=lambda stage, value: f"7_armarium/blobs/sha256/{value}",
     )
     payload = {
@@ -1602,11 +1606,11 @@ def _review_bundle_payload(data: bytes) -> tuple[types.SimpleNamespace, dict]:
     return tree, payload
 
 
-def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
+def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEMS_BYTES + 1))
-    tree, payload = _review_bundle_payload(bundle.getvalue())
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
@@ -1635,11 +1639,11 @@ def test_no_archive_member_can_be_both_this_name_and_a_directory():
         assert not (member.filename == review._REVIEW_ITEMS_MEMBER and member.is_dir())
 
 
-def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
+def test_review_refuses_more_review_rows_than_the_console_can_safely_project(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b"{}\n" * (review.MAX_REVIEW_ITEMS + 1))
-    tree, payload = _review_bundle_payload(bundle.getvalue())
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
@@ -1649,18 +1653,41 @@ def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     )
 
 
-def test_review_refuses_ambiguous_duplicate_review_members():
+def test_review_refuses_ambiguous_duplicate_review_members(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("review-items.jsonl", b'{"reason":"first"}\n')
         with pytest.warns(UserWarning, match="Duplicate name"):
             archive.writestr("review-items.jsonl", b'{"reason":"second"}\n')
-    tree, payload = _review_bundle_payload(bundle.getvalue())
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
+
+
+def test_review_charges_the_export_bundle_to_the_same_allowance_as_the_images(
+    tmp_path: Path,
+):
+    """The bundle zip is read whole in the same pass as every page and crop.
+
+    Bounding the images alone would bound nothing: a parish-sized bundle met
+    the machine's memory in the exact projection the image allowance guards.
+    The bundle spends from the shared allowance and an oversized run refuses
+    by name (GOVERNANCE 2), with the run tree intact.
+    """
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"real"}\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF, review._ImageBudget(limit=16))
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "more than the console can project" in (excinfo.value.detail or "")
+    assert "the Armarium export bundle" in (excinfo.value.detail or "")
 
 
 def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
@@ -1797,6 +1824,25 @@ def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
     )
     assert projected["crops"] == []
 
+    # A non-delivered act is the one shape whose writer never records the
+    # field (pipeline/7_armarium/run.py builds review entries without it), so
+    # only there absent is the record as written — while a present non-list
+    # is still refused.
+    held = review._act_row(
+        types.SimpleNamespace(),
+        {"act_id": "act_example", "act_key": "a1"},
+        _EXPORT_REF,
+        requires_crops=False,
+    )
+    assert held["crops"] == []
+    with pytest.raises(OperatorError):
+        review._act_row(
+            types.SimpleNamespace(),
+            {"act_id": "act_example", "act_key": "a1", "source_regions": "gone"},
+            _EXPORT_REF,
+            requires_crops=False,
+        )
+
 
 def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_queue():
     """A broken bundle reference must not read as "nothing needs your attention".
@@ -1822,7 +1868,7 @@ def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_qu
         assert expected in (excinfo.value.detail or ""), broken
 
 
-def test_review_refuses_a_bundle_member_whose_declared_size_is_false():
+def test_review_refuses_a_bundle_member_whose_declared_size_is_false(tmp_path: Path):
     """A lying zip header is refused; it cannot expand past the declared size.
 
     `zipfile` bounds a member read by the `file_size` its central directory
@@ -1839,7 +1885,7 @@ def test_review_refuses_a_bundle_member_whose_declared_size_is_false():
     entry = data.rfind(b"PK\x01\x02")
     struct.pack_into("<I", data, entry + 24, 8)  # central-directory uncompressed size
 
-    tree, payload = _review_bundle_payload(bytes(data))
+    tree, payload = _review_bundle_payload(bytes(data), tmp_path)
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
     assert "could not be read" in (excinfo.value.detail or "")

@@ -55,7 +55,8 @@ class _ImageBudget:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail=(
-                    f"this run's page and crop images pass {self._limit} bytes at {what}, "
+                    f"this run's page and crop images and its export bundle pass "
+                    f"{self._limit} bytes at {what}, "
                     "which is more than the console can project in one read-only view; the "
                     "run tree is intact and unchanged, and a narrower selection can be "
                     "reviewed while this limit stands"
@@ -181,9 +182,17 @@ class ReadOnlyRun:
             # bound nothing.
             budget = _ImageBudget()
             pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
+            # The two act lists carry different writer contracts: Armarium
+            # attaches `source_regions` to every delivered act and never to a
+            # non-delivered one (pipeline/7_armarium/run.py builds review
+            # entries without it). A delivered act missing its crop list is
+            # therefore a damaged record; a non-delivered act without one is
+            # the record as written.
             acts = tuple(
-                _act_row(tree, row, export_ref, budget)
-                for row in (*payload["delivered"], *payload["non_delivered"])
+                _act_row(tree, row, export_ref, budget) for row in payload["delivered"]
+            ) + tuple(
+                _act_row(tree, row, export_ref, budget, requires_crops=False)
+                for row in payload["non_delivered"]
             )
             return ReviewProjection(
                 tree.run_id,
@@ -191,7 +200,7 @@ class ReadOnlyRun:
                 tuple(boundaries),
                 pages,
                 acts,
-                _review_items(tree, payload, export_ref),
+                _review_items(tree, payload, export_ref, budget),
                 _advance_records(
                     tree,
                     {row["stage"]: row for row in boundaries if row.get("seal_present")},
@@ -366,6 +375,8 @@ def _act_row(
     row: Any,
     export_ref: dict[str, str],
     budget: _ImageBudget | None = None,
+    *,
+    requires_crops: bool = True,
 ) -> dict[str, Any]:
     budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
@@ -376,12 +387,16 @@ def _act_row(
                 "not an object"
             ),
         )
-    # No `[]` default. An act whose export row omits `source_regions` would
-    # then reach the console as an act with an empty crop list, and the
-    # operator could not tell "this act records no crop" from "the crop list
-    # went missing" — they would be approving text they never saw against the
-    # ink (GOVERNANCE 2, GOALS 5). Absent is refused exactly like malformed.
+    # No `[]` default for a delivered act. One whose export row omits
+    # `source_regions` would then reach the console as an act with an empty
+    # crop list, and the operator could not tell "this act records no crop"
+    # from "the crop list went missing" — they would be approving text they
+    # never saw against the ink (GOVERNANCE 2, GOALS 5). Absent is refused
+    # exactly like malformed. A non-delivered act is the one shape whose
+    # writer never records the field, so only there absent means absent.
     source_regions = row.get("source_regions")
+    if source_regions is None and not requires_crops:
+        source_regions = []
     if not isinstance(source_regions, list):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -572,8 +587,12 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
 
 
 def _review_items(
-    tree: RunTree, payload: dict[str, Any], export_ref: dict[str, str]
+    tree: RunTree,
+    payload: dict[str, Any],
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
 ) -> tuple[dict[str, Any], ...] | None:
+    budget = _ImageBudget() if budget is None else budget
     bundle = payload.get("bundle")
     if not isinstance(bundle, dict):
         raise OperatorError(
@@ -615,7 +634,11 @@ def _review_items(
             ),
         )
     try:
-        bundle_bytes = tree.read_bytes(path)
+        # The same shape the image allowance exists for: the bundle zip is read
+        # whole to verify its digest, in the same projection pass that already
+        # holds every page and crop, so it spends from the same allowance and an
+        # oversized run refuses by name instead of by exhaustion (GOVERNANCE 2).
+        bundle_bytes = _budgeted_image_bytes(tree, path, budget, "the Armarium export bundle")
         actual_digest = digest_bytes(bundle_bytes)
         if actual_digest != expected_digest:
             raise OperatorError(
