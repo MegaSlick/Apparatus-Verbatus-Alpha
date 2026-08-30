@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -236,10 +237,10 @@ def test_same_chair_counts_once_only_after_its_comparable_rows_cover_every_compo
 
 
 @pytest.mark.parametrize(
-    ("rows", "components", "floor"),
+    ("rows", "components", "floor", "refusal"),
     [
-        (None, {"whole"}, 1),
-        ([], {"whole"}, True),
+        (None, {"whole"}, 1, "invalid denominator"),
+        ([], {"whole"}, True, "invalid denominator"),
         (
             [
                 {
@@ -252,6 +253,7 @@ def test_same_chair_counts_once_only_after_its_comparable_rows_cover_every_compo
             ],
             {"whole"},
             1,
+            "malformed components",
         ),
         (
             [
@@ -265,11 +267,21 @@ def test_same_chair_counts_once_only_after_its_comparable_rows_cover_every_compo
             ],
             {"whole"},
             1,
+            "malformed components",
         ),
     ],
 )
-def test_malformed_witness_floor_inputs_are_named_schema_refusals(rows, components, floor):
-    with pytest.raises(SchemaRefusal):
+def test_malformed_witness_floor_inputs_are_named_schema_refusals(rows, components, floor, refusal):
+    """Each case names its own guard, so three of them cannot stop working quietly.
+
+    Read as "some SchemaRefusal was raised", a later change that refused on one
+    early condition and dropped the bool-floor and malformed-component checks
+    left all four cases green -- and a floor of `True` would then be accepted as
+    the integer 1, dropping a parish run's witness floor to one chair with
+    nothing turning red. The first two cases genuinely share one refusal: the
+    denominator guard screens rows, components and floor together.
+    """
+    with pytest.raises(SchemaRefusal, match=refusal):
         same_chair_witness_floor(rows, components=components, floor=floor)
 
 
@@ -309,7 +321,26 @@ def test_cross_capture_visibility_cannot_be_passed_to_unit14b_page_denominators(
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
-    assert "cross_capture_coverage" not in module.page_coverage_findings.__code__.co_names
+    # Walk the nested code objects too. `co_names` lists only the names one
+    # code object references, so reaching cross-capture visibility from a scope
+    # compiled separately walked straight past this guard -- and that is the
+    # exact confusion the test is named to prevent: the Unit 14B page-ink
+    # denominator answered by cross-capture geometry, a page reading as covered
+    # because another capture saw the surface, and an act dropped with no
+    # page-ink evidence ever demanded.
+    #
+    # Measured on this interpreter (3.12) rather than assumed. A *list*
+    # comprehension is inlined by PEP 709, so `co_names` already caught that
+    # one; a generator expression, a nested function and a lambda are each still
+    # a separate code object and were all invisible to the old single-object
+    # check. Those three are the hole this closes.
+    pending = [module.page_coverage_findings.__code__]
+    reached: set[str] = set()
+    while pending:
+        code = pending.pop()
+        reached.update(code.co_names)
+        pending.extend(constant for constant in code.co_consts if isinstance(constant, type(code)))
+    assert "cross_capture_coverage" not in reached
     assert FIXTURE.exists(), "the 19B two-capture fixture remains the shared evidence path"
 
 
@@ -438,38 +469,82 @@ def test_a_surface_seen_by_one_capture_is_as_covered_as_one_seen_by_three():
         assert record["findings"] == []
 
 
-def test_the_published_coverage_record_carries_no_tally_or_ranking_field():
-    """The recursive shape screen for this record specifically. A per-capture
-    or per-cell count, score, rank, or percentage would be the arithmetic a
-    later reader could sort captures by (consult §7.3-§7.6); the record holds
-    cell sets and named states only."""
-    record = build_cross_capture_coverage(
-        logical_act_id="pac_fixture", components=[_three_capture_component(visible_in="ab")]
-    )
-    forbidden = (
-        "count",
-        "score",
-        "rank",
-        "percent",
-        "ratio",
-        "total",
-        "weight",
-        "confidence",
-        "quorum",
-        "majority",
-        "best",
-        "primary",
-        "preferred",
-        "winner",
-    )
+_FORBIDDEN_SHAPE_WORDS = (
+    "count",
+    "score",
+    "rank",
+    "percent",
+    "ratio",
+    "total",
+    "weight",
+    "confidence",
+    "quorum",
+    "majority",
+    "best",
+    "primary",
+    "preferred",
+    "winner",
+)
 
-    def walk(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                assert not any(word in str(key).lower() for word in forbidden), key
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
 
-    walk(record)
+def _assert_no_tally_or_ranking(value, *, where="record"):
+    """Screen keys and string values alike, iteratively, over a whole record.
+
+    Values matter as much as keys here. The record is meant to hold cell sets
+    and named states, and a named state is a value: a component publishing
+    `"union_state": "best-capture"` carries exactly the ranking a downstream
+    reader could sort captures by, while a key-only screen stays green.
+    """
+    pending = [(value, where)]
+    while pending:
+        current, path = pending.pop()
+        if isinstance(current, dict):
+            for key, item in current.items():
+                lowered = str(key).lower()
+                assert not any(word in lowered for word in _FORBIDDEN_SHAPE_WORDS), (
+                    f"{path}: field {key!r} is a tally or ranking shape"
+                )
+                pending.append((item, f"{path}.{key}"))
+        elif isinstance(current, list):
+            for index, item in enumerate(current):
+                pending.append((item, f"{path}[{index}]"))
+        elif isinstance(current, str):
+            lowered = current.lower()
+            assert not any(word in lowered for word in _FORBIDDEN_SHAPE_WORDS), (
+                f"{path}: value {current!r} is a tally or ranking shape"
+            )
+
+
+def test_no_coverage_state_carries_a_tally_or_ranking_field():
+    """The recursive shape screen for this record specifically.
+
+    A per-capture or per-cell count, score, rank, or percentage would be the
+    arithmetic a later reader could sort captures by (consult section 7.3-7.6);
+    the record holds cell sets and named states only.
+
+    Screened across every coverage state rather than one. The single record
+    this used to check was built from `visible_in="ab"`, which resolves to a
+    fully covered surface with no findings -- the one shape least likely to
+    grow a tally. The unresolved and occluded-everywhere branches are where a
+    count would appear, and neither was ever reached.
+    """
+    records = [
+        build_cross_capture_coverage(
+            logical_act_id="pac_fixture", components=[_three_capture_component(visible_in=seen)]
+        )
+        for seen in ("", "a", "b", "ab", "abc")
+    ]
+    records.append(
+        build_cross_capture_coverage(
+            logical_act_id="pac_fixture",
+            components=[_component(a_state="occluded", b_state="occluded", b_visible=())],
+        )
+    )
+    records.append(
+        build_cross_capture_coverage(logical_act_id="pac_fixture", components=[_component()])
+    )
+    # The states really are different; a screen over seven copies of one record
+    # would prove no more than the single record it replaced.
+    assert len({json.dumps(record, sort_keys=True) for record in records}) == len(records)
+    for record in records:
+        _assert_no_tally_or_ranking(record)

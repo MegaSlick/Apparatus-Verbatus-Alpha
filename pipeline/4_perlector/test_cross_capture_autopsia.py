@@ -128,17 +128,24 @@ def test_the_reader_receives_a_dossier_digest_sealing_the_delivered_fields():
     assert reader.calls[0][0] == delivered
 
 
-def test_every_instrument_arm_reuses_the_same_complete_presentation_not_one_capture():
+def test_the_assembled_presentation_carries_every_capture_not_one():
+    """Renamed to what it checks. It ran one identical assembly four times.
+
+    The loop variable never reached `assemble_reader_input`, so the four
+    iterations made the same single call and the name promised per-arm coverage
+    the body did not provide. The genuine per-arm proof is
+    `test_clustered_logical_passes_make_one_establishing_call_and_no_capture_local_calls`
+    below, which drives the arms through the recording reader.
+    """
     dossier = {"testimonia": [], "prior_draft": {"text": "prior"}}
-    for pass_kind in ("lectio-prior", "lectio-nuda", "primed-without-prior", "perlectio"):
-        delivered, pixels = assemble_reader_input(
-            autopsia=autopsia(),
-            dossier=dossier,
-            read_bytes=READ_BYTES,
-            max_images=6,
-        )
-        assert delivered["cross_capture_autopsia"]["required_capture_sha256s"] == [A, B]
-        assert len(pixels["region_images"]) == 2, pass_kind
+    delivered, pixels = assemble_reader_input(
+        autopsia=autopsia(),
+        dossier=dossier,
+        read_bytes=READ_BYTES,
+        max_images=6,
+    )
+    assert delivered["cross_capture_autopsia"]["required_capture_sha256s"] == [A, B]
+    assert len(pixels["region_images"]) == 2
 
 
 def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_local_calls():

@@ -31,6 +31,17 @@ SOURCE_B = "b" * 64
 PAGE = physical_page_id("fixture", "book", "12r")
 ACT_A = act_id("pg_" + "1" * 16, "proposal", {"x": 0, "y": 0, "w": 10, "h": 10})
 ACT_B = act_id("pg_" + "2" * 16, "proposal", {"x": 0, "y": 0, "w": 10, "h": 10})
+# The rest of the shared constants, above their first use rather than halfway
+# down the file. Reading them from function bodies worked only because those
+# reads happen at call time, after import; a later module-level use, such as a
+# parametrize argument, would have failed the import and taken every test in
+# this file out of the run instead of failing visibly.
+SOURCE_C = "c" * 64
+PAGE_13R = physical_page_id("fixture", "book", "13r")
+PG1 = "pg_" + "1" * 16
+PG2 = "pg_" + "2" * 16
+PG3 = "pg_" + "3" * 16
+SEAL = {"relative_path": "designator/proposal.json", "sha256": digest_bytes(b"seal")}
 
 
 def _local(act, page, source, key, bounds=None):
@@ -926,14 +937,6 @@ def test_partition_validator_refuses_a_dropped_required_capture_presentation(tmp
     partition["self_hash"] = self_hash(partition)
     with pytest.raises(SchemaRefusal, match="presentation set"):
         validate_physical_act_partition(partition)
-
-
-SOURCE_C = "c" * 64
-PAGE_13R = physical_page_id("fixture", "book", "13r")
-PG1 = "pg_" + "1" * 16
-PG2 = "pg_" + "2" * 16
-PG3 = "pg_" + "3" * 16
-SEAL = {"relative_path": "designator/proposal.json", "sha256": digest_bytes(b"seal")}
 
 
 def _partition(register_bytes, local_acts, alignments, ledger, digest=None):

@@ -3992,12 +3992,15 @@ def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happ
         for record in artifacts(tree, PERLECTOR, "audit-draft")
         if record["subject_id"] == a2["act_id"]
     )
-    assert draft["payload"]["page_ids"] == sorted(
-        {
-            page_identity(load_fixture(str(ROOT / "proof")), 1),
-            page_identity(load_fixture(str(ROOT / "proof")), 2),
-        }
-    )
+    # The pair is pinned, not just the sorted set. `page_identity` derives the
+    # id from the page's bytes, so two byte-identical fixture pages would
+    # collapse to one element and this assertion would still pass -- with a2's
+    # audit denominator quietly down to one page, and page two, which is where
+    # the continuation evidence this test is named for lives, never audited.
+    fixture = load_fixture(str(ROOT / "proof"))
+    both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
+    assert len(both_pages) == 2, "the fixture's two pages share one identity"
+    assert draft["payload"]["page_ids"] == both_pages
 
 
 def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
@@ -4057,6 +4060,11 @@ def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
     }
     fixture = load_fixture(str(ROOT / "proof"))
     both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
+    # The sibling site's pin, for the same reason: the set collapses to one
+    # element if the fixture's two pages ever become byte-identical, and both
+    # attempts would then reconcile against a one-page denominator while still
+    # comparing equal to each other.
+    assert len(both_pages) == 2, "the fixture's two pages share one identity"
     assert drafts == {1: both_pages, 2: both_pages}
 
     attachment = next(
