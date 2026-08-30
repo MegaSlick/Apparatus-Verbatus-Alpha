@@ -23,7 +23,7 @@ def _policy(path: Path) -> Path:
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -108,7 +108,7 @@ def test_spend_show_names_stale_observation_without_refreshing_it(tmp_path: Path
 
 def test_spend_refuses_to_display_unconfigured_policy_as_configured(tmp_path: Path) -> None:
     policy = tmp_path / "spend.toml"
-    policy.write_text('schema = "pod-spend.v2"\nstate = "unconfigured"\n', encoding="utf-8")
+    policy.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
 
     with pytest.raises(OperatorError) as raised:
         SpendSurface(ReceiptStore(tmp_path / "state", now=lambda: NOW), NOW).show(policy)
@@ -228,12 +228,23 @@ def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None
     project_imports = {
         (node.module, alias.name)
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("operations.")
+        # A relative import (level > 0) is a project import whose spelling
+        # carries no "operations." prefix; it must enter this pin, not slip
+        # past the absolute-name filter.
+        if isinstance(node, ast.ImportFrom)
+        and (node.level > 0 or (node.module or "").startswith("operations."))
         for alias in node.names
     }
     assert project_imports == {
         ("operations.pod.spend", "MAX_BALANCE_OBSERVATION_AGE_SECONDS"),
         ("operations.pod.spend", "load_spend_policy"),
+        # The operator package's own read-only pieces, spelled relatively.
+        ("errors", "ErrorCode"),
+        ("errors", "OperatorError"),
+        ("errors", "strip_control_bytes"),
+        ("records", "ReceiptStore"),
+        ("records", "RecordError"),
+        ("records", "sha256_file"),
     }
     imported = {
         alias.name

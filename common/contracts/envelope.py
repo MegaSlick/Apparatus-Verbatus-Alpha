@@ -18,6 +18,7 @@ moment genuinely matters it lives in an approval record or a run receipt, both o
 which are honestly non-deterministic and neither of which is a stage artifact.
 """
 
+import unicodedata
 from typing import Any, Final
 
 from .canonical import (
@@ -264,15 +265,33 @@ def validate_input_refs(inputs: Any) -> None:
                 else ""
             )
             raise SchemaRefusal(f"input reference {path!r} is listed twice{conflict}")
-        portable = path.casefold()
+        portable = _portable_spelling(path)
         if portable in portable_spellings:
             raise SchemaRefusal(
                 f"input references {portable_spellings[portable]!r} and {path!r} collide on "
-                "a case-insensitive filesystem; one physical file may not acquire two "
-                "accounting names"
+                "a case-insensitive or Unicode-normalising filesystem; one physical file "
+                "may not acquire two accounting names"
             )
         seen[path] = sha
         portable_spellings[portable] = path
+
+
+def _portable_spelling(path: str) -> str:
+    """One physical file's one accounting name, across the hosts this may run on.
+
+    Case is one spelling a filesystem varies; Unicode form is the other, and it
+    came from the same place. `Étienne-1.png` composed and the same name
+    decomposed are different strings with different casefolds, and macOS hands
+    back the decomposed spelling for a name Linux stored composed. Folding only
+    the case would let one scanned page enter the lineage as two references with
+    two digests, and the double-count refusal above would never fire.
+
+    Normalised on both sides of the casefold because casefolding can itself
+    denormalise — `identities._declared_text` states the same reasoning for the
+    other place this system binds text a host or a person controls the spelling
+    of.
+    """
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", path).casefold())
 
 
 def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:

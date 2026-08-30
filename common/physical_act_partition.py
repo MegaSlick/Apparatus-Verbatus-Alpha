@@ -30,7 +30,7 @@ from common.corpus_register import (
     members_of,
     membership_heads,
     physical_act_page,
-    refuse_preference,
+    refuse_capture_preference,
     resolve_proposal,
 )
 from common.corpus_register import register_digest as read_register_digest
@@ -56,43 +56,29 @@ def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
 
 
 def _refuse_preference(value: Any) -> None:
-    try:
-        refuse_preference(value, what="physical-act partition")
-    except RecursionError as error:
-        # Every call site below runs this screen on a caller-supplied structure
-        # before its own shape checks, so an unvalidated proposal or partition
-        # can nest past Python's recursion limit. A record this machine cannot
-        # walk is refused, never crashed on -- the same boundary `self_hash`
-        # already holds for the digest this module seals.
-        raise SchemaRefusal(
-            "physical-act partition: the record nests too deeply for this machine to walk, "
-            "so its preference screen was never computable"
-        ) from error
+    refuse_capture_preference(value, what="physical-act partition")
 
 
 def _refuse_textual(value: Any) -> None:
-    try:
-        _refuse_textual_walk(value)
-    except RecursionError as error:
-        # The same boundary as `_refuse_preference`: a structure this machine
-        # cannot walk is refused by name, never crashed on.
-        raise SchemaRefusal(
-            "physical-act partition: the record nests too deeply for this machine to walk, "
-            "so its textual-evidence screen was never computable"
-        ) from error
+    """Refuse textual evidence anywhere in an untrusted proposal payload.
 
-
-def _refuse_textual_walk(value: Any) -> None:
-    if isinstance(value, dict):
-        if set(value) & _TEXTUAL_FIELDS:
-            raise SchemaRefusal(
-                "correspondence proposal: textual evidence cannot match physical acts"
-            )
-        for child in value.values():
-            _refuse_textual_walk(child)
-    elif isinstance(value, list):
-        for child in value:
-            _refuse_textual_walk(child)
+    Iterative for the same reason the preference screens are: the value is
+    caller input, screened before any shape check closes it, so a deep payload
+    walked recursively exhausted the interpreter stack and raised
+    ``RecursionError`` -- a crash naming nothing, where this module's whole
+    purpose is to refuse by name. Depth is this walk's own list now.
+    """
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if set(current) & _TEXTUAL_FIELDS:
+                raise SchemaRefusal(
+                    "correspondence proposal: textual evidence cannot match physical acts"
+                )
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -132,6 +118,12 @@ def _path(value: Any, what: str) -> str:
     # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
     # the run root, and a digest-bound reference this schema seals must be
     # refused here rather than trusted through to whichever reader dereferences it.
+    # Typed before it is walked. The key-set check upstream proves the field is
+    # present, not that it is a string, so a `relative_path` of None or a number
+    # reached `startswith` and killed the stage with an AttributeError traceback
+    # instead of the named refusal this module exists to produce.
+    if not isinstance(value, str) or not value:
+        raise SchemaRefusal(f"physical-act partition: {what} path is not a non-empty string")
     if value.startswith("/") or ".." in value.split("/"):
         raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
     return value
@@ -526,7 +518,6 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         or not seal["relative_path"]
     ):
         raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
-    _path(seal["relative_path"], "proposal seal")
     _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(

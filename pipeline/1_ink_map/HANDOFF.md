@@ -4,6 +4,26 @@ The ink map runs after the Exemplar seal and before the Designator. It writes on
 `kind="ink-map"` record per sealed page, including zero-ink pages, with the shared
 `common.residual_ink::page_residual_ink` result measured against empty coverage.
 
+Each record carries `payload["page_ordinal"]`, the sealed page's ordinal from the
+run's `source_manifest`. That ordinal is the identity a consumer joins on: this
+document is the interface, and without it named here a consumer has to guess —
+keying on `subject_id` instead silently mismatches records the day subject naming
+changes, and a page's ink evidence lands against the wrong act. The stage refuses
+the whole census rather than publish a record it cannot bind to exactly one
+submitted source.
+
+`payload["edge_findings"]` retains this stage's lossless page-space ink runs so
+the Armarium can re-measure the same pixels rather than decode the page again
+under a possibly different measurement. **Its size on a real page is PROPOSED,
+NOT YET MEASURED.** What is measured is the fixture: page 1 of
+`proof.synthetic_pages` is 200x260, carries 2,880 runs, and serializes to about
+21.8 KiB of JSON. That figure says nothing about a 300-DPI register page, whose
+larger raster and denser handwriting move both terms, and this stage's shard is
+described elsewhere in units of a thousand pages. Extrapolating from the fixture
+would be exactly the unmeasured claim GOVERNANCE 10 forbids, so the shard disk
+budget stays an open question against real material and is named here rather
+than assumed away.
+
 `payload["edge"]` is the bounded `unclaimed-edge-ink` detector: it measures only
 the 64-pixel page perimeter using that same implementation. A flagged record is
 unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for an
@@ -27,17 +47,21 @@ informative on its own. The field this record exists to carry forward is
 derives from. The alarm on this record is the *outcome* —
 `unclaimed-edge-ink` — which is measured against a real central rectangle.
 
-**A flagged edge record does not make the run `partial` yet, by design.**
-`run_aggregate` (`common/contracts/outcomes.py`) reconciles act categories, the
-page census, witness coverage and text status; it does not read ink-map
-records, so a page whose perimeter carries unclaimed ink still lets a run whose
-acts all reconcile report `complete`. That is the deferral this unit chose, not
-an oversight: `unclaimed-edge-ink` classifies UNRESOLVED at this boundary and
-terminates nothing, and Unit 14's own definition of done is the one that
-requires the hold be *visible in the Armarium aggregate*. Until Unit 14 lands,
-the evidence lives in the record and this paragraph, which is what GOVERNANCE 2
-asks of it — but no run may be described as having accounted for edge ink on
-the strength of a `complete` status alone.
+**A flagged edge record does not by itself make the run `partial`, but an
+unreleased one now does.** `unclaimed-edge-ink` still classifies UNRESOLVED at
+*this* boundary and terminates nothing here: this stage measures before any
+proposal exists, so it cannot know whether an act claims that ink. What decides
+the run is the Armarium's re-measure against the Designator's verified crops —
+see the Unit 14B ledger below. `run_aggregate`
+(`common/contracts/outcomes.py`) takes `edge_hold_pages` and appends a named
+partial reason for every page whose edge ink no crop released, so a run
+carrying one cannot report `complete`. A page whose ink the crops did claim is
+released and adds no reason.
+
+This paragraph previously recorded the opposite, as the deferral this unit had
+chosen while Unit 14 was outstanding. Unit 14B has landed; the sentence is kept
+here corrected rather than deleted because this file is the stage interface and
+a consumer who built against the old contract needs to see that it moved.
 
 ## The fixture is a degenerate case for the edge detector
 

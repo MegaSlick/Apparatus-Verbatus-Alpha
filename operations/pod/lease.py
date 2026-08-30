@@ -307,6 +307,10 @@ class LeaseStore:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except ImportError:  # pragma: no cover - production pod and tests are POSIX
                 pass
+            except OSError:
+                # handle.close() below releases the POSIX lock; an unlock
+                # failure must not replace the store operation's own outcome.
+                pass
             handle.close()
 
     def create(self, lease: PodLease) -> PodLease:

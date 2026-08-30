@@ -139,7 +139,15 @@ def test_each_stage_boot_needs_its_own_authorization_and_the_same_one_cannot_boo
         work=lambda _: "witness evidence",
     )
 
-    assert runtime.calls == 2, "the first confirmation did not create a second pod"
+    # The old message read "the first confirmation did not create a second pod",
+    # which describes the opposite of the failure this file exists to catch: a
+    # refused second boot leaking through makes the count 3, and an engineer
+    # reading that during a billing incident goes looking for a missing pod
+    # rather than an extra one.
+    assert runtime.calls == 2, (
+        "expected exactly one paid create per authorization; a different count means either "
+        "the second authorization did not create its pod or a refused boot reached the provider"
+    )
     assert [item.pod_id for item in provider.pods.values()] == [
         first_cost.pod_id,
         second_cost.pod_id,
@@ -897,10 +905,20 @@ def test_a_close_record_write_failure_leaves_unknown_not_zero(
     assert intent["close_state"] == intent["cost_state"] == "unknown"
 
 
-def test_adopt_after_crash_needs_fresh_confirmation_and_settles_the_original_boot(
+def test_a_stub_adoption_creates_no_second_pod_and_closes_against_the_original_grant(
     tmp_path: Path,
 ) -> None:
-    """Adoption creates no second pod and closes against the original stage grant."""
+    """What is real here is the close; the confirmation gate is a stub, not this layer's.
+
+    Named for what it proves. The `adopt` closure below decides its own refusal,
+    so the two assertions around it check that closure's `if` and no production
+    code -- this layer has no adoption path at all (see `staged.py`'s module
+    docstring), and a test claiming to cover a fresh-confirmation gate would stay
+    green after that gate was deleted, while an operator adopted a billing pod on
+    a spent grant. What this test does exercise is real and worth keeping: a
+    restarted lifecycle closes the adopted pod id against the original stage
+    grant, settles it, and writes exactly one cost record.
+    """
 
     clock, provider, _, before_crash = lifecycle(tmp_path)
     grant = StageAuthorization("parish-17", "attestatores", "grant-witnesses")

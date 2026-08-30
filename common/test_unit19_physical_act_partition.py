@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import common.physical_act_partition as _partition_module
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id, physical_act_id, physical_page_id
@@ -31,6 +32,17 @@ SOURCE_B = "b" * 64
 PAGE = physical_page_id("fixture", "book", "12r")
 ACT_A = act_id("pg_" + "1" * 16, "proposal", {"x": 0, "y": 0, "w": 10, "h": 10})
 ACT_B = act_id("pg_" + "2" * 16, "proposal", {"x": 0, "y": 0, "w": 10, "h": 10})
+# The rest of the shared constants, above their first use rather than halfway
+# down the file. Reading them from function bodies worked only because those
+# reads happen at call time, after import; a later module-level use, such as a
+# parametrize argument, would have failed the import and taken every test in
+# this file out of the run instead of failing visibly.
+SOURCE_C = "c" * 64
+PAGE_13R = physical_page_id("fixture", "book", "13r")
+PG1 = "pg_" + "1" * 16
+PG2 = "pg_" + "2" * 16
+PG3 = "pg_" + "3" * 16
+SEAL = {"relative_path": "designator/proposal.json", "sha256": digest_bytes(b"seal")}
 
 
 def _local(act, page, source, key, bounds=None):
@@ -61,6 +73,7 @@ def _register(tmp_path: Path):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -529,6 +542,7 @@ def test_a_capture_in_two_proposed_correspondences_is_ambiguous_not_appended(tmp
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -536,6 +550,7 @@ def test_a_capture_in_two_proposed_correspondences_is_ambiguous_not_appended(tmp
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": other_page,
+                "appending_run": "triage",
             },
         ],
         expected_digest=register_digest(empty_register()),
@@ -646,6 +661,7 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -653,6 +669,7 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": other_page,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -997,14 +1014,6 @@ def test_partition_validator_refuses_a_dropped_required_capture_presentation(tmp
         validate_physical_act_partition(partition)
 
 
-SOURCE_C = "c" * 64
-PAGE_13R = physical_page_id("fixture", "book", "13r")
-PG1 = "pg_" + "1" * 16
-PG2 = "pg_" + "2" * 16
-PG3 = "pg_" + "3" * 16
-SEAL = {"relative_path": "designator/proposal.json", "sha256": digest_bytes(b"seal")}
-
-
 def _partition(register_bytes, local_acts, alignments, ledger, digest=None):
     return build_physical_act_partition(
         register=register_bytes,
@@ -1086,6 +1095,7 @@ def _two_page_member_register(tmp_path, w):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -1093,6 +1103,7 @@ def _two_page_member_register(tmp_path, w):
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1321,6 +1332,7 @@ def _three_member_register(tmp_path):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1497,6 +1509,7 @@ def test_a_local_act_corresponding_to_a_physical_act_minted_elsewhere_is_held(tm
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -1504,6 +1517,7 @@ def test_a_local_act_corresponding_to_a_physical_act_minted_elsewhere_is_held(tm
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -2011,6 +2025,7 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -2018,6 +2033,7 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -2088,3 +2104,46 @@ def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
     payload["self_hash"] = self_hash(payload)
     with pytest.raises(SchemaRefusal, match="escapes the run tree"):
         validate_physical_act_partition(payload)
+
+
+@pytest.mark.parametrize("path_value", [None, 7, True, ["a"], {"a": 1}, ""])
+def test_the_builder_refuses_a_non_string_proposal_seal_path_by_name(path_value):
+    """The builder's key-set check proves the field is present, not that it is a string.
+
+    The validator already types this field, so the gap was on the build side
+    only: `relative_path` arriving as None or a number reached `startswith` and
+    killed the stage with an AttributeError, where this module's whole contract
+    is to refuse by name. Driven through the builder for that reason -- routed
+    at the validator this case never reaches the check it is about.
+    """
+    register = empty_register()
+    with pytest.raises(SchemaRefusal, match="path is not a non-empty string"):
+        build_physical_act_partition(
+            register=register,
+            register_digest=register_digest(register),
+            proposal_seal_ref={"relative_path": path_value, "sha256": "0" * 64},
+            local_acts=[_local(ACT_A, PG1, SOURCE_A, "a1")],
+            capture_alignments=[],
+            source_ledger={SOURCE_A},
+        )
+
+
+def test_the_textual_screen_walks_a_deep_payload_instead_of_the_interpreter_stack():
+    """The sibling of the preference screens, and it had the same defect.
+
+    This guard runs over caller-supplied proposal payloads before any shape
+    check closes them, so a deeply nested one walked recursively exhausted the
+    stack and raised RecursionError -- a crash naming nothing, in a module whose
+    entire purpose is to refuse textual evidence by name.
+    """
+    deep = {"leaf": 1}
+    for _ in range(50_000):
+        deep = {"nested": deep}
+    # Clean to the bottom: depth alone must not stop the walk.
+    _partition_module._refuse_textual(deep)
+
+    buried = {"ocr": "a reading"}
+    for _ in range(50_000):
+        buried = {"nested": [buried]}
+    with pytest.raises(SchemaRefusal, match="textual evidence cannot match physical acts"):
+        _partition_module._refuse_textual(buried)

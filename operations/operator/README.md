@@ -27,20 +27,23 @@ only that): see the upload section below.
 Every screen says "fixture" where a real run would name a real resource. The first real
 run requires separate approval.
 
-## The eleven words
+## The fourteen words
 
-Nine things this tool can do, in the order a normal run uses them, plus two you can run
+Twelve things this tool can do, in the order a normal run uses them, plus two you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
+| `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
 | `scantailor` | Names the separate desktop handoff and records a saved ScanTailor project's geometry by digest. | No. It does not launch ScanTailor or use its output images. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
 | `run` | Processes the images through the pipeline. This build runs the declared synthetic fixture. | No new cost beyond the machine already running. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
+| `review` | Opens one run tree read-only and shows its sealed boundaries, page and act images, review queue and recorded decisions. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
+| `advance` | Appends Tyrel's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record it appends is permanent and is never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
@@ -85,11 +88,14 @@ sit above the instrument suite's 1,200-frame corpus-order case and turn a larger
 dense pass into a named refusal before proxy retention or full comparisons can grow without
 a bound; prepare that material as smaller submitted folders.
 
-**`upload` needs no rented machine**, so a normal order is: `upload` your images first
-(zero machine cost while you do), then `launch` when you are ready to actually process
+**Neither `ingest` nor `upload` needs a rented machine**, so a normal order is: `ingest`
+the submitted folder if you are preparing source masters, work its queue with `triage`,
+`upload` your images (zero machine cost while you do any of that), then `launch` when you
+are ready to actually process
 them, `boot`, `run`, `export`, `backup` your run tree to keep a local copy, and `close`
-the moment you are done. Run `status` any time you are unsure what is happening or
-costing money.
+the moment you are done. Use `review` to read one run tree without changing anything in
+it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
+time you are unsure what is happening or costing money.
 
 ## The ScanTailor seam
 
@@ -206,7 +212,9 @@ appears.
 ## Where it keeps its own records
 
 Everything this tool writes for itself lives in `~/.local/state/verbatus/` by default (or
-`$XDG_STATE_HOME/verbatus/` when set), outside the project checkout; `--state-dir` moves it.
+`$XDG_STATE_HOME/verbatus/` when that variable holds an absolute path outside the
+project checkout; a relative value, or an absolute one that lands inside the
+checkout, is ignored), outside the project checkout; `--state-dir` moves it.
 Each record is written once and named after a
 checksum of its own contents, so a record cannot be quietly edited afterwards and still
 read back. You do not need to look in there — `status` shows you what matters.

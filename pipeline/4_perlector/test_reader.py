@@ -140,11 +140,19 @@ def test_an_unnamed_pass_kind_is_refused_rather_than_served_as_the_establishing_
 
 def test_every_pass_kind_the_producer_uses_is_in_the_closed_vocabulary():
     """The vocabulary equals literals in both producers, including audit re-proof."""
+    # Derived from the files that actually name a pass kind, not a fixed pair,
+    # so the pin grows with the code. A reader call moved into a new module
+    # would otherwise never have its pass kinds compared, and a misspelling
+    # there would be read as an establishing pass.
+    producers = [
+        path
+        for path in sorted(Path(__file__).parent.glob("*.py"))
+        if not path.name.startswith("test_") and "pass_kind=" in path.read_text()
+    ]
+    assert {path.name for path in producers} >= {"run.py", "combined.py"}
     producer_calls = set()
-    for name in ("run.py", "combined.py"):
-        producer_calls |= set(
-            re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / name).read_text())
-        )
+    for path in producers:
+        producer_calls |= set(re.findall(r"pass_kind=\"([^\"]+)\"", path.read_text()))
     assert producer_calls == set(reader_module.PASS_KINDS)
 
 

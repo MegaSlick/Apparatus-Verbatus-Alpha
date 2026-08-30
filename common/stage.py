@@ -20,7 +20,7 @@ import platform
 import stat
 import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
@@ -176,6 +176,36 @@ def _read_triage_modes_config(path: str | Path) -> bytes:
     return raw
 
 
+def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
+    """The closed triage-mode schema, checked in one place.
+
+    `run_config_bindings` seals the digest of these bytes into `config_digest` and
+    `require_triage_modes` rechecks them at the point of use; before this was
+    shared, only the second one parsed. A file declaring `[automatic]` therefore
+    sealed cleanly into `run.json` and the run walked several stages before the
+    first triage recheck refused it — a run tree that looks legitimate and can
+    never complete. The same validator on both sides means the binding cannot
+    admit a vocabulary the recheck will reject.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
+    try:
+        record = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
+    if set(record) != set(TRIAGE_MODES) or any(
+        not isinstance(policy, dict)
+        or set(policy) != {"review_at_or_below_confidence"}
+        or not isinstance(policy["review_at_or_below_confidence"], int)
+        or isinstance(policy["review_at_or_below_confidence"], bool)
+        or not 0 <= policy["review_at_or_below_confidence"] <= 4
+        for policy in record.values()
+    ):
+        raise ContractError("triage modes configuration has the wrong closed schema")
+
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -256,6 +286,12 @@ def held_advance_boundaries(
         if from_stage is not None or to_stage is not None:
             raise ContractError("manual mode names one stage, not a range")
         return frozenset({stage})
+    # Named, not reached by falling through. `RUN_MODES` is `TRIAGE_MODES`, a
+    # vocabulary that grows in `common/contracts/stages.py` for the triage
+    # manifest's sake; a mode added there would arrive here as a range mode and
+    # the operator would be told semi mode needs a range it never had.
+    if mode != "semi":
+        raise ContractError(f"staged run mode {mode!r} names no held-boundary rule")
     if from_stage is None or to_stage is None:
         raise ContractError("semi mode needs both the first and last stage of its range")
     first = STAGES.index(_named_boundary(from_stage, "the semi-mode range start"))
@@ -732,8 +768,27 @@ class StageContext:
         return audit
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
-        """Canonical content-addressed storage shared by serving evidence records."""
+        """Canonical content-addressed storage shared by serving evidence records.
 
+        Guarded after the seal for the same reason `publish` is, and it is the
+        same directory at stake: this writes through `tree.put_blob` into the
+        stage's own blob directory, which `_stage_blob_inventory` walks and whose
+        digest the seal payload carries. One serving-evidence write afterwards
+        changes the inventory the seal witnessed — and the symptom lands on the
+        wrong stage, because the *next* consumer refuses with "its named inventory
+        no longer matches disk". A producer that did honest work would be reported
+        as a tree whose evidence was altered, indistinguishable from real
+        tampering. Ordering discipline was already judged insufficient for
+        artifacts; blobs are no different.
+
+        Serving *receipts* need no such guard: they are run receipts written under
+        `receipts/`, outside any stage's inventory.
+        """
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
+                "would make its witnessed blob inventory false"
+            )
         try:
             payload = canonical_bytes(value)
         except (TypeError, ValueError) as error:
@@ -983,12 +1038,28 @@ def _stage_seal_payload(
             f"{stage} cannot seal its boundary: decode-environment "
             f"{decode_environment_artifact_id!r} is unreadable: {error}"
         ) from error
+    # Read the authority once, and refuse a missing binding by name. `read_run`
+    # proves a run authority's self-hash, schema, and run id; it does not require
+    # any particular field, so an authority not written by `RunTree.create` can
+    # reach here whole and still be missing one. Subscripting it raised a bare
+    # KeyError, which is neither a ContractError nor a RunHalted — so `run_stage`
+    # did not turn it into one of the four honest exit codes, and the operator was
+    # handed a traceback naming a dict key instead of a refusal naming the run.
+    # The verifier at `_verify_stage_seal` already reads both fields with `.get`
+    # and tolerates their absence; this side now agrees with it.
+    run = tree.read_run()
+    missing = [field for field in ("config_digest", "register_digest") if field not in run]
+    if missing:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its boundary: the run authority carries no "
+            f"{', '.join(missing)}, so the seal would witness a binding that is not there"
+        )
     return {
         "stage": stage,
         "attempt_ordinal": ordinal,
         "attempt_id": attempt,
-        "config_digest": tree.read_run()["config_digest"],
-        "register_digest": tree.read_run()["register_digest"],
+        "config_digest": run["config_digest"],
+        "register_digest": run["register_digest"],
         "artifact_inventory": digest_of(artifacts),
         "blob_inventory": digest_of(blobs),
         "census": [
@@ -1067,7 +1138,7 @@ def _stage_blob_inventory(
                 raise SchemaRefusal(
                     f"{stage} blob inventory contains noncanonical content address {name!r}"
                 )
-            observed = _digest_regular_file_at(directory_fd, name, stage)
+            observed = _digest_regular_file_at(directory_fd, name, stage, siblings=names)
             if verify_addresses and observed != name:
                 raise SchemaRefusal(
                     f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
@@ -1122,7 +1193,41 @@ def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) ->
         )
 
 
-def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
+def _publisher_link_allowance(
+    directory_fd: int, siblings: Sequence[str], name: str, identity: tuple[int, int]
+) -> int:
+    """Extra links to `name` that its own interrupted publisher explains.
+
+    `RunTree._atomic_create` publishes by hard-linking `.<digest>.tmp-<unique>`
+    onto the digest name and then unlinking the temporary. SIGKILL between those
+    two steps leaves the published blob with a second link, and the only other
+    name holding it is that temporary. The bytes are complete, the digest matches
+    the name, and the inventory already skips the temporary itself — so refusing
+    the blob for its link count meant a run killed at the wrong microsecond could
+    never seal again, with the message accusing evidence that was in fact intact.
+
+    Each same-inode temporary bearing this blob's own digest explains exactly one
+    link. Every other link is still unexplained and still a refusal: this widens
+    the rule by precisely the state the publisher can leave and by nothing else.
+    """
+    explained = 0
+    for other in siblings:
+        if other == name or not other.startswith(f".{name}.tmp-"):
+            continue
+        if not _is_unpublished_blob_temporary(other):
+            continue
+        try:
+            sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError:  # pragma: no cover - the temporary vanished mid-inventory
+            continue
+        if (sibling.st_dev, sibling.st_ino) == identity:
+            explained += 1
+    return explained
+
+
+def _digest_regular_file_at(
+    directory_fd: int, name: str, stage: str, *, siblings: Sequence[str] = ()
+) -> str:
     """Hash one directory entry without changing which inode the name denotes."""
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
@@ -1134,12 +1239,19 @@ def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            identity = (opened.st_dev, opened.st_ino)
+            # One link for the evidence name, plus any the interrupted publisher
+            # left behind under its own private temporary name.
+            allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
             if (
                 not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or (opened.st_dev, opened.st_ino) != (named_before.st_dev, named_before.st_ino)
+                or opened.st_nlink > allowed_links
+                or identity != (named_before.st_dev, named_before.st_ino)
             ):
-                raise SchemaRefusal(f"{stage} blob {name!r} is not one contained regular file")
+                raise SchemaRefusal(
+                    f"{stage} blob {name!r} is not one contained regular file: it is reachable "
+                    "under a name this store did not publish it under"
+                )
             observed = hashlib.file_digest(handle, "sha256").hexdigest()
             closed_over = os.fstat(handle.fileno())
             named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1148,12 +1260,11 @@ def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
             f"{stage} blob {name!r} changed or became unreadable while it was inventoried: {error}"
         ) from error
 
-    identity = (opened.st_dev, opened.st_ino)
     if (
         identity != (closed_over.st_dev, closed_over.st_ino)
         or identity != (named_after.st_dev, named_after.st_ino)
         or not stat.S_ISREG(named_after.st_mode)
-        or closed_over.st_nlink != 1
+        or closed_over.st_nlink > allowed_links
         or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
         != (closed_over.st_size, closed_over.st_mtime_ns, closed_over.st_ctime_ns)
     ):
@@ -1219,11 +1330,16 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
-    if payload.get("config_digest") != tree.read_run().get("config_digest"):
+    # One read, both comparisons. Two reads can straddle a rewrite, and a seal
+    # that matched no single run authority would pass this boundary -- the same
+    # two-read fault this file already names for `pdf_render.toml` and
+    # `recovery.toml`.
+    run_authority = tree.read_run()
+    if payload.get("config_digest") != run_authority.get("config_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
         )
-    if payload.get("register_digest") != tree.read_run().get("register_digest"):
+    if payload.get("register_digest") != run_authority.get("register_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
         )
@@ -1655,6 +1771,7 @@ def run_config_bindings(
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     decoding_config_path: str | Path = DEFAULT_DECODING_CONFIG_PATH,
+    triage_modes_config_path: str | Path = DEFAULT_TRIAGE_MODES_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -1736,9 +1853,16 @@ def run_config_bindings(
         corpus_frame_config_path
     )
     _decoding_policy, decoding_config_digest = load_decoding_policy(decoding_config_path)
-    triage_modes_config_digest = digest_bytes(
-        _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
-    )
+    # The parameter, not the module default: every other sealed configuration here
+    # binds the path its caller named, and `require_triage_modes` already accepts
+    # one at the point of use. Sealing the default while the recheck read a caller's
+    # file would have reported drift on two files that had each never changed.
+    # Validated, not merely hashed. Sealing bytes the point-of-use recheck will
+    # refuse produces a run whose `run.json` is well formed and which cannot reach
+    # triage; the refusal belongs at run creation, where nothing has been written.
+    triage_modes_raw = _read_triage_modes_config(triage_modes_config_path)
+    _validate_triage_modes_config(triage_modes_raw, triage_modes_config_path)
+    triage_modes_config_digest = digest_bytes(triage_modes_raw)
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -1921,23 +2045,7 @@ def require_triage_modes(
             "the triage modes configuration changed between run binding and its "
             f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
         )
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
-    try:
-        record = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
-    if set(record) != set(TRIAGE_MODES) or any(
-        not isinstance(policy, dict)
-        or set(policy) != {"review_at_or_below_confidence"}
-        or not isinstance(policy["review_at_or_below_confidence"], int)
-        or isinstance(policy["review_at_or_below_confidence"], bool)
-        or not 0 <= policy["review_at_or_below_confidence"] <= 4
-        for policy in record.values()
-    ):
-        raise ContractError("triage modes configuration has the wrong closed schema")
+    _validate_triage_modes_config(raw, path)
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.

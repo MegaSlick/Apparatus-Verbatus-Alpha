@@ -7,6 +7,8 @@ from base64 import b64decode
 from dataclasses import replace
 from io import BytesIO
 
+import PIL
+import pillow_heif
 import pytest
 from PIL import Image, ImageDraw
 
@@ -99,9 +101,29 @@ def test_jpeg_recipe_records_versions_and_requires_remeasurement_across_versions
     proxy = instrument.build_proxies_from_bytes(jpeg.getvalue(), config)
     recipe = instrument.producer_recipe(config)
     assert proxy.signature_png_sha256
-    assert recipe["imaging_library_versions"] == instrument.imaging_library_versions()
+    # Against the installed libraries, not against the call that wrote the recipe:
+    # comparing the record with its own producer holds even when the versions are
+    # empty or wrong, and these versions are the whole reason a JPEG proxy digest can
+    # be re-measured after an upgrade.
+    versions = recipe["imaging_library_versions"]
+    assert set(versions) == {
+        "renderer",
+        "renderer_version",
+        "pillow_heif_version",
+        "libheif_version",
+    }
+    assert versions["renderer"] == "Pillow"
+    assert versions["renderer_version"] == PIL.__version__
+    assert versions["pillow_heif_version"] == pillow_heif.__version__
+    assert versions["libheif_version"] == pillow_heif.libheif_info()["libheif"]
+    assert all(value for value in versions.values())
     assert recipe["determinism"]["cross_version_claim"] == "NOT_CLAIMED"
-    assert "re-measure" in recipe["determinism"]["jpeg_remeasure_failure"]
+    # The whole declared sentence, so a rewrite that drops the obligation cannot pass
+    # on the strength of one surviving word.
+    assert recipe["determinism"]["jpeg_remeasure_failure"] == instrument.JPEG_REMEASURE_FAILURE
+    assert "re-measure the JPEG case before making any determinism claim" in (
+        instrument.JPEG_REMEASURE_FAILURE
+    )
 
 
 def test_near_duplicate_small_insert_move_is_recorded_as_evidence_not_a_link():
@@ -195,11 +217,17 @@ def test_a_pair_at_exactly_tau_link_is_still_only_recorded_candidate_evidence():
     assert "re_shoot_cluster_id" not in evidence
 
 
-def test_blob_share_gate_is_non_vacuous_at_the_shipped_unmeasured_value():
-    """One disagreeing cell clears agreement but not the declared blob-share gate.
+def test_one_disagreeing_cell_is_negligible_rather_than_unrelated():
+    """The verdict must not run backwards against its own evidence.
 
-    This records the rule's shape without tuning it against a synthetic corpus:
-    component count alone does not make every tiny difference near-duplicate.
+    The blob share was once a floor the largest disagreeing component had to reach,
+    which sent the tightest agreements — one to thirty of 3072 cells at the shipped
+    values — past both clauses to "unrelated", while a hundred-cell blob was recorded
+    near-duplicate. A re-shoot read as unrelated is how two frames of one physical page
+    both enter the corpus as separate pages. The share still keeps a tiny difference
+    from being argued about; it no longer disqualifies the pair for being too similar.
+    Recorded without tuning against a synthetic corpus: the shipped values stay
+    UNMEASURED, and a large diffuse disagreement is still not near-duplicate.
     """
     config = instrument.load_config()
     count = config.grid_columns * config.grid_rows
@@ -225,7 +253,7 @@ def test_blob_share_gate_is_non_vacuous_at_the_shipped_unmeasured_value():
     )
     assert evidence["disagreeing_component_count"] == 1
     assert evidence["largest_component_share"] < config.blob_share_per_mille
-    assert evidence["verdict"] == "unrelated"
+    assert evidence["verdict"] == "near-duplicate"
 
 
 def test_unequal_dimensions_are_a_declared_comparison_refusal():
@@ -267,7 +295,7 @@ def test_malformed_signature_lengths_are_named_refusals_not_index_or_zip_errors(
 def test_every_produced_record_runs_through_the_shared_preference_refusal(monkeypatch):
     config = instrument.load_config()
     calls: list[dict] = []
-    monkeypatch.setattr(instrument, "_refuse_preference", calls.append)
+    monkeypatch.setattr(instrument, "refuse_capture_preference", calls.append)
     one = instrument.build_proxies(synthetic_page(), source_frame_sha256="a" * 64, config=config)
     two = instrument.build_proxies(synthetic_page(), source_frame_sha256="b" * 64, config=config)
     recipe = instrument.producer_recipe(config)
@@ -819,3 +847,122 @@ def test_pair_identity_and_directional_measures_are_canonical_by_digest():
     reverse = instrument.compare_signatures(second.signature, first.signature, config)
     assert forward == reverse
     assert forward["both_digests"] == ["a" * 64, "b" * 64]
+
+
+def _retuned_config_path(tmp_path, columns: int, rows: int):
+    """The shipped declaration with only its prefilter geometry retuned."""
+    text = instrument.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+    text = text.replace("global_prefilter_columns = 4", f"global_prefilter_columns = {columns}")
+    text = text.replace("global_prefilter_rows = 4", f"global_prefilter_rows = {rows}")
+    path = tmp_path / "instrument.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_retuned_prefilter_grid_produces_a_recipe_this_module_still_accepts(tmp_path):
+    """The loader and the recipe validator must not disagree about the same grid.
+
+    Both name 16 cells, and the columns and rows are declared UNMEASURED, so a
+    2 × 8 retune has to survive the round trip. When the validator demanded the
+    literal shipped [4, 4], the pass finished its comparisons and could not
+    publish, and the refusal named 16 cells for a grid that had 16.
+    """
+    config = instrument.load_config(_retuned_config_path(tmp_path, 2, 8))
+    assert (config.global_prefilter_columns, config.global_prefilter_rows) == (2, 8)
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    assert recipe["candidate_selection_recipe"]["global_prefilter_grid"] == [2, 8]
+    assert instrument.validate_producer_recipe(recipe)
+
+
+@pytest.mark.parametrize(
+    ("grid", "reason"),
+    [
+        ([4, 5], "not 16 cells"),
+        ([16], "columns by rows"),
+        ("4x4", "columns by rows"),
+        ([4, True], "positive integer"),
+        ([0, 16], "positive integer"),
+    ],
+)
+def test_a_recipe_prefilter_grid_outside_sixteen_cells_is_refused(grid, reason):
+    config = instrument.load_config()
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    recipe["candidate_selection_recipe"]["global_prefilter_grid"] = grid
+    with pytest.raises(instrument.InstrumentRefusal, match=reason):
+        instrument.validate_producer_recipe(recipe)
+
+
+def test_no_agreeing_pair_is_recorded_unrelated_for_disagreeing_less():
+    """Inside the agreement regime the verdict may not run backwards.
+
+    The three verdicts are not one scale — a complementary candidate disagrees a lot,
+    in one region, by design. But while agreement still reaches the link threshold, a
+    localized disagreement is the same kind of evidence however it is divided, and a
+    *smaller* one may never earn "unrelated" when a larger one earns "near-duplicate".
+    Walked across the whole band and over one and two regions, because both were bands:
+    at the shipped values one to thirty cells in a single region scored unrelated while
+    a hundred scored near-duplicate, and then forty cells split across two regions of
+    twenty scored unrelated while thirty-one in one region scored near-duplicate.
+    """
+    config = instrument.load_config()
+    overlapping = config.grid_columns * config.grid_rows
+    reached = 0
+    for components in (1, 2):
+        for disagreements in range(components, overlapping + 1):
+            if (overlapping - disagreements) * 1000 < config.link_agreement_per_mille * overlapping:
+                continue
+            reached += 1
+            largest = disagreements - (components - 1)
+            assert (
+                instrument._verdict_for_metrics(
+                    overlapping - disagreements,
+                    overlapping,
+                    components,
+                    largest * 1000 // overlapping,
+                    config,
+                )
+                == "near-duplicate"
+            ), f"{disagreements} disagreeing cells in {components} region(s) is not near-duplicate"
+    assert reached > 600, "the agreement band the shipped thresholds admit was not walked"
+
+
+def test_a_large_disagreement_scattered_across_many_regions_stays_unrelated():
+    """The component bound is what the blob-share floor was mistaken for.
+
+    Admitting the tightly-agreeing pairs must not admit two different pages that happen
+    to agree in most cells: a disagreement past the negligible share and spread over
+    more than two regions is still no evidence of a re-shoot.
+    """
+    config = instrument.load_config()
+    overlapping = config.grid_columns * config.grid_rows
+    scattered = 200
+    assert (
+        instrument._verdict_for_metrics(
+            overlapping - scattered,
+            overlapping,
+            40,
+            5 * 1000 // overlapping,
+            config,
+        )
+        == "unrelated"
+    )
+
+
+def test_the_shipped_recipe_validates_against_the_validator_that_guards_it():
+    """The producer's two halves must agree, sentence for sentence.
+
+    Every declared rule is written once as a module constant now, but the round trip
+    is what proves it: if either half ever grows its own copy of a sentence, or the
+    validator's closed key set drifts from `imaging_library_versions()`, the producer
+    would refuse the only recipe it can build and could commit no confirmation at all.
+    """
+    recipe = json.loads(json.dumps(instrument.producer_recipe(instrument.load_config())))
+    assert instrument.validate_producer_recipe(recipe) == recipe
+    comparison = recipe["comparison_recipe"]
+    assert comparison["verdict_rule"] == instrument.VERDICT_RULE
+    assert comparison["offset_selection"] == instrument.OFFSET_SELECTION
+    assert comparison["known_blindness"] == list(instrument.SIGNATURE_BLINDNESS)
+    assert len(instrument.SIGNATURE_BLINDNESS) == 5, (
+        "a dropped comma merges two blindness statements into one, and the recipe would "
+        "then validate against the shortened tuple"
+    )

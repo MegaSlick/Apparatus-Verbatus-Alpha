@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -31,11 +32,12 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         scenario="happy",
         fixture_root="proof",
         models_config="config/models.toml",
+        serving_recipes_config="config/serving_recipes.toml",
         pdf_render_config="config/pdf_render.toml",
         designator_padding_config="config/designator_padding.toml",
         designator_geometry_config="config/designator_geometry.toml",
         alignment_config="config/alignment.toml",
-        formats_config="config/armarium_formats.toml",
+        formats_config="config/formats.toml",
         recovery_config="config/recovery.toml",
         hard_failure_config="config/hard_failure.toml",
         pdf_target_dpi=None,
@@ -47,7 +49,6 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
         perlector_protocol_config="config/perlector_protocol.toml",
-        serving_recipes_config="config/serving_recipes_real.toml",
         decoding_config="config/decoding.toml",
         perlector_audit_config="config/perlector_audit.toml",
         draft_fed=True,
@@ -114,3 +115,61 @@ def test_terminal_report_turns_malformed_reasons_into_a_named_refusal():
 
     with pytest.raises(ContractError, match="blank or non-string terminal reason"):
         orchestrator.terminal_report(export)
+
+
+def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
+    """Two ways this stand-in silently stops being the surface it says it is.
+
+    It drifts when `invoke` starts reading an attribute the Namespace does not
+    carry -- which is not a caught refusal but an AttributeError raised before
+    either probe reaches its assertion, so the security pin stops running while
+    still looking green in a count. Both this file's subprocess-boundary tests
+    were doing exactly that until the attribute was restored.
+
+    It also drifts in its values. `formats_config` named
+    `config/armarium_formats.toml`, a file that has never existed; the real
+    default is `config/formats.toml`. Nothing failed, because the probe ignores
+    the values -- which is precisely why a wrong one can sit here indefinitely
+    while the docstring above calls this the stable argv surface.
+    """
+    reads: set[str] = set()
+    for name in ("invoke", "require_coherent_ingress_options"):
+        function = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
+        target = next(
+            node
+            for node in function.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        for node in ast.walk(target):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "args"
+            ):
+                reads.add(node.attr)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "args"
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                reads.add(node.args[1].value)
+
+    supplied = vars(_invoke_args(Path("/tmp")))
+    assert reads - set(supplied) == set(), (
+        f"invoke() reads {sorted(reads - set(supplied))}, which this stand-in never sets; "
+        "the probes would raise AttributeError before asserting anything"
+    )
+    assert set(supplied) - reads == set(), (
+        f"this stand-in sets {sorted(set(supplied) - reads)}, which invoke() never reads"
+    )
+
+    for attribute, value in supplied.items():
+        if isinstance(value, str) and value.startswith("config/"):
+            assert (ROOT / value).is_file(), (
+                f"{attribute}={value!r} names a config file that does not exist; a stand-in "
+                "for the real argv surface must not carry a path the real run could not use"
+            )

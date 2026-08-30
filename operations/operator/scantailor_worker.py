@@ -163,14 +163,18 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         _closed(params, "params", {"mode"}, ["pages", "dependencies"])
         pages = params[0]
         kind = pages.attrib.get("type")
+        # Layout type before shape: an unknown kind produces an empty cutter
+        # list, and the shape refusal would then tell the operator their saved
+        # project is truncated when the real fact is a layout this parser does
+        # not support.
+        if kind not in {"single-uncut", "single-cut", "two-pages"}:
+            raise _refuse("page-split geometry names an unknown layout type")
         cutters = (
             ["cutter1"]
             if kind == "two-pages"
             else (["cutter1", "cutter2"] if kind == "single-cut" else [])
         )
         _closed(pages, "pages", {"type"}, ["outline", *cutters])
-        if kind not in {"single-uncut", "single-cut", "two-pages"}:
-            raise _refuse("page-split geometry names an unknown layout type")
         outline = pages[0]
         if outline.tag != "outline" or len(outline) != 5 or set(outline.attrib):
             raise _refuse("page-split outline is not exactly four closed sides")

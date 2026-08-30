@@ -388,6 +388,30 @@ def test_a_completed_structured_witness_stays_visible_but_cannot_be_compared():
     ]
 
 
+def test_a_completed_reading_outcome_carrying_no_text_at_all_is_unknown_not_a_refusal():
+    """The textless case of the branch above, which used to be a `SchemaRefusal`.
+
+    Before the retained-native seam a completed reading with nothing to compare
+    raised "no text to compare", because a missing `reported` field could only
+    mean a malformed record. It no longer can: the comparison text is the
+    retained payload, and a witness may genuinely hold one that is not text. So
+    the chair is recorded `compared: "unknown"` with the fact named, exactly as
+    a structured payload is -- visible, uncounted toward the floor, and neither
+    guessed at nor dropped (GOVERNANCE 2). Pinned separately from the structured
+    case because an absent payload and an object payload are different records
+    reaching the same branch, and only one of them was ever exercised here.
+    """
+    assert dissent.dissent_against(
+        "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
+    ) == [
+        {
+            "chair": "attestator_1",
+            "compared": "unknown",
+            "reason": "no comparable text for this act: retained derived testimony is not text",
+        }
+    ]
+
+
 def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
     """Structural pin, not merely a docstring promise: `comparison_view` must
     never grow a threshold, weight, or distance-metric parameter. A reviewer

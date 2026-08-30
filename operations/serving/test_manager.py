@@ -2464,6 +2464,11 @@ def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(
 
     assert launcher.processes == []
     assert publisher.calls == []
+    # The claim is that the row is refused *before* the snapshot, not merely
+    # that nothing launched. Without this the refusal could move after
+    # `registry.ensure` and the test would stay green, while an operator saw a
+    # checkpoint or pin failure instead of the unimplemented-serving cause.
+    assert registry.ensure_calls == [], "the refusal reached the snapshot before naming its cause"
     assert "no serving process was started" in registry.refusals[0][1]
 
 
@@ -2486,6 +2491,11 @@ def test_real_catalogue_missing_row_refusal_names_the_exact_chair_and_tier() -> 
     assert removed.recipe in detail
     assert removed.chair in detail
     assert removed.tier in detail
+    # A refusal that dumps the whole catalogue satisfies every check above,
+    # because the removed row is a member of it. What an operator needs is the
+    # one row to add, so a retained row must NOT appear.
+    retained = next(profile for profile in incomplete.profiles if profile.chair != removed.chair)
+    assert retained.chair not in detail
 
 
 def test_for_identity_refuses_both_zero_and_multiple_matches() -> None:
@@ -3765,7 +3775,7 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
     """A page token must not depend on preserving ambiguous whitespace glyphs."""
 
     assert len(witness) >= 32
-    with pytest.raises(ValueError, match="must contain no whitespace"):
+    with pytest.raises(ServingConfigurationError, match="must contain no whitespace"):
         VisionSmokeCall(witness)
 
 
@@ -3773,7 +3783,7 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
 def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
     witness: object,
 ) -> None:
-    with pytest.raises(ValueError, match="non-blank string between 32 and 128"):
+    with pytest.raises(ServingConfigurationError, match="non-blank string between 32 and 128"):
         VisionSmokeCall(witness)  # type: ignore[arg-type]
 
 
@@ -3781,7 +3791,7 @@ def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
 def test_vision_smoke_call_refuses_a_witness_that_is_not_a_visible_url_safe_token(
     witness: str,
 ) -> None:
-    with pytest.raises(ValueError, match="visible URL-safe ASCII"):
+    with pytest.raises(ServingConfigurationError, match="visible URL-safe ASCII"):
         VisionSmokeCall(witness)
 
 
@@ -3794,12 +3804,12 @@ def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> No
             return f"Reply with PAGE-WITNESS: {self.page_witness}"
 
     assert PAGE_WITNESS not in vision_smoke().prompt
-    with pytest.raises(ValueError, match="occurs in the smoke prompt"):
+    with pytest.raises(ServingConfigurationError, match="occurs in the smoke prompt"):
         LeakedWitnessPrompt(PAGE_WITNESS)
 
 
 def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() -> None:
-    with pytest.raises(ValueError, match="utilization sampler must be callable"):
+    with pytest.raises(ServingConfigurationError, match="utilization sampler must be callable"):
         VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]
 
 
@@ -3888,6 +3898,10 @@ def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
     fixture = tmp_path / "golden-page.png"
     fixture_bytes = write_golden_page(fixture)
     handle = manager.start(chair, TIER)
+    # The refusal below is driven by a lowered bound, so pin the real one too:
+    # the serving README states 64 MiB as a fact about this path, and without
+    # this the constant could move to any value with the suite still green.
+    assert smoke_module._MAXIMUM_PNG_BYTES == 64 * 1024 * 1024
     monkeypatch.setattr(smoke_module, "_MAXIMUM_PNG_BYTES", len(fixture_bytes) - 1)
 
     with pytest.raises(ServingConfigurationError, match="byte smoke request bound"):

@@ -1,23 +1,5 @@
 # Designator — handoff
 
-# Stage-completion seal
-
-Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
-this pass's disk inventory and blob contents, and binds the exact decode-environment
-bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
-held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
-successor correctly refuses the missing boundary. Every difference in decoders,
-platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
-field or decoder name. A valid difference is report-only and never refuses;
-Unit 17 owns any fatal policy.
-
-Seals are compared as the SET the stored inventory names, on both sides of the
-boundary: the producer refuses to re-seal, and the successor refuses to read,
-when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
-so removing the latest leaves a prefix that still looks whole — and the earlier
-statement would then answer for a boundary it never witnessed.
 The Designator turns sealed Exemplar pages into the act denominator for the
 walking skeleton. It writes only ordinary `skeleton.v1` artifacts below
 `2_designator/artifacts/`; each envelope has a derived artifact identity,
@@ -29,6 +11,26 @@ for every stage; there is no per-page `crops/`, `acts/` or `conservation/`
 directory anywhere in this tree. Spec 06's contracts section names those as
 concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
 this handoff expresses each as an artifact *kind* below rather than a path.
+
+## Stage-completion seal
+
+Before this producer's final manifest it publishes one `decode-environment` and
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+held after publishing stage evidence seals it (holds remain in its census); a
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
+successor correctly refuses the missing boundary. Every difference in decoders,
+platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
+field or decoder name. A valid difference is report-only and never refuses;
+Unit 17 owns any fatal policy.
+
+Seals are compared as the SET the stored inventory names, on both sides of the
+boundary: the producer refuses to re-seal, and the successor refuses to read,
+when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
+so removing the latest leaves a prefix that still looks whole — and the earlier
+statement would then answer for a boundary it never witnessed.
 
 ## Scope and input boundary
 

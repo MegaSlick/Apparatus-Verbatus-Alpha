@@ -29,7 +29,26 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
     assert len(parsed["geometry"][0]["outline"]) == 5
     assert parsed["geometry"][0]["outline"][0] == parsed["geometry"][0]["outline"][-1]
     assert parsed["geometry"][0]["cutters"][0]["p1"] == {"x": "600", "y": "0"}
-    assert "winner" not in json.dumps(parsed)
+    # Every saved geometry survives; nothing is reduced to a preferred one.
+    # (A string search for a label the parser never writes proved nothing.)
+    assert len(parsed["geometry"]) == 1
+    assert parsed["source_image_count"] == 1
+
+
+def test_an_unknown_layout_type_is_named_not_reported_as_truncated(tmp_path: Path) -> None:
+    """The refusal names the real fact: a layout this parser does not support.
+
+    An unknown kind yields an empty cutter list, and the shape check would
+    then send the operator hunting for missing XML that is not missing.
+    """
+    project = tmp_path / "scan.ScanTailor"
+    mutated = PROJECT.replace(b'type="two-pages"', b'type="three-pages"')
+    assert mutated != PROJECT
+    project.write_bytes(mutated)
+    with pytest.raises(ValueError) as refused:
+        scantailor_worker.parse(mutated, project)
+    assert "unknown layout type" in str(refused.value)
+    assert "truncated" not in str(refused.value)
 
 
 @pytest.mark.parametrize("bad", (b"<project", PROJECT.replace(b'<point x="0" y="800"/>', b"")))
@@ -81,9 +100,16 @@ def test_two_geometries_for_one_page_refuses_rather_than_picking(tmp_path: Path)
         scantailor_worker.parse(offering_two_variants, tmp_path / "two-variants.ScanTailor")
 
 
-def test_surface_names_the_external_gap_and_imports_only_through_the_worker(
+def test_parent_sequences_preview_then_commit_through_a_stand_in_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The parent's plumbing only: `run_confined` is a stand-in here.
+
+    The real worker's document contents are proven by
+    `test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point`;
+    this test would stay green if `scantailor_worker.main` regressed, and its
+    name may not claim otherwise.
+    """
     project = tmp_path / "scan.ScanTailor"
     output = tmp_path / "geometry"
     project.write_bytes(PROJECT)
@@ -531,9 +557,9 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
 def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
     readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
     words = [line for line in readme.splitlines() if line.startswith("| `")]
-    assert "## The eleven words" in readme
-    assert "Nine things this tool can do" in readme
-    assert len(words) == 11
+    assert "## The fourteen words" in readme
+    assert "Twelve things this tool can do" in readme
+    assert len(words) == 14
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):

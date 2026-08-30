@@ -63,7 +63,7 @@ def ingest_in_custody(
         "expected_output_device": None,
         "expected_output_inode": None,
     }
-    preview = _call_worker(request, "preview", writable=None, workspace=workspace)
+    preview = _call_worker(request, "preview", writable=None)
     preview_summary = _summary(preview, ErrorCode.INGEST_PREVIEW_UNRESOLVED)
     preview_output_identity = _output_identity(preview, ErrorCode.INGEST_PREVIEW_UNRESOLVED)
     _print_preview(preview_summary, printer)
@@ -82,9 +82,7 @@ def ingest_in_custody(
     # The preview's gate check has already rejected a symlinked output path.
     # Resolve only for the kernel allowance, and make the worker recheck the
     # original spelling in case it was replaced between preview and commit.
-    committed = _call_worker(
-        commit_request, "commit", writable=output_path.resolve(), workspace=workspace
-    )
+    committed = _call_worker(commit_request, "commit", writable=output_path.resolve())
     summary = _summary(committed, ErrorCode.INGEST_UNRESOLVED)
     if _output_identity(committed, ErrorCode.INGEST_UNRESOLVED) != preview_output_identity:
         raise OperatorError(
@@ -110,7 +108,7 @@ def _absolute_path(path: Path, workspace: Path) -> Path:
 
 
 def _call_worker(
-    request: dict[str, Any], operation: str, *, writable: Path | None, workspace: Path
+    request: dict[str, Any], operation: str, *, writable: Path | None
 ) -> dict[str, Any]:
     # Which stage failed decides what the operator is told about their output
     # folder, and the two facts are not the same. The commit child may have
@@ -129,7 +127,10 @@ def _call_worker(
     # acts on arrives absolute in the JSON request, the import root is pinned
     # by `python_module_command` to the checkout that loaded this module, and
     # the cwd stays that same pinned root (the backup worker's precedent) so
-    # no caller-nominated tree is in play at all.
+    # no caller-nominated tree is in play at all. This function therefore takes
+    # no workspace at all: it used to accept one and never read it, which left
+    # the next reader a parameter that looks like the authority this comment
+    # spends six lines denying.
     worker_root = Path(__file__).resolve().parents[2]
     command = python_module_command("operations.operator.ingest_worker")
     payload = json.dumps({"operation": operation, **request}, sort_keys=True)

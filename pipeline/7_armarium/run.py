@@ -816,7 +816,18 @@ def pages_marked_out(context, manifest_cache: dict[str, dict]) -> dict[str, list
 
 
 def claimed_bounds_by_page(context, manifest_cache: dict[str, dict]) -> dict[int, list[dict]]:
-    """Verified capture rectangles are the only geometry that can release a finding."""
+    """Verified capture rectangles are the only geometry that can release a finding.
+
+    This walks the Designator regions a second time and verifies each crop
+    again, after `pages_marked_out` has already verified the same ones. The
+    duplicate decode is deliberate, not an oversight: the rectangles that
+    *release* an edge hold are verified by the function that uses them, so a
+    release can never rest on a verification performed somewhere else for
+    another purpose. `test_unit14b_edge_release.py` pins that independence
+    directly. Sharing one cached verification between the two walks would keep
+    those tests green while removing the property in production, which is the
+    shape of regression this stage exists to refuse.
+    """
     claimed: dict[int, list[dict]] = {}
     for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
         if entry["kind"] != "region":

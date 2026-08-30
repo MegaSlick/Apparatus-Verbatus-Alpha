@@ -111,4 +111,9 @@ def test_exclusive_write_publishes_only_after_the_payload_is_fsynced(
     monkeypatch.setattr(durable.os, "fsync", observe_before_sync)
     durable.exclusive_write(target, b'{"grant":"one"}')
 
+    # Without this the test passes when nothing is fsynced at all: the callback
+    # would never run, the ordering assertion inside it would never be reached,
+    # and only the read-back below would be checked -- green while every grant
+    # record became a file a power loss can take.
+    assert fsync_calls >= 1, "the payload was published without ever being fsynced"
     assert target.read_bytes() == b'{"grant":"one"}'

@@ -1,23 +1,5 @@
 # Archetypus — handoff
 
-# Stage-completion seal
-
-Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
-this pass's disk inventory and blob contents, and binds the exact decode-environment
-bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
-held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
-successor correctly refuses the missing boundary. Every difference in decoders,
-platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
-field or decoder name. A valid difference is report-only and never refuses;
-Unit 17 owns any fatal policy.
-
-Seals are compared as the SET the stored inventory names, on both sides of the
-boundary: the producer refuses to re-seal, and the successor refuses to read,
-when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
-so removing the latest leaves a prefix that still looks whole — and the earlier
-statement would then answer for a boundary it never witnessed.
 The Archetypus is the first and only current stage that calls one machine reading
 established. It is not a correction, a witness consensus, or a truth claim. It writes
 a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an act whose
@@ -29,6 +11,26 @@ reconciles. `EXIT_HELD` when any act's current review is `recovery-requested`: t
 outcome is unresolved rather than terminal, so the acts already established are real
 but the stage's work is not finished, and the held act ids are named on stderr. A
 refusal anywhere in establishment or index reconciliation is fatal, not a held act.
+
+## Stage-completion seal
+
+Before this producer's final manifest it publishes one `decode-environment` and
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+held after publishing stage evidence seals it (holds remain in its census); a
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
+successor correctly refuses the missing boundary. Every difference in decoders,
+platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
+field or decoder name. A valid difference is report-only and never refuses;
+Unit 17 owns any fatal policy.
+
+Seals are compared as the SET the stored inventory names, on both sides of the
+boundary: the producer refuses to re-seal, and the successor refuses to read,
+when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
+so removing the latest leaves a prefix that still looks whole — and the earlier
+statement would then answer for a boundary it never witnessed.
 
 ## Input boundary
 

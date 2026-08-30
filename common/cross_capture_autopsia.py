@@ -80,15 +80,32 @@ def _ref_list(value: Any, what: str) -> list[dict[str, str]]:
 
 
 def _reject_preference(value: Any) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            lowered = str(key).lower()
-            if any(fragment in lowered for fragment in _FORBIDDEN):
-                raise SchemaRefusal(f"cross-capture autopsia: forbidden preference field {key!r}")
-            _reject_preference(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_preference(item)
+    """Refuse a nested capture-preference claim anywhere in an untrusted payload.
+
+    Iterative for the same reason `corpus_register.refuse_capture_preference`
+    is, and this was the one preference screen still recursing. Both guards run
+    ahead of any shape check -- `build_autopsia` screens `views` before `_view`
+    closes it, and `assemble_reader_input` screens a reader dossier whose only
+    prior check is that it is a dict -- so the value each walks is arbitrary
+    caller input. A recursive walk over it exhausted the interpreter stack at a
+    few thousand levels and raised `RecursionError`, which is a crash and not a
+    named refusal; the payload that reached the guard then left no record of
+    what was wrong with it. Depth is the walk's own list here, so a deep payload
+    is screened to the bottom exactly like a shallow one.
+    """
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key, item in current.items():
+                lowered = str(key).lower()
+                if any(fragment in lowered for fragment in _FORBIDDEN):
+                    raise SchemaRefusal(
+                        f"cross-capture autopsia: forbidden preference field {key!r}"
+                    )
+                pending.append(item)
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def _view(row: Any) -> dict[str, Any]:
@@ -227,7 +244,13 @@ def build_autopsia_from_run(
     required = set(record["required_capture_sha256s"])
     missing = required - ledger
     if missing:
-        raise SchemaRefusal("cluster-member-absent: required capture is absent from this run")
+        # Name them. The operator's next act is to fetch a photograph, and a
+        # logical act spanning several captures gives no clue which one unless
+        # the refusal says. Sorted so the sentence is the same on every run.
+        raise SchemaRefusal(
+            "cluster-member-absent: required captures are absent from this run: "
+            + ", ".join(sorted(missing))
+        )
     return record
 
 

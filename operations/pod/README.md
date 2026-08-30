@@ -126,7 +126,10 @@ check.
   recovery record, while an out-of-bounds value refuses rather than being clamped. It
   also enforces an observed `account_balance_floor_usd`. Its source is an explicit
   provider seam; an unavailable source refuses paid actions, and the refusal names why
-  the balance could not be read. Observations more than 60 seconds old or dated in the
+  the balance could not be read. The RunPod adapter bounds that read: a source that
+  blocks rather than fails becomes a named timeout refusal, because one of these gates
+  runs after `create` has returned a billing pod and before anything is armed to stop
+  it, and a stall there would record no assessment and attempt no close. Observations more than 60 seconds old or dated in the
   future are unusable, never cached authority. The floor is a reserve that must survive
   the run, so it is tested against the observed balance net of this action's estimated
   cost to its hard deadline and every active or pending liability in the same durable
@@ -147,7 +150,7 @@ check.
   `operations/notify/`; delivery never alters a launch decision, and whether the phone
   got it is recorded either way. A delivered warning is suppressed for fifteen minutes
   while readings remain low; two consecutive safe readings establish recovery, so a new
-  crossing pages immediately, while one-reading flaps do not re-arm it.
+  crossing sends a page immediately, while one-reading flaps do not re-arm it.
   `operations/pod/cli.py` sends nothing unless `--notify` is passed. The commented
   `$50.00` template value remains unverified and must be checked against RunPod before a
   live run. All paid actions for one provider account must use the same lease root; the

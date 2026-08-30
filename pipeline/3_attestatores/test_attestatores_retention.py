@@ -1450,8 +1450,11 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
     region["self_hash"] = self_hash(region)
     tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(region))
     # A sibling Designator artifact retained a reference to the region record's
-    # pre-repoint bytes, so the seal rebind alone leaves the Designator's own
-    # boundary self-contradictory and the Attestatores stops there.
+    # pre-repoint bytes, so a seal rebind alone would leave the Designator's own
+    # boundary self-contradictory and the Attestatores would stop at that instead
+    # of reaching the per-act degradation this test measures. The boundary is
+    # rewitnessed, retained input references included, so the pass runs on and
+    # degrades the one refused act -- which is what the assertions below read.
     rewitness_boundary(tree, DESIGNATOR)
 
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
@@ -2152,6 +2155,11 @@ def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monk
     with pytest.raises(attestatores.FatalAccounting, match="closing partition"):
         attestatores.main()
 
+    # The premise, asserted rather than assumed. Without it a regression that
+    # died before writing a single Testimonium would satisfy the seal assertion
+    # below, and the test could not tell a seal correctly withheld after a full
+    # pass from a pass that never happened.
+    assert len(_testimonia(tree)) == 6
     assert not any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
     )

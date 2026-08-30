@@ -94,6 +94,7 @@ from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import read_register_file  # noqa: E402
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
+from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -101,6 +102,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    DEFAULT_TRIAGE_MODES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
@@ -563,7 +565,7 @@ def decide(
             "render_contract": {
                 **contract,
                 "derivative_page": {
-                    "kind": "sealed-derivative-page-v1",
+                    "kind": SEALED_DERIVATIVE_PAGE_KIND,
                     "parent_frame_sha256": whole_digest,
                     "parent_frame_page_index": frame_index,
                     "triage_manifest_row": source.triage_row,
@@ -803,6 +805,16 @@ def expand_sources(
                     if detected == "pdf":
                         # Streamed PDFs are not loaded into `data`, but their
                         # inspected identity must exist before membership seals.
+                        # This is the first of the Door's two streams over a real
+                        # PDF. It binds membership to the bytes actually inspected,
+                        # while `run.json` does not exist yet; `process_sources`
+                        # streams the file again at admission to prove those bytes
+                        # did not move after the seal. Neither pass can be dropped
+                        # in favour of the other, and each has its own test:
+                        # `test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie`
+                        # for this one, and
+                        # `test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed`
+                        # for the second.
                         computed, _ = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
@@ -1043,8 +1055,14 @@ def process_sources(
     """Admit or refuse every declared source. Returns the count admitted.
 
     `read_bytes` is called once per distinct raster path within this call. A real
-    PDF is different: its digest is streamed once, then PDFium holds one native
-    descriptor-anchored document handle while every fanned page renders from it.
+    PDF is different: its digest is streamed once *here*, then PDFium holds one
+    native descriptor-anchored document handle while every fanned page renders
+    from it. Once here, not once in the Door: `expand_sources` already streamed
+    the same file to bind its shard membership, before `run.json` existed. That
+    is deliberate rather than redundant -- this second stream is the only thing
+    that can see bytes replaced after the seal, and it is what the
+    `computed_sha256` comparison below refuses on. A reader who takes the
+    earlier digest as sufficient and removes this one deletes that refusal.
     This lets a reel be larger than available Python memory without losing its
     page ordinals or filename ledger link, and prevents a pathname replacement
     from separating the digest from the pixels that are sealed.
@@ -1739,13 +1757,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="sealed triage-producer-recipe.v1 for the pre-door producer run",
     )
     args = parser.parse_args()
-    existing_tree = RunTree(Path(args.run_root), args.run_id)
-    if existing_tree.resolve("run.json").exists():
-        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
+        # The run-level cap is applied inside `real_submission`, once the run root
+        # has passed the storage gate. Reading a run authority here would open and
+        # self-hash a file in a directory the data-handling policy never approved
+        # — the exact read the gate exists to stop — and an operator who mistyped
+        # the run root onto an unapproved volume holding a run.json would be told
+        # the run was halted rather than that the root is not approved.
         return real_submission(args, registry)
+    # The fixture path is declared synthetic input and is not gated, so its cap
+    # check has no earlier gate to stand behind.
+    _refuse_halted_run_root(Path(args.run_root), args)
     if args.submission_manifest is not None:
         raise ContractError(
             "a submission filename ledger is meaningful only with a real submission folder; "
@@ -1758,6 +1782,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     ):
         raise ContractError("triage geometry is meaningful only with a real submission folder")
     return fixture_submission(args, registry)
+
+
+def _refuse_halted_run_root(run_root: Path, args) -> None:
+    """Apply the sealed run-level hard-failure cap to an existing run tree.
+
+    Called on the fixture path before anything is written, and on the real path
+    only after `run_root` has passed the approved-storage gate — reading a run
+    authority is a read, and a read outside an approved location is what the gate
+    is for.
+    """
+    existing_tree = RunTree(run_root, args.run_id)
+    if existing_tree.resolve("run.json").exists():
+        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
 
 
 def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
@@ -1909,6 +1946,9 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The run-level cap, now that the root it reads is a location the policy
+    # approved, and against the resolved path rather than the typed one.
+    _refuse_halted_run_root(run_root, args)
     for location, label in (
         (run_root, "run root"),
         (manifest_path, "submission filename ledger"),
@@ -2262,7 +2302,12 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
-    triage_modes_config_path = ROOT / "config" / "triage_modes.toml"
+    # The shared constant, not a second spelling of it: `require_triage_modes` reads
+    # this same file at its point of use through the default below, and a moved path
+    # would otherwise refuse every real submission carrying triage geometry with
+    # "changed between run binding" — pointing the operator at a rewrite that never
+    # happened.
+    triage_modes_config_path = Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     try:
         triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
     except OSError as error:

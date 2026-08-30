@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -13,6 +14,7 @@ from common.runtree.store import RunTree
 
 from .advance import (
     MAX_ADVANCE_REQUEST_CHARACTERS,
+    WORKER_REPORT_FAILED_EXIT,
     receipt_directory_identity,
     record_advance,
     require_directory_identity,
@@ -69,7 +71,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ContractError, OSError, ValueError, RecursionError) as error:
         print(str(error), file=sys.stderr)
         return 2
-    print(json.dumps(reference.to_record(), sort_keys=True))
+    # The record above is on disk and permanent. Reporting it can still fail --
+    # a closed or broken stdout pipe raises `OSError` -- and an uncaught one
+    # here would exit nonzero with a traceback, which the parent reads as "the
+    # advance was refused" about a boundary that was in fact advanced. The
+    # write gets its own status so the parent can say which of the two happened.
+    try:
+        sys.stdout.write(json.dumps(reference.to_record(), sort_keys=True) + "\n")
+        sys.stdout.flush()
+    except OSError as error:
+        # The buffer still holds the unsent report, and the interpreter's own
+        # flush at shutdown would raise again and replace this status with 120.
+        # Pointing the descriptor at the null device discards that second
+        # attempt without discarding what this process is trying to say.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:  # pragma: no cover - the null device is not optional
+            pass
+        print(
+            f"the advance record was written and could not be reported: {error}",
+            file=sys.stderr,
+        )
+        return WORKER_REPORT_FAILED_EXIT
     return 0
 
 
