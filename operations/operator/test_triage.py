@@ -1243,6 +1243,117 @@ def test_decision_arguments_without_a_decision_word_refuse_and_write_nothing(
     assert not mode_record.exists()
 
 
+def test_a_decline_carrying_acceptance_arguments_records_nothing_at_all(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The wrong decision word with the right companions is its own refusal.
+
+    `--draft`, `--confirmation-out` and `--preview-sha256` belong to `--accept`.
+    Supplied alongside `--decline` they passed every guard, were ignored in
+    silence, and the decline was journalled with exit 0. Because a decided row is
+    never rewritten, the acceptance the operator was plainly assembling -- they
+    had produced a draft and its preview digest -- was then refused for that item
+    with "decision-already-recorded", permanently. The console had already told
+    them the command succeeded.
+
+    The real batch matters here: the refusal has to arrive before the queue is
+    even loadable, so nothing durable can be blamed on the inputs being missing.
+    """
+    from operations.operator import cli
+
+    batch = _Batch(tmp_path)
+    files = {name: tmp_path / f"{name}.json" for name in ("manifest", "evidence", "proxies")}
+    files["manifest"].write_bytes(canonical_bytes(batch.produced.manifest))
+    files["evidence"].write_bytes(canonical_bytes({"records": batch.evidence}))
+    files["proxies"].write_bytes(canonical_bytes(batch.paths))
+    draft = batch.draft()
+    draft_path = tmp_path / "draft.json"
+    draft_path.write_bytes(canonical_bytes(draft))
+    mode_record = tmp_path / "mode.json"
+    state_path = tmp_path / "state.json"
+    confirmation = tmp_path / "confirmation.json"
+
+    result = cli.main(
+        [
+            "--workspace",
+            str(MODES.parents[1]),
+            "--state-dir",
+            str(tmp_path / "receipts"),
+            "triage",
+            "--manifest",
+            str(files["manifest"]),
+            "--evidence",
+            str(files["evidence"]),
+            "--proxy-paths",
+            str(files["proxies"]),
+            "--mode",
+            "semi",
+            "--batch-id",
+            "batch-1",
+            "--operator",
+            "Tyrel",
+            "--mode-record",
+            str(mode_record),
+            "--queue-state",
+            str(state_path),
+            "--decline",
+            batch.item,
+            "--draft",
+            str(draft_path),
+            "--confirmation-out",
+            str(confirmation),
+            "--preview-sha256",
+            digest_of(draft),
+        ]
+    )
+
+    assert result == 2
+    assert "decline-with-acceptance-arguments" in capsys.readouterr().out
+    # Nothing durable: no mode claim, no journalled decline, no confirmation.
+    assert not mode_record.exists()
+    assert not state_path.exists()
+    assert not confirmation.exists()
+
+    # And the acceptance the operator was assembling is still available.
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(MODES.parents[1]),
+                "--state-dir",
+                str(tmp_path / "receipts"),
+                "triage",
+                "--manifest",
+                str(files["manifest"]),
+                "--evidence",
+                str(files["evidence"]),
+                "--proxy-paths",
+                str(files["proxies"]),
+                "--mode",
+                "semi",
+                "--batch-id",
+                "batch-1",
+                "--operator",
+                "Tyrel",
+                "--mode-record",
+                str(mode_record),
+                "--queue-state",
+                str(state_path),
+                "--accept",
+                batch.item,
+                "--draft",
+                str(draft_path),
+                "--confirmation-out",
+                str(confirmation),
+                "--preview-sha256",
+                digest_of(draft),
+            ]
+        )
+        == 0
+    )
+    assert confirmation.read_bytes() == canonical_bytes(draft)
+
+
 def test_a_queue_state_alone_stays_a_legitimate_display_run(tmp_path: Path):
     """The guard above must not catch reading the journal beside the queue.
 

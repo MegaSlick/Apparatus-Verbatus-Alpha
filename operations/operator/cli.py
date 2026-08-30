@@ -586,6 +586,23 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
             raise triage.TriageRefusal(
                 "triage refusal queue-state-required: decline needs --queue-state"
             )
+        # A decline carrying acceptance arguments. The guard below catches the
+        # companions supplied with *no* decision word; this catches them supplied
+        # with the *wrong* one. --draft, --confirmation-out and --preview-sha256
+        # belong to --accept alone, and the decline path ignored all three in
+        # silence while journalling the decline and exiting 0. A decided row is
+        # never rewritten, so the acceptance the operator was plainly assembling
+        # -- they had produced a draft and its preview digest -- became
+        # permanently unreachable for that item, and the console had called it
+        # success.
+        if args.decline is not None and any(
+            (args.draft, args.confirmation_out, args.preview_sha256)
+        ):
+            raise triage.TriageRefusal(
+                "triage refusal decline-with-acceptance-arguments: --draft, "
+                "--confirmation-out and --preview-sha256 belong to --accept; a decline "
+                "would ignore them and decide this row for good"
+            )
         # The reverse direction. The checks above refuse a decision missing its
         # companions; without this one, the companions supplied *without* a
         # decision word printed the queue and exited 0, so an operator who meant
