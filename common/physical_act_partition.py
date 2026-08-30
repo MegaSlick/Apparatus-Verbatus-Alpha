@@ -464,7 +464,6 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
     _path(seal["relative_path"], "proposal seal")
-    _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(
         not isinstance(payload[name], int) or isinstance(payload[name], bool) or payload[name] < 0
