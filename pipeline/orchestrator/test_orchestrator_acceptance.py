@@ -884,7 +884,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # re-hashed, although the same envelope already bound the Churro capture that
 # way; the Recensor applies its existing capture rule to them too. Reference
 # fields only -- each page record that names retained responses gains them as
-# inputs. No blob, no artifact, no exit-code change: counts hold at 90/0 and
+# inputs. No new blob or artifact file, but the EXISTING page-record artifacts'
+# bytes change (their inputs list grows), which is exactly why both digests
+# below moved. No exit-code change: counts hold at 90/0 and
 # 113/3, and both digests below reproduced twice in independent temporary roots
 # through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers at canonical run id "r".
