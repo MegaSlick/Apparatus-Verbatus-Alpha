@@ -874,8 +874,11 @@ def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
 def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path) -> None:
     """One confirmation must buy one pod even when two callers race for it.
 
-    Validation and consumption must share a lock; a sequential test cannot prove
-    that boundary. The barrier forces both callers into the claim window.
+    The spend gate serializes whole creates, so the loser is refused before it
+    ever reaches the claim window -- `observed == [False]` below proves that
+    serialization, not the claim window's own lock. The window's atomicity has
+    its own direct race in
+    `test_validation_and_consumption_share_one_lock_in_the_claim_window`.
     """
 
     clock = Clock()
@@ -1170,6 +1173,72 @@ def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
     assert sum(1 for verb, _ in provider.calls if verb == "create") == creates
     # Lease refusal precedes challenge consumption and must render phraseless.
     assert result.preview is not None and result.preview.challenge is None
+
+
+def test_validation_and_consumption_share_one_lock_in_the_claim_window(tmp_path: Path) -> None:
+    """Two callers must never stand inside the claim window together.
+
+    `create` cannot reach this race any more -- the spend gate serializes whole
+    creates and the open-lease refusal turns the loser back earlier -- so the
+    claim window is raced directly. The barrier can only be satisfied by both
+    callers being inside validated-but-unconsumed at once, which is exactly the
+    state `_challenge_lock` exists to make impossible: a satisfied barrier is
+    the failure, and one spent challenge plus one clean miss is the pass.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+    preview = pod_runtime.preview_create(create_request).preview
+    assert preview is not None and preview.challenge is not None
+
+    real = launch_module.require_confirmation
+    entered = threading.Barrier(2)
+    overlap: list[bool] = []
+
+    def observing_confirmation(typed, expected):
+        try:
+            entered.wait(timeout=2.0)
+        except threading.BrokenBarrierError:
+            overlap.append(False)
+        else:
+            overlap.append(True)
+        return real(typed, expected)
+
+    launch_module.require_confirmation = observing_confirmation
+    claims: list[object] = []
+    record = threading.Lock()
+
+    def attempt() -> None:
+        try:
+            outcome = pod_runtime._claim_challenge(
+                "create",
+                create_request.name,
+                create_request.hard_deadline,
+                create_request.reviewed_digest(),
+                preview.challenge or "",
+                preview.confirmation_phrase,
+                preview.confirmation_phrase,
+            )
+        except Exception as error:  # a KeyError here is the double-spend itself
+            outcome = error
+        with record:
+            claims.append(outcome)
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        launch_module.require_confirmation = real
+
+    assert True not in overlap, "both callers were inside the claim window together"
+    assert sorted(claims, key=str) == [False, True], (
+        f"one challenge must be spent exactly once and the miss must be clean: {claims}"
+    )
 
 
 def test_an_unreadable_lease_never_reads_as_an_empty_lease_root(tmp_path: Path) -> None:

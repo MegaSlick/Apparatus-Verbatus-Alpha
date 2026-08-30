@@ -491,12 +491,17 @@ def test_a_launch_that_lost_its_provider_response_refuses_the_next_one(
     assert len(provider.pods) == 1
 
     # A new surface models the process boundary that discards in-memory state.
+    # Each seam is asserted on its own: one raises block covering both calls
+    # proved only the first, and a launch-time regression would have hidden
+    # behind the preparation refusal.
     restarted = _surface(tmp_path, provider=provider)
     with pytest.raises(OperatorError) as refused:
-        second = restarted.prepare_launch(_request(name="second-attempt"), policy_path=spend)
-        restarted.launch(second, second.confirmation_phrase)
-
+        restarted.prepare_launch(_request(name="second-attempt"), policy_path=spend)
     assert refused.value.code is ErrorCode.LAUNCH_UNRESOLVED
+
+    with pytest.raises(OperatorError) as launch_refused:
+        restarted.launch(first, first.confirmation_phrase)
+    assert launch_refused.value.code is ErrorCode.LAUNCH_UNRESOLVED
     assert "no verified close is recorded" in (refused.value.detail or "")
     assert len(provider.pods) == 1, "a second pod was created on top of an unresolved one"
     assert not any(verb == "create" and name == "second-attempt" for verb, name in provider.calls)

@@ -98,8 +98,17 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
     }
     assert all(row["sealed"] and len(row["seal_digest"]) == 64 for row in projected.boundaries)
     assert all("census" in row for row in projected.boundaries)
-    assert len(projected.stage_records) > len(projected.boundaries)
     tree = RunTree(run_root, run_id)
+    # Coverage, not cardinality: a walk that silently skipped a stage or
+    # dropped an artifact is the failure this surface exists to prevent, and
+    # "more rows than boundaries" would not catch it.
+    expected = {
+        (stage, row["artifact_id"])
+        for stage in review.STAGES
+        for row in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+    }
+    projected_ids = {(row["stage"], row["artifact_id"]) for row in projected.stage_records}
+    assert expected == projected_ids, "the review walk dropped an artifact the manifest lists"
     assert all(
         row["stage"] == row["record"]["stage"]
         and row["artifact_id"] == row["record"]["artifact_id"]
@@ -172,7 +181,8 @@ def test_review_child_receives_no_write_right_even_when_the_parent_reads_every_r
     cli._review_in_custody(run_root, run_id, ROOT)
 
     assert seen["writable"] is None
-    assert '"stage_records"' in str(seen["input_text"])
+    delivered = json.loads(str(seen["input_text"]))["stage_records"]
+    assert delivered, "the console child received an empty stage-record list"
 
 
 def test_unsealed_boundary_is_refused_before_an_advance_record_is_written(tmp_path: Path):

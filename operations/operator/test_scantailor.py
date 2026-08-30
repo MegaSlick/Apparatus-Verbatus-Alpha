@@ -29,7 +29,10 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
     assert len(parsed["geometry"][0]["outline"]) == 5
     assert parsed["geometry"][0]["outline"][0] == parsed["geometry"][0]["outline"][-1]
     assert parsed["geometry"][0]["cutters"][0]["p1"] == {"x": "600", "y": "0"}
-    assert "winner" not in json.dumps(parsed)
+    # Every saved geometry survives; nothing is reduced to a preferred one.
+    # (A string search for a label the parser never writes proved nothing.)
+    assert len(parsed["geometry"]) == 1
+    assert parsed["source_image_count"] == 1
 
 
 @pytest.mark.parametrize("bad", (b"<project", PROJECT.replace(b'<point x="0" y="800"/>', b"")))
