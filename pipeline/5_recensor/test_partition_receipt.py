@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.models import AbsentChair
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS
 from common.contracts.stages import ATTESTATORES, RECENSOR
@@ -305,6 +306,33 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
     monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)
     with pytest.raises(FatalAccounting, match="configured boundary"):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+def test_recensor_names_an_absent_chair_that_still_carries_a_native_capture(tmp_path, monkeypatch):
+    """The sibling above reads `witness_adapter` off whatever `resolve` returns.
+
+    `ChairRegistry.resolve` answers with an identity *or* an `AbsentChair`, and
+    an absence carries no adapter. A page record naming a chair the roster marks
+    absent therefore reached the attribute directly and stopped this stage with
+    an `AttributeError`: a traceback where the contract owes a refusal, naming
+    neither the act nor the chair the operator has to go and look at.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "absent-capture", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "absent-capture"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.registry.resolve
+
+    def absent_third_chair(chair):
+        if chair == "attestator_3":
+            return AbsentChair(role=chair, reason="withdrawn for this run")
+        return original(chair)
+
+    monkeypatch.setattr(context.registry, "resolve", absent_third_chair)
+    with pytest.raises(FatalAccounting, match="roster records that chair as absent") as caught:
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+    assert "attestator_3" in str(caught.value)
 
 
 def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(

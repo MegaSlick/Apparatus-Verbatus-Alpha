@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
@@ -394,7 +395,20 @@ def act_attachment_facts(
                         f"act {act_id} page witness {chair!r} does not bind its retained raw "
                         "response as a verified input"
                     )
-                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                # `resolve` returns an identity *or* an absence, and `AbsentChair`
+                # carries no `witness_adapter`. Read straight through, a page
+                # record naming a chair the roster marks absent stopped this
+                # stage with an AttributeError -- a traceback where its contract
+                # owes a named refusal, and one that says nothing about which
+                # act or chair was inconsistent.
+                resolved = context.registry.resolve(chair)
+                if not isinstance(resolved, ChairIdentity):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} carries a native capture while the "
+                        "roster records that chair as absent; an absent chair has no adapter "
+                        "boundary to attribute it to; restore the chair or the retained record"
+                    )
+                if native_capture["adapter"] != resolved.witness_adapter:
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} attributes its native capture to "
                         "an adapter other than that chair's configured boundary"
