@@ -468,9 +468,19 @@ def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -
 
     created = [name for verb, name in provider.calls if verb == "create"]
     assert len(created) == 1, f"two windows both reached a paid create: {created}"
-    assert sorted(str(outcome) for outcome in outcomes) == sorted(
-        (str(LaunchState.CREATED_GUARDED), str(ErrorCode.LAUNCH_ALREADY_IN_FLIGHT))
-    )
+    # Either refusal preserves the one-pod guarantee: the loser sees the held
+    # claim (LAUNCH_ALREADY_IN_FLIGHT), or, descheduled past the winner's
+    # release, the active-launch receipt (ACTIVE_POD_REQUIRES_CLOSE). Pinning
+    # only the first made scheduling luck look like a defect.
+    assert str(LaunchState.CREATED_GUARDED) in {str(outcome) for outcome in outcomes}
+    refusals = [
+        str(outcome) for outcome in outcomes if str(outcome) != str(LaunchState.CREATED_GUARDED)
+    ]
+    assert len(refusals) == 1, outcomes
+    assert refusals[0] in {
+        str(ErrorCode.LAUNCH_ALREADY_IN_FLIGHT),
+        str(ErrorCode.ACTIVE_POD_REQUIRES_CLOSE),
+    }, outcomes
     recorded = first.receipts.read(first._active_launch_receipt())["payload"]
     assert recorded["pod"]["pod_id"] in provider.pods
     assert recorded["request"]["name"] == created[0]
@@ -1341,6 +1351,50 @@ def test_provider_preview_faults_are_named_and_a_retry_is_safe(
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
     prepared = surface.prepare_launch(_request(), policy_path=spend)
     assert prepared.result.preview is not None
+
+
+def test_a_planted_link_at_the_paid_launch_claim_is_refused_not_followed(
+    tmp_path: Path,
+) -> None:
+    """The claim deciding sole-launcher status is not redirectable via a link."""
+
+    surface = _surface(tmp_path)
+    surface.state_root.mkdir(parents=True, exist_ok=True)
+    decoy = tmp_path / "decoy-lock"
+    decoy.write_bytes(b"")
+    (surface.state_root / ".paid-launch.lock").symlink_to(decoy)
+
+    with pytest.raises(OperatorError) as refused:
+        with surface._exclusive_paid_launch():
+            raise AssertionError("the claim was taken through a planted link")
+    assert refused.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "could not be opened" in (refused.value.detail or "")
+
+
+def test_an_unlock_failure_cannot_replace_the_result_the_claim_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The paid launch's own outcome survives a failing LOCK_UN.
+
+    Closing the handle releases the POSIX lock anyway; an OSError out of the
+    finally would have replaced the whole launch result with "could not
+    classify" while a fixture pod and its receipt already existed.
+    """
+
+    surface = _surface(tmp_path)
+    real_flock = surface_module.fcntl.flock
+
+    def failing_unlock(descriptor, operation):
+        if operation == surface_module.fcntl.LOCK_UN:
+            raise OSError("unlock refused")
+        return real_flock(descriptor, operation)
+
+    monkeypatch.setattr(surface_module.fcntl, "flock", failing_unlock)
+
+    outcome = []
+    with surface._exclusive_paid_launch():
+        outcome.append("launched")
+    assert outcome == ["launched"]
 
 
 def test_timeout_word_cannot_make_an_unleased_launch_look_retryable(tmp_path: Path) -> None:

@@ -1192,7 +1192,12 @@ class PodRuntime:
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    # The with-block close releases the POSIX lock; an unlock
+                    # failure must not replace the alert path's own outcome.
+                    pass
 
     def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
         """Read only a closed state shape; corrupt evidence reverts to sending."""

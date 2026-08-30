@@ -1606,12 +1606,16 @@ class OperatorSurface:
         self.state_root.mkdir(parents=True, exist_ok=True)
         path = self.state_root / ".paid-launch.lock"
         try:
-            handle = path.open("a+b")
+            # O_NOFOLLOW like every other evidence reader here: the claim that
+            # decides whether two windows may both send a paid create must not
+            # be redirectable through a planted link.
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError as error:
             raise OperatorError(
                 ErrorCode.SAFETY_CHECK_FAILED,
                 detail=f"the paid-launch claim {path} could not be opened: {error}",
             ) from error
+        handle = os.fdopen(descriptor, "r+b")
         with handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1637,7 +1641,13 @@ class OperatorSurface:
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    # Closing the handle releases the POSIX lock. An unlock
+                    # failure must not replace the paid-launch result this
+                    # block was protecting.
+                    pass
 
     def _prior_run_state(self, run_id: str) -> str | None:
         """Use the explicitly named prior run receipt, never a search for a convenient one."""

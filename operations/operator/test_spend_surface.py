@@ -228,12 +228,23 @@ def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None
     project_imports = {
         (node.module, alias.name)
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("operations.")
+        # A relative import (level > 0) is a project import whose spelling
+        # carries no "operations." prefix; it must enter this pin, not slip
+        # past the absolute-name filter.
+        if isinstance(node, ast.ImportFrom)
+        and (node.level > 0 or (node.module or "").startswith("operations."))
         for alias in node.names
     }
     assert project_imports == {
         ("operations.pod.spend", "MAX_BALANCE_OBSERVATION_AGE_SECONDS"),
         ("operations.pod.spend", "load_spend_policy"),
+        # The operator package's own read-only pieces, spelled relatively.
+        ("errors", "ErrorCode"),
+        ("errors", "OperatorError"),
+        ("errors", "strip_control_bytes"),
+        ("records", "ReceiptStore"),
+        ("records", "RecordError"),
+        ("records", "sha256_file"),
     }
     imported = {
         alias.name
