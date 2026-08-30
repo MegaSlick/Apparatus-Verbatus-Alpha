@@ -76,6 +76,7 @@ from common.native_witness import (  # noqa: E402
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented_page_binding,
+    verify_native_capture_blob,
 )
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -490,6 +491,16 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
     unpresented = payload.get("unpresented_regions")
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     if not attempted:
+        # Ahead of the image-evidence refusal, which names none of this: a
+        # stripped record whose retained response survives passes that rule and
+        # still holds the bytes the chair answered with.
+        if payload.get("raw_response_ref") is not None:
+            raise SchemaRefusal(
+                "a non-attempted Testimonium retains a provider response. The record would say "
+                "the chair was not served while naming the bytes it answered with, outside its "
+                "own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained reference"
+            )
         if (
             payload.get("regions") != []
             or presented != {}
@@ -594,7 +605,11 @@ def validate_page_testimonium_record(
 ) -> None:
     """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
     payload = record.get("payload")
-    validate_page_testimonium_payload(payload, testimonium_id=record.get("artifact_id"))
+    validate_page_testimonium_payload(
+        payload,
+        testimonium_id=record.get("artifact_id"),
+        read_bytes=context.tree.read_bytes,
+    )
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     presented = payload["presented"]
     if payload["regions"] != []:
@@ -604,6 +619,16 @@ def validate_page_testimonium_record(
             "digest-bound attachments"
         )
     if not attempted:
+        # Same order and same reason as the act-scoped seam above: the retained
+        # response is checked first because the image-evidence refusal below
+        # does not mention it, and a stripped record keeps it.
+        if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
+            raise SchemaRefusal(
+                "a non-attempted page Testimonium retains a provider response. The record would "
+                "say the chair was not served while naming the bytes it answered with, outside "
+                "its own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained capture"
+            )
         if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
             raise SchemaRefusal(
                 "a non-attempted page Testimonium carries image evidence. The record would say "
@@ -645,11 +670,27 @@ def validate_page_testimonium_record(
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
+        # Every retained response the record derived from, in the payload's own
+        # order: the partition's responses, then a native capture. Each is
+        # bound beside the presented pixels so an ordinary artifact read
+        # re-hashes it, rather than trusting a nested reference nobody opens.
+        retained = list(payload.get("raw_response_refs", []))
+        capture = payload.get("native_capture")
+        if capture is not None:
+            retained.append(capture["raw_response_ref"])
+        # Sorted the way the envelope stores inputs, exactly as the act-scoped
+        # seam above does. Comparing against the payload's own order passes only
+        # while the retained paths happen to sort after the presented image.
+        expected_inputs = sorted(
+            expected_inputs + retained,
+            key=lambda item: (item["relative_path"], item["sha256"]),
+        )
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
-                "a page Testimonium does not bind exactly its presented image. The consumer "
-                "cannot prove which immutable pixels produced the page report. Restore the one "
-                "digest-bound presentation input and remove unrelated inputs"
+                "a page Testimonium does not bind exactly its presented image"
+                + (" and every retained raw response" if retained else "")
+                + ". The consumer cannot prove which immutable pixels produced the page "
+                "report. Restore the digest-bound inputs and remove unrelated ones"
             )
     page_proposals = [
         region
@@ -1023,6 +1064,34 @@ def act_attachment_view(
             # the third mirror of the Recensor's (see `current_page_testimonia`).
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+            native_capture = page_payload.get("native_capture")
+            if native_capture is not None:
+                if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
+                    raise SchemaRefusal(
+                        f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
+                        "retained raw response as a verified input"
+                    )
+                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                    raise SchemaRefusal(
+                        f"act {act_id} page Testimonium for chair {chair!r} attributes its "
+                        "native capture to an adapter other than that chair's configured boundary"
+                    )
+                verify_native_capture_blob(context.tree, native_capture)
+            # The SEALED PROPOSAL geometry, never every current basis region.
+            # The writer computes this attachment from `proposed_regions`
+            # (`pipeline/3_attestatores/run.py`) and cannot do otherwise: a
+            # recovery region does not exist when a witness runs, and the reread
+            # rule forbids new testimony after a reading. Re-deriving here over
+            # a recovery crop as well therefore does not check the writer, it
+            # contradicts it -- and it contradicts it in exactly the case Unit
+            # 10C exists for. A page witness reporting ink outside every
+            # proposal routes to a fallback recrop; the expanded crop then
+            # overlaps the observation the proposal missed, and the reread
+            # refused the act's own attachment record as forged. That is
+            # retrospective coverage arriving through the attachment door
+            # (consult 4.1, wall 1: a recovery crop may not become coverage
+            # after the fact), and it turned a recoverable coverage finding
+            # into a hard stage failure.
             # A recovery crop postdates testimony and therefore cannot expand
             # the sealed-proposal denominator used to attach that testimony.
             page_bases = [
@@ -1031,9 +1100,14 @@ def act_attachment_view(
                 if basis["source_page_ordinal"] == attachment_page
                 and basis["region_id"] in proposal_region_ids
             ]
-            geometrically_attached = chair_testimonium[
-                "outcome"
-            ] in WITNESS_READING_OUTCOMES and any(
+            # Native page and compatibility act outcomes are independent; legacy
+            # page joins instead derive their outcome from the act attempts.
+            attachment_outcome = (
+                testimonium["outcome"]
+                if native_capture is not None
+                else chair_testimonium["outcome"]
+            )
+            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
                 reported_geometry_overlaps(
                     page_payload.get("observed", []), basis["transform"]["bounds"]
                 )

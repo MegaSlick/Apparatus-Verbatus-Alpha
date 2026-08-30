@@ -868,15 +868,12 @@ def expand_sources(
                     "returned because every member must remain visible together and no canonical "
                     "frame may be selected; submit every cluster member in the same shard and retry"
                 )
-    if triage_rows is not None:
-        unsubmitted_rows = set(triage_rows) - submitted_digests
-        if unsubmitted_rows:
-            raise ContractError(
-                "the triage decision manifest contains "
-                f"{len(unsubmitted_rows)} row(s) naming no submitted source frame; no source "
-                "expansion was returned because ignoring a decision would lose evidence; supply "
-                "a manifest whose rows exactly match the submitted shard and retry"
-            )
+    # Deliberately no refusal for rows naming frames outside this submission:
+    # the decision manifest is corpus-scoped and a submission is one shard of
+    # it (Unit 8's 1,000-page sharding), so rows for other shards are the
+    # ordinary case, not lost evidence. The evidence guarantee runs in the
+    # other direction twice: the producer proves exact coverage over what it
+    # was handed, and this expansion refuses any submitted frame without a row.
     return sources
 
 

@@ -65,13 +65,11 @@ MAX_PIXELS = 100_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
-def _refuse_past_pixel_bound(width: int, height: int) -> None:
-    """The one place `MAX_PIXELS` is enforced against a pair of dimensions —
-    four call sites (the native path, both Pillow-fallback decode paths, and
-    the CMYK/mode-conversion crop) needed the identical check and message."""
+def _refuse_past_pixel_bound(width: int, height: int, what: str = "page") -> None:
+    """Keep every decode and allocation under the door's sealed pixel ceiling."""
     if width * height > MAX_PIXELS:
         raise ValueError(
-            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
+            f"a {width}x{height} {what} is past this pipeline's {MAX_PIXELS}-pixel bound"
         )
 
 
@@ -425,6 +423,60 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
     if x < 0 or y < 0 or x + w > width or y + h > height:
         raise ValueError(f"crop bounds {bounds} fall outside a {width}x{height} page")
     return encode_grayscale_png_deterministic(w, h, [row[x : x + w] for row in rows[y : y + h]])
+
+
+# Pillow 12.3.0 silently forces NEAREST for modes `1` and `P`, so both must be
+# promoted before a transform may truthfully name LANCZOS. This behavior is
+# carried from `src/PIL/Image.py:2404-2405` under Pillow's MIT-CMU licence:
+# https://github.com/python-pillow/Pillow/blob/12.3.0/src/PIL/Image.py#L2404-L2405
+# https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE
+def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
+    """Resize an image with Pillow LANCZOS and deterministic PNG framing.
+
+    A sealed ``pillow-lanczos`` recipe must reproduce the operation that ran.
+    Bilevel and palette sources are therefore promoted before Pillow can replace
+    LANCZOS with nearest-neighbour; palette alpha is retained.
+
+    An identity-sized request runs no resampler and skips the mode promotion
+    with it, but it is still written out through this module's deterministic
+    framing rather than handed back untouched. For the only bytes the pipeline
+    ever passes here -- a crop this module encoded -- re-encoding reproduces the
+    input exactly, which is what the identity cases assert. Bytes framed by some
+    other encoder would come back re-framed, so this is not a passthrough and
+    must not be relied on as one.
+    """
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError("resize dimensions must be positive integers")
+    # The source bound protects decoding; the target needs its own check before
+    # Pillow allocates it. A sealed resize recipe is untrusted input on read-back,
+    # and positive integers alone otherwise admit an arbitrarily large image.
+    _refuse_past_pixel_bound(width, height, "resize target")
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height)
+            image.load()
+            source = image
+            resizing = (image.width, image.height) != (width, height)
+            if resizing and image.mode == "1":
+                source = image.convert("L")
+            elif resizing and image.mode == "P":
+                # A palette's transparency can live either in image metadata or
+                # its palette; RGB promotion would discard those samples.
+                keeps_alpha = "transparency" in image.info or "A" in getattr(
+                    image.palette, "mode", "RGB"
+                )
+                source = image.convert("RGBA" if keeps_alpha else "RGB")
+            resized = source.resize((width, height), resample=Image.Resampling.LANCZOS)
+            return encode_image_deterministic(resized)
+    except _DECODE_FAILURES as error:
+        raise ValueError(f"image bytes are not decodable for resize ({error})") from error
 
 
 def dimensions(png_bytes: bytes) -> tuple[int, int]:

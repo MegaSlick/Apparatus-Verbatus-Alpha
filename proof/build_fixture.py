@@ -26,6 +26,7 @@ answers "what is on these pages, and what should the fakes do?" and is read by t
 stage programs as data.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -99,6 +100,9 @@ _PRIOR_READING_SCENARIOS = (
     "malformed-capabilities",
     # No declared recovery or hold may mask the geometry-triggered route.
     "coverage-recovery",
+    # Churro-native reaches the same Perlector seam and requires the same priors.
+    "churro-native",
+    "churro-truncation",
 )
 PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
@@ -130,6 +134,37 @@ TESTIMONY = {
     },
 }
 
+
+def chandra_raw_response_for_act(payload: str, act_key: str) -> str:
+    """Bind fixture text to native geometry over its declared act.
+
+    Scenario overrides must retain both facts; text without reported geometry
+    leaves a page witness unable to attach to the act it read.
+    """
+    act = next(row for row in ACTS if row["key"] == act_key)
+    page = next(row for row in ALL_PAGES if row["ordinal"] == act["page_ordinal"])
+    bounds = next(
+        row["bounds"] for row in page["acts"] if row["ordinal"] == act["proposal_ordinal"]
+    )
+    return json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": payload,
+            "blocks": [
+                {
+                    "bbox": [
+                        bounds["x"] + 0.25,
+                        bounds["y"] + 0.5,
+                        bounds["x"] + bounds["w"],
+                        bounds["y"] + bounds["h"] + 0.1,
+                    ]
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+
+
 # R4's fixture-only Chandra view.  The HTML is deliberately retained as markup
 # so the alignment path proves stripping and offset accounting before mapping
 # the named anchor lines into their declared geometry.
@@ -152,11 +187,16 @@ CHANDRA_ANCHORS = (
 # Fixture geometry is deterministic stimulus for an explicitly unmeasured
 # positive-area rule; it is neither a calibrated threshold nor act assignment.
 NATIVE_OBSERVATIONS = (
-    # Two independent reports must contain both page-1 proposals without
-    # treating anchor alignment as attachment authority.
-    {"chair": "attestator_1", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
+    # The reference path's declared page geometry belongs to the chair without
+    # native layout: attestator_1 is the Chandra chair whose page-space geometry
+    # now derives from its retained native responses, so a declared box for it
+    # would double-count. attestator_3's box stays large enough to contain both
+    # proposal regions, exercising geometric attachment and containment without
+    # using an anchor as authority.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
-    # Review retains marginal ink outside every proposal for bounded recovery.
+    # The disagreement fixture stays deliberately uncalibrated and belongs to
+    # the recovery scenario: it is reported ink outside every proposal, which
+    # the page Testimonium retains for the Recensor's bounded route.
     {
         "scenario": "review",
         "chair": "attestator_1",
@@ -195,6 +235,7 @@ SCENARIO_TESTIMONY = (
         "act_key": "a1",
         "chair": "attestator_1",
         "payload": TESTIMONY["a1"]["attestator_1"],
+        "raw_response": chandra_raw_response_for_act(TESTIMONY["a1"]["attestator_1"], "a1"),
         "witness_reported": {"confidence": "high"},
         "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
     },
@@ -294,19 +335,31 @@ PAGE_REFUSALS = (
 # same page with those declarations deliberately absent.
 WITNESS_EMPTY = (
     {"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},
+    # No raw geometry: a recovery crop must remain under-witnessed rather than
+    # acquire retrospective coverage from a later empty response.
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},
     # All three configured chairs, so the Recensor's blank corroboration has a
     # genuine unanimous absence to confirm -- not merely one dissenting-from-
     # nothing chair beside two that never ran.
-    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_1"},
+    {
+        "scenario": "confirmed-blank",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "raw_response": chandra_raw_response_for_act("", "a1"),
+    },
     {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
     {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
     # Two of three: the third chair is left to report its ordinary declared
     # testimony (real text), so blank corroboration must refuse -- a single
     # dissenting witness beside an identical Perlector `no-readable-text`.
-    {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_1"},
+    {
+        "scenario": "blank-with-dissent",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "raw_response": chandra_raw_response_for_act("", "a1"),
+    },
     {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
 )
 
@@ -366,6 +419,86 @@ READING_FAILURES = (
 STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},)
 
 
+# Derive page-response bodies from the same act declarations to prevent drift.
+_PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
+# `config/models.toml` remains the authority for page scope; tests reconcile it.
+_PAGE_CHAIRS = ("attestator_1", "attestator_3")
+
+
+def churro_xml(text: str) -> str:
+    """Frame fixture text as Churro XML; it is not a measured model response."""
+    if "<" in text or ">" in text or "&" in text:
+        raise ValueError("a declared Churro response text must not need XML escaping")
+    return f"<output>{text}</output>"
+
+
+def _joined_page_text(page_ordinal: int, chair: str) -> str:
+    """Keep the pinned happy page text derived from its act testimony."""
+    return "\n".join(TESTIMONY[act_key][chair] for act_key in _PAGE_ACTS[page_ordinal])
+
+
+# Page furniture makes assumed act-order attachment observably wrong.
+_CHURRO_NATIVE_HEADER = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
+
+
+def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
+    return f"{_CHURRO_NATIVE_HEADER}\n{_joined_page_text(page_ordinal, chair)}"
+
+
+# The Churro fixture seam belongs to the chair whose configured boundary IS
+# churro.v1: attestator_1 is the Chandra chair, and a whole-page churro
+# response attributed to it would be fixture bytes wearing another model
+# boundary's name (the exact misattribution the declared-response validation
+# refuses). Happy preserves attestator_3's pinned reading; churro-native
+# covers page furniture and retained parse failure; churro-truncation covers
+# a visibly cut response whose parsed text is kept. All four capture-coverage
+# cases that once rode two chairs survive on the one honest chair.
+_CHURRO_PAGE_CHAIRS = ("attestator_3",)
+CHURRO_PAGE_RESPONSES = tuple(
+    {
+        "scenario": "happy",
+        "page_ordinal": page_ordinal,
+        "chair": chair,
+        "raw_xml": churro_xml(_joined_page_text(page_ordinal, chair)),
+        "transport_stop_reason": "eos",
+    }
+    for page_ordinal in sorted(_PAGE_ACTS)
+    for chair in _CHURRO_PAGE_CHAIRS
+) + (
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_3")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 2,
+        "chair": "attestator_3",
+        # The missing closing tag is retained fixture evidence for parse failure.
+        "raw_xml": f"<output>{_churro_native_page_text(2, 'attestator_3')}",
+        "transport_stop_reason": "length",
+    },
+    {
+        "scenario": "churro-truncation",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_3")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-truncation",
+        "page_ordinal": 2,
+        # Valid XML the transport cut at `length`: truncated is true and the
+        # parsed text is kept, with nothing completing or re-asking it.
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_3")),
+        "transport_stop_reason": "length",
+    },
+)
+
+
 def page_descriptor(ordinal):
     for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
@@ -385,8 +518,9 @@ def render_all() -> dict[int, bytes]:
 
 
 def toml_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    """Encode a TOML basic string without changing its Unicode text."""
+    # JSON escapes C0 controls; TOML additionally forbids a literal U+007F.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007F")
 
 
 def toml_value(value) -> str:
@@ -596,6 +730,12 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
                 f"chair = {toml_string(chair)}",
                 f"payload = {toml_value(payload)}",
             ]
+            if chair == "attestator_1":
+                # Chandra's fixture response keeps its unverified float boxes
+                # in the raw JSON path; its adapter alone quantizes them.
+                lines.append(
+                    "raw_response = " + toml_string(chandra_raw_response_for_act(payload, act_key))
+                )
 
     for row in SCENARIO_TESTIMONY:
         lines += [
@@ -610,8 +750,21 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             lines.append(f"witness_reported = {toml_value(row['witness_reported'])}")
         if "format_capabilities" in row:
             lines.append(f"format_capabilities = {toml_value(row['format_capabilities'])}")
+        if "raw_response" in row:
+            lines.append(f"raw_response = {toml_string(row['raw_response'])}")
         if "attempt_ordinal" in row:
             lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
+
+    for row in CHURRO_PAGE_RESPONSES:
+        lines += [
+            "",
+            "[[churro_page_response]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"raw_xml = {toml_string(row['raw_xml'])}",
+            f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
+        ]
 
     lines += [
         "",
@@ -651,6 +804,25 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# scenario produces has exactly one possible origin.",
         "[[scenario]]",
         'name = "coverage-recovery"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# churro-native declares neither a recovery nor a hold either. What it",
+        "# declares is two real-format Churro page responses -- one that parses",
+        "# and one the provider cut mid-element, retained unparseable -- so the",
+        "# full-page capture boundary runs through the stage program rather than",
+        "# through unit tests alone. The visibly cut but still parseable response",
+        "# is churro-truncation's, below.",
+        "[[scenario]]",
+        'name = "churro-native"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# churro-truncation isolates the visibly cut, still-parseable response:",
+        "# the transport said `length`, the text is kept, truncated is true, and",
+        "# nothing completes or re-asks it (GOVERNANCE 7).",
+        "[[scenario]]",
+        'name = "churro-truncation"',
         "recover_acts = []",
         "hold_acts = []",
         "",
@@ -836,6 +1008,8 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"act_key = {toml_string(row['act_key'])}",
             f"chair = {toml_string(row['chair'])}",
         ]
+        if "raw_response" in row:
+            lines.append(f"raw_response = {toml_string(row['raw_response'])}")
 
     for row in STRUCTURE_FAILURES:
         lines += [

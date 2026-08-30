@@ -31,6 +31,7 @@ from common.imaging import (
     encode_grayscale_png_deterministic,
     image_shown,
     render_triage_derivative,
+    resize_png_lanczos,
 )
 
 BOUNDS = {"x": 1, "y": 1, "w": 3, "h": 2}
@@ -539,3 +540,109 @@ def test_every_declared_conversion_is_executable_and_records_the_bytes_actual_mo
     assert geometry["color_mode"] == output_mode
     with Image.open(BytesIO(rendered)) as reread:
         assert reread.mode == output_mode
+
+
+def test_a_resized_view_is_framed_so_that_no_compressor_chooses_any_of_its_bytes():
+    """Content-addressed resize bytes must not depend on Pillow's bundled zlib."""
+    resized = resize_png_lanczos(
+        crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12}), 10, 6
+    )
+
+    raw = stored_block_payload(idat_of(resized))
+    stride = len(raw) // 6
+    assert stride * 6 == len(raw)
+    assert all(raw[row * stride] == 0 for row in range(6)), "a scanline is not filter 0"
+    assert carries_only_image_chunks(resized)
+
+
+def test_a_resize_to_the_source_size_is_the_crop_itself_and_not_a_re_encoding():
+    """An identity-sized request records a crop, so its bytes must remain identical."""
+    crop = crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12})
+
+    assert resize_png_lanczos(crop, 20, 12) == crop
+
+
+def bilevel_page(width: int = 40, height: int = 24) -> bytes:
+    """Mode ``1`` reaches crop/resize because the door preserves bilevel pages."""
+    image = Image.new("1", (width, height), 1)
+    for x in range(0, width, 3):
+        for y in range(2, height - 2):
+            image.putpixel((x, y), 0)
+    return _encode_crop_deterministic(image)
+
+
+def test_a_bilevel_crop_is_really_resampled_rather_than_silently_decimated():
+    """Pillow answers LANCZOS on a `1` image with NEAREST and reports nothing.
+
+    A sealed ``pillow-lanczos`` transform must differ from that silent
+    nearest-neighbour substitution; output mode alone cannot prove promotion
+    happened before resampling.
+    """
+    crop = crop_png(bilevel_page(), {"x": 0, "y": 0, "w": 40, "h": 24})
+    with Image.open(BytesIO(crop)) as image:
+        image.load()
+        assert image.mode == "1", "the fixture stopped exercising the substitution"
+        decimated = _encode_crop_deterministic(
+            image.resize((20, 12), resample=Image.Resampling.NEAREST)
+        )
+
+    resized = resize_png_lanczos(crop, 20, 12)
+
+    assert resized != decimated
+    with Image.open(BytesIO(resized)) as reread:
+        assert reread.mode == "L"
+        assert len(set(reread.convert("L").tobytes())) > 2, "no intermediate samples were produced"
+
+
+def test_a_bilevel_crop_that_needs_no_resize_is_still_returned_untouched():
+    """No promotion may change evidence when an identity-sized view runs no filter."""
+    crop = crop_png(bilevel_page(), {"x": 0, "y": 0, "w": 40, "h": 24})
+
+    assert resize_png_lanczos(crop, 40, 24) == crop
+
+
+def test_a_palette_resize_preserves_transparency_while_making_lanczos_run():
+    """Pillow silently forces NEAREST for palette images, but promoting a
+    transparent palette to RGB would repair the filter by deleting alpha."""
+    image = Image.new("P", (4, 4))
+    image.putpalette([255, 0, 0, 0, 255, 0] + [0, 0, 0] * 254)
+    image.putdata([0, 1, 0, 1] * 4)
+    image.info["transparency"] = 0
+    encoded = BytesIO()
+    image.save(encoded, format="PNG")
+
+    # The alpha assertion below does catch a deleted promotion today -- without
+    # it the transparency does not survive to the re-read and alpha comes back
+    # all-255. But it catches it indirectly, through what happens to the palette
+    # rather than through which resampler ran, and the property in this test's
+    # name is that LANCZOS ran. Compare against the nearest-neighbour result the
+    # bilevel case already compares against, so the substitution is observed
+    # rather than inferred.
+    with Image.open(BytesIO(encoded.getvalue())) as opened:
+        opened.load()
+        assert opened.mode == "P", "the fixture stopped exercising the substitution"
+        decimated = _encode_crop_deterministic(
+            opened.resize((2, 2), resample=Image.Resampling.NEAREST)
+        )
+
+    resized = resize_png_lanczos(encoded.getvalue(), 2, 2)
+
+    assert resized != decimated
+    with Image.open(BytesIO(resized)) as reread:
+        assert reread.mode == "RGBA"
+        assert min(reread.getchannel("A").getextrema()) < 255
+
+
+def test_a_resize_target_is_bounded_before_pillow_can_allocate_it(monkeypatch):
+    crop = crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12})
+    called = False
+
+    def resize_was_reached(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("Pillow reached an over-bound target")
+
+    monkeypatch.setattr(Image.Image, "resize", resize_was_reached)
+    with pytest.raises(ValueError, match="resize target.*pixel bound"):
+        resize_png_lanczos(crop, 100_000_001, 1)
+    assert called is False

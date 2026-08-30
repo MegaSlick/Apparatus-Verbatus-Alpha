@@ -15,8 +15,11 @@ from common.native_witness import (
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    validate_presented,
     validate_presented_page_binding,
     validate_reportable_observations,
+    validate_retained_response_refs,
+    verify_native_capture_bytes,
 )
 
 
@@ -520,6 +523,249 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
         validate_page_testimonium_payload(value)
 
 
+def test_page_retained_response_reference_rechecks_the_blob_bytes():
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+    validate_retained_response_refs(
+        {"raw_response_refs": [reference]}, read_bytes=lambda _path: raw
+    )
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        validate_retained_response_refs(
+            {"raw_response_refs": [reference]}, read_bytes=lambda _path: b"changed"
+        )
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        validate_retained_response_refs(
+            {"raw_response_refs": [reference]},
+            read_bytes=lambda _path: (_ for _ in ()).throw(FileNotFoundError("gone")),
+        )
+
+
+def test_page_retained_response_digest_is_lowercase_hex():
+    reference = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "z" * 64,
+        "sha256": "z" * 64,
+    }
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
+def test_page_retained_response_digest_shape_is_the_module_wide_one():
+    """An uppercase digest is refused although its path is derived from it.
+
+    The path check alone cannot see this: `relative_path` and `sha256` agree
+    with each other. Only the digest-shape rule refuses it, and this seam and
+    the native-capture seam below must spell that rule the same way, or one of
+    them starts binding a blob identity the other refuses.
+    """
+    digest = "A" * 64
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
+def test_page_retained_response_path_is_derived_from_its_digest():
+    reference = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+        "sha256": "b" * 64,
+    }
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
+def test_the_public_page_seam_actually_reaches_the_retained_response_check():
+    """The three tests above call the checker directly and pass either way.
+
+    `validate_page_testimonium_payload` is the only caller in the pipeline, and
+    the Recensor hands it `read_bytes` precisely so the retained bytes are
+    re-hashed against their recorded digests. A stray `return` above that call
+    made the whole check unreachable while the unit tests stayed green: the
+    record then reported a verified retained response nobody had verified
+    (GOVERNANCE 10). This case goes through the public function, so the dead
+    path fails loudly rather than quietly.
+    """
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+
+    value = _page_payload(raw_response_refs=[reference])
+    assert validate_page_testimonium_payload(value, read_bytes=lambda _path: raw) is value
+
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        validate_page_testimonium_payload(
+            _page_payload(raw_response_refs=[reference]), read_bytes=lambda _path: b"changed"
+        )
+
+    # The shape checks reach the seam too, not only the byte recheck: a caller
+    # that passes no `read_bytes` still gets the closed reference contract.
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_page_testimonium_payload(
+            _page_payload(
+                raw_response_refs=[
+                    {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "b" * 64}
+                ]
+            )
+        )
+
+
+def _page_with_churro_capture() -> dict:
+    value = payload()
+    text = value["payload"]
+    digest = digest_bytes(f"<output>{text}</output>".encode())
+    value.update(
+        {
+            "chair": "attestator_1",
+            "act_key": "page-1",
+            "attempt_ordinal": 1,
+            "regions": [],
+            "provenance": {},
+            "format_capabilities": {},
+            "witness_reported": None,
+            "reported": text,
+            "content_health": {
+                "native_type": "string",
+                "encoding": "utf-8-json-native",
+                "recordable": True,
+                "empty": False,
+                "blank": False,
+                "truncated": False,
+                "characters": len(text),
+                "truncation_basis": "trusted-response-boundary",
+            },
+            "unpresented_regions": [],
+            "scope": "page",
+            "page_ordinal": 1,
+            "page_role": "primary",
+            "unjoined_act_attempts": [],
+            "native_capture": {
+                "schema": "attestatores-model-view.v1",
+                "adapter": "churro.v1",
+                "view": {
+                    "prompt": {"system": "system prompt", "user": "user prompt"},
+                    "generation": {"max_new_tokens": 24_000},
+                },
+                "raw_response_ref": {
+                    "relative_path": f"3_attestatores/blobs/sha256/{digest}",
+                    "sha256": digest,
+                },
+                "transport_stop_reason": "eos",
+                "stop_reason": "eos",
+                "findings": [],
+                "parse": {"state": "parsed", "parser": "xml", "text": text},
+            },
+        }
+    )
+    return value
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda value: value["native_capture"]["raw_response_ref"].update(
+                relative_path="3_attestatores/blobs/sha256/not-the-digest"
+            ),
+            "content-addressed",
+        ),
+        (
+            # Path and digest agree here, so only the digest-shape rule refuses
+            # it. The retained-response seam above spells the same rule.
+            lambda value: value["native_capture"]["raw_response_ref"].update(
+                relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
+            ),
+            "content-addressed",
+        ),
+        (
+            lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),
+            "unknown retained model-view schema",
+        ),
+        (
+            lambda value: value["native_capture"]["view"].update(unread="ignored"),
+            "exactly its prompt and generation",
+        ),
+        (
+            lambda value: value["native_capture"]["view"]["generation"].update(
+                max_new_tokens=10**100
+            ),
+            "24000-token bound",
+        ),
+        (
+            lambda value: value["native_capture"].update(stop_reason="partial-parse-failed"),
+            "disagrees with its parse and findings",
+        ),
+        (
+            lambda value: value["native_capture"].update(
+                parse={"state": "pending", "parser": "xml"}
+            ),
+            "terminal XML parse",
+        ),
+        (
+            lambda value: value["native_capture"]["findings"].extend(
+                [
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "first",
+                        "inspected": "raw-response",
+                    },
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "second",
+                        "inspected": "raw-response",
+                    },
+                ]
+            ),
+            "more than one repetition finding",
+        ),
+        (
+            lambda value: value["native_capture"]["parse"].update(text="different"),
+            "payload differs",
+        ),
+        (
+            lambda value: value["content_health"].update(characters=0),
+            "health differs",
+        ),
+    ],
+)
+def test_churro_native_capture_closes_its_evidence_reference_and_derived_facts(change, message):
+    value = _page_with_churro_capture()
+    change(value)
+    with pytest.raises(SchemaRefusal, match=message):
+        validate_page_testimonium_payload(value)
+
+
+def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence():
+    value = _page_with_churro_capture()
+    value["payload"] = ""
+    value.pop("reported")
+    value["content_health"].update(
+        empty=True,
+        blank=True,
+        truncated=True,
+        characters=0,
+    )
+    value["native_capture"]["transport_stop_reason"] = "length"
+    value["native_capture"]["stop_reason"] = "length"
+    value["native_capture"]["parse"]["text"] = ""
+    value["observed"][0]["span"] = None
+    value["reason"] = "provider stopped at length; a cut-off response is not a confirmed blank"
+
+    assert validate_page_testimonium_payload(value) is value
+
+    value["reported"] = ""
+    with pytest.raises(SchemaRefusal, match="claims a reported absence"):
+        validate_page_testimonium_payload(value)
+
+
+def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_bytes():
+    value = _page_with_churro_capture()
+    raw = f"<output>{value['payload']}</output>".encode()
+    assert verify_native_capture_bytes(value["native_capture"], raw) is value["native_capture"]
+
+    value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
+    with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
+        verify_native_capture_bytes(value["native_capture"], raw)
+
+
 def _page_payload(**changes):
     """A complete, valid page Testimonium payload the closed contract accepts."""
     value = payload()
@@ -752,3 +998,81 @@ def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_rec
             testimonium_id="page-testimony",
             proposal_boxes=[{"x": 20, "y": 20, "w": 5, "h": 5}],
         )
+
+
+def _resized_presentation():
+    value = payload()
+    value["presented"].update({"kind": "adapter-crop", "image_sha256": "b" * 64})
+    value["presented"]["image_path"] = "3_attestatores/blobs/sha256/" + "b" * 64
+    value["presented"]["transform"].update(
+        {
+            "operation": "crop-resize-preserve-aspect",
+            "bounds": {"x": 0, "y": 0, "w": 40, "h": 20},
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": 40,
+                "source_height_px": 20,
+                "target_width_px": 20,
+                "target_height_px": 10,
+            },
+        }
+    )
+    return value["presented"]
+
+
+def test_a_resize_recipe_must_preserve_the_aspect_its_own_operation_names():
+    """Digest replay accepts stretched targets, but page mapping requires one scale."""
+    presented = _resized_presentation()
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 18
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_rounds_down_and_never_up():
+    """The sealed ``floor`` rule makes 40x21 at width 20 exactly 10 pixels high."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"]["h"] = 21
+    presented["transform"]["resize"]["source_height_px"] = 21
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 11
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_never_scales_a_dimension_away_entirely():
+    """Flooring may not erase a dimension; executable resize targets start at 1px."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"].update({"w": 4000, "h": 3})
+    presented["transform"]["resize"].update(
+        {"source_width_px": 4000, "source_height_px": 3, "target_width_px": 1000}
+    )
+    presented["transform"]["resize"]["target_height_px"] = 1
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 0
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)
+
+
+def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
+    """Malformed dimensions must reach a named refusal before aspect arithmetic."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"]["target_width_px"] = "20"
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_refuses_an_over_bound_target_as_its_own_schema_error():
+    """A resealed target is untrusted input. It must be refused before Pillow
+    allocates it, and as a SchemaRefusal the tally knows how to hold."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"].update(
+        {"target_width_px": 200_000_002, "target_height_px": 100_000_001}
+    )
+
+    with pytest.raises(SchemaRefusal, match="target exceeds.*pixel bound"):
+        validate_presented(presented)

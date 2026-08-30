@@ -749,6 +749,47 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # assigning it to either.  The final corrective pass separates its retained
 # recovery route from textual shortfall, so fresh canonical-id "r"
 # measurements are 84/0 (happy) and 109/3 (review).
+# Re-pinned for Unit 12 (Churro as its own stage), at the audit seat. THREE
+# things move here and they are different in kind, so they are separated.
+#
+# 1. `proof/skeleton_fixture.toml` gains eight `[[churro_page_response]]` rows
+#    and the `churro-native` scenario. `run_config_bindings` folds the whole
+#    fixture declaration into `config_digest`, so this alone moves BOTH pinned
+#    authorities even though only `happy` reads any of the new rows.
+# 2. `happy` now runs the real Churro page-capture boundary. Its four declared
+#    responses reproduce the previous synthetic join text EXACTLY, so no act's
+#    reading, span, alignment or dissent row moves; what moves is that each of
+#    the four page Testimonia gains a `native_capture` block, and each captured
+#    response is written content-addressed as its own retained blob. That is
+#    the file-count change: 84 -> 88, four raw responses, one per (page, chair).
+#    A capture path no pinned scenario runs is a page-witness mechanism a
+#    refactor can disable with every test still green, which is the Sol-S1
+#    failure; `happy` runs it now.
+# 3. `review` declares no Churro response, keeps the synthetic join, and writes
+#    no new file -- its count holds at 109. Its digest still moves, for reason 1
+#    alone.
+#
+# Also in the same seat and moving neither count: the page Testimonium writer now
+# validates its own `content_health` (the tally's read-back filters to
+# `kind == "testimonium"` and has never seen a page record), post-hoc repetition
+# detection inspects the parsed transcription rather than the raw bytes whose
+# closing `</output>` tag made every tail window differ, and a page-witness act
+# attachment resolves its outcome from the page attempt that produced the record
+# it names. None of the three alters a byte in either pinned scenario: happy and
+# review carry no repetition, no unparseable capture, and no failed page capture.
+#
+# Both values below were measured twice, in independent temporary roots, through
+# this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
+# canonical run id "r", after the last byte of the candidate was in place.
+# Counts and exits: 88/0 (happy) and 109/3 (review).
+# Sol formal review binds each retained raw Churro response into its page
+# Testimonium envelope's `inputs`, so every consumer read verifies the bytes
+# against `raw_response_ref` rather than trusting a nested reference it never
+# opens. The same four files remain and every payload fact is unchanged; only
+# happy's four page-artifact envelopes and their downstream references move.
+# Re-measured through this module at canonical run id "r": 88/0. Review has no
+# native captures, so its 109 files and digest remain unchanged.
+#
 # Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
 # Sonnet's recorded gap was that the coverage-triggered recovery origin had no
@@ -763,31 +804,102 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
 # twice in independent temporary roots through this module's own `orchestrate`
 # and `semantic_snapshot_digest` helpers at canonical run id "r".
-# Review only, once more in the same seat: a page witness invoked on every act
-# and unusable on all of them now records the serving moment that produced it
-# (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
-# left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
-# One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
-# or exit change (97/3), and happy is untouched at the digest above.
-# Phase-2 review correction: a1's single request now names both coverage causes
-# that actually triggered it (the declared incomplete crop and the unclaimed
-# witness observation), instead of silently reporting only the latter.
-# Re-pinned at this merge (10C onto the composed pr tree): every contributing
-# branch moved these pins on its own, so no branch's own pin describes this
-# tree. One semantic contradiction was composed rather than sided with: 10B's
-# formal review added "observed boxes lie inside the exact presentation", and
-# 10C's coverage design records a page witness's page-space geometry on its
-# act view, where boxes legitimately exceed the one-crop presentation. The
-# containment refusal now keys on whether the presentation IS the witness's
-# complete view: page-scoped records and act-scoped chairs keep the review
-# pass's refusal verbatim; only a page witness's act view (`page_witness:
-# True`, reconciled downstream against the sealed declaration) is exempt, and
-# its boxes stay bounded by the sealed page. Counts move to 84/0 and 109/3 as
-# 10C's own narrative records. Both values measured through this module's own
-# `orchestrate` and `semantic_snapshot_digest` helpers, twice, at two
-# independent run roots.
-HAPPY_RUN_TREE_DIGEST = "f3cc7020f165a44ac1e6dd3504f15255b38dc584904fa17ebe45a96640b74466"
-REVIEW_RUN_TREE_DIGEST = "6631eb64932c3496f850d3857f34d4b748f62eb9bcd085b4bce95009c600397b"
+# Unit 11 re-pin: Chandra retains one native JSON response blob for each of its
+# two fixture act reads, so both canonical trees gain two content-addressed
+# custody artifacts. In `review`, the page partition now carries both those
+# captured act boxes and the declared marginal observation: the former attach
+# each act witness and keep dissent measurable, while the latter remains an
+# unrouted observation for coverage recovery. Fresh canonical-id `r` runs
+# measured 86 files/exit 0 for happy and 111 files/exit 3 for review through
+# this module's `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 11 Sonnet re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
+# a whole-page Chandra `raw_response` (previous re-pin, below) whose native
+# block quantized to a box that both (a) fell outside the sealed page by one
+# pixel, holding the run before the Perlector ever established a reading for
+# that act, and (b) once the overflow was corrected, fully contained the
+# fallback act's own region -- retroactively "witness covering" a recovery
+# crop the architecture requires stay visibly under-witnessed
+# (`test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered`).
+# The row's `raw_response` is removed rather than reshaped: unlike
+# `confirmed-blank`/`blank-with-dissent`, this scenario's design is that no
+# witness geometry covers the recovery crop. The fixture is bound whole into
+# every run's config digest, so both canonical trees change although neither
+# happy nor review touches `page-fallback:3`. Measured twice from fresh
+# final-candidate runs at canonical run id "r": 86/0 for happy and 111/3 for
+# review (counts and exit codes unchanged from the prior re-pin).
+#
+# Unit 11 prior re-pin: Chandra's scenario-specific inputs now retain native
+# layout blocks wherever the scenario overrides its base response, including a
+# completed empty response.  The blocks are witness-reported geometry, never a
+# whole-page presentation fallback, so blank corroboration and the capability
+# scenario each retain the page-witness evidence their assertions require. The
+# fixture is bound whole into every run's config digest; therefore both canonical
+# trees change although happy and review use only the base Chandra responses.
+# Measured twice from fresh final-candidate runs at canonical run id "r": 86/0
+# for happy and 111/3 for review.
+#
+# Unit 11 Opus re-pin (final seat), and the last one in this unit: the durable
+# page Testimonium now names the retained responses its own derived geometry was
+# quantized from, and the rule that quantized them (`raw_response_refs`,
+# `adapter_metadata`). The act-scoped Testimonia already carried both, but they
+# are the compatibility bridge Unit 14 deletes, and the page record is the one a
+# page-scoped occupant actually produces -- so the record holding the integers
+# held no route back to the floats they came from (GOALS 5; ARCHITECTURE
+# invariant 3). Two payload fields on the one Chandra page record whose geometry
+# is native; a record whose observations are only the presentation echo reports
+# no conversion, because none happened. No new artifact, no new blob, no
+# behaviour change: counts and exit codes hold at 86/0 and 111/3, and each
+# digest below reproduced twice in independent temporary roots through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers at canonical
+# run id "r".
+# Phase-2 Sol review re-pin: the placeholder JSON accepted by the offline
+# Chandra adapter now carries an explicit fixture schema.  Without that label,
+# a real but still-unverified Chandra response that happened to expose the same
+# generic `markdown`/`blocks`/`bbox` keys could acquire the fixture's declared
+# sealed-page-pixel quantization rule.  The label changes the fixture bytes,
+# their retained blob digests, and the config digest bound into every artifact;
+# counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
+# from independent canonical-id `r` runs after the correction.
+# Superseded, and kept because this log is append-only: the `coverage-recovery`
+# entry higher up added fixture bytes alone and so moved every run's digest.
+# That candidate changed no stage behavior, artifact kind, count, or exit code;
+# its canonical measurements were 84/0 and 109/3, and the entries below have
+# since replaced both.
+# DAI adds a content-addressed adapter crop, making canonical happy/review
+# counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
+# consults LANCZOS there. Both digests were reproduced twice in independent
+# temporary roots at canonical run id "r" after those bindings were final.
+# Re-pinned at this merge (13 onto the composed pr tree): the DAI adapter
+# joins the composed roster (attestator_2, act scope) with its relabel-proof
+# retain wrapper; presentation validation knows all three adapters (Chandra
+# and Churro present the exact image they were given, DAI re-derives its
+# crop-resize recipe); happy gains attestator_2's two retained DAI act
+# responses (88 -> 90) and review likewise (111 -> 113). Measured twice at
+# two independent run roots through this module's own helpers.
+#
+# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# retained response it derived from in its envelope `inputs`, not only a Churro
+# `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
+# so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
+# re-hashed, although the same envelope already bound the Churro capture that
+# way; the Recensor applies its existing capture rule to them too. Reference
+# fields only -- each page record that names retained responses gains them as
+# inputs. No new blob or artifact file, but the EXISTING page-record artifacts'
+# bytes change (their inputs list grows), which is exactly why both digests
+# below moved. No exit-code change: counts hold at 90/0 and
+# 113/3, and both digests below reproduced twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers at canonical run id "r".
+#
+# Reading this log: it is chronological and append-only, and every entry states
+# the counts and the fixture shape as they stood when that entry was written.
+# Only the last entry describes the tree now; an earlier entry naming a
+# different count, or a different number of declared fixture rows, is the
+# measurement it superseded and not a competing claim about today. The two
+# literals below are the authority, and each re-pin says what moved them.
+HAPPY_SNAPSHOT_FILES = 90
+HAPPY_RUN_TREE_DIGEST = "1644e4ffc446d6833280837ccb34a66008740884626f90ea29d4cbd2e6752322"
+REVIEW_RUN_TREE_DIGEST = "8febd1df2970413dce014b3c58a0382fef53a435216ca773954ddcea21ac876c"
 
 
 def orchestrate(
@@ -4463,7 +4575,10 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 84
+    # The count includes two retained Chandra-response blobs, Unit 12's two
+    # content-addressed raw Churro responses, and Unit 13's retained DAI act
+    # responses.
+    assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -4503,9 +4618,9 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    # R0 adds the same four retained page/attachment artifacts before review's
-    # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 109
+    # The count includes the two retained Chandra blobs written before recovery;
+    # rerunning the loop must not append another copy.
+    assert len(before) == 113
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

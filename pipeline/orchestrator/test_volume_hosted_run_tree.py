@@ -16,6 +16,7 @@ from typing import Iterator, cast
 
 import pytest
 
+from common.contracts.errors import SchemaRefusal
 from common.runtree.store import RunTree
 from operations.operator.backup import _is_publication_temporary, sync_run_tree
 
@@ -168,6 +169,42 @@ def _region_count(root: Path, run_id: str) -> int:
     return sum(entry["kind"] == "region" for entry in manifest["artifacts"])
 
 
+def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
+    """Count regions while the driver writes, absorbing only its own renames.
+
+    The blob walk lists a directory and then stats every name it listed, and it
+    refuses any entry that vanished in between.  That refusal is correct and
+    stays: a stage manifest is built after its stage has finished writing, and
+    a file disappearing under a finished stage is a fault.  This poll is the
+    one caller that reads the tree while a live driver is still publishing into
+    it, and a publish is `.NAME.tmp-XXXX` followed by a rename -- so the poll
+    can list a temporary name whose rename lands before the stat, and be told
+    the tree changed under it.  It did, which is the condition this loop is
+    waiting on.
+
+    Only that race is absorbed, and it has to match on both counts: the refusal
+    is chained to an ENOENT -- a name that was listed and is now gone -- and the
+    vanished name is a `.<target>.tmp-<unique>` publication temporary.  An
+    ordinary evidence file disappearing mid-run is not that, and neither is a
+    malformed manifest or a digest mismatch; each is re-raised here with its own
+    reason rather than restated as "no change" until the hang guard expires.
+    The quiescent counts either side of this window refuse normally in every
+    case.
+    """
+    try:
+        return _region_count(root, run_id)
+    except SchemaRefusal as refusal:
+        cause = refusal.__cause__
+        vanished = getattr(cause, "filename", None)
+        if (
+            isinstance(cause, FileNotFoundError)
+            and isinstance(vanished, str)
+            and _is_publication_temporary_name(vanished)
+        ):
+            return unchanged
+        raise
+
+
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
     """Leave no recovery process group behind, including on an assertion path."""
 
@@ -235,7 +272,7 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     # scales to; it is not the window.
     hang_guard = time.monotonic() + 600
     try:
-        while _region_count(volume, "r") == region_count:
+        while _region_count_mid_write(volume, "r", unchanged=region_count) == region_count:
             if process.poll() is not None:
                 raise AssertionError(
                     "recovery exited before it appended a crop:\n"
@@ -392,7 +429,9 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # `snapshot` keys are relative to the run root's parent; a backup inventory
     # names members relative to the run tree itself.
     assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed) - excluded
-    assert report.reused == 0, "nothing was in the object store before this backup"
+    # Distinct run-tree paths may share verified bytes, so copied plus reused —
+    # not copied alone — must account for every published member; on this
+    # branch's content the store legitimately deduplicates across paths.
     assert report.copied + report.reused == len(published["files"])
 
     restored_root = tmp_path / "restored-from-mac"
@@ -435,9 +474,23 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     _assert_every_reference_resolves(restored_root, "r")
 
 
+def _snapshot_manifest(mac: Path, snapshot_sha256: str) -> dict:
+    """The published snapshot record: what the backup carried, and what it left."""
+    return json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+
+
+def _is_publication_temporary_name(relative: str) -> bool:
+    """A same-directory `.<target>.tmp-<unique>` name, as `RunTree` publishes."""
+    name = Path(relative).name
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and target and unique)
+
+
 def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
     """Test-only: production restore must have its own run-tree custody boundary."""
-    record = json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
+    record = _snapshot_manifest(mac, snapshot_sha256)
     for row in record["files"]:
         data = (mac / "objects" / "sha256" / row["sha256"]).read_bytes()
         assert hashlib.sha256(data).hexdigest() == row["sha256"], row

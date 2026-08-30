@@ -8,12 +8,16 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
-from common.imaging import crop_png
+from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 # `native` and `derived` are reported-ink evidence. `presented` only associates
@@ -43,9 +47,29 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
-    {"reason", "reported", "partition_disagreement"}
+    {
+        "reason",
+        "reported",
+        "partition_disagreement",
+        # The retained responses this record's own derived geometry was
+        # quantized from, and the declared rule that converted them. Plural
+        # because a page record's partition may be assembled from more than one
+        # retained response; a page witness that answers once retains one.
+        "raw_response_refs",
+        "adapter_metadata",
+        "native_capture",
+    }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
+
+# The serving request is already bounded at 24,000 generated tokens.  Four MiB
+# still allows more than 174 UTF-8 response bytes per requested token -- far
+# beyond an OCR transcription -- while giving the XML parser and the post-hoc
+# repetition scan a hard ceiling when a provider ignores that request bound.
+CHURRO_OUTPUT_TOKENS: Final = 24_000
+CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+_CHURRO_REPETITION_WINDOW: Final = 24
+_CHURRO_REPETITION_MIN_REPEATS: Final = 3
 
 
 def _integer(value: object) -> bool:
@@ -112,12 +136,17 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     ):
         raise SchemaRefusal("a Testimonium presented block has invalid source or blob identity")
     transform = value["transform"]
-    if not isinstance(transform, dict) or set(transform) != {
+    if not isinstance(transform, dict):
+        raise SchemaRefusal("a Testimonium presented block has no complete page transform")
+    required_transform_fields = {
         "operation",
         "source_page_ordinal",
         "source_page_id",
         "bounds",
-    }:
+    }
+    if transform.get("operation") == "crop-resize-preserve-aspect":
+        required_transform_fields.add("resize")
+    if set(transform) != required_transform_fields:
         raise SchemaRefusal("a Testimonium presented block has no complete page transform")
     if (
         not isinstance(transform["operation"], str)
@@ -126,6 +155,46 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     ):
         raise SchemaRefusal("a Testimonium presented transform disagrees with its source page")
     _bounds(transform["bounds"], "a Testimonium presented transform", page_size=page_size)
+    if transform["operation"] == "crop-resize-preserve-aspect":
+        resize = transform["resize"]
+        if not isinstance(resize, dict) or set(resize) != {
+            "resampler",
+            "dimension_rounding",
+            "source_width_px",
+            "source_height_px",
+            "target_width_px",
+            "target_height_px",
+        }:
+            raise SchemaRefusal("a resized adapter-crop has no closed resize recipe")
+        if resize["resampler"] != "pillow-lanczos" or resize["dimension_rounding"] != "floor":
+            raise SchemaRefusal("a resized adapter-crop has an unknown executable resize recipe")
+        # Malformed schema values must become a named refusal before the aspect
+        # identity performs arithmetic on them.
+        if not all(
+            _integer(resize[field]) and resize[field] > 0
+            for field in (
+                "source_width_px",
+                "source_height_px",
+                "target_width_px",
+                "target_height_px",
+            )
+        ):
+            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+        if resize["target_width_px"] * resize["target_height_px"] > MAX_PIXELS:
+            raise SchemaRefusal(
+                "a resized adapter-crop target exceeds the executable image pixel bound"
+            )
+        bounds = transform["bounds"]
+        if resize["source_width_px"] != bounds["w"] or resize["source_height_px"] != bounds["h"]:
+            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+        # Adapter coordinates map back to page bounds through one uniform scale;
+        # digest re-derivation alone would also accept a stretched target.
+        if resize["target_height_px"] != max(
+            1, resize["source_height_px"] * resize["target_width_px"] // resize["source_width_px"]
+        ):
+            raise SchemaRefusal(
+                "a resized adapter-crop does not preserve the aspect its operation names"
+            )
     if kind == "region":
         ref = value["region_ref"]
         if (
@@ -285,11 +354,9 @@ def validate_presented_page_binding(
     read, by any later coverage derivation, as page 1 geometry (GOALS 5;
     ARCHITECTURE invariant 3).
 
-    A region presentation is re-derived against its own sealed Designator
-    record by the callers, which is stronger than this. An adapter-crop uses the
-    only recipe this four-field transform can express today: an exact PNG crop
-    from the sealed page. Its digest is re-derived here; a future resize or other
-    operation must extend the closed recipe rather than ride as an opaque word.
+    Region callers also bind the sealed Designator record. An adapter-crop is an
+    exact PNG crop or its explicitly recorded LANCZOS resize; either operation
+    must reproduce its retained digest from sealed page bytes.
     """
     kind = presented["kind"]
     whole_page = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
@@ -316,7 +383,8 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation carries the whole sealed page's blob under a "
                 "sub-page transform"
             )
-        if presented["transform"]["operation"] != "crop":
+        operation = presented["transform"]["operation"]
+        if operation not in {"crop", "crop-resize-preserve-aspect"}:
             raise SchemaRefusal(
                 "an adapter-crop presentation has no executable sealed-page crop transform"
             )
@@ -324,7 +392,17 @@ def validate_presented_page_binding(
             raise SchemaRefusal(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
-        expected_sha256 = digest_bytes(crop_png(page_bytes, bounds))
+        derived = crop_png(page_bytes, bounds)
+        if operation == "crop-resize-preserve-aspect":
+            resize = presented["transform"]["resize"]
+            # The closed recipe repeats crop dimensions so any re-deriver drift
+            # becomes a named schema refusal before resizing.
+            if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
+                raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
+            derived = resize_png_lanczos(
+                derived, resize["target_width_px"], resize["target_height_px"]
+            )
+        expected_sha256 = digest_bytes(derived)
         if presented["image_sha256"] != expected_sha256:
             raise SchemaRefusal(
                 "an adapter-crop presentation blob does not re-derive from its sealed page transform"
@@ -392,7 +470,10 @@ def unpresented_region_ids(
 
 
 def validate_page_testimonium_payload(
-    payload: Any, *, testimonium_id: str | None = None
+    payload: Any,
+    *,
+    testimonium_id: str | None = None,
+    read_bytes: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
     """Close the page-scoped native Testimonium at writer and consumer seams."""
     if not isinstance(payload, dict) or not (
@@ -438,11 +519,151 @@ def validate_page_testimonium_payload(
             source_page_id=presented.get("source_page_id") if presented else None,
             testimonium_id=testimonium_id,
         )
+    if "native_capture" in payload:
+        capture = validate_native_capture(payload["native_capture"])
+        if capture["adapter"] == "churro.v1":
+            parse = capture["parse"]
+            parsed_text = parse.get("text")
+            if parse["state"] == "parsed":
+                if payload["payload"] != parsed_text:
+                    raise SchemaRefusal(
+                        "a Churro page Testimonium payload differs from its parsed native capture"
+                    )
+                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                expected_health = {
+                    "native_type": "string",
+                    "encoding": "utf-8-json-native",
+                    "recordable": True,
+                    "empty": parsed_text == "",
+                    "blank": parsed_text.strip() == "",
+                    "truncated": cut_off,
+                    "characters": len(parsed_text),
+                    "truncation_basis": "trusted-response-boundary",
+                }
+                if payload["content_health"] != expected_health:
+                    raise SchemaRefusal(
+                        "a Churro page Testimonium health differs from its parsed native capture"
+                    )
+                interrupted_silence = cut_off and parsed_text == ""
+                if interrupted_silence:
+                    if "reported" in payload:
+                        raise SchemaRefusal(
+                            "a cut-off empty Churro page capture claims a reported absence"
+                        )
+                    if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
+                        raise SchemaRefusal(
+                            "a cut-off empty Churro page capture has no failed-attempt reason"
+                        )
+                elif payload.get("reported") != parsed_text:
+                    raise SchemaRefusal(
+                        "a parsed Churro page Testimonium lacks its exact textual projection"
+                    )
+                elif "reason" in payload:
+                    raise SchemaRefusal(
+                        "a usable Churro page capture carries a failed-attempt reason"
+                    )
+            else:
+                if payload["payload"] is not None or "reported" in payload:
+                    raise SchemaRefusal(
+                        "an unparseable Churro page capture claims retained page text"
+                    )
+                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                basis = (
+                    "response cut off by the provider "
+                    f"({capture['transport_stop_reason']!r}); {parse['reason']}"
+                    if cut_off
+                    else parse["reason"]
+                )
+                expected_health = {
+                    "native_type": "unrecordable",
+                    "encoding": "invalid-or-unrecordable",
+                    "recordable": False,
+                    "empty": None,
+                    "blank": None,
+                    "truncated": None,
+                    "characters": None,
+                    "truncation_basis": basis,
+                }
+                if payload["content_health"] != expected_health:
+                    raise SchemaRefusal(
+                        "an unparseable Churro page Testimonium health differs from its capture"
+                    )
+                reason = payload.get("reason")
+                if (
+                    not isinstance(reason, str)
+                    or not reason.strip()
+                    or parse["reason"] not in reason
+                ):
+                    raise SchemaRefusal(
+                        "an unparseable Churro page capture has no reason naming its parser refusal"
+                    )
+    validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
 
-# Only zero overlap is declared: calibrating a near-overlap threshold without a
-# measurement would violate GOVERNANCE 10.
+def validate_retained_response_refs(
+    payload: dict[str, Any], *, read_bytes: Callable[[str], bytes] | None = None
+) -> None:
+    """Close a page partition's links to its retained native responses.
+
+    A partition may derive from several responses, so references remain plural
+    and ordered. The producing stage owns its blob namespace; this shared seam
+    closes the reference shape and prevents quantization metadata from appearing
+    without the bytes whose geometry it describes.
+    """
+    refs = payload.get("raw_response_refs")
+    if refs is not None:
+        if not isinstance(refs, list) or not refs:
+            raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
+        expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
+        for reference in refs:
+            if (
+                not isinstance(reference, dict)
+                or set(reference) != {"relative_path", "sha256"}
+                or not isinstance(reference["relative_path"], str)
+                or not reference["relative_path"]
+                or not is_sha256(reference["sha256"])
+                or reference["relative_path"] != expected_prefix + reference["sha256"]
+            ):
+                raise SchemaRefusal(
+                    "a page Testimonium retained-response reference is not a closed blob reference"
+                )
+        if len({reference["sha256"] for reference in refs}) != len(refs):
+            raise SchemaRefusal("a page Testimonium names one retained response twice")
+        if read_bytes is not None:
+            for reference in refs:
+                try:
+                    retained = read_bytes(reference["relative_path"])
+                except OSError as error:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} could "
+                        f"not be read: {error}"
+                    ) from error
+                if digest_bytes(retained) != reference["sha256"]:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} "
+                        "differs from its digest"
+                    )
+    metadata = payload.get("adapter_metadata")
+    if metadata is not None:
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"geometry_quantization"}
+            or not isinstance(metadata["geometry_quantization"], str)
+            or not metadata["geometry_quantization"]
+        ):
+            raise SchemaRefusal("a page Testimonium adapter metadata is not its closed shape")
+        if refs is None:
+            raise SchemaRefusal(
+                "a page Testimonium declares a quantization rule with no retained response to "
+                "have applied it to"
+            )
+
+
+# A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
+# unambiguous zero-overlap case; calibrating a near-overlap threshold would be a
+# measurement claim GOVERNANCE 10 does not permit until something has actually
+# been measured.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
 
@@ -641,6 +862,312 @@ def _partition_pairing_facts(
         if (proposal["x"], proposal["y"], proposal["w"], proposal["h"]) not in proposal_match_counts
     ]
     return deltas, unobserved_proposals, ambiguous_pairings
+
+
+_NATIVE_CAPTURE_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "adapter",
+        "view",
+        "raw_response_ref",
+        "transport_stop_reason",
+        "stop_reason",
+        "findings",
+        "parse",
+    }
+)
+_NATIVE_CAPTURE_PARSE_STATES: Final = frozenset({"not-requested", "pending", "parsed", "failed"})
+_CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
+    {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
+)
+_CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
+_CHURRO_STOP_REASONS: Final = frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS
+
+
+def validate_churro_xml(raw: bytes) -> str:
+    """Validate one bounded native Churro response as a plain output element."""
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaRefusal("Churro response is not raw bytes")
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        raise SchemaRefusal(
+            "Churro response exceeds the retained parsing limit of "
+            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+        )
+    if b"<!DOCTYPE" in bytes(raw).upper():
+        raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
+    try:
+        root = ET.fromstring(raw)
+    except (ET.ParseError, UnicodeDecodeError) as error:
+        raise SchemaRefusal(f"Churro response is not parseable XML: {error}") from error
+    if root.tag != "output" or set(root.attrib) or list(root):
+        raise SchemaRefusal("Churro response must be a plain <output> XML element")
+    return root.text or ""
+
+
+def detect_churro_repetition(raw: bytes) -> dict[str, Any] | None:
+    """Report a repeated tail after capture; this function has no generation input."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": "response is not UTF-8 text",
+        }
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) < _CHURRO_REPETITION_WINDOW * _CHURRO_REPETITION_MIN_REPEATS:
+        return None
+    for width in range(
+        _CHURRO_REPETITION_WINDOW,
+        min(256, len(normalized) // _CHURRO_REPETITION_MIN_REPEATS) + 1,
+    ):
+        unit = normalized[-width:]
+        repeats = 1
+        while (repeats + 1) * width <= len(normalized) and (
+            normalized[-(repeats + 1) * width : -repeats * width] == unit
+        ):
+            repeats += 1
+        if repeats >= _CHURRO_REPETITION_MIN_REPEATS:
+            return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
+    return None
+
+
+def derive_churro_capture(
+    raw: bytes,
+    transport_stop_reason: str,
+    *,
+    parser: str | None,
+    xml_parser=validate_churro_xml,
+    repetition_detector=detect_churro_repetition,
+) -> dict[str, Any]:
+    """Derive the exact mutable-free facts a Churro capture may publish.
+
+    Oversized bytes have already crossed the response boundary, so they remain
+    evidence in the caller's blob store.  They are not handed to either parser
+    or detector; both unperformed operations are named in the retained facts.
+    """
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        reason = (
+            "Churro response exceeds the retained parsing limit of "
+            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+        )
+        parse = (
+            {"state": "not-requested", "parser": None}
+            if parser is None
+            else {"state": "failed", "parser": parser, "reason": reason}
+        )
+        return {
+            "parse": parse,
+            "findings": [
+                {
+                    "kind": "post-hoc-repetition-uninspected",
+                    "reason": reason,
+                    "inspected": "raw-response",
+                }
+            ],
+            "stop_reason": (
+                "partial-parse-failed" if parser is not None else transport_stop_reason
+            ),
+        }
+
+    parse: dict[str, Any] = {"state": "not-requested", "parser": None}
+    stop_reason = transport_stop_reason
+    if parser == "xml":
+        try:
+            parse = {"state": "parsed", "parser": "xml", "text": xml_parser(raw)}
+        except SchemaRefusal as error:
+            parse = {"state": "failed", "parser": "xml", "reason": str(error)}
+            stop_reason = "partial-parse-failed"
+    parsed_text = parse.get("text")
+    inspected, basis = (
+        (parsed_text.encode("utf-8"), "parsed-text")
+        if isinstance(parsed_text, str)
+        else (raw, "raw-response")
+    )
+    findings: list[dict[str, Any]] = []
+    if finding := repetition_detector(inspected):
+        findings.append({**finding, "inspected": basis})
+        if finding["kind"] == "post-hoc-repetition" and parse["state"] != "failed":
+            stop_reason = "partial-post-hoc-repetition-detected"
+    return {"parse": parse, "findings": findings, "stop_reason": stop_reason}
+
+
+def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
+    """Verify one capture's derived record against its authoritative raw blob."""
+    capture = validate_native_capture(value)
+    if not isinstance(raw, bytes):
+        raise SchemaRefusal("a page Testimonium raw response is not bytes")
+    actual_digest = digest_bytes(raw)
+    if actual_digest != capture["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal(
+            "a page Testimonium raw response has digest "
+            f"{actual_digest}, not its native capture digest "
+            f"{capture['raw_response_ref']['sha256']}"
+        )
+    if capture["adapter"] != "churro.v1":
+        return capture
+    derived = derive_churro_capture(
+        raw,
+        capture["transport_stop_reason"],
+        parser=capture["parse"]["parser"],
+    )
+    for field in ("parse", "findings", "stop_reason"):
+        if capture[field] != derived[field]:
+            raise SchemaRefusal(
+                f"a Churro native capture's {field} differs from its retained raw response"
+            )
+    return capture
+
+
+def verify_native_capture_blob(tree: Any, value: Any) -> dict[str, Any]:
+    """Read, digest-check, and derive from the same raw bytes without a check/use gap."""
+    capture = validate_native_capture(value)
+    reference = capture["raw_response_ref"]
+    try:
+        raw = tree.read_bytes(reference["relative_path"])
+    except OSError as error:
+        raise SchemaRefusal(
+            f"a page Testimonium raw response could not be read: {error}"
+        ) from error
+    return verify_native_capture_bytes(capture, raw)
+
+
+def _validate_churro_capture(value: dict[str, Any]) -> None:
+    """Close the rules that belong to Churro alone, once the shared shape holds.
+
+    `validate_native_capture` closes what every adapter's retained model view
+    must carry. These are Churro's own: its transport reasons, its prompt and
+    generation view, its terminal XML parse, its single repetition finding and
+    the stop-reason arithmetic over the two. Keeping them here gives the next
+    page adapter a visible slot for its own rules instead of one body where the
+    shared closure and one adapter's specifics are stacked without a seam.
+    """
+    parse = value["parse"]
+    state, parser, findings = parse["state"], parse.get("parser"), value["findings"]
+    if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
+        raise SchemaRefusal(
+            "a Churro page capture has an unknown transport stop reason "
+            f"{value['transport_stop_reason']!r}"
+        )
+    view = value["view"]
+    if set(view) != {"prompt", "generation"}:
+        raise SchemaRefusal(
+            "a Churro page capture does not retain exactly its prompt and generation view"
+        )
+    prompt, generation = view["prompt"], view["generation"]
+    if (
+        not isinstance(prompt, dict)
+        or set(prompt) != {"system", "user"}
+        or any(not isinstance(prompt[field], str) or not prompt[field] for field in prompt)
+    ):
+        raise SchemaRefusal("a Churro page capture has no closed nonblank prompt view")
+    if (
+        not isinstance(generation, dict)
+        or set(generation) != {"max_new_tokens"}
+        or not isinstance(generation["max_new_tokens"], int)
+        or isinstance(generation["max_new_tokens"], bool)
+        or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
+    ):
+        raise SchemaRefusal(
+            f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
+        )
+    if state not in {"parsed", "failed"} or parser != "xml":
+        raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
+    if len(findings) > 1:
+        raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
+    for finding in findings:
+        kind = finding["kind"]
+        if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
+            raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
+        if kind == "post-hoc-repetition":
+            if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
+                not isinstance(finding[field], int)
+                or isinstance(finding[field], bool)
+                or finding[field] <= 0
+                for field in ("unit_characters", "repeats")
+            ):
+                raise SchemaRefusal(
+                    "a Churro page capture has a malformed post-hoc repetition finding"
+                )
+        elif set(finding) != {"kind", "reason", "inspected"} or not (
+            isinstance(finding["reason"], str) and finding["reason"]
+        ):
+            raise SchemaRefusal(
+                "a Churro page capture has a malformed uninspected-repetition finding"
+            )
+        if finding["inspected"] not in {"parsed-text", "raw-response"}:
+            raise SchemaRefusal(
+                "a Churro page capture repetition finding does not name the inspected view"
+            )
+    repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
+    expected_stop = value["transport_stop_reason"]
+    if state == "failed":
+        expected_stop = "partial-parse-failed"
+    elif repeated:
+        expected_stop = "partial-post-hoc-repetition-detected"
+    if value["stop_reason"] != expected_stop:
+        raise SchemaRefusal(
+            "a Churro page capture stop reason disagrees with its parse and findings"
+        )
+
+
+def validate_native_capture(value: Any) -> dict[str, Any]:
+    """Close the derived model view; raw response bytes remain in its referenced blob."""
+    if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
+        raise SchemaRefusal(
+            "a page Testimonium native capture is not its retained model-view schema"
+        )
+    for field in ("schema", "adapter", "transport_stop_reason", "stop_reason"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise SchemaRefusal(f"a page Testimonium native capture has a blank {field}")
+    if value["schema"] != "attestatores-model-view.v1":
+        raise SchemaRefusal(
+            "a page Testimonium native capture has an unknown retained model-view schema"
+        )
+    if not isinstance(value["view"], dict):
+        raise SchemaRefusal("a page Testimonium native capture view is not an object")
+    reference = value["raw_response_ref"]
+    if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
+        raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
+    if not all(isinstance(reference[key], str) and reference[key] for key in reference):
+        raise SchemaRefusal(
+            "a page Testimonium native capture has an invalid raw-response reference"
+        )
+    digest = reference["sha256"]
+    expected_path = f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
+    if not is_sha256(digest) or reference["relative_path"] != expected_path:
+        raise SchemaRefusal(
+            "a page Testimonium native capture raw-response reference is not its "
+            "content-addressed Attestatores blob path and digest"
+        )
+    findings = value["findings"]
+    if not isinstance(findings, list) or not all(
+        isinstance(finding, dict) and isinstance(finding.get("kind"), str) and finding["kind"]
+        for finding in findings
+    ):
+        raise SchemaRefusal("a page Testimonium native capture has a malformed findings list")
+    parse = value["parse"]
+    state = parse.get("state") if isinstance(parse, dict) else None
+    if not isinstance(parse, dict) or state not in _NATIVE_CAPTURE_PARSE_STATES:
+        raise SchemaRefusal("a page Testimonium native capture has a malformed parse record")
+    parser = parse.get("parser")
+    if state == "not-requested":
+        expected, parser_valid = {"state", "parser"}, parser is None
+    elif state == "pending":
+        expected, parser_valid = {"state", "parser"}, isinstance(parser, str) and bool(parser)
+    else:
+        expected = {"state", "parser", "text" if state == "parsed" else "reason"}
+        parser_valid = isinstance(parser, str) and bool(parser)
+    if set(parse) != expected or not parser_valid:
+        raise SchemaRefusal("a page Testimonium native capture parse record has the wrong shape")
+    if state == "parsed" and not isinstance(parse["text"], str):
+        raise SchemaRefusal("a page Testimonium native capture claims parsed with no text")
+    if state == "failed" and not (isinstance(parse["reason"], str) and parse["reason"]):
+        raise SchemaRefusal(
+            "a page Testimonium native capture claims a parse failure with no reason"
+        )
+    if value["adapter"] == "churro.v1":
+        _validate_churro_capture(value)
+    return value
 
 
 def validate_partition_disagreement(

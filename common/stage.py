@@ -742,6 +742,11 @@ class StageContext:
 
 _SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
 _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
+# Every stage that decodes or transforms image bytes in its own pass must seal
+# ``produced_pixels: true``; DAI makes Attestatores such a stage.
+_PIXEL_STAGES: Final = frozenset(
+    {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
+)
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
     {"decoders", "platform", "machine", "decode_paths_used", "produced_pixels"}
@@ -854,6 +859,9 @@ def _decode_environment(stage: str) -> dict[str, Any]:
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
         "designator": {"project-png"},
+        # Decode paths name the project-owned deterministic codec route; the
+        # executable presentation transform separately names its resampler.
+        "attestatores": {"project-png"},
         "perlector": {"project-png"},
         "recensor": {"project-png"},
     }.get(stage, {"none"})

@@ -128,7 +128,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "unbound.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "dai.v1", "unbound.fixture.v1"}),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -211,19 +211,57 @@ def test_an_adapter_without_any_scope_is_refused_like_a_wrong_one():
     assert "Set witness_scope to exactly 'page' or 'act'" in str(caught.value)
 
 
+def test_the_live_roster_pins_one_adapter_per_chair():
+    """The three adapters now partition the roster one-to-one.
+
+    Chandra reads page geometry natively, Churro answers whole pages with no
+    layout, and DAI crops acts. Pinning the assignment makes a moved binding a
+    loud fact rather than a silent reassignment of which ink a chair is shown.
+    """
+    models = _models()
+    witness_adapters.validate_witness_adapter_bindings(models)
+    # The whole configured map, not three named chairs: naming only the chairs
+    # it expects, this test would stay green while `models.toml` added a fourth
+    # witness chair, and the sentence above about a one-to-one partition would
+    # quietly stop being true of the live roster.
+    # `getattr`, because an absent chair carries neither field at all: it must
+    # be skipped, not raise, and it can never hold a binding to miss.
+    assert {
+        name: (chair.witness_adapter, chair.witness_scope)
+        for name, chair in models.chairs.items()
+        if getattr(chair, "witness_adapter", None) is not None
+        or getattr(chair, "witness_scope", None) is not None
+    } == {
+        "attestator_1": ("chandra.v1", "page"),
+        "attestator_2": ("dai.v1", "act"),
+        "attestator_3": ("churro.v1", "page"),
+    }
+
+
 def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """The adapter belongs to each occupant; it is not a unique or ranked seat.
 
     Collapsing adapter names only decides whether a registry declaration is in
     use. Scope remains on each identity, so sharing a native boundary cannot
     collapse the page/act distinction or select one chair over the other.
+
+    The roster above happens to assign one adapter per chair, so asserting that
+    roster is not a test of this rule: it would pass unchanged if the validator
+    grew a uniqueness refusal. The sharing case has to be constructed.
     """
     models = _models()
-    witness_adapters.validate_witness_adapter_bindings(models)
-    first = models.chairs["attestator_1"]
-    second = models.chairs["attestator_2"]
-    assert first.witness_adapter == second.witness_adapter == "churro.v1"
-    assert (first.witness_scope, second.witness_scope) == ("page", "act")
+    chairs = dict(models.chairs)
+    chairs["attestator_2"] = replace(
+        chairs["attestator_2"], witness_adapter="chandra.v1", witness_scope="act"
+    )
+    shared = replace(models, chairs=chairs)
+
+    witness_adapters.validate_witness_adapter_bindings(shared)
+
+    assert shared.chairs["attestator_1"].witness_adapter == "chandra.v1"
+    assert shared.chairs["attestator_1"].witness_scope == "page"
+    assert shared.chairs["attestator_2"].witness_adapter == "chandra.v1"
+    assert shared.chairs["attestator_2"].witness_scope == "act"
 
 
 @pytest.mark.parametrize(
@@ -350,7 +388,7 @@ def test_the_live_roster_declares_the_rows_on_witness_chairs_and_nowhere_else():
 
 def test_adapter_rows_travel_in_the_resolved_provenance_record():
     record = _models().chairs["attestator_1"].to_record()
-    assert record["witness_adapter"] == "churro.v1"
+    assert record["witness_adapter"] == "chandra.v1"
     assert record["witness_scope"] == "page"
 
 
@@ -387,7 +425,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "other.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "dai.v1", "other.fixture.v1"}),
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]

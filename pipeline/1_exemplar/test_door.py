@@ -3632,16 +3632,16 @@ def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
         )
 
 
-def test_a_submitted_frame_with_no_triage_row_is_refused_and_so_is_an_extra_row():
+def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():
     """The Door's half of Unit 6B's coverage invariant, in both directions.
 
     The producer proves exact coverage over what it was handed; the Door proves it
     again over what was actually submitted, because the two sets are only the same
     if nothing was added between them. A submitted frame with no row would be a
     frame fanned out with no declared geometry — silently, since every other row
-    still expands. There is no corpus-scoped sharding yet to explain away a row
-    naming a frame outside the submission, so the reverse direction is refused too:
-    a manifest's rows must exactly match what was submitted.
+    still expands. The reverse is not a defect and must not be refused: a decision
+    manifest is corpus-scoped and a submission is one shard of it, so rows for
+    frames outside this shard are the ordinary case.
     """
     submitted, absent = png(4, 3), png(4, 3, rows=None, bit_depth=8, color_type=2)
     submitted_digest, absent_digest = digest_bytes(submitted), digest_bytes(absent)
@@ -3676,16 +3676,16 @@ def test_a_submitted_frame_with_no_triage_row_is_refused_and_so_is_an_extra_row(
             triage_rows={absent_digest: row(absent_digest, 4, 3)},
         )
 
-    with pytest.raises(ContractError, match="naming no submitted source frame"):
-        door.expand_sources(
-            [{"relative_path": "a.png", "sha256": submitted_digest}],
-            reader({"a.png": submitted}),
-            POLICY,
-            triage_rows={
-                submitted_digest: row(submitted_digest, 4, 3),
-                absent_digest: row(absent_digest, 4, 3),
-            },
-        )
+    sources = door.expand_sources(
+        [{"relative_path": "a.png", "sha256": submitted_digest}],
+        reader({"a.png": submitted}),
+        POLICY,
+        triage_rows={
+            submitted_digest: row(submitted_digest, 4, 3),
+            absent_digest: row(absent_digest, 4, 3),
+        },
+    )
+    assert [source.declared_sha256 for source in sources] == [submitted_digest]
 
 
 def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
@@ -3794,25 +3794,6 @@ def _single_part_triage_row(
         actor={"kind": "model", "identity": "triage", "revision": "r1"},
         human_override=False,
     )
-
-
-def test_triage_rows_reconcile_exactly_with_the_submitted_shard():
-    submitted = png(4, 3)
-    absent = png(5, 3)
-    rows = {
-        digest_bytes(submitted): _single_part_triage_row(submitted, frame=(4, 3)),
-        digest_bytes(absent): _single_part_triage_row(absent, frame=(5, 3)),
-    }
-
-    with pytest.raises(ContractError, match="1 row.*no submitted source frame") as refused:
-        expand_sources(
-            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
-            reader({"submitted.png": submitted}),
-            POLICY,
-            triage_rows=rows,
-        )
-    assert "no source expansion was returned" in str(refused.value)
-    assert "exactly match the submitted shard" in str(refused.value)
 
 
 def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():

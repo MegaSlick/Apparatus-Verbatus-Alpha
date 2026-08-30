@@ -57,14 +57,6 @@ html = "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta eps
 lines = [{ act_key = "a1", h = 80, text = "SYNTHETIC ACT ONE alpha beta gamma", w = 160, x = 20, y = 20 }, { act_key = "a2", h = 100, text = "SYNTHETIC ACT TWO delta epsilon zeta eta", w = 160, x = 20, y = 120 }]
 
 [[native_observation]]
-chair = "attestator_1"
-page_ordinal = 1
-x = 12
-y = 15
-w = 188
-h = 223
-
-[[native_observation]]
 chair = "attestator_3"
 page_ordinal = 1
 x = 12
@@ -297,6 +289,26 @@ text = "SYNTHETIC ACT ONE alpha beta ganna"
 
 [[prior_reading]]
 scenario = "coverage-recovery"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
+scenario = "churro-native"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "churro-native"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
+scenario = "churro-truncation"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "churro-truncation"
 act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
@@ -331,6 +343,7 @@ h = 146
 act_key = "a1"
 chair = "attestator_1"
 payload = "SYNTHETIC ACT ONE alpha beta gamma"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[testimony]]
 act_key = "a1"
@@ -346,6 +359,7 @@ payload = "SYNTHETIC ACT ONE alpha beta"
 act_key = "a2"
 chair = "attestator_1"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"
 
 [[testimony]]
 act_key = "a2"
@@ -364,6 +378,7 @@ chair = "attestator_1"
 payload = "SYNTHETIC ACT ONE alpha beta gamma"
 witness_reported = { confidence = "high" }
 format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[testimony]]
 scenario = "witness-capabilities"
@@ -393,6 +408,48 @@ act_key = "a2"
 chair = "attestator_2"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
 attempt_ordinal = 2
+
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+transport_stop_reason = "length"
+
+[[churro_page_response]]
+scenario = "churro-truncation"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-truncation"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "length"
 
 # The happy scenario establishes both acts. The review scenario recovers act
 # a1 once -- act identity stable, region and attempt identities changing -- and
@@ -430,6 +487,25 @@ hold_acts = []
 # scenario produces has exactly one possible origin.
 [[scenario]]
 name = "coverage-recovery"
+recover_acts = []
+hold_acts = []
+
+# churro-native declares neither a recovery nor a hold either. What it
+# declares is two real-format Churro page responses -- one that parses
+# and one the provider cut mid-element, retained unparseable -- so the
+# full-page capture boundary runs through the stage program rather than
+# through unit tests alone. The visibly cut but still parseable response
+# is churro-truncation's, below.
+[[scenario]]
+name = "churro-native"
+recover_acts = []
+hold_acts = []
+
+# churro-truncation isolates the visibly cut, still-parseable response:
+# the transport said `length`, the text is kept, truncated is true, and
+# nothing completes or re-asks it (GOVERNANCE 7).
+[[scenario]]
+name = "churro-truncation"
 recover_acts = []
 hold_acts = []
 
@@ -625,6 +701,7 @@ chair = "attestator_3"
 scenario = "confirmed-blank"
 act_key = "a1"
 chair = "attestator_1"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[witness_empty]]
 scenario = "confirmed-blank"
@@ -640,6 +717,7 @@ chair = "attestator_3"
 scenario = "blank-with-dissent"
 act_key = "a1"
 chair = "attestator_1"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[witness_empty]]
 scenario = "blank-with-dissent"

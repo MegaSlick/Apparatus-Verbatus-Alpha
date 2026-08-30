@@ -220,6 +220,138 @@ def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
     assert recensor._merge_page_attachment_fact(attached, unattached) is attached
 
 
+def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monkeypatch):
+    """A successful compatibility act row cannot turn a failed page attempt into coverage.
+
+    Both the page attempt's outcome and the page-witness attachment row are
+    mutated below, and they have to be: the Recensor re-derives `attached` from
+    the attempt outcome and the reported geometry, and refuses any record where
+    the stored flag disagrees. Leaving the row attached beside a failed attempt
+    therefore never reaches this coverage computation at all -- it stops as a
+    named `FatalAccounting`, which is exactly what
+    `test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways`
+    asserts for both polarities. So the pair here is the only well-formed way to
+    pose a failed page attempt, and the sibling test is what stops the two
+    signals from drifting apart unnoticed.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "page-outcome", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "page-outcome"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original_artifact = context.tree.read_artifact
+    original_reference = context.tree.read_artifact_reference
+
+    def failed_attachment(stage, kind, artifact_id):
+        record = original_artifact(stage, kind, artifact_id)
+        if (
+            stage == ATTESTATORES
+            and kind == "act-attachment"
+            and record["subject_id"] == act["act_id"]
+        ):
+            record = copy.deepcopy(record)
+            entry = next(
+                item
+                for item in record["payload"]["attachments"]
+                if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
+            )
+            assert entry["attached"] is True
+            entry.update(attached=False, attachment_basis="unattached", span=None)
+        return record
+
+    def failed_page(reference, *, stage, kind, subject_id):
+        record = original_reference(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
+            record = copy.deepcopy(record)
+            record["outcome"] = "failed"
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", failed_attachment)
+    monkeypatch.setattr(context.tree, "read_artifact_reference", failed_page)
+
+    coverage = recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+    assert coverage["under_witnessed"] is True
+    assert coverage["page_granularity_only"] == 1
+    assert coverage["shortfalls"]["unaligned"] == 1
+
+
+def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    through_perlector(root, "capture-adapter", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "capture-adapter"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def wrong_adapter(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
+            record = copy.deepcopy(record)
+            record["payload"]["native_capture"]["adapter"] = "another-adapter.v1"
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)
+    with pytest.raises(FatalAccounting, match="configured boundary"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(
+    tmp_path, monkeypatch
+):
+    """The sibling of the native-capture rule below, for a quantized partition.
+
+    A retained response named only in the payload is one that
+    `RunTree.read_artifact` never re-hashes, because it verifies `inputs` and
+    nothing else. The page record would then keep integers whose route back to
+    the floats they came from could be swapped underneath it.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "partition-inputs", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "partition-inputs"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def unbound_responses(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"].get("raw_response_refs"):
+            record = copy.deepcopy(record)
+            retained = record["payload"]["raw_response_refs"]
+            record["inputs"] = [item for item in record["inputs"] if item not in retained]
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", unbound_responses)
+    with pytest.raises(FatalAccounting, match="quantized from as a verified input"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "runs"
+    through_perlector(root, "capture-projection", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "capture-projection"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def forged_projection(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
+            record = copy.deepcopy(record)
+            payload = record["payload"]
+            text = payload["payload"]
+            forged = ("X" if text[0] != "X" else "Y") + text[1:]
+            payload["payload"] = forged
+            payload["reported"] = forged
+            payload["native_capture"]["parse"]["text"] = forged
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", forged_projection)
+    with pytest.raises(FatalAccounting, match="parse.*retained raw response"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "review", "review")
