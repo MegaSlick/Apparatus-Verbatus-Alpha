@@ -16,10 +16,13 @@ from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
 from operations.operator import cli, custody, ingest, ingest_worker
+from operations.operator.errors import ERRORS, ErrorCode
 from operations.operator.ingest_protocol import EXPECTED_DIGEST_FIELDS
 from operations.submit import gate, inventory
 from operations.triage import instrument
 from operations.triage.producer import CONFIRMATION_SCHEMA
+
+from .conftest import requires_host_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -140,6 +143,7 @@ def test_ingest_commit_makes_an_immutable_ready_folder_and_keeps_source_bytes_un
     assert ready["confirmation_file_retained"] is False
 
 
+@requires_host_boundary
 def test_ingest_refusal_shows_the_unit_6b_reason_verbatim_and_writes_nothing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -189,11 +193,21 @@ def test_ingest_refusal_shows_the_unit_6b_reason_verbatim_and_writes_nothing(
     assert not list(output.iterdir())
 
 
+@requires_host_boundary
 def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """An uncertain commit may follow writes, so its reason must remain actionable."""
+    """An uncertain commit may follow writes, so its reason must remain actionable.
+
+    The refusal is named, not merely counted. Every custody failure also exits 2
+    and also renders "What happened:" and "What it means:" without JSON, so the
+    original assertions were satisfied by a console that refused to open at all
+    and never reached the unwritable folder this test sets up. That is not a
+    hypothetical: on a host whose `setpriv` predates Landlock this test passed
+    while measuring nothing, which is what `requires_host_boundary` above now
+    prevents. Asserting *which* refusal arrived keeps it honest on any host.
+    """
     source, output, policy, _approved = _inputs(tmp_path)
     output.chmod(0o500)
     try:
@@ -221,8 +235,13 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     assert "What happened:" in rendered and "What it means:" in rendered
     assert '"status"' not in rendered
     assert '"reason"' not in rendered
+    # The ingest worker's own refusal, not the console failing to open. Without
+    # this the console never had to reach the folder at all.
+    assert ERRORS[ErrorCode.INGEST_UNRESOLVED].what_happened in rendered
+    assert ERRORS[ErrorCode.CONSOLE_CUSTODY_REFUSED].what_happened not in rendered
 
 
+@requires_host_boundary
 def test_ingest_does_not_resolve_a_source_symlink_past_the_data_gate(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -480,6 +499,7 @@ def test_ingest_commit_refuses_when_the_confirmation_file_changed_after_the_prev
     assert not list(output.iterdir())
 
 
+@requires_host_boundary
 def test_scripted_ingest_walk_uses_the_confined_console_and_prints_door_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -587,6 +607,7 @@ def test_ingest_presenter_has_no_image_or_producer_writer_and_uses_the_custody_s
     assert ingest.run_confined is custody.run_confined
 
 
+@requires_host_boundary
 def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -626,6 +647,7 @@ def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
     assert marker.read_text(encoding="utf-8") == "must survive the refusal"
 
 
+@requires_host_boundary
 def test_a_case_variant_spelling_cannot_place_the_output_inside_the_submission(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -713,6 +735,7 @@ def test_ingest_commit_refuses_when_the_data_handling_policy_changed_after_the_p
     assert not list(output.iterdir())
 
 
+@requires_host_boundary
 def test_ingest_names_every_undecodable_file_by_position_and_digest(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -825,6 +848,7 @@ def test_the_console_shows_the_ledger_digest_the_run_tree_will_carry(tmp_path: P
     assert ready["data_handling_policy_sha256"] == gate.load_policy_binding(policy).config_sha256
 
 
+@requires_host_boundary
 def test_the_ready_folder_is_admitted_by_the_real_door_exactly_as_the_console_claimed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -902,6 +926,7 @@ def test_the_ready_folder_is_admitted_by_the_real_door_exactly_as_the_console_cl
     assert f"ledger self-hash {ledger['self_hash']}" in rendered
 
 
+@requires_host_boundary
 def test_a_failed_preview_never_tells_the_operator_records_may_have_been_written(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1046,6 +1071,7 @@ def test_the_double_click_route_reaches_the_one_confined_ingest_implementation(
     )
 
 
+@requires_host_boundary
 @pytest.mark.parametrize("with_confirmation", (False, True), ids=("no-confirmation", "confirmed"))
 def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
     tmp_path: Path,
