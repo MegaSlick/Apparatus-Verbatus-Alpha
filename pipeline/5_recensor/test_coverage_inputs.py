@@ -206,7 +206,7 @@ def _attachment_fact_record(rows):
     }
 
 
-def _page_fact(*, ordinal, attached, anchor_basis=None):
+def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
     alignment = (
         {
             "status": "aligned",
@@ -226,7 +226,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
         "page_witness": True,
         "page_ordinal": ordinal,
         "attached": attached,
-        "comparable": attached,
+        "comparable": attached if comparable is None else comparable,
         "attachment_basis": "geometric-overlap" if attached else "unattached",
         "testimonium_ref": {"artifact_id": f"pt-{ordinal}"},
         "content_health": {"truncated": False},
@@ -347,6 +347,67 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
             "overlap_rule": {"rule": "positive-area", "status": "unmeasured"},
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    (
+        pytest.param({"x": 0, "y": 0, "h": 10}, id="missing-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 10, "z": 1}, id="extra-side"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": True}, id="boolean-height"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": "10"}, id="string-height"),
+        pytest.param({"x": -1, "y": 0, "w": 10, "h": 10}, id="negative-x"),
+        pytest.param({"x": 0, "y": -1, "w": 10, "h": 10}, id="negative-y"),
+        pytest.param({"x": 0, "y": 0, "w": 0, "h": 10}, id="zero-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 0}, id="zero-height"),
+        pytest.param({"x": 0, "y": 0, "w": -10, "h": 10}, id="negative-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": -10}, id="negative-height"),
+    ),
+)
+def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(monkeypatch, bounds):
+    """Two failures, one refusal. A rectangle missing a side travels on as a
+    proposal box into `unrouted_observations`, which indexes all four by name,
+    and leaves the stage that decides recovery as a bare `KeyError` naming
+    neither page nor act. A rectangle that is merely degenerate -- off-page
+    origin, or zero/negative extent -- is worse: it indexes cleanly and overlaps
+    nothing, so ink a real proposal covers is published as an unrouted
+    observation and drives bounded recovery on evidence the run manufactured.
+    Every case here is a rectangle `_proposal_geometry_by_page` already refuses
+    of the same sealed proposals."""
+    page = _page_testimonium(outcome="read", retained="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": bounds,
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    with pytest.raises(FatalAccounting, match="has no page-pixel bounds"):
+        RUN.testimony_content_findings(context)
 
 
 def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
@@ -515,7 +576,7 @@ def test_an_unaligned_continuation_still_requires_its_current_page_testimonium(m
         RUN.testimony_content_findings(context)
 
 
-def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
+def _patched_page_geometry(monkeypatch, context, observed_by_ordinal, textless=()):
     """Stand in for 10C's geometric sub-derivation so merge/duplicate/enum
     protections stay testable in isolation. Attached rows get one native box
     overlapping the page's sole proposal; unattached rows get none. The real
@@ -546,8 +607,15 @@ def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
                 "page_ordinal": ordinal,
                 "observed": observed,
                 # Retained page text: comparability requires an aligned slice
-                # of it, and the fake mirrors the real record's shape.
-                "payload": "page text" if observed_by_ordinal[ordinal] else None,
+                # of it, and the fake mirrors the real record's shape. A page in
+                # `textless` is observed but retained no text of its own -- the
+                # continuation a witness reached without producing a page slice,
+                # which is how one chair's two rows differ in `comparable`.
+                "payload": (
+                    "page text"
+                    if observed_by_ordinal[ordinal] and ordinal not in textless
+                    else None
+                ),
             },
         }
 
@@ -575,6 +643,48 @@ def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+@pytest.mark.parametrize(
+    "comparable_first",
+    (True, False),
+    ids=("comparable-page-first", "comparable-page-second"),
+)
+def test_page_attachment_facts_keep_the_comparable_page_in_either_row_order(
+    monkeypatch, comparable_first
+):
+    """`comparable` is a per-page fact, so the merge may not depend on row order.
+
+    The producer derives it from that page's own alignment status and that
+    page's own retained text, so one chair's two rows for one act genuinely
+    differ in it. Merged on `attached` alone, whichever row arrived first won --
+    and rows arrive in page order, so a continuation page that attached without
+    comparable text erased the primary page that had both. The chair then
+    dropped out of the witness floor and the act read under-witnessed, held for
+    a human on evidence that was there all along.
+    """
+    comparable_page = _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor")
+    # Attached with a real alignment, but no comparable text of its own: the
+    # continuation page a witness reached without producing a page slice.
+    incomparable_page = _page_fact(
+        ordinal=2, attached=True, anchor_basis="no-page-anchor", comparable=False
+    )
+    rows = (
+        [comparable_page, incomparable_page]
+        if comparable_first
+        else [incomparable_page, comparable_page]
+    )
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: True}, textless=(2,))
+
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["comparable"] is True, (
+        "the page that produced comparable text was discarded because of its row order"
+    )
 
 
 def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch):

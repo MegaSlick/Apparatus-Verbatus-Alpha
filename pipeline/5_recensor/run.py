@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
@@ -252,10 +253,21 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
 
 
 def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
-    """An unattached continuation may not erase another page's attachment."""
-    if current["attached"] and not previous["attached"]:
-        return current
-    return previous
+    """An unattached continuation may not erase another page's attachment.
+
+    Chosen by strength, not by arrival order. `attached` alone decided this
+    before, and `comparable` is a per-page fact -- the producer derives it from
+    that page's own alignment status and that page's own retained text
+    (`pipeline/3_attestatores/run.py`), so one chair's two rows for one act
+    genuinely differ in it. Rows arrive in page order, so a continuation page
+    that attached without comparable text sorted ahead of the primary page that
+    had both and won on `attached` being equal. The chair was then recorded
+    incomparable, dropped out of the witness floor, and the act read
+    under-witnessed -- an act held for a human on evidence that existed.
+
+    Ties keep `previous`, so equal-strength rows behave exactly as before.
+    """
+    return max(previous, current, key=lambda fact: (fact["attached"], fact["comparable"]))
 
 
 def act_attachment_facts(
@@ -378,6 +390,15 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
+            # The same rule as the native capture below, for the responses a
+            # page partition was quantized from: a retained response named only
+            # in the payload is one an ordinary artifact read never re-hashes.
+            for reference in page_payload.get("raw_response_refs", []):
+                if reference not in page_testimonium.get("inputs", []):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} does not bind a retained raw "
+                        "response its own geometry was quantized from as a verified input"
+                    )
             native_capture = page_payload.get("native_capture")
             if native_capture is not None:
                 if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
@@ -385,7 +406,20 @@ def act_attachment_facts(
                         f"act {act_id} page witness {chair!r} does not bind its retained raw "
                         "response as a verified input"
                     )
-                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                # `resolve` returns an identity *or* an absence, and `AbsentChair`
+                # carries no `witness_adapter`. Read straight through, a page
+                # record naming a chair the roster marks absent stopped this
+                # stage with an AttributeError -- a traceback where its contract
+                # owes a named refusal, and one that says nothing about which
+                # act or chair was inconsistent.
+                resolved = context.registry.resolve(chair)
+                if not isinstance(resolved, ChairIdentity):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} carries a native capture while the "
+                        "roster records that chair as absent; an absent chair has no adapter "
+                        "boundary to attribute it to; restore the chair or the retained record"
+                    )
+                if native_capture["adapter"] != resolved.witness_adapter:
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} attributes its native capture to "
                         "an adapter other than that chair's configured boundary"
@@ -605,9 +639,10 @@ def act_attachment_facts(
             # whose page has no anchor cannot erase the primary page's valid
             # attachment; all page references remain separately checked by the
             # content denominator below. Merging whole rows keeps one page's
-            # contribution carrying both predicates — `comparable` is derived
-            # from the shared act payload, so OR-ing booleans across pages
-            # could only manufacture a basis no single page supplied.
+            # contribution carrying both predicates together: the surviving row
+            # is the strongest single page's, never a pair of booleans OR-ed
+            # across pages, which could manufacture a combination no one page
+            # supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
             # Only rows of this same act attempt are merged -- the health
@@ -1592,7 +1627,32 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            if not isinstance(bounds, dict):
+            # The same rectangle `_proposal_geometry_by_page` requires of these
+            # same sealed proposals: four integer sides, on the page, with
+            # positive area. Two distinct failures follow from accepting less.
+            # A rectangle that is a dict and nothing more reaches
+            # `unrouted_observations`, which indexes all four sides by name, and
+            # leaves the stage that decides recovery as a bare `KeyError` naming
+            # neither page nor act. Worse, a *degenerate* rectangle -- zero or
+            # negative width, or an off-page origin -- indexes cleanly and
+            # overlaps nothing, so `_overlaps` reports that no proposal accounts
+            # for ink a proposal does in fact cover, and the witness's
+            # observation is published as an unrouted-observation finding. That
+            # is manufactured coverage evidence driving bounded recovery
+            # (GOVERNANCE 10, 11), which is why the range checks belong here and
+            # not only in the sibling reader.
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
+                    for side in ("x", "y", "w", "h")
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+            ):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
                 )

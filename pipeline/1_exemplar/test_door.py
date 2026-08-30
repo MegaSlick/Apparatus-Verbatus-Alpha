@@ -35,6 +35,7 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
+import common.imaging as common_imaging
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -1074,13 +1075,29 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "ambiguous",
+    ("ambiguous", "refusal"),
     [
-        b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
-        b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+        # A duplicate member refuses deterministically at parse time, so this case
+        # pins the parse refusal exactly. Sharing the nesting case's alternation let
+        # it pass with `object_pairs_hook=_unique_json_object` removed: the document
+        # would then parse with the last value winning and fail the closed-schema
+        # check instead, which also matches "invalid" — the guard against a triage
+        # document carrying two values for one field gone with nothing reporting it.
+        (
+            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            "the triage producer recipe is not valid UTF-8 JSON",
+        ),
+        # The nesting case genuinely needs the width: whether the parser gives up
+        # before the closed-schema check is interpreter-dependent.
+        (
+            b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+            "the triage producer recipe is (not valid UTF-8 JSON|invalid)",
+        ),
     ],
 )
-def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_path, ambiguous):
+def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
+    tmp_path, ambiguous, refusal
+):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -1095,10 +1112,7 @@ def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_p
     # at closed-schema validation when the parser happens to survive the depth;
     # either way it is a named ContractError, never an escaping crash, which is
     # the guarantee this test exists for.
-    with pytest.raises(
-        ContractError,
-        match="the triage producer recipe is (not valid UTF-8 JSON|invalid)",
-    ):
+    with pytest.raises(ContractError, match=refusal):
         door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 
 
@@ -1269,13 +1283,31 @@ def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monke
     assert "clusters for one configured shard" in str(refused.value)
 
 
-def test_split_render_uses_the_deterministic_common_encoder():
+def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     """Same-process repetition alone would pass even for a Pillow-chosen framing;
     the claim under test is that a *different* PNG-writing zlib build still yields
     identical bytes, which is what `common.imaging.encode_image_deterministic`
     exists to guarantee (`common/test_imaging_determinism.py`'s own zlib-shim
     pattern). Without varying the encoder, this test cannot tell the project-owned
-    encoder from Pillow's own writer choosing whatever its bundled zlib does."""
+    encoder from Pillow's own writer choosing whatever its bundled zlib does.
+
+    The zlib shim alone did not do that. `encode_image_deterministic` writes stored
+    DEFLATE blocks through `_deterministic_stored_deflate` and never calls
+    `zlib.compress`, and neither does Pillow's PNG writer, which uses a compression
+    object. So the shim changed neither render and the test passed no matter which
+    encoder ran. The encoder call is spied on directly now, and the shim covers
+    `compressobj` too, so a replacement writer would be caught by both halves.
+    Found by CodeRabbit."""
+    calls: list[bytes] = []
+    genuine_encode = common_imaging.encode_image_deterministic
+
+    def spy(image):
+        encoded = genuine_encode(image)
+        calls.append(encoded)
+        return encoded
+
+    monkeypatch.setattr(common_imaging, "encode_image_deterministic", spy)
+
     data = jpeg(6, 4)
     part = door.triage_manifest.make_part(
         {"x": 0, "y": 0, "w": 6, "h": 4},
@@ -1286,16 +1318,23 @@ def test_split_render_uses_the_deterministic_common_encoder():
     first, _, first_contract = door.render_raster_page(data, 0, part)
     assert validate_png(first).width == 4
     assert first_contract["deterministic_encoder"] == "common.imaging.encode_image_deterministic-v1"
+    # The bytes the Door sealed are this encoder's return value, not a writer that
+    # merely produced something a PNG validator accepts.
+    assert calls == [first]
 
     genuine_compress = zlib.compress
+    genuine_compressobj = zlib.compressobj
     try:
         zlib.compress = lambda payload, level=-1, **kwargs: genuine_compress(payload, 6)
+        zlib.compressobj = lambda *args, **kwargs: genuine_compressobj(6)
         shimmed, _, shimmed_contract = door.render_raster_page(data, 0, part)
     finally:
         zlib.compress = genuine_compress
+        zlib.compressobj = genuine_compressobj
 
     assert shimmed == first, "a different zlib compression level renamed the sealed derivative"
     assert shimmed_contract == first_contract
+    assert calls == [first, first]
 
 
 def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
@@ -1565,6 +1604,60 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
+
+
+def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
+    """A real run authority must say which serving catalogue governed it.
+
+    The fixture path binds the catalogue's bytes into `config_digest`; the real
+    path did not, so two real submissions selecting different
+    `--serving-recipes-config` files produced the same digest. `RunTree.create`
+    saw no change, the same run id was reusable across them, and nothing in the
+    authority could afterwards say which catalogue the run had been served from
+    (GOVERNANCE 6).
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    recovery = door.load_recovery_policy()
+    common = (
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+    )
+    baseline = door._real_bindings(*common, **_sealed_binding_digests())
+
+    other = tmp_path / "serving_recipes_other.toml"
+    other.write_bytes(
+        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH).read_bytes() + b"\n# a different catalogue\n"
+    )
+    changed = door._real_bindings(
+        *common, serving_recipes_config_path=other, **_sealed_binding_digests()
+    )
+
+    assert baseline["config_digest"] != changed["config_digest"]
+    assert (
+        baseline["sealed_config_digests"]["serving-recipes"]
+        != (changed["sealed_config_digests"]["serving-recipes"])
+    )
+    # Named for a point of use, exactly as the fixture path names it.
+    assert "pod-placement" in baseline["sealed_config_digests"]
 
 
 def _approved_submission(tmp_path, files: dict[str, bytes]):

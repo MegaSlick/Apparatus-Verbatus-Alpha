@@ -1084,7 +1084,13 @@ def test_operator_launch_delivers_and_displays_a_low_balance_warning(tmp_path: P
     assert receipt["action"] == "create"
     assert receipt["subject"] == "operator-test"
     assert receipt["spend"]["ceilings"]["alert_notifications"] == ["Phone notification: sent."]
-    assert "confirmation_phrase" not in receipt
+    # The whole serialised payload, not its top-level keys: the phrase would
+    # arrive nested under `spend`, where every other value read above lives, and
+    # a top-level check would stay green while a durable receipt carried the one
+    # value that must be read off the live price screen instead of copied.
+    serialised = json.dumps(receipt)
+    assert "confirmation_phrase" not in serialised
+    assert prepared.confirmation_phrase not in serialised
 
 
 def test_post_create_balance_refusal_does_not_claim_no_paid_action_occurred(

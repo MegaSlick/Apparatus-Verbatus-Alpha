@@ -53,6 +53,7 @@ from common.fixture_identity import page_identity
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
     EXIT_HELD,
     _decode_environment,
@@ -65,6 +66,7 @@ from common.stage import (
     verify_final_seal,
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
+from operations.operator import surface, volume_s3
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -671,7 +673,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
 # both authorities without adding an artifact.
 #
-# Re-pinned for the Door's cluster report, a new artifact in every run.
+# *Not* re-pinned for the Door's cluster report, though a note here once said it was.
+# `publish_cluster_report` writes nothing unless some admission carries a
+# `triage_link`, and only the real-ingress route ever supplies triage rows to
+# `expand_sources`; the fixture route these runs take submits none, so the report
+# returns None and no artifact reaches the tree. The pins did move at the merge that
+# landed the report, but for the typed render-origin validator and the page-identity
+# refusal composed in the same commit. Found by CodeRabbit.
 #
 # Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
 # config_digest, so the pins bind those provenance fields even though artifact
@@ -854,8 +862,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # their retained blob digests, and the config digest bound into every artifact;
 # counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
 # from independent canonical-id `r` runs after the correction.
-# run's digest. That candidate changed no stage behavior, artifact kind, count,
-# or exit code; its canonical measurements were 84/0 and 109/3.
+# Superseded, and kept because this log is append-only: the `coverage-recovery`
+# entry higher up added fixture bytes alone and so moved every run's digest.
+# That candidate changed no stage behavior, artifact kind, count, or exit code;
+# its canonical measurements were 84/0 and 109/3, and the entries below have
+# since replaced both.
 # DAI adds a content-addressed adapter crop, making canonical happy/review
 # counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
 # consults LANCZOS there. Both digests were reproduced twice in independent
@@ -924,6 +935,32 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Both digests were re-measured twice in independent temporary roots through this
 # module's own `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
 #
+# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# retained response it derived from in its envelope `inputs`, not only a Churro
+# `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
+# so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
+# re-hashed, although the same envelope already bound the Churro capture that
+# way; the Recensor applies its existing capture rule to them too. Reference
+# fields only -- each page record that names retained responses gains them as
+# inputs. No new blob or artifact file, but the EXISTING page-record artifacts'
+# bytes change (their inputs list grows), which is exactly why both digests
+# below moved. No exit-code change: counts hold at 90/0 and
+# 113/3, and both digests below reproduced twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers at canonical run id "r".
+#
+# Re-pinned at this merge (pr/09's landed tip onto the Ink Map tree): the entry
+# above was measured on pr/09's own tree, where the Ink Map does not exist, so
+# its 90/113 are that tree's counts and not this one's. The two changes are
+# independent and both apply here -- the Ink Map's five artifacts per tree, and
+# the page records whose `inputs` now bind every retained response they derived
+# from -- so the counts are the Ink Map's 95/118 while the digests move again
+# for the inputs binding. Neither side's literals could be carried across: both
+# were measured on a tree missing the other's change. Exits hold at 0 and 3, and
+# both digests below were measured twice in independent temporary roots through
+# this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
+# canonical run id "r".
+#
 # Reading this log: it is chronological and append-only, and every entry states
 # the counts and the fixture shape as they stood when that entry was written.
 # Only the last entry describes the tree now; an earlier entry naming a
@@ -932,8 +969,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 118
-HAPPY_RUN_TREE_DIGEST = "ae7d0957e8f8645101661109353911bb9a73fe9bb2879e65eb1a2efe25bb7396"
-REVIEW_RUN_TREE_DIGEST = "8e6f17db53a599d10fad548cddca51cdf38791fc728d933de0efcdb498096897"
+HAPPY_RUN_TREE_DIGEST = "2cb821d2f728a65241ce7ab739a8d45c98a0c53f70424cc3ffa955df534fd0e3"
+REVIEW_RUN_TREE_DIGEST = "58e4839f32778ae260be05d86a0727d3a07de303205a9ca1f058975daf330630"
 
 
 def orchestrate(
@@ -1130,7 +1167,12 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         scenario="happy",
         fixture_root=ROOT / "proof",
         models_config=ROOT / "config" / "models.toml",
-        serving_recipes_config=ROOT / "config" / "serving_recipes.toml",
+        # The constant, not a second spelling of the path. This stand-in feeds
+        # mocked subprocess tests, so a catalogue that moved with only
+        # `DEFAULT_SERVING_RECIPES_CONFIG_PATH` updated would leave them passing
+        # while handing every stage a path that is not there. The neighbouring
+        # literals predate this branch and are left as they are.
+        serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
@@ -1362,6 +1404,49 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     )
     assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
     assert resolved.data_gate_policy.is_file()
+
+
+def test_orchestrator_upload_credentials_are_the_transfers_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both stripping helpers drop the transfer's own names and keep the rest.
+
+    Both this orchestrator and the operator surface strip the upload-only
+    credentials from a stage's environment, and the import boundary keeps this
+    one a duplicate. Without this reconciliation a third credential added to the
+    transfer would go on reaching stages here while the whole suite stayed
+    green -- a live secret in the environment of the process that decodes
+    caller-supplied material.
+
+    Comparing the three sets is not enough on its own: three constants can agree
+    perfectly while a helper has stopped consulting its own. So each helper is
+    run against an environment holding every name, and what it returns is the
+    evidence.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
+    assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    # The names are the transfer's own defaults, not a set that merely happens to
+    # match them today.
+    spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")
+    assert {spec.access_key_env, spec.secret_key_env} == set(volume_s3.TRANSFER_CREDENTIAL_ENV)
+
+    for name in volume_s3.TRANSFER_CREDENTIAL_ENV:
+        monkeypatch.setenv(name, f"upload-secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        # The stripper must remove those names and nothing else: an
+        # implementation that returned an empty environment, or one that dropped
+        # everything it did not recognise, would satisfy the assertion above
+        # while breaking every stage that reads its own settings.
+        assert built["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved", label
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):

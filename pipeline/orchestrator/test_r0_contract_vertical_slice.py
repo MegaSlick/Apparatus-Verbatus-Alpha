@@ -1091,12 +1091,8 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     # `test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current`:
     # a Perlector that never sealed sends the Recensor to the missing-boundary
     # refusal, and the drift this test exists to catch stops being measured.
-    assert (
-        invoke_stage(
-            root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py"
-        ).returncode
-        == 0
-    )
+    sealing = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
+    assert sealing.returncode == 0, sealing.stderr
     _reseal(tree, path, record)
 
     perlector = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
@@ -1187,10 +1183,8 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     # of "each must refuse" that would then be proven nowhere. That first run
     # retains an input reference to the record's pre-forgery bytes, so its
     # boundary is re-witnessed below before the Recensor is asked to read.
-    assert (
-        invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py").returncode
-        == 0
-    )
+    sealing = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
+    assert sealing.returncode == 0, sealing.stderr
     _reseal(tree, attachment_path, attachment_record)
 
     perlector = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")

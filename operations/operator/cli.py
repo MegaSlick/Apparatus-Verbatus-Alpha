@@ -649,7 +649,13 @@ def _advance_with_confirmation(
     tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
         _seal, digest = sealed_boundary(tree, stage)
-    except ApprovalRefusal as error:
+    except (ApprovalRefusal, OSError) as error:
+        # `sealed_boundary` converts contract failures, but a stage manifest or
+        # seal artefact that cannot be read raises `OSError` straight through.
+        # Uncaught, that reached the catch-all and told the operator to
+        # photograph an unexpected error and find a maintainer, when the answer
+        # is that this boundary cannot be advanced because its evidence could
+        # not be read. `advance.trigger_advance` guards the same call this way.
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     phrase = f"advance {run_id} past {stage} at {digest}"
     _print(f"The current {stage} boundary has seal digest {digest}.")

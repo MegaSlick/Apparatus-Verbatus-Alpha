@@ -39,16 +39,31 @@ def test_a_submission_ordinal_does_not_enter_page_identity():
 
 
 def test_inserting_an_earlier_source_leaves_existing_page_identities_unchanged():
-    originals = ["b" * 64, "c" * 64]
-    before = {
-        digest: identities.page_id({"kind": "source", "sha256": digest}, WHOLE)
-        for digest in originals
+    """The named risk: a new first page silently renaming every page after it,
+    and every act beneath them re-keyed.
+
+    Routed through `page_identity`, which takes the whole submitted row list and
+    an ordinal, because that is the only helper here that can see position at
+    all. Calling `page_id` twice with the same origin record could not have
+    failed however page identity was derived -- it was one expression compared
+    against itself.
+    """
+    submitted = {
+        "page": [
+            {"ordinal": 1, "sha256": "b" * 64},
+            {"ordinal": 2, "sha256": "c" * 64},
+        ]
     }
-    after = {
-        digest: identities.page_id({"kind": "source", "sha256": digest}, WHOLE)
-        for digest in ["a" * 64, *originals]
+    inserted = {
+        "page": [
+            {"ordinal": 1, "sha256": "a" * 64},
+            {"ordinal": 2, "sha256": "b" * 64},
+            {"ordinal": 3, "sha256": "c" * 64},
+        ]
     }
-    assert {digest: after[digest] for digest in originals} == before
+    before = {"b" * 64: page_identity(submitted, 1), "c" * 64: page_identity(submitted, 2)}
+    after = {"b" * 64: page_identity(inserted, 2), "c" * 64: page_identity(inserted, 3)}
+    assert after == before
 
 
 def test_one_hand_computable_page_identity_golden():

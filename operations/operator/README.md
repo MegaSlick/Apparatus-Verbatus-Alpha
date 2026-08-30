@@ -163,8 +163,9 @@ appears.
 ## Where it keeps its own records
 
 Everything this tool writes for itself lives in `~/.local/state/verbatus/` by default (or
-`$XDG_STATE_HOME/verbatus/` when that variable holds an absolute path; a relative
-value is ignored), outside the project checkout; `--state-dir` moves it.
+`$XDG_STATE_HOME/verbatus/` when that variable holds an absolute path outside the
+project checkout; a relative value, or an absolute one that lands inside the
+checkout, is ignored), outside the project checkout; `--state-dir` moves it.
 Each record is written once and named after a
 checksum of its own contents, so a record cannot be quietly edited afterwards and still
 read back. You do not need to look in there — `status` shows you what matters.

@@ -568,7 +568,16 @@ def test_coverage_for_an_unknown_act_is_fatal():
 
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
-    files must agree, a test reads both from source and fails on divergence."""
+    files must agree, a test reads both from source and fails on divergence.
+
+    Scope, said plainly so a pass here is not read for more than it proves: the
+    subtraction removes `BOUNDARY_OUTCOMES` from the same vocabulary the loop in
+    `outcomes.py` put them into, so a *third* boundary outcome would be added
+    and taken away again and this check would stay green. What refuses that is
+    `EXPECTED_VOCABULARY_SIZES["armarium"]` above, pinned at 7 -- five
+    categories and two boundary outcomes. The two are one guard, and loosening
+    the size pin removes the half that watches this direction.
+    """
     assert set(outcomes.VOCABULARIES[ARMARIUM]) - set(outcomes.BOUNDARY_OUTCOMES.values()) == {
         category.value for category in ArmariumCategory
     }
@@ -586,10 +595,17 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
     Written on this audit: the repair landed with no named test holding it, and
     the fixture cannot produce the divergence today.
     """
+    # Stated in full rather than through the boolean shorthand: what this test
+    # needs is two chairs that attached *and* compared, and the shorthand says
+    # nothing about comparability.
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "read"},
         3,
-        attachments={"s1": True, "s2": True, "s3": False},
+        attachments={
+            "s1": {"attached": True, "comparable": True},
+            "s2": {"attached": True, "comparable": True},
+            "s3": {"attached": False, "comparable": False},
+        },
     )
     assert coverage["under_witnessed"] is True
     assert coverage["by_class"]["completed"] == 3, "the wider class still counts all three"
@@ -659,6 +675,24 @@ def _fact(attached, basis):
     # seam: an attachment that cannot be compared is not evidence of coverage.
     # A fact reached geometrically is comparable exactly when it attached.
     return {"attached": attached, "comparable": attached, "attachment_basis": basis}
+
+
+def test_a_bare_boolean_attachment_claims_no_comparability_either():
+    """The shorthand states attachment, and attachment is not comparability.
+
+    Copying `attached` into `comparable` gave a caller that measured no
+    comparison one toward the witness floor for free -- the same unearned claim
+    the granularity basis refuses it just below. A caller holding comparability
+    evidence says so in the mapping form.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read"},
+        2,
+        attachments={"s1": True, "s2": True},
+    )
+
+    assert coverage["page_granularity_only"] == 2
+    assert coverage["under_witnessed"] is True
 
 
 def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():

@@ -56,6 +56,11 @@ SYNTHETIC_FIXTURE_INGRESS: Final = "synthetic-fixture"
 REAL_INGRESS: Final = "real"
 
 _REQUIRED: Final = (
+    # `schema` is required like every other field, so a record that simply omits
+    # it is named as absent rather than reported below as a schema of the wrong
+    # type — a diagnostic that sent the reader looking for a value that was
+    # never there.
+    "schema",
     "subject_ids",
     "action",
     "approver",
@@ -109,7 +114,11 @@ class ApprovalRecordBinding:
     ):
         if not isinstance(reference, ApprovalRecordReference):
             raise ApprovalRefusal("an approval-record binding has no typed reference")
-        if not isinstance(subject, str) or not subject.strip():
+        # `type(...) is str`, not `isinstance`, for the reason this module states
+        # at `_text_field_refusal`: a str subclass can override comparison, and
+        # the arm that decides which experiment an approval covers does so by
+        # comparing this subject against a named constant.
+        if type(subject) is not str or not subject.strip():
             raise ApprovalRefusal("an approval-record binding names no subject")
         if not _is_sha256(target_version_hash):
             raise ApprovalRefusal("an approval-record binding names no target version")
@@ -231,7 +240,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     missing = [field for field in _REQUIRED if field not in record]
     if missing:
         raise ApprovalRefusal(f"approval record is missing {missing}")
-    schema = record.get("schema")
+    schema = record["schema"]
     if type(schema) is not str:
         raise ApprovalRefusal("approval record schema is not an exact string")
     if schema != "approval-record.v0":
