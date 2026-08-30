@@ -4031,7 +4031,9 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
     together instead of a reviewer noticing.
     """
     readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
-    documented = set(re.findall(r"^\| `([a-z]+)` \|", readme, flags=re.MULTILINE))
+    # A multi-word cell like `spend show` documents the verb plus its
+    # subcommand; the verb is its first word.
+    documented = set(re.findall(r"^\| `([a-z]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
     subparsers_action = next(
         action
         for action in cli.build_parser()._actions
@@ -4047,14 +4049,15 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
 
     counted = len(declared)
     spelled = {
-        11: ("eleven", "Ten"),
-        12: ("twelve", "Eleven"),
-        13: ("thirteen", "Twelve"),
+        13: ("thirteen", "Eleven"),
+        14: ("fourteen", "Twelve"),
+        15: ("fifteen", "Thirteen"),
     }
     assert counted in spelled, (
         f"{counted} verbs: extend this test's number words so the heading stays checkable"
     )
     total, doers = spelled[counted]
-    # The heading counts every word; the sentence counts every word but `status`.
+    # The heading counts every word; the sentence counts every word but the
+    # two you can run any time (`status` and `spend show`).
     assert f"## The {total} words" in readme
     assert f"\n{doers} things this tool can do," in readme

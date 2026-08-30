@@ -1403,7 +1403,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',

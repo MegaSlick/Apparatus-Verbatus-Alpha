@@ -23,7 +23,7 @@ def _policy(path: Path) -> Path:
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -108,7 +108,7 @@ def test_spend_show_names_stale_observation_without_refreshing_it(tmp_path: Path
 
 def test_spend_refuses_to_display_unconfigured_policy_as_configured(tmp_path: Path) -> None:
     policy = tmp_path / "spend.toml"
-    policy.write_text('schema = "pod-spend.v2"\nstate = "unconfigured"\n', encoding="utf-8")
+    policy.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
 
     with pytest.raises(OperatorError) as raised:
         SpendSurface(ReceiptStore(tmp_path / "state", now=lambda: NOW), NOW).show(policy)

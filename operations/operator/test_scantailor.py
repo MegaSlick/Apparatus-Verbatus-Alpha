@@ -531,9 +531,9 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
 def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
     readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
     words = [line for line in readme.splitlines() if line.startswith("| `")]
-    assert "## The eleven words" in readme
-    assert "Nine things this tool can do" in readme
-    assert len(words) == 11
+    assert "## The fourteen words" in readme
+    assert "Twelve things this tool can do" in readme
+    assert len(words) == 14
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
