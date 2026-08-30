@@ -12,7 +12,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_of, is_sha256, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
-from common.corpus_register import refuse_preference
+from common.corpus_register import refuse_capture_preference
 from common.cross_capture_dissent import (
     CAVEAT,
     unit20_dissent_input,
@@ -208,7 +208,7 @@ def validate_reshoot_delta_record(record: Any, dissent_record: Any) -> dict[str,
     """Refuse output not reproduced from the exact sealed Unit 19 evidence."""
     if not isinstance(record, dict) or set(record) != _FIELDS or not verify_self_hash(record):
         raise SchemaRefusal("reshoot delta record: closed shape or self_hash failed")
-    refuse_preference(record, what="reshoot delta record")
+    refuse_capture_preference(record, what="reshoot delta record")
     if record["schema"] != SCHEMA or record["caveat"] != CAVEAT:
         raise SchemaRefusal("reshoot delta record: schema or dissent caveat is not binding")
     if record["denominator_caveat"] != DENOMINATOR_CAVEAT:

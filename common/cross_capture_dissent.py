@@ -15,7 +15,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
-from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_preference
+from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_capture_preference
 
 SCHEMA: Final = "cross-capture-dissent.v1"
 CAVEAT: Final = (
@@ -72,7 +72,7 @@ _SPAN_FIELDS: Final = frozenset({"start", "end"})
 # `capture_confidence`) while meaning exactly the thing §6 forbids.  §7 shape
 # 1's preference vocabulary is swept the same way, from the corpus register's
 # own list rather than a second copy here, so the two spellings of "forbidden"
-# cannot drift; `refuse_preference` then matches those names exactly and names
+# cannot drift; `refuse_capture_preference` then matches those names exactly and names
 # the producing record in its refusal.  The sweep is over keys only:
 # `observed_form` is legitimately a witness-shaped string and must stay
 # readable as evidence.
@@ -351,7 +351,7 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
         # depth.  This is the shared screen every producer of the §7 vocabulary
         # runs, kept so that narrowing the fragment match can never silently retire
         # the preference screen with it.
-        refuse_preference(candidate, what="cross-capture dissent")
+        refuse_capture_preference(candidate, what="cross-capture dissent")
     except RecursionError as error:
         # `model_provenance` is accepted as any object at all (module docstring
         # above), so an unvalidated caller can nest it past Python's recursion
