@@ -860,8 +860,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # their retained blob digests, and the config digest bound into every artifact;
 # counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
 # from independent canonical-id `r` runs after the correction.
-# run's digest. That candidate changed no stage behavior, artifact kind, count,
-# or exit code; its canonical measurements were 84/0 and 109/3.
+# Superseded, and kept because this log is append-only: the `coverage-recovery`
+# entry higher up added fixture bytes alone and so moved every run's digest.
+# That candidate changed no stage behavior, artifact kind, count, or exit code;
+# its canonical measurements were 84/0 and 109/3, and the entries below have
+# since replaced both.
 # DAI adds a content-addressed adapter crop, making canonical happy/review
 # counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
 # consults LANCZOS there. Both digests were reproduced twice in independent
