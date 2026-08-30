@@ -288,7 +288,15 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
             "physical_page_components": [],
             "self_hash": self_hash({**record, "physical_page_components": []}),
         },
-        {**record, "text_hash": "0" * 64},
+        # Self-hash recomputed over the forged digest on purpose: with the
+        # original self_hash left in place, verify_self_hash refuses first and
+        # the text_hash comparison is never reached, so this variant would
+        # duplicate the self_hash case below instead of covering its own guard.
+        {
+            **record,
+            "text_hash": "0" * 64,
+            "self_hash": self_hash({**record, "text_hash": "0" * 64}),
+        },
         {**record, "self_hash": "0" * 64},
     ):
         try:

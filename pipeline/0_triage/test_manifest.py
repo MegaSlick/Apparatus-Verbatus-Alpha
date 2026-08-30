@@ -828,3 +828,47 @@ def test_the_mode_triple_is_the_shared_vocabulary_not_a_private_one():
     assert TRIAGE_MODES == ("manual", "semi", "auto")
     for mode in TRIAGE_MODES:
         assert validate_manifest(manifest([row(mode=mode)]))
+
+
+def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
+    """The drift pin for `common/capture_comparability.py`, owned by this stage.
+
+    The comparability derivation reads `mode`, `actor` (kind/identity/revision),
+    and `human_override` off this stage's rows. The pin lives here rather than
+    under common/ because common/ knows nothing about stages: a stage author
+    renaming a row field must meet the failure at the edit site, and nothing in
+    common/ may import a stage to find out.
+    """
+    import manifest as _manifest_module  # noqa: PLC0415
+
+    from common.capture_comparability import (  # noqa: PLC0415
+        ACTOR_FACT_FIELDS,
+        TRIAGE_ACTOR_KINDS,
+        TRIAGE_FACT_FIELDS,
+        comparability_from_triage,
+    )
+
+    assert set(TRIAGE_FACT_FIELDS) <= _manifest_module._ROW_FIELDS
+    assert TRIAGE_ACTOR_KINDS == _manifest_module.ACTOR_KINDS
+    sealed = make_row(
+        corpus_id="montebello",
+        source_frame_sha256="a" * 64,
+        frame={"width": 100, "height": 100},
+        split=make_split(
+            [
+                make_part(
+                    {"x": 0, "y": 0, "w": 100, "h": 100},
+                    {"x": 0, "y": 0, "w": 100, "h": 100},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "producer", "identity": "verbatus-triage", "revision": "0.0.0"},
+        human_override=False,
+    )
+    assert set(ACTOR_FACT_FIELDS) == set(sealed["actor"])
+    assert comparability_from_triage(sealed, sealed)["comparably_captured"] is True

@@ -8,16 +8,13 @@ true without detection.
 from __future__ import annotations
 
 import ast
-import importlib.util
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from common.capture_comparability import (
-    ACTOR_FACT_FIELDS,
     COMPARABILITY_DIFFERENCE_CODES,
-    TRIAGE_ACTOR_KINDS,
     TRIAGE_FACT_FIELDS,
     comparability_from_triage,
 )
@@ -56,14 +53,6 @@ def _row(**overrides: Any) -> dict[str, Any]:
     }
     row.update(overrides)
     return row
-
-
-def _load_triage_manifest():
-    """Import Unit 5's manifest by path; its package name starts with a digit."""
-    spec = importlib.util.spec_from_file_location("_u5_manifest", TRIAGE_MANIFEST)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _production_sources() -> list[Path]:
@@ -179,35 +168,6 @@ def test_malformed_triage_facts_are_refused_rather_than_compared_equal(overrides
 
     with pytest.raises(SchemaRefusal, match=cause):
         comparability_from_triage(malformed, malformed)
-
-
-def test_the_facts_read_here_are_unit_5s_own_row_and_actor_fields():
-    """Schema drift must fail rather than leave a derivation that refuses every pair."""
-    manifest = _load_triage_manifest()
-    assert set(TRIAGE_FACT_FIELDS) <= manifest._ROW_FIELDS
-    assert TRIAGE_ACTOR_KINDS == manifest.ACTOR_KINDS
-    row = manifest.make_row(
-        corpus_id="montebello",
-        source_frame_sha256="a" * 64,
-        frame={"width": 100, "height": 100},
-        split=manifest.make_split(
-            [
-                manifest.make_part(
-                    {"x": 0, "y": 0, "w": 100, "h": 100},
-                    {"x": 0, "y": 0, "w": 100, "h": 100},
-                    0,
-                    colour_mode="keep",
-                )
-            ]
-        ),
-        re_shoot_cluster_id=None,
-        confidence=4,
-        mode="auto",
-        actor={"kind": "producer", "identity": "verbatus-triage", "revision": "0.0.0"},
-        human_override=False,
-    )
-    assert set(ACTOR_FACT_FIELDS) == set(row["actor"])
-    assert comparability_from_triage(row, row)["comparably_captured"] is True
 
 
 def test_no_production_module_outside_the_derivation_names_the_capture_condition():

@@ -244,6 +244,16 @@ wants it before relying on the file — with one practical caveat: its first arg
 stage-context-shaped object (`.tree`, `.fixture`, `.input_ref`, `.artifact_ref`), so a
 consumer outside a stage builds a small shim first, exactly as `test_index.py` does.
 
+**The clustered index has no such reconciliation yet — deliberately unfilled.**
+`build_logical_index` (Unit 19D) seals one `{logical_act_id, text_hash}` row per
+established logical record, but no consumer reads it and the stage does not yet run
+it: neither established stage dispatches by logical act. Until the first consumer
+lands, the index can only agree with the writer's own list — the exact self-agreement
+the image-local reconciliation above exists to break. Wiring the clustered path must
+bring the same three-way reconciliation (rows, records on disk, the Recensor's
+accepted set) with it; an index without it would let a skipped logical act read as
+absent rather than as an error.
+
 ## Consumer obligations
 
 Armarium requires exactly one Archetypus record for an accepted act, rather than

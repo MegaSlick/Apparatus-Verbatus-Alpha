@@ -184,7 +184,6 @@ while the Perlector now observes the delivered pixels before it reports empty.
 
 ```text
 act_key ("page-fallback:<ordinal>"), page_id, page_ordinal, page_bounds
-fallback_ordinal (the reserved FALLBACK_PAGE_ACT_ORDINAL)
 tile_count, tiles = [{bounds, rationale}]
 reason
 provenance (the resolved Designator chair)
