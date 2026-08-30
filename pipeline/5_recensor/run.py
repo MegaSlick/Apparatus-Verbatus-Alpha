@@ -273,8 +273,14 @@ def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
 
 SURVEY_ABSENT = "act-visibility-survey-absent"
 REGISTRATION_ABSENT = "cross-capture-registration-absent"
+# A view whose capture rendered two pages cannot be surveyed on one grid: the
+# instrument divides a single rectangle into cells, and a rectangle spanning two
+# page coordinate spaces exists on no page. Recorded like the other absences
+# rather than measured, because a verdict over that rectangle would describe a
+# surface no camera saw.
+SURVEY_SPANS_TWO_PAGES = "act-visibility-survey-spans-two-pages"
 # An absent instrument is recorded but does not become a measured shortfall.
-INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT})
+INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT, SURVEY_SPANS_TWO_PAGES})
 
 
 def _page_occlusion_survey(context, page_id: str) -> dict:
@@ -378,7 +384,28 @@ def act_cross_capture_coverage(context, act_id: str, latest_payload: dict) -> di
             surveyed = surveyed and page_survey["surveyed"]
             polygons.extend(page_survey["polygons"])
             occlusion_refs.extend(page_survey["occlusion_refs"])
-        if surveyed:
+        # One capture may render two pages -- `logical_reading.act_autopsia`
+        # groups every touched page by capture, so an act running over a page
+        # break becomes one view with two page identifiers. The bounding box
+        # below is taken over every page's proposal geometry at once, and the
+        # occlusion polygons above are pooled the same way, so for such a view
+        # the rectangle handed to the instrument mixes two coordinate spaces:
+        # a sticker over the top of page two would be reported as covering
+        # cells whose coordinates belong to page one. The verdict is not
+        # decorative -- `cross_capture_review_causes` reads it and
+        # `review_route_from_findings` turns occluded-everywhere into a stated
+        # reason -- so an act could be held on a false measurement, or called
+        # fully visible while real occlusion landed in the wrong cells.
+        # Continuation acts are ordinary in these registers, so this is the
+        # common case and not an edge. Until the instrument can classify each
+        # page on its own grid and combine the results, such a view is recorded
+        # as unmeasured rather than measured wrongly (GOVERNANCE 2 and 10).
+        if surveyed and len(view["page_ids"]) > 1:
+            visibility_state = "unresolved"
+            visible_cells = []
+            occluded_cells = []
+            finding_codes = [SURVEY_SPANS_TWO_PAGES]
+        elif surveyed:
             x0 = min(bounds["x"] for bounds in bounds_list)
             y0 = min(bounds["y"] for bounds in bounds_list)
             x1 = max(bounds["x"] + bounds["w"] for bounds in bounds_list)
@@ -2858,8 +2885,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 outside_ink_requests=outside_ink_requests,
             )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
-                # This independent contract check must agree with the live
-                # request gate before any recovery budget is spent.
+                # A shape guard, and it cannot fire on the production path
+                # today -- said plainly here rather than left to be discovered,
+                # the way the route screen above already states its own reach.
+                # Every conjunct below is proved before this point: the three
+                # budget comparisons are the enclosing condition's own, this
+                # origin is reachable only from a non-empty measured ink
+                # observation, and that same branch is what proves the page's
+                # grant unspent. So `admitted` is true whenever control arrives.
+                # Its worth is structural: it is a second spelling of the rule,
+                # and it fires if a later edit makes the live gate looser than
+                # the contract. It does not, on its own, hold the two in
+                # agreement -- an edit that loosens both together would pass.
                 dossier = latest_payload.get("dossier")
                 gate = capture_specific_recovery(
                     logical_act_id=(

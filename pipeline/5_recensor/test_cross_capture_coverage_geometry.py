@@ -538,7 +538,20 @@ def test_the_recovery_gate_consults_no_cross_capture_fact():
         f"{EXPECTED_RECOVERY_GATES}; screen the new one here before raising this"
     )
     for gate in gates:
-        names = {child.id for child in ast.walk(gate.test) if isinstance(child, ast.Name)}
+        # Bare names are not the only way in. `ast.Name` misses an attribute
+        # read like `coverage.cross_capture_state` and misses a dict key like
+        # `result["cross_capture_coverage"]` -- and the subscript idiom is used
+        # inside this very gate, whose eval environment below supplies `budget`
+        # as a dict. A regression reaching union geometry that way would have
+        # passed the screen.
+        names = set()
+        for child in ast.walk(gate.test):
+            if isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                names.add(child.value)
         assert not {name for name in names if "cross_capture" in name or "occlu" in name}, (
             f"union geometry is back in the recovery gate at line {gate.lineno}"
         )
@@ -716,3 +729,77 @@ def test_the_coverage_and_witness_floor_functions_have_real_production_callers()
         "capture_specific_recovery",
     ):
         assert name in called, f"{name} has no production call site in run.py"
+
+
+def test_a_view_spanning_two_pages_is_unmeasured_not_measured_on_a_merged_grid():
+    """A continuation act's verdict may not come from a rectangle no page has.
+
+    One capture may render two pages: `logical_reading.act_autopsia` groups
+    every touched page by capture, and its own suite proves a single view with
+    `page_ids == ["pg_1", "pg_2"]`. The survey used to take one bounding box
+    over both pages' proposal geometry and pool both pages' occlusion polygons
+    against it, so an occlusion on page two was classified into cells whose
+    coordinates belong to page one -- and that verdict is read by
+    `cross_capture_review_causes`, which can hold an act with a stated reason
+    drawn from a measurement of a surface no camera saw. Continuation acts are
+    ordinary in these registers.
+
+    The honest record is that the instrument did not measure this view, which
+    is the shape the unresolved state already carries.
+    """
+    module = _recensor()
+    bounds = {"x": 0, "y": 0, "w": 20, "h": 20}
+    view = _view(
+        view_id="view_1",
+        physical_page_id="ppg_local_pg_a",
+        source_sha256=A,
+        page_id="pg_a",
+        local_act_id="act_x",
+    )
+    view["page_ids"] = ["pg_a", "pg_b"]
+    context = _FakeContext(
+        {
+            "region_1": (
+                "region",
+                "act_x",
+                _region_record(
+                    region_id="region_1",
+                    image_path="fixture/act_x.png",
+                    page_id="pg_a",
+                    ordinal=1,
+                    bounds=bounds,
+                ),
+            ),
+            # Both pages are genuinely surveyed, so this is not the
+            # absent-survey path: page one carries a proven below-ink polygon
+            # that occludes nothing, and page two a real occlusion. Pooled onto
+            # one grid, page two's polygon would have been reported as covering
+            # page one's cells and the act called occluded-everywhere.
+            "occ_a": (
+                "occlusion",
+                "occ_a",
+                _occlusion_record(
+                    page_id="pg_a", polygon=_rectangle(0, 0, 2, 2), z_relationship="below-ink"
+                ),
+            ),
+            "occ_b": (
+                "occlusion",
+                "occ_b",
+                _occlusion_record(page_id="pg_b", polygon=_rectangle(0, 0, 40, 40)),
+            ),
+        }
+    )
+    latest_payload = _autopsia_dossier(logical_act_id="act_x", views=[view])
+    result = module.act_cross_capture_coverage(context, "act_x", latest_payload)
+
+    (component,) = result["components"]
+    (capture,) = component["captures"]
+    assert capture["visibility_state"] == "unresolved"
+    assert capture["finding_codes"] == [module.SURVEY_SPANS_TWO_PAGES]
+    # Unmeasured means unmeasured: no cell may be claimed either way.
+    assert capture["visible_cells"] == []
+    assert capture["occluded_cells"] == []
+    # And it is an absent instrument, not a measured shortfall, so it does not
+    # become an occluded-everywhere hold on evidence that was never taken.
+    assert set(capture["finding_codes"]) <= module.INSTRUMENT_ABSENT_CODES
+    assert result["act_state"] != "occluded-everywhere"

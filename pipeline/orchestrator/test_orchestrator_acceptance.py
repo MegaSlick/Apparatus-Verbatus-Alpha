@@ -1162,6 +1162,17 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # tree missing the other's change. The four literals are re-measured here on the
 # merged tree, twice in independent temporary roots through this module's own
 # `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
+#
+# Reconciling the two happy baselines above, because they do not agree and a
+# reader cannot otherwise tell an expected count change from a dropped act.
+# This branch's own entries climbed to happy 98 (97 -> 98 for the partition
+# blob, then 98 held). The incoming branch's entries stand at happy 95, because
+# its ink-confirmation gate removed the recovery round this branch still had.
+# Neither number describes the merged tree. Measured here: happy is 96, which is
+# the incoming 95 plus exactly the one sealed run-partition blob this branch
+# adds -- the same +1 the review side shows, 106 -> 107. So the two files
+# between 98 and 96 were removed by the incoming ink gate, not lost here, and
+# every entry above naming 97 or 98 is superseded rather than contradicted.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
 HAPPY_RUN_TREE_DIGEST = "d82c0727cbb759414012dc932b9ff0d4360c3c89189dc5b6f6039632ddcf6509"

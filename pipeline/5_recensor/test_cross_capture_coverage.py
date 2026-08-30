@@ -240,7 +240,29 @@ def test_same_chair_counts_once_only_after_its_comparable_rows_cover_every_compo
     ("rows", "components", "floor", "refusal"),
     [
         (None, {"whole"}, 1, "invalid denominator"),
+        # `rows=[]` is itself valid -- a list with nothing in it passes the
+        # denominator guard and the loop simply does not run -- so this case
+        # already isolates the boolean floor as its only refusable input.
+        # Measured: the same case with `floor=1` raises nothing at all.
         ([], {"whole"}, True, "invalid denominator"),
+        # The same guard again over otherwise-valid rows, so the bool-floor
+        # check is pinned independently of whatever the rows list is doing. A
+        # floor of `True` read as the integer 1 drops a parish run's witness
+        # floor to one chair.
+        (
+            [
+                {
+                    "chair": "attestator_1",
+                    "capture": A,
+                    "attached": True,
+                    "comparable": True,
+                    "components": ["whole"],
+                }
+            ],
+            {"whole"},
+            True,
+            "invalid denominator",
+        ),
         (
             [
                 {
@@ -339,6 +361,11 @@ def test_cross_capture_visibility_cannot_be_passed_to_unit14b_page_denominators(
     while pending:
         code = pending.pop()
         reached.update(code.co_names)
+        # String constants too. `co_names` holds referenced and attribute names
+        # but not subscript keys, and these coverage records are plain dicts --
+        # so the natural way to reach the value, `payload["cross_capture_coverage"]`,
+        # lands in `co_consts` where the guard was not looking.
+        reached.update(constant for constant in code.co_consts if isinstance(constant, str))
         pending.extend(constant for constant in code.co_consts if isinstance(constant, type(code)))
     assert "cross_capture_coverage" not in reached
     assert FIXTURE.exists(), "the 19B two-capture fixture remains the shared evidence path"
