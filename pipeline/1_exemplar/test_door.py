@@ -1606,6 +1606,60 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     assert baseline["config_digest"] != changed["config_digest"]
 
 
+def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
+    """A real run authority must say which serving catalogue governed it.
+
+    The fixture path binds the catalogue's bytes into `config_digest`; the real
+    path did not, so two real submissions selecting different
+    `--serving-recipes-config` files produced the same digest. `RunTree.create`
+    saw no change, the same run id was reusable across them, and nothing in the
+    authority could afterwards say which catalogue the run had been served from
+    (GOVERNANCE 6).
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    recovery = door.load_recovery_policy()
+    common = (
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+    )
+    baseline = door._real_bindings(*common, **_sealed_binding_digests())
+
+    other = tmp_path / "serving_recipes_other.toml"
+    other.write_bytes(
+        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH).read_bytes() + b"\n# a different catalogue\n"
+    )
+    changed = door._real_bindings(
+        *common, serving_recipes_config_path=other, **_sealed_binding_digests()
+    )
+
+    assert baseline["config_digest"] != changed["config_digest"]
+    assert (
+        baseline["sealed_config_digests"]["serving-recipes"]
+        != (changed["sealed_config_digests"]["serving-recipes"])
+    )
+    # Named for a point of use, exactly as the fixture path names it.
+    assert "pod-placement" in baseline["sealed_config_digests"]
+
+
 def _approved_submission(tmp_path, files: dict[str, bytes]):
     """Create synthetic source files, an approved-root policy, and the filename ledger."""
     approved = tmp_path / "approved"
