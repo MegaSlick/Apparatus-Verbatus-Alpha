@@ -23,16 +23,16 @@ from typing import Any, Final, Mapping, Sequence
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
-from common.contracts.errors import IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
     append_records,
+    confirm_unchanged_head,
     empty_register,
     membership_heads,
     read_register_path,
     refuse_capture_preference,
-    register_digest,
     validate_register_bytes,
 )
 from common.imaging import ENCODER_LOSSLESS_MODES
@@ -232,7 +232,12 @@ def _whole_frame_row(
 
 
 def _verify_transcribed_row(
-    row: Mapping[str, Any], frame: SubmittedFrame, digest: str, triage_mode: str
+    row: Mapping[str, Any],
+    frame: SubmittedFrame,
+    digest: str,
+    triage_mode: str,
+    *,
+    decoded: tuple[int, int, str],
 ) -> dict[str, Any]:
     """Bind a caller-provided geometry transcription to its submitted master.
 
@@ -255,7 +260,10 @@ def _verify_transcribed_row(
         raise ProducerRefusal(
             "manual refusal digest-bytes-mismatch: transcription names other bytes"
         )
-    width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
+    # The caller's own decode of these exact immutable bytes, by this same function,
+    # three lines earlier. Decoding a second time would prove nothing it did not
+    # already prove and would pay a full master decode twice per transcribed frame.
+    width, height, source_mode = decoded
     if checked["frame"] != {"width": width, "height": height}:
         raise ProducerRefusal(
             "manual refusal frame-dimensions-mismatch: transcription disagrees with decoded master"
@@ -746,7 +754,9 @@ def produce(
         width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
         supplied = transcribed_rows_by_path.get(frame.path)
         row = (
-            _verify_transcribed_row(supplied, frame, digest, mode)
+            _verify_transcribed_row(
+                supplied, frame, digest, mode, decoded=(width, height, source_mode)
+            )
             if supplied is not None
             else _whole_frame_row(
                 corpus_id=corpus_id,
@@ -941,6 +951,12 @@ def append_confirmation_to_register(
                         "volume_id": page["volume_id"],
                         "designation": page["designation"],
                         "physical_page_id": page_id,
+                        # The same run that appends the membership beside it. A
+                        # declaration is append-only and permanent, so a folio typed
+                        # against the wrong volume stands for ever unless the register
+                        # can say which pass entered it. Not one of `physical_page_id`'s
+                        # bindings, so carrying it leaves page identity unchanged.
+                        "appending_run": confirmation["appending_run"],
                     }
                 )
                 existing_pages.add(page_id)
@@ -968,15 +984,14 @@ def append_confirmation_to_register(
     if not records:
         # Every membership this confirmation names is already in the register: either
         # a genuine no-op resubmission, or the register half of an earlier crash-split
-        # commit. Either way there is nothing new to append. A caller whose expected
-        # digest is stale still gets the ordinary concurrent-write refusal below.
-        current_digest = register_digest(current_bytes)
-        if current_digest != expected_register_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
-        return current_digest
+        # commit. Either way there is nothing new to append — but that is still a
+        # compare-and-swap, and `current_bytes` was read outside the writer lock. A
+        # retraction published since then moves the head without changing what this
+        # pass would append, so comparing our own stale bytes would return a digest
+        # the register no longer has, and the manifest and cluster records written
+        # next would name a membership that has been withdrawn. The confirmation is
+        # proved against a locked read instead.
+        return confirm_unchanged_head(register_path, expected_digest=expected_register_digest)
     return append_records(register_path, records, expected_digest=expected_register_digest)
 
 

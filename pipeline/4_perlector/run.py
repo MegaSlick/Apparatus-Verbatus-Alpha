@@ -948,10 +948,19 @@ def act_attachment_view(
         # alternative to the first, which is not what it checks. The outcomes are
         # the same either way; what changes is where the next branch added here
         # gets wired.
-        if not attachment["attached"] and (
-            attachment["attachment_basis"] != "unattached" or span is not None
-        ):
-            raise SchemaRefusal("an unattached act view claims an alignment span")
+        #
+        # Two separate faults inside it, and each names its own field. This branch
+        # is reached by page-witness attachments as well as act-scoped ones, so the
+        # refusal may not call every row an "act view"; and a row whose only fault
+        # is its basis sent the operator to a `span` that was already null.
+        if not attachment["attached"]:
+            if attachment["attachment_basis"] != "unattached":
+                raise SchemaRefusal(
+                    "an unattached attachment names an attachment basis other than "
+                    "'unattached'; nothing attached it, so nothing decided the basis"
+                )
+            if span is not None:
+                raise SchemaRefusal("an unattached attachment claims an alignment span")
         chair = attachment["chair"]
         attachment_page = attachment["page_ordinal"]
         # The attachment describes one attempt, and the reread path

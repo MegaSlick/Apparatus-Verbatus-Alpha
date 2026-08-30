@@ -15,6 +15,8 @@ the seam for, and what it did with what came back.
 """
 
 import json
+import os
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -548,10 +550,23 @@ def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_p
     destination = tmp_path / "staging"
     destination.mkdir()
 
+    # Unchanged bytes are not proof that nothing read them, and the claim in this
+    # test's name is about the read. `_copy_verified_file` is the only step that
+    # opens a returned file, and it opens through `os.open`, so a regression that
+    # copied the operator's secret and then refused for some later reason trips
+    # this guard rather than passing on an intact file.
+    real_open = os.open
+
+    def refuse_external_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == outside:
+            raise AssertionError("the external symlink target was opened")
+        return real_open(path, *args, **kwargs)
+
     with pytest.raises(DigestMismatchRefusal, match="external link targets are never read"):
-        HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
-            "fixture-org/pinned", "a" * 40, destination
-        )
+        with unittest.mock.patch.object(os, "open", refuse_external_open):
+            HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
+                "fixture-org/pinned", "a" * 40, destination
+            )
 
     assert outside.read_bytes() == b"must not enter model evidence"
     assert sorted(destination.iterdir()) == []
@@ -698,7 +713,9 @@ def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_b
                     "fixture-org/pinned", "a" * 40, destination
                 )
             outcome.append(None)
-        except BaseException as error:  # noqa: BLE001 - reported through the assertion below
+        # Broad on purpose: the worker thread must hand whatever it raised back
+        # to the assertions below rather than die with it on a daemon thread.
+        except BaseException as error:
             outcome.append(error)
 
     worker = threading.Thread(target=run, daemon=True)

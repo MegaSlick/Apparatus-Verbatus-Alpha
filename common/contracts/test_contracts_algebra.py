@@ -633,7 +633,16 @@ def test_coverage_for_an_unknown_act_is_fatal():
 
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
-    files must agree, a test reads both from source and fails on divergence."""
+    files must agree, a test reads both from source and fails on divergence.
+
+    Scope, said plainly so a pass here is not read for more than it proves: the
+    subtraction removes `BOUNDARY_OUTCOMES` from the same vocabulary the loop in
+    `outcomes.py` put them into, so a *third* boundary outcome would be added
+    and taken away again and this check would stay green. What refuses that is
+    `EXPECTED_VOCABULARY_SIZES["armarium"]` above, pinned at 7 -- five
+    categories and two boundary outcomes. The two are one guard, and loosening
+    the size pin removes the half that watches this direction.
+    """
     assert set(outcomes.VOCABULARIES[ARMARIUM]) - set(outcomes.BOUNDARY_OUTCOMES.values()) == {
         category.value for category in ArmariumCategory
     }

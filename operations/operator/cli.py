@@ -728,7 +728,17 @@ def _advance_with_confirmation(
         )
         summary = boundary_summary(tree, stage)
         digest = summary["seal_digest"]
-    except ApprovalRefusal as error:
+    except (ApprovalRefusal, OSError) as error:
+        # `OSError` is carried from pr/08, where this block read the boundary
+        # through `sealed_boundary` and an unreadable manifest or seal artefact
+        # raised straight through. `boundary_summary` converts that one itself
+        # now (`stored_boundary` catches `OSError`), but the reason to keep the
+        # arm is unchanged and still live: this block prints the whole boundary
+        # chain before it returns, and a closed or broken stdout raises `OSError`
+        # out of `_print`. Uncaught, either reached the catch-all and told the
+        # operator to photograph an unexpected error and find a maintainer, when
+        # the answer is that this boundary cannot be advanced.
+        # `advance.trigger_advance` guards its own printing the same way.
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     _print("Sealed evidence summary:")
     _print(f"- seal digest: {summary['seal_digest']}")
