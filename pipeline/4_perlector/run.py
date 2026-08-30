@@ -491,6 +491,16 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
     unpresented = payload.get("unpresented_regions")
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     if not attempted:
+        # Ahead of the image-evidence refusal, which names none of this: a
+        # stripped record whose retained response survives passes that rule and
+        # still holds the bytes the chair answered with.
+        if payload.get("raw_response_ref") is not None:
+            raise SchemaRefusal(
+                "a non-attempted Testimonium retains a provider response. The record would say "
+                "the chair was not served while naming the bytes it answered with, outside its "
+                "own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained reference"
+            )
         if (
             payload.get("regions") != []
             or presented != {}
@@ -609,6 +619,16 @@ def validate_page_testimonium_record(
             "digest-bound attachments"
         )
     if not attempted:
+        # Same order and same reason as the act-scoped seam above: the retained
+        # response is checked first because the image-evidence refusal below
+        # does not mention it, and a stripped record keeps it.
+        if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
+            raise SchemaRefusal(
+                "a non-attempted page Testimonium retains a provider response. The record would "
+                "say the chair was not served while naming the bytes it answered with, outside "
+                "its own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained capture"
+            )
         if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
             raise SchemaRefusal(
                 "a non-attempted page Testimonium carries image evidence. The record would say "
