@@ -73,6 +73,11 @@ def _production_sources() -> list[Path]:
         if set(relative.parts) & _SKIP_DIRECTORIES or relative.name.startswith("test_"):
             continue
         found.append(relative)
+    if not found:
+        raise AssertionError(
+            f"no production sources were found under {ROOT}; the capture-condition scan "
+            "would pass by inspecting nothing"
+        )
     return found
 
 
@@ -233,6 +238,8 @@ def test_no_production_module_outside_the_derivation_names_the_capture_condition
 
 def test_the_three_entitled_modules_still_exist_so_the_scan_cannot_pass_vacuously():
     """A scan whose allow-list has rotted away would pass by finding nothing."""
+    scanned = _production_sources()
+    assert Path("common/physical_act_partition.py") in scanned
     for relative in _CONDITION_AUTHORS:
         assert (ROOT / relative).is_file(), relative
     assert any(

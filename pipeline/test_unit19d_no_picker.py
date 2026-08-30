@@ -67,7 +67,9 @@ ARMARIUM_EXPORT_LOGICAL_FUNCTIONS = frozenset(
 
 
 def _module(path: Path) -> ast.Module:
-    return ast.parse(path.read_text())
+    # Pinned encoding: the scanned files carry non-ASCII characters, and a
+    # guard that cannot run on a non-UTF-8 locale is a failure, not a pass.
+    return ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _functions_named(tree: ast.Module, names: frozenset[str]) -> list[ast.FunctionDef]:
@@ -80,6 +82,14 @@ def _functions_named(tree: ast.Module, names: frozenset[str]) -> list[ast.Functi
 
 
 def _identifiers(node: ast.AST) -> set[str]:
+    """Names in the forms a preference claim would take: identifiers,
+    attributes, arguments, and whole string constants (a flag value or field
+    name). Deliberately not a tokenizer over prose -- docstrings and refusal
+    messages legitimately use words like "canonical" and "selected" in their
+    serialization and product-format senses, and wording is review's business;
+    the mechanical enforcement against preference FIELDS at any depth is the
+    runtime screens (`refuse_capture_preference`, `_refuse_scalar_claim_keys`),
+    which these shapes-1 scans complement rather than replace."""
     read: set[str] = set()
     for sub in ast.walk(node):
         if isinstance(sub, ast.Name):
@@ -131,7 +141,11 @@ def test_the_static_guard_sees_qualified_calls_and_negative_positions():
 
 
 def test_the_whole_new_dissent_module_names_no_shape_one_preference_word():
-    """§7 shape 1 over every line `common/cross_capture_dissent.py` added."""
+    """§7 shape 1 over every name `common/cross_capture_dissent.py` added.
+
+    Names, not prose: see `_identifiers` for what this scan can and cannot
+    catch, and the runtime preference screens for the field-level enforcement.
+    """
     read = _identifiers(_module(DISSENT_SOURCE))
     assert not read & SHAPE_ONE_WORDS, sorted(read & SHAPE_ONE_WORDS)
 
@@ -192,16 +206,19 @@ def test_the_armarium_logical_export_path_names_no_preference_or_selector():
         assert subs == [], (node.name, [ast.unparse(n) for n in subs])
 
 
-def test_no_export_emits_capture_member_acts_beside_the_logical_act():
+def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(monkeypatch):
     """§7 shape 15/19: the Armarium logical projection field set is closed and
 
     carries no per-member act_id/act_key -- only the logical subject and the
     member lists retained as opaque provenance, never re-exported as their own
-    rows.
+    rows. Exercised through `logical_act_projection_entry`'s derived identity
+    and its refusals; the export-side double-count screen has its own test in
+    the cluster-path suite.
     """
-    import sys  # noqa: PLC0415
-
-    sys.path.insert(0, str(ARMARIUM_SOURCE.parent))
+    # syspath scoped to this test: pipeline/7_armarium holds run.py and
+    # display.py, and a leaked path entry would let any later test in the
+    # session import the Armarium's module under a generic name.
+    monkeypatch.syspath_prepend(str(ARMARIUM_SOURCE.parent))
     import importlib.util  # noqa: PLC0415
 
     spec = importlib.util.spec_from_file_location("u19d_no_picker_armarium", ARMARIUM_SOURCE)
