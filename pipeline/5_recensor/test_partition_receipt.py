@@ -202,27 +202,47 @@ def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
-    # Two independent protections can name this forgery: the re-derivation of
-    # the act-scoped attachment, and the outcome-consistency check that refuses
-    # an attachment disagreeing with the current Testimonium. Which one fires
-    # first depends on the drift; either named refusal proves the label was
-    # not trusted.
-    with pytest.raises(
-        FatalAccounting,
-        match="act-scoped attachment|disagrees with the current Testimonium outcome",
-    ):
+    # Pinned per drift, not as an alternation. `validate_chair_coverage` raises
+    # "disagrees with the current Testimonium outcome" from its own superseded
+    # check, independently of `act_attachment_facts` -- so accepting that
+    # wording for the `stored-false` case let this test pass with the act-scoped
+    # re-derivation it is named for deleted. Each drift now names the refusal
+    # that must answer for it.
+    # One refusal per drift, rather than an alternation either could satisfy.
+    # Accepting both wordings for both drifts meant `stored-false` passed on the
+    # superseded check alone, so the act-scoped re-derivation this test is named
+    # for could have been deleted with the suite still green.
+    #
+    # Checked against the code rather than assumed: `stored-false` cannot reach
+    # that re-derivation at all. Clearing `attached` on a chair whose current
+    # Testimonium reads is itself an outcome disagreement, and the superseded
+    # check inside `act_attachment_facts` answers first -- calling that function
+    # directly raises the same superseded refusal. So `wrong-basis` is the drift
+    # that proves the label was re-derived, and `stored-false` proves the
+    # staleness gate in front of it. Each is asserted for what it actually does.
+    expected = {
+        "stored-false": "disagrees with the current Testimonium outcome",
+        "wrong-basis": "act-scoped attachment",
+    }[drift]
+    with pytest.raises(FatalAccounting, match=expected):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
 def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
     recensor = _load_recensor()
+    # `comparable` travels with `attached` in every fact the caller builds, and
+    # the merge now reads both. Supplied here rather than defaulted inside the
+    # helper: a missing predicate silently read as False is the substitution
+    # this stage refuses everywhere else.
     unattached = {
         "attached": False,
+        "comparable": False,
         "attachment_basis": "unattached",
         "anchor_basis": None,
     }
     attached = {
         "attached": True,
+        "comparable": True,
         "attachment_basis": "geometric-overlap",
         "anchor_basis": "act-anchor",
     }

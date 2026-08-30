@@ -547,7 +547,11 @@ def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_r
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
-    testimony = _page_record_with(context, lambda payload: retained in payload)
+    # Selected on the value, not the key: `raw_response_refs: []` and
+    # `native_capture: None` both satisfy mere presence while carrying nothing
+    # retained, and such a record reaches no refusal at all -- the test would
+    # then fail pointing at the Perlector rather than at its own fixture.
+    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
     perlector.validate_page_testimonium_record(context, testimony, proposals)
 
     payload = testimony["payload"]
@@ -588,7 +592,11 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
-    testimony = _page_record_with(context, lambda payload: retained in payload)
+    # Selected on the value, not the key: `raw_response_refs: []` and
+    # `native_capture: None` both satisfy mere presence while carrying nothing
+    # retained, and such a record reaches no refusal at all -- the test would
+    # then fail pointing at the Perlector rather than at its own fixture.
+    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
 
     forged = copy.deepcopy(testimony)
     forged["outcome"] = "not-run"
