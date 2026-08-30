@@ -33,14 +33,22 @@ MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-ACTOR_KINDS: Final = ("human", "model", "scantailor")
+# A deterministic offline producer is a distinct provenance role because it makes no
+# model call. Like other non-human actors, it carries a resolved identity and revision.
+ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
-# The shared cap, not a second declaration of it: the Exemplar boundary restates
-# this module's row schema and bounds the same split before its own pairwise check.
+# A single frame's parts must remain in one content-aware shard, and the shared
+# corpus-frame policy refuses any configured shard limit above 1,000 — so any
+# bound at or below that keeps every ingestible frame provable. The 64-part
+# value is the security pass's ceiling on the quadratic pairwise-disjointness
+# proof; a real frame with more parts is a triage-policy conversation, not a
+# bigger loop. Derived from the shared cap, not declared a second time: the
+# Exemplar boundary restates this module's row schema and bounds the same
+# split before its own pairwise check.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
@@ -142,9 +150,13 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     except (TypeError, ValueError, RecursionError) as error:
         # `canonical_bytes` refuses unsupported values with TypeError, circular
         # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError. A caller building a row is inside this contract's refusal
-        # algebra, so each is one here too; a bare built-in exception would escape
-        # every `except SchemaRefusal` in the pipeline.
+        # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
+        # has no form for — arrives as TypeError too, because `canonical_bytes`
+        # converts it there deliberately; naming `UnicodeError` here would neither
+        # widen this clause (it is a `ValueError` subclass) nor be reachable, while
+        # reading as a branch a test had covered. A caller building a row is inside
+        # this contract's refusal algebra, so each is one here too; a bare built-in
+        # exception would escape every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 
@@ -217,7 +229,8 @@ def _validate_actor(actor: Any) -> None:
             raise SchemaRefusal("a human triage actor carries no revision; it must be null")
     elif not isinstance(actor["revision"], str) or not actor["revision"].strip():
         raise SchemaRefusal(
-            "triage actor revision must be the resolved model revision or the ScanTailor version"
+            "triage actor revision must be the resolved model revision, ScanTailor version, "
+            "or producer revision"
         )
 
 

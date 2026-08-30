@@ -38,16 +38,29 @@ from synthetic_sources import (
 import common.imaging as common_imaging
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    self_hash,
+    verify_self_hash,
+)
 from common.contracts.errors import ContractError, IncompatibleReuse
+from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     StageContext,
+    require_triage_modes,
+    run_sealed_config_digests,
 )
 from operations.submit import gate, submit
+from operations.triage import instrument, producer
+from operations.triage.instrument import load_config as instrument_config
+from operations.triage.instrument import producer_recipe
 
 POLICY = load_format_policy()
 
@@ -895,6 +908,228 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
     ]
 
 
+def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
+    """Validated recipe bytes supply the digest that the Door later binds."""
+    from operations.triage.instrument import load_config, producer_recipe
+
+    data = png(4, 3)
+    source_digest = digest_bytes(data)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    recipe_path = tmp_path / "recipe.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recipe_path.write_text(json.dumps(producer_recipe(load_config())), encoding="utf-8")
+
+    rows, clusters, digests = door.load_triage_decisions(
+        manifest_path, producer_recipe_path=recipe_path
+    )
+    assert rows == {source_digest: row}
+    assert clusters == {}
+    assert digests == {
+        "triage-decision-manifest": digest_bytes(manifest_path.read_bytes()),
+        "triage-producer-recipe": digest_bytes(recipe_path.read_bytes()),
+    }
+
+
+def test_a_producer_authored_manifest_cannot_drop_its_producer_recipe(tmp_path):
+    data = png(4, 3)
+    source_digest = digest_bytes(data)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="producer rows.*no triage producer recipe"):
+        door.load_triage_decisions(manifest_path)
+
+
+def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path):
+    """A requested recipe path must refuse by name when it cannot be read."""
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    missing = tmp_path / "nonexistent-recipe.json"
+    with pytest.raises(ContractError, match="^the triage producer recipe could not be read$"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
+
+
+def test_a_triage_document_symlink_is_not_followed(tmp_path):
+    target = tmp_path / "recipe-target.json"
+    target.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
+    redirected = tmp_path / "recipe.json"
+    redirected.symlink_to(target)
+    with pytest.raises(ContractError, match="without following path redirects"):
+        door._read_triage_document(redirected, "triage producer recipe")
+
+
+def test_a_triage_document_does_not_follow_an_intermediate_directory_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "recipe.json").write_text(
+        json.dumps(producer_recipe(instrument_config())), encoding="utf-8"
+    )
+    redirected = tmp_path / "redirected"
+    redirected.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ContractError, match="without following path redirects"):
+        door._read_triage_document(redirected / "recipe.json", "triage producer recipe")
+
+
+def test_a_triage_document_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 64)
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x" * 65)
+    with pytest.raises(ContractError, match="64-byte document bound"):
+        door._read_triage_document(oversized, "triage producer recipe")
+
+
+def test_a_triage_document_path_replacement_cannot_change_the_opened_bytes(tmp_path, monkeypatch):
+    recipe_path = tmp_path / "recipe.json"
+    original = json.dumps(producer_recipe(instrument_config())).encode("utf-8")
+    recipe_path.write_bytes(original)
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"not the opened document")
+    real_open = door.os.open
+
+    def open_then_replace(path, flags, *, dir_fd=None):
+        descriptor = real_open(path, flags, dir_fd=dir_fd)
+        if path == recipe_path.name and not flags & door.os.O_DIRECTORY:
+            replacement.replace(recipe_path)
+        return descriptor
+
+    monkeypatch.setattr(door.os, "open", open_then_replace)
+    raw, _document = door._read_triage_document(recipe_path, "triage producer recipe")
+    assert raw == original
+
+
+def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_text("not JSON", encoding="utf-8")
+    with pytest.raises(ContractError, match="the triage producer recipe is not valid UTF-8 JSON"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
+
+
+@pytest.mark.parametrize(
+    ("ambiguous", "refusal"),
+    [
+        # A duplicate member refuses deterministically at parse time, so this case
+        # pins the parse refusal exactly. Sharing the nesting case's alternation let
+        # it pass with `object_pairs_hook=_unique_json_object` removed: the document
+        # would then parse with the last value winning and fail the closed-schema
+        # check instead, which also matches "invalid" — the guard against a triage
+        # document carrying two values for one field gone with nothing reporting it.
+        (
+            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            "the triage producer recipe is not valid UTF-8 JSON",
+        ),
+        # The nesting case genuinely needs the width: whether the parser gives up
+        # before the closed-schema check is interpreter-dependent.
+        (
+            b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+            "the triage producer recipe is (not valid UTF-8 JSON|invalid)",
+        ),
+    ],
+)
+def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
+    tmp_path, ambiguous, refusal
+):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_bytes(ambiguous)
+    # A duplicate member refuses at parse time. Pathological nesting refuses at
+    # parse time when the interpreter's C recursion headroom runs out first, or
+    # at closed-schema validation when the parser happens to survive the depth;
+    # either way it is a named ContractError, never an escaping crash, which is
+    # the guarantee this test exists for.
+    with pytest.raises(ContractError, match=refusal):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
+
+
+def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path):
+    """A recipe that fails its closed schema names validation, not JSON parsing."""
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_text(json.dumps({"schema": "not-the-real-schema"}), encoding="utf-8")
+    with pytest.raises(ContractError, match="the triage producer recipe is invalid"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
+
+
 def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
     """A manifest row is evidence about submitted master bytes, never a hint."""
     data = png(4, 3)
@@ -973,11 +1208,8 @@ def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch
     decision_path.write_bytes(b"123456789")
     monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 8)
 
-    with pytest.raises(ContractError, match="8-byte input bound") as refused:
+    with pytest.raises(ContractError, match="8-byte document bound"):
         door.load_triage_decisions(decision_path)
-
-    assert "may not allocate without limit" in str(refused.value)
-    assert "records for this submitted shard" in str(refused.value)
 
 
 def test_a_triage_document_symlink_is_not_followed_at_the_read_boundary(tmp_path):
@@ -995,10 +1227,12 @@ def test_a_triage_document_symlink_is_not_followed_at_the_read_boundary(tmp_path
     redirected = tmp_path / "manifest.json"
     redirected.symlink_to(outside)
 
-    with pytest.raises(ContractError, match="could not be read") as refused:
+    # The surviving fd-anchored walk refuses the redirect at open time with its
+    # own wording; the symlink is still never followed and no run is created.
+    with pytest.raises(ContractError, match="without following path redirects") as refused:
         door.load_triage_decisions(redirected)
 
-    assert "no run was created" in str(refused.value)
+    assert "regular file" in str(refused.value)
 
 
 def test_triage_split_count_refuses_before_quadratic_geometry_validation(tmp_path, monkeypatch):
@@ -1394,7 +1628,15 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
 
 
 def _run_real_door(
-    monkeypatch, *, run_root, source, policy_path, ledger_path, run_id, corpus_register=None
+    monkeypatch,
+    *,
+    run_root,
+    source,
+    policy_path,
+    ledger_path,
+    run_id,
+    corpus_register=None,
+    extra=(),
 ):
     monkeypatch.setattr(
         sys,
@@ -1412,6 +1654,7 @@ def _run_real_door(
             "--data-gate-policy",
             str(policy_path),
             *(["--corpus-register", str(corpus_register)] if corpus_register is not None else []),
+            *extra,
         ],
     )
     return door.main()
@@ -2613,6 +2856,20 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'data-handling' entry naming the caller-selected policy that gated admission "
         "(CodeRabbit CF01)"
     )
+    triage_modes = ROOT / "config" / "triage_modes.toml"
+    assert sealed.get("triage-modes") == digest_bytes(triage_modes.read_bytes()), (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
+    )
+    require_triage_modes(sealed, triage_modes)
+
+
+def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
+    """The named real-path seal is used before a manifest can shape source pages."""
+    implementation = inspect.getsource(door.real_submission)
+    assert implementation.index("require_triage_modes") < implementation.index(
+        "sources = expand_sources"
+    )
 
 
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
@@ -2950,6 +3207,9 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
     gained_clusters = bindings(
         {"triage-decision-manifest": "c" * 64, "triage-re-shoot-clusters": "e" * 64}
     )
+    gained_producer_recipe = bindings(
+        {"triage-decision-manifest": "c" * 64, "triage-producer-recipe": "f" * 64}
+    )
     none_at_all = bindings({})
 
     assert first["config_digest"] == again["config_digest"]
@@ -2959,10 +3219,11 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
                 first["config_digest"],
                 moved_gutter["config_digest"],
                 gained_clusters["config_digest"],
+                gained_producer_recipe["config_digest"],
                 none_at_all["config_digest"],
             }
         )
-        == 4
+        == 5
     )
 
     source_manifest = [
@@ -3102,6 +3363,329 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
         )
     assert "cluster cannot be reconciled" in str(unresolved.value)
     assert "supply the matching corpus-scoped cluster record" in str(unresolved.value)
+
+
+# The insert covers the middle of the frame at its own angle; the page around it is
+# the exact complement, decomposed into four axis-aligned rectangles. Unit 5's
+# validator proves the partition, so these numbers are the whole geometry claim.
+_TAPED_FRAME = {"width": 64, "height": 48}
+_TAPED_INSERT = {"x": 20, "y": 12, "w": 24, "h": 16}
+_TAPED_PAGE_PARTS = (
+    {"x": 0, "y": 0, "w": 64, "h": 12},
+    {"x": 0, "y": 12, "w": 20, "h": 16},
+    {"x": 44, "y": 12, "w": 20, "h": 16},
+    {"x": 0, "y": 28, "w": 64, "h": 20},
+)
+
+
+def _taped_split():
+    """One rotated insert part plus the four page parts that complete the frame."""
+    parts = [
+        door.triage_manifest.make_part(
+            _TAPED_INSERT,
+            {"x": 0, "y": 0, "w": _TAPED_INSERT["w"], "h": _TAPED_INSERT["h"]},
+            3_500,
+            colour_mode="keep",
+        )
+    ]
+    parts += [
+        door.triage_manifest.make_part(
+            region,
+            {"x": 0, "y": 0, "w": region["w"], "h": region["h"]},
+            0,
+            colour_mode="keep",
+        )
+        for region in _TAPED_PAGE_PARTS
+    ]
+    return door.triage_manifest.make_split(parts)
+
+
+def _taped_frames():
+    frames = []
+    for index, tone in enumerate((90, 160)):
+        image = Image.new("L", (_TAPED_FRAME["width"], _TAPED_FRAME["height"]), tone)
+        # A little structure so the instrument's signature grid is not uniform.
+        image.paste(255 - tone, (20, 12, 44, 28))
+        encoded = BytesIO()
+        image.save(encoded, format="PNG")
+        frames.append(producer.SubmittedFrame(f"{index}.png", encoded.getvalue()))
+    return frames
+
+
+def _taped_confirmation(frames):
+    """A confirmation over the taped pair, traced to the real Unit 6A instrument."""
+    config = instrument_config()
+    proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
+    evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
+    recipe = instrument.producer_recipe(config)
+    digests = sorted(digest_bytes(item.data) for item in frames)
+    confirmation = {
+        "schema": producer.CONFIRMATION_SCHEMA,
+        "corpus_id": "parish-a",
+        "appending_run": "triage-taped-1",
+        "authority": {"kind": "fixture", "identity": "taped-insert-fixture", "revision": "v1"},
+        "instrument_config_sha256": evidence_manifest["instrument_config_sha256"],
+        "evidence_manifest_sha256": digest_of(evidence_manifest),
+        "clusters": [
+            {
+                "pages": [
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-taped",
+                        "member_frame_sha256": digests,
+                    }
+                ],
+                "evidence_pairs": [digests],
+            }
+        ],
+    }
+    return confirmation, recipe, evidence_manifest, evidence
+
+
+def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_door(
+    tmp_path: Path,
+):
+    """The final DoD-3/4/5 walk: three linked frames, one independent frame, no loss."""
+    frames = []
+    for name, tone in (("63", 70), ("64", 100), ("65", 130), ("66", 160)):
+        image = Image.new("L", (64, 48), tone)
+        image.paste(255 - tone, (8, 8, 24, 24))
+        encoded = BytesIO()
+        image.save(encoded, format="PNG")
+        frames.append(producer.SubmittedFrame(f"{name}.png", encoded.getvalue()))
+    config = instrument_config()
+    proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
+    evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
+    recipe = instrument.producer_recipe(config)
+    digests_by_name = {item.path: digest_bytes(item.data) for item in frames}
+    linked = sorted(digests_by_name[name] for name in ("63.png", "64.png", "65.png"))
+    independent = digests_by_name["66.png"]
+    confirmation = {
+        "schema": producer.CONFIRMATION_SCHEMA,
+        "corpus_id": "parish-a",
+        "appending_run": "triage-63-66-final",
+        "authority": {"kind": "fixture", "identity": "synthetic-63-66", "revision": "v1"},
+        "instrument_config_sha256": evidence_manifest["instrument_config_sha256"],
+        "evidence_manifest_sha256": digest_of(evidence_manifest),
+        "clusters": [
+            {
+                "pages": [
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-31-left",
+                        "member_frame_sha256": linked,
+                    },
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-31-right",
+                        "member_frame_sha256": [digests_by_name["65.png"]],
+                    },
+                ],
+                "evidence_pairs": [sorted(linked[:2])],
+            }
+        ],
+    }
+    register_path = tmp_path / "register.json"
+    produced, _register_head = producer.commit_confirmed_production(
+        frames,
+        corpus_id="parish-a",
+        mode="auto",
+        confirmation=confirmation,
+        instrument_recipe=recipe,
+        evidence_manifest=evidence_manifest,
+        evidence_records=evidence,
+        register_path=register_path,
+        manifest_path=tmp_path / "manifest.json",
+        clusters_path=tmp_path / "clusters.json",
+        authority_path=tmp_path / "confirmation.json",
+        max_pages_per_shard=3,
+    )
+    assert len(produced.manifest["records"]) == 4
+    assert set(produced.rows_by_digest) == set(digests_by_name.values())
+    assert produced.rows_by_digest[independent]["re_shoot_cluster_id"] is None
+    cluster_id, cluster = next(iter(produced.clusters.items()))
+    assert cluster["member_frame_sha256"] == linked
+    assert all(
+        produced.rows_by_digest[digest]["re_shoot_cluster_id"] == cluster_id for digest in linked
+    )
+    register_bytes = register_path.read_bytes()
+    left_page = physical_page_id("parish-a", "v1", "opening-31-left")
+    right_page = physical_page_id("parish-a", "v1", "opening-31-right")
+    assert members_of(register_bytes, left_page) == linked
+    assert members_of(register_bytes, right_page) == [digests_by_name["65.png"]]
+
+    sources = door.expand_sources(
+        [{"relative_path": item.path, "sha256": digests_by_name[item.path]} for item in frames],
+        reader({item.path: item.data for item in frames}),
+        POLICY,
+        triage_rows=produced.rows_by_digest,
+        triage_clusters=produced.clusters,
+    )
+    shards = door.content_aware_shards(sources, max_pages_per_shard=3)
+    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2, 3], [4]]
+
+
+def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
+    """Unit 5's own structural case, carried end to end without a frame-level crop.
+
+    A document taped over the page at its own angle has no single gutter for
+    auto-split and no global deskew that straightens both surfaces. The proposal is
+    one rotated part for the insert and four axis-aligned parts for the page around
+    it. This asserts the whole path: the producer binds it to submitted bytes, Unit
+    5's validator proves it partitions the frame, and the Door fans one ordinal out
+    per part while keeping the confirmed cluster whole.
+    """
+    frames = _taped_frames()
+    digests = [digest_bytes(item.data) for item in frames]
+    proposals = {
+        item.path: door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame=dict(_TAPED_FRAME),
+            split=_taped_split(),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            # A deterministic offline producer cannot see a taped insert; the
+            # geometry is an operator's structural proposal, bound to these bytes.
+            actor={"kind": "human", "identity": "operator", "revision": None},
+            human_override=True,
+        )
+        for item, digest in zip(frames, digests, strict=True)
+    }
+    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
+    produced = producer.produce(
+        frames,
+        corpus_id="parish-a",
+        mode="manual",
+        confirmation=confirmation,
+        instrument_recipe=recipe,
+        evidence_manifest=evidence_manifest,
+        evidence_records=evidence,
+        transcribed_rows_by_path=proposals,
+        max_pages_per_shard=10,
+    )
+    rows = produced.rows_by_digest
+    assert len(produced.clusters) == 1
+    cluster_id, cluster = next(iter(produced.clusters.items()))
+    assert cluster["split_count"] == 5
+    for digest in digests:
+        parts = rows[digest]["split"]["parts"]
+        assert len(parts) == 5
+        assert [part["rotation"]["rotation_millidegrees"] for part in parts].count(0) == 4
+        assert rows[digest]["re_shoot_cluster_id"] == cluster_id
+
+    sources = door.expand_sources(
+        [
+            {"relative_path": item.path, "sha256": digest}
+            for item, digest in zip(frames, digests, strict=True)
+        ],
+        reader({item.path: item.data for item in frames}),
+        POLICY,
+        triage_rows=rows,
+        triage_clusters=produced.clusters,
+    )
+    assert [source.triage_part_index for source in sources] == [0, 1, 2, 3, 4] * 2
+    assert {source.ordinal for source in sources} == set(range(1, 11))
+
+    # The cluster spans every one of those ten ordinals, so no seam inside it is
+    # legal: one shard holds it or the submission is refused.
+    assert len(door.content_aware_shards(sources, max_pages_per_shard=10)) == 1
+    with pytest.raises(ContractError, match="content-aware shard refusal"):
+        door.content_aware_shards(sources, max_pages_per_shard=5)
+
+
+def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
+    """Two taped frames are ten Door ordinals, and a five-page cap cannot hold them.
+
+    A span counted in frames would have called this cluster two pages and passed it
+    to a Door that then has no legal seam anywhere inside it — the whole submission
+    refused, at the stage that can no longer explain why.
+    """
+    frames = _taped_frames()
+    proposals = {
+        item.path: door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest_bytes(item.data),
+            frame=dict(_TAPED_FRAME),
+            split=_taped_split(),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            actor={"kind": "human", "identity": "operator", "revision": None},
+            human_override=True,
+        )
+        for item in frames
+    }
+    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
+    with pytest.raises(producer.ProducerRefusal, match="cluster-span-over-cap"):
+        producer.produce(
+            frames,
+            corpus_id="parish-a",
+            mode="manual",
+            confirmation=confirmation,
+            instrument_recipe=recipe,
+            evidence_manifest=evidence_manifest,
+            evidence_records=evidence,
+            transcribed_rows_by_path=proposals,
+            max_pages_per_shard=5,
+        )
+
+
+def test_a_submitted_frame_with_no_triage_row_is_refused_and_so_is_an_extra_row():
+    """The Door's half of Unit 6B's coverage invariant, in both directions.
+
+    The producer proves exact coverage over what it was handed; the Door proves it
+    again over what was actually submitted, because the two sets are only the same
+    if nothing was added between them. A submitted frame with no row would be a
+    frame fanned out with no declared geometry — silently, since every other row
+    still expands. There is no corpus-scoped sharding yet to explain away a row
+    naming a frame outside the submission, so the reverse direction is refused too:
+    a manifest's rows must exactly match what was submitted.
+    """
+    submitted, absent = png(4, 3), png(4, 3, rows=None, bit_depth=8, color_type=2)
+    submitted_digest, absent_digest = digest_bytes(submitted), digest_bytes(absent)
+
+    def row(digest, width, height):
+        return door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame={"width": width, "height": height},
+            split=door.triage_manifest.make_split(
+                [
+                    door.triage_manifest.make_part(
+                        {"x": 0, "y": 0, "w": width, "h": height},
+                        {"x": 0, "y": 0, "w": width, "h": height},
+                        0,
+                        colour_mode="keep",
+                    )
+                ]
+            ),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            actor={"kind": "producer", "identity": "operations.triage.producer", "revision": "r1"},
+            human_override=False,
+        )
+
+    with pytest.raises(ContractError, match="no row for a submitted source frame"):
+        door.expand_sources(
+            [{"relative_path": "a.png", "sha256": submitted_digest}],
+            reader({"a.png": submitted}),
+            POLICY,
+            triage_rows={absent_digest: row(absent_digest, 4, 3)},
+        )
+
+    with pytest.raises(ContractError, match="naming no submitted source frame"):
+        door.expand_sources(
+            [{"relative_path": "a.png", "sha256": submitted_digest}],
+            reader({"a.png": submitted}),
+            POLICY,
+            triage_rows={
+                submitted_digest: row(submitted_digest, 4, 3),
+                absent_digest: row(absent_digest, 4, 3),
+            },
+        )
 
 
 def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
@@ -3402,3 +3986,231 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
     records = admissions(tree)
     assert set(records) == {1, 2}
     assert all(record["outcome"] == "refused" for record in records.values())
+
+
+def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
+    """Binding and point-of-use checks must resolve the same triage-modes bytes.
+
+    Both sides now resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
+    weaker remaining coupling: that the binding digest and the point-of-use check
+    still agree about the bytes, whatever that constant later names. Drift would
+    otherwise compare a run against bytes that did not govern it.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "fake-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    bindings = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
+        door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
+        triage_document_digests={"triage-decision-manifest": "c" * 64},
+        **_sealed_binding_digests(),
+    )
+    require_triage_modes(bindings["sealed_config_digests"])
+    edited = tmp_path / "triage_modes.toml"
+    edited.write_text(
+        "[manual]\nreview_at_or_below_confidence = 3\n"
+        "[semi]\nreview_at_or_below_confidence = 4\n"
+        "[auto]\nreview_at_or_below_confidence = 4\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="changed between run binding") as refusal:
+        require_triage_modes(bindings["sealed_config_digests"], edited)
+    assert bindings["sealed_config_digests"]["triage-modes"] in str(refusal.value)
+    assert digest_bytes(edited.read_bytes()) in str(refusal.value)
+
+
+def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
+    """A run authority missing the modes seal names the binding fault.
+
+    Missing bindings and changed files require distinct operator actions, so this
+    path must not collapse into a bare KeyError or the drift refusal.
+    """
+    pre_repair_authority = {
+        "sealed_config_digests": {
+            "designator-padding": "a" * 64,
+            "designator-geometry": "b" * 64,
+            "alignment": "c" * 64,
+            "corpus-frame-shard": "d" * 64,
+            "pdf-render": "e" * 64,
+            "recovery": "f" * 64,
+            "hard-failure": "0" * 64,
+            "data-handling": "1" * 64,
+        }
+    }
+    sealed = run_sealed_config_digests(pre_repair_authority)
+    assert "triage-modes" not in sealed
+    with pytest.raises(ContractError, match="sealed no digest for the triage modes") as refusal:
+        require_triage_modes(sealed)
+    assert "changed between run binding" not in str(refusal.value)
+
+
+def test_a_triage_producer_recipe_without_its_manifest_is_refused_at_the_real_door(
+    tmp_path, monkeypatch
+):
+    """The recipe records how a decision manifest was produced; alone it decides nothing.
+
+    Accepting it alone would seal a document into `config_digest` that governed no input
+    to this run — a reproducibility claim about a step that never touched these bytes.
+    Driven through the real door rather than a stub so the refusal is proven to arrive
+    before anything is read, not merely to exist in the source.
+    """
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    recipe_path = approved / "recipe.json"
+    recipe_path.write_text(
+        json.dumps(producer_recipe(instrument_config())),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="producer recipe requires a triage decision manifest"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="recipe-without-manifest",
+            extra=["--triage-producer-recipe", str(recipe_path)],
+        )
+
+
+def _triage_documents(folder, ledger):
+    """A one-row triage manifest for a submitted 4x3 PNG, plus its recipe."""
+    corpus_id = "parish-a"
+    source_digest = ledger["files"][0]["sha256"]
+    row = door.triage_manifest.make_row(
+        corpus_id=corpus_id,
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = folder / "triage-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": corpus_id,
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recipe_path = folder / "triage-recipe.json"
+    recipe_path.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
+    return manifest_path, recipe_path
+
+
+def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geometry(
+    tmp_path, monkeypatch
+):
+    """A real submission proves the modes seal before triage geometry is used.
+
+    Triage manifests arrive only on the real path, so source-order inspection cannot
+    prove that the check executes over geometry-bearing input.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="triage-geometry",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+        == 0
+    )
+    run = RunTree(run_root, "triage-geometry").read_run()
+    sealed = run_sealed_config_digests(run)
+    assert sealed["triage-modes"] == digest_bytes(
+        (Path(door.ROOT) / "config" / "triage_modes.toml").read_bytes()
+    )
+    require_triage_modes(sealed)
+    # The fixed run-authority shape binds recipe bytes only through config_digest and
+    # intentionally exposes no triage_document_digests field.
+    assert "triage_document_digests" not in run
+
+
+def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_geometry(
+    tmp_path, monkeypatch
+):
+    """A missing modes seal refuses before triage rows can shape any source.
+
+    Stripping the current binding provides the invalid authority without reproducing
+    an obsolete Door implementation.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    real_bindings = door._real_bindings
+    real_expand_sources = door.expand_sources
+    expanded: list[int] = []
+
+    def unsealed(*args, **kwargs):
+        bindings = real_bindings(*args, **kwargs)
+        bindings["sealed_config_digests"].pop("triage-modes")
+        return bindings
+
+    def watched_expand(*args, **kwargs):
+        expanded.append(1)
+        return real_expand_sources(*args, **kwargs)
+
+    monkeypatch.setattr(door, "_real_bindings", unsealed)
+    monkeypatch.setattr(door, "expand_sources", watched_expand)
+    run_root = approved / "runs"
+    with pytest.raises(ContractError, match="sealed no digest for the triage modes"):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="pre-repair",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+    assert expanded == []
+    assert not (run_root / "pre-repair").exists()

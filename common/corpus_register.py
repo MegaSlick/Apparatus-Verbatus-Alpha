@@ -13,6 +13,15 @@ editing the first — which is what "append-only" has to mean if `physical_page_
 is not to be re-derived under everything beneath it, and what GOVERNANCE 4 means
 one level above the run tree.
 
+A wrong link is corrected the same way — by appending, never by editing. A
+``retraction`` may name the *current head* of a page's chain, which restores the
+predecessor it grew from and leaves the withdrawn link in place as evidence of
+what was once declared. Only the head, because every link contains its
+predecessor's members: withdrawing one from the middle would leave every
+successor asserting the captures it withdrew. This is the answer to a human
+confirming two frames as one physical page and being wrong, which no
+deterministic instrument can catch — two blank forms agree everywhere.
+
 The chain is verified on read, not merely written: a reader replays it, so a
 membership record removed or reordered from the middle of the register breaks
 every successor's predecessor digest. What replay cannot see is truncation of
@@ -73,6 +82,34 @@ def read_register_file(register_path: str | Path) -> bytes:
     return _read_register_path(Path(register_path), missing_ok=False)
 
 
+def _resolved_register_path(register_path: str | Path, expected_digest: str) -> Path:
+    """Resolve one register pathname and refuse a malformed expected digest.
+
+    Both writers take this door, so a later tightening of either check cannot reach
+    the appending path and miss the no-op one: a register path that append refused
+    and a no-op confirmation accepted would be two safety rules wearing one name.
+    """
+    try:
+        supplied_path = Path(register_path)
+        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
+    except (OSError, RuntimeError, TypeError) as error:
+        raise SchemaRefusal("corpus-register path could not be resolved") from error
+    if not _is_sha256(expected_digest):
+        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    return path
+
+
+def _require_observed_head(current: bytes, expected_digest: str) -> str:
+    """The compare half of the compare-and-swap, in one wording for both writers."""
+    observed = register_digest(current)
+    if observed != expected_digest:
+        raise IncompatibleReuse(
+            "the corpus register changed after this writer read it; the append was "
+            "not written and must be rebuilt against the current register digest"
+        )
+    return observed
+
+
 def append_records(
     register_path: str | Path,
     records: list[dict[str, Any]],
@@ -92,9 +129,7 @@ def append_records(
     concurrent resolvers from both extending one predecessor and silently losing
     whichever append publishes first.
     """
-    path = Path(register_path)
-    if not _is_sha256(expected_digest):
-        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    path = _resolved_register_path(register_path, expected_digest)
     if (
         not isinstance(records, list)
         or not records
@@ -108,18 +143,39 @@ def append_records(
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
-        current = _read_register_path(path, missing_ok=True)
-        observed = register_digest(current)
-        if observed != expected_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
+        try:
+            current, predecessor_identity = _read_register_path_with_identity(path)
+        except FileNotFoundError:
+            current = empty_register()
+            predecessor_identity = None
+        _require_observed_head(current, expected_digest)
         value = validate_register_bytes(current)
         successor = canonical_bytes({"schema": SCHEMA, "records": [*value["records"], *records]})
         successor_digest = register_digest(successor)
+        _require_same_register_identity(path, predecessor_identity)
         _atomic_replace(path, successor)
         return successor_digest
+
+
+def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -> str:
+    """Prove, under the writer lock, that the register is still the head a caller read.
+
+    An append of no records is still a compare-and-swap. A writer that computes "there
+    is nothing new to append" from bytes it read earlier has read them outside the
+    lock, and a retraction published in between moves the head without changing what
+    that writer would have appended — so returning its own stale digest reports a head
+    that no longer exists, and whatever the caller publishes beside it names memberships
+    the register has since withdrawn. This performs the same locked read-and-compare
+    `append_records` performs, and returns the digest it proved.
+    """
+    path = _resolved_register_path(register_path, expected_digest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _register_lock(path):
+        try:
+            current = _read_register_path(path, missing_ok=False)
+        except FileNotFoundError:
+            current = empty_register()
+        return _require_observed_head(current, expected_digest)
 
 
 @contextmanager
@@ -149,8 +205,9 @@ def _register_lock(path: Path) -> Iterator[None]:
             "the corpus-register lock could not be opened without following a redirect"
         ) from error
     with os.fdopen(descriptor, "a+b") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise SchemaRefusal("the corpus-register lock is not a regular file")
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise SchemaRefusal("the corpus-register lock is not one unaliased regular file")
         try:
             import fcntl
         except ImportError as error:  # pragma: no cover - supported stores are POSIX
@@ -167,37 +224,76 @@ def _register_lock(path: Path) -> Iterator[None]:
 
 
 def _read_register_path(path: Path, *, missing_ok: bool) -> bytes:
+    """HEAD-era entry point: bounded bytes, absent register optional."""
+    try:
+        return _read_register_path_with_identity(path)[0]
+    except FileNotFoundError:
+        if missing_ok:
+            return empty_register()
+        raise
+
+
+def read_register_path(register_path: str | Path) -> bytes:
+    """Read one direct, unaliased register file without following its final name."""
+    return _read_register_path_with_identity(Path(register_path))[0]
+
+
+def _read_register_path_with_identity(path: Path) -> tuple[bytes, tuple[int, int]]:
+    """Read stable, bounded bytes and retain the device/inode identity checked at publish."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:  # pragma: no cover - supported register stores are POSIX
         raise SchemaRefusal(
             "this platform cannot read a corpus register without following symlinks"
         )
-    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError:
-        if missing_ok:
-            return empty_register()
         raise
     except (OSError, ValueError) as error:
         raise SchemaRefusal(
-            "the corpus register could not be opened as a regular non-symlink file"
+            "corpus register path must be a direct, readable regular file"
         ) from error
     with os.fdopen(descriptor, "rb") as handle:
-        details = os.fstat(handle.fileno())
-        if not stat.S_ISREG(details.st_mode):
-            raise SchemaRefusal("the corpus register is not a regular file")
-        if details.st_size > MAX_REGISTER_BYTES:
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise SchemaRefusal("corpus register path must be one unaliased regular file")
+        if status.st_size > MAX_REGISTER_BYTES:
             raise SchemaRefusal(
-                f"the corpus register is {details.st_size} bytes, past the "
+                f"the corpus register is {status.st_size} bytes, past the "
                 f"{MAX_REGISTER_BYTES}-byte validation bound"
             )
         data = handle.read(MAX_REGISTER_BYTES + 1)
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (status.st_dev, status.st_ino):
+            raise SchemaRefusal("corpus register path changed while its bytes were read")
     if len(data) > MAX_REGISTER_BYTES:
         raise SchemaRefusal(
             f"the corpus register is past the {MAX_REGISTER_BYTES}-byte validation bound"
         )
-    return data
+    return data, (status.st_dev, status.st_ino)
+
+
+def _require_same_register_identity(path: Path, expected: tuple[int, int] | None) -> None:
+    """Refuse a pathname swap between predecessor validation and replacement."""
+    try:
+        status = os.lstat(path)
+    except FileNotFoundError:
+        actual = None
+    except OSError as error:
+        raise IncompatibleReuse(
+            "the corpus register identity could not be rechecked before publication"
+        ) from error
+    else:
+        if stat.S_ISLNK(status.st_mode):
+            actual = None
+        else:
+            actual = (status.st_dev, status.st_ino)
+    if actual != expected:
+        raise IncompatibleReuse(
+            "the corpus register path changed after its predecessor was validated; the append "
+            "was not written and must be rebuilt against the current register file"
+        )
 
 
 def _atomic_replace(path: Path, data: bytes) -> None:
@@ -205,6 +301,8 @@ def _atomic_replace(path: Path, data: bytes) -> None:
     descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
     temporary = Path(raw_temporary)
     replaced = False
+    failure: ContractError | None = None
+    cause: OSError | None = None
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
@@ -212,7 +310,10 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         replaced = True
-        directory = os.open(path.parent, os.O_RDONLY)
+        directory = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
             os.fsync(directory)
         finally:
@@ -223,9 +324,35 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             if replaced
             else "was not replaced"
         )
-        raise ContractError(f"the corpus register {state}") from error
-    finally:
-        temporary.unlink(missing_ok=True)
+        failure = ContractError(f"the corpus register {state}")
+        cause = error
+    cleanup_error = _temporary_cleanup_error(temporary)
+    if failure is not None:
+        if cleanup_error is not None:
+            failure.add_note(
+                f"corpus-register temporary {temporary} also could not be removed: {cleanup_error}"
+            )
+        raise failure from cause
+    if cleanup_error is not None:
+        # The replacement and the directory fsync both succeeded, so the new register is
+        # live and this refusal is about the leftover alone. It has to say so: a caller
+        # that reads "could not be removed" as "nothing was written" rebuilds its append
+        # against the previous digest, which the moved head then refuses as a concurrent
+        # change — two refusals for one durable, successful publish.
+        raise SchemaRefusal(
+            f"the corpus register was replaced and is durable at digest {digest_bytes(data)}; "
+            f"only the temporary {temporary} could not be removed. Do not retry this append "
+            "against the previous digest"
+        ) from cleanup_error
+
+
+def _temporary_cleanup_error(path: Path) -> OSError | None:
+    """Return cleanup failure so the corpus-register refusal remains primary."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        return error
+    return None
 
 
 def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:
@@ -284,7 +411,7 @@ def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -
             "one; start a new run against that register instead"
         )
     try:
-        live = register_digest(read_register_file(register_path))
+        live = register_digest(read_register_path(register_path))
     except (OSError, ContractError) as error:
         raise IncompatibleReuse("the corpus register could not be read") from error
     if live != sealed:
@@ -304,8 +431,12 @@ class _Reading:
         self.physical_act_pages: dict[str, str] = {}
         self.correspondences: set[str] = set()
         self.membership_head: dict[str, tuple[str, frozenset[str]]] = {}
-        self.membership_assertions: dict[str, tuple[str, str]] = {}
-        self.retracted_members: dict[str, set[str]] = {}
+        # Every link of every page's chain, oldest first, so a retraction of the
+        # head can restore the predecessor it grew from without the register
+        # carrying a second, editable copy of "what the members are now".
+        self.membership_chain: dict[str, list[tuple[str, frozenset[str]]]] = {}
+        self.membership_links: set[str] = set()
+        self.retracted_membership_links: set[str] = set()
 
 
 def validate_register_bytes(data: bytes) -> dict[str, Any]:
@@ -359,14 +490,28 @@ def members_of(data: bytes, physical_page: str) -> list[str]:
     the declaration itself — the declaration has none. An undeclared page and a
     declared page with no capture yet are both the empty list on purpose: this
     reads membership, it does not assert that a page exists.
+
+    A retracted head is not the head. The surviving link is the answer, and a
+    page whose every link has been retracted reads as the same empty list as one
+    that never had a capture — both mean "nothing currently shows this page",
+    and the register still carries every retracted link and its reason.
     """
     reading = _read(data)[1]
     _identity(physical_page, "ppg", "membership lookup physical page")
     head = reading.membership_head.get(physical_page)
-    if head is None:
-        return []
-    active = head[1] - reading.retracted_members.get(physical_page, set())
-    return sorted(active)
+    return sorted(head[1]) if head is not None else []
+
+
+def membership_heads(data: bytes) -> dict[str, tuple[str, frozenset[str]]]:
+    """Return the replayed current head of every membership chain.
+
+    A historical scan of ``membership`` records is not equivalent to replay: a
+    retraction leaves its withdrawn link in the register as evidence. Writers that
+    extend a chain need both the surviving members and that surviving link's digest,
+    so this deliberately exposes the same replayed state that :func:`members_of`
+    reads rather than inviting each writer to reconstruct it differently.
+    """
+    return dict(_read(data)[1].membership_head)
 
 
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
@@ -406,11 +551,6 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
 
 def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
-
-
-def _membership_assertion_identity(physical_page: str, member: str) -> str:
-    """The retractable assertion that one capture shows one physical page."""
-    return f"membership:{physical_page}->{member}"
 
 
 def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
@@ -515,9 +655,6 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         )
         _validate_membership(row, reading)
         identity = f"membership:{digest_of(row)}"
-        for member in row["members"]:
-            assertion = _membership_assertion_identity(row["physical_page_id"], member)
-            reading.membership_assertions[assertion] = (row["physical_page_id"], member)
     elif kind == "physical-act":
         row = _closed(
             record,
@@ -594,25 +731,84 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         ):
             raise SchemaRefusal("retraction record is malformed")
         # A retraction naming nothing retracts nothing while reading as a
-        # correction that happened. It is refused rather than filed. Both
-        # resolvable assertion kinds are retractable: an act correspondence,
-        # or the claim that one capture shows one physical page.
-        membership = reading.membership_assertions.get(row["retracts"])
-        if row["retracts"] not in reading.correspondences and membership is None:
+        # correction that happened. It is refused rather than filed.
+        if row["retracts"].startswith("membership:"):
+            _retract_membership(row, reading)
+        elif row["retracts"] not in reading.correspondences:
             raise SchemaRefusal(
                 f"retraction names {row['retracts']!r}, which no earlier correspondence or "
-                "membership assertion in this register declares; a retraction that corrects "
+                "membership link in this register declares; a retraction that corrects "
                 "nothing is not a correction"
             )
-        if membership is not None:
-            page, member = membership
-            reading.retracted_members.setdefault(page, set()).add(member)
         identity = f"retract:{row['retracts']}"
     else:
         raise SchemaRefusal(f"unknown corpus register record kind {kind!r}")
     if identity in reading.seen:
         raise SchemaRefusal(f"corpus register repeats immutable record {identity!r}")
     reading.seen.add(identity)
+
+
+def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
+    """Withdraw the newest link of one physical page's membership chain.
+
+    This is the correction path for the case the instrument is blind to: two
+    frames a human confirmed as one physical page when they are not — two blank
+    forms that agree everywhere because neither carries ink. Memberships grow and
+    are never edited, so without this a wrong confirmation is a corpus-lifetime
+    fact nobody can answer, and GOVERNANCE 2 does not allow a result that can
+    only be wrong in silence.
+
+    Only the current head may be retracted, and that restriction is the whole
+    design rather than a convenience. Each link's members contain its
+    predecessor's, so retracting a link from the middle would leave every
+    successor still asserting the captures it withdrew — a correction the reader
+    would have to ignore, which GOVERNANCE 4 says is not a correction. Unwinding
+    from the head is the only order in which the surviving head is the honest
+    answer; a page corrected two links deep is corrected by two retractions.
+
+    Nothing is deleted. The retracted link stays in the register as evidence of
+    what was once declared and of the appending run that declared it; it simply
+    stops being the answer to "what shows this page".
+    """
+    target = row["retracts"].removeprefix("membership:")
+    page = next(
+        (
+            name
+            for name, head in reading.membership_head.items()
+            if head[0] == target and reading.membership_chain.get(name)
+        ),
+        None,
+    )
+    if page is None:
+        if target in reading.retracted_membership_links:
+            raise SchemaRefusal(
+                f"retraction names membership link {target!r}, which was already retracted; "
+                "a retraction that corrects nothing is not a correction"
+            )
+        if target in reading.membership_links:
+            raise SchemaRefusal(
+                f"retraction names membership link {target!r}, which is not the current head "
+                "of its page's chain; every successor contains the captures it declared, so "
+                "withdrawing it would leave them asserted anyway. Retract from the head."
+            )
+        # Its own wording, not the generic branch's. The two are reached by different
+        # routes — a target that opened with `membership:` was searched for among the
+        # links, and one that did not was searched for among the correspondences — and
+        # a message that cannot tell an operator which namespace was searched also
+        # cannot tell a test that the routing above still exists.
+        raise SchemaRefusal(
+            f"retraction names membership link {target!r}, which this register never declares; "
+            "a retraction that corrects nothing is not a correction"
+        )
+    chain = reading.membership_chain[page]
+    chain.pop()
+    reading.retracted_membership_links.add(target)
+    if chain:
+        reading.membership_head[page] = chain[-1]
+    else:
+        # The page keeps its declaration and returns to having no capture yet,
+        # which `members_of` already spells as the empty list.
+        del reading.membership_head[page]
 
 
 def _require_declared(identity: str, declared: set[str], what: str) -> None:
@@ -663,4 +859,8 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
                 f"membership record for {page!r} does not add a capture to its predecessor; "
                 "membership grows, and a capture already declared is never withdrawn"
             )
-    reading.membership_head[page] = (digest_of(row), members)
+    membership_digest = digest_of(row)
+    link = (membership_digest, members)
+    reading.membership_head[page] = link
+    reading.membership_chain.setdefault(page, []).append(link)
+    reading.membership_links.add(membership_digest)
