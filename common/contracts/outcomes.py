@@ -462,7 +462,15 @@ def witness_coverage(
             if fact is None:
                 fact = False
             if isinstance(fact, bool):
-                fact = {"attached": fact, "comparable": fact}
+                # `comparable: False`, never a copy of the geometry. The
+                # shorthand states attachment and nothing else -- it carries no
+                # alignment status and no retained text -- so copying `attached`
+                # into `comparable` let a caller that measured no comparison at
+                # all count one toward the witness floor for free, which is the
+                # same free claim the granularity basis above refuses it
+                # (GOVERNANCE 10). A caller with comparability evidence states
+                # it in the mapping form.
+                fact = {"attached": fact, "comparable": False}
             if (
                 not isinstance(fact, Mapping)
                 or not isinstance(fact.get("attached"), bool)
