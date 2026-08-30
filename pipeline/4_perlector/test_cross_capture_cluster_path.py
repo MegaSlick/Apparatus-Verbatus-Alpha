@@ -577,6 +577,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         "outcome": "read",
         "payload": {
             "text": passes["perlectio"]["result"]["text"],
+            "lectio_kind": "primed-with-prior",
             # The dossier the joint reader was actually handed, autopsia and
             # all: `establish_logical_record` proves this record's member and
             # capture provenance against the partition that autopsia names,
@@ -838,6 +839,23 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     with pytest.raises(SchemaRefusal, match="does not match the package's own logical"):
         armarium_export.verify_export_bundle(forged_buffer.getvalue(), tmp_path / "clean-forged")
 
+    # An unhashable denominator in package JSON is a refusal, never a TypeError
+    # out of the field-set lookup.
+    unhashable_manifest = json.loads(forged_members["EXPORT_MANIFEST.json"])
+    unhashable_manifest["claims"]["act_partition"]["local_proposal_rows"] = 2
+    unhashable_manifest["claims"]["act_partition"]["denominator"] = ["a", "list"]
+    unhashable_manifest.pop("self_hash")
+    unhashable_manifest["self_hash"] = armarium_export.self_hash(unhashable_manifest)
+    forged_members["EXPORT_MANIFEST.json"] = armarium_export.canonical_bytes(unhashable_manifest)
+    unhashable_buffer = BytesIO()
+    with ZipFile(unhashable_buffer, "w") as archive:
+        for name, data in forged_members.items():
+            archive.writestr(name, data)
+    with pytest.raises(SchemaRefusal, match="not this build's fixed claim"):
+        armarium_export.verify_export_bundle(
+            unhashable_buffer.getvalue(), tmp_path / "clean-unhashable"
+        )
+
     # And a clustered projection that does not say how many seal rows its
     # smaller denominator stands for cannot be exported at all.
     with pytest.raises(SchemaRefusal):
@@ -870,6 +888,9 @@ def _reading_inputs(
         "outcome": "read",
         "payload": {
             "text": text,
+            # The establishing joint pass is the primed one; instrument arms
+            # (lectio-prior, lectio-nuda, primed-without-prior) never establish.
+            "lectio_kind": "primed-with-prior",
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
@@ -1436,6 +1457,63 @@ def test_one_active_capture_after_retraction_still_establishes_and_projects_one_
         "admitted": True,
         "reason": "this capture's Unit 14B ink-confirmed observation and both bounded grants admit recovery",
     }
+
+
+def test_an_instrument_arm_reading_cannot_establish_a_logical_act(tmp_path):
+    """Only the explicitly primed establishing pass may supply established text.
+
+    The combined protocol's other arms -- lectio-prior, lectio-nuda,
+    primed-without-prior -- are instrument records; a caller submitting one
+    (or a reading with no lectio_kind at all) through the logical constructor
+    would record a draft text as established, the exact substitution
+    `accepted_primed_perlectio` refuses on the image-local path.
+    """
+    fixture = _fixture()
+    register_path, physical_page, _physical_act = _register(tmp_path, fixture)
+    partition = _partition(register_path, fixture, physical_page, captures=fixture["captures"])
+    (logical_act,) = partition["logical_acts"]
+    autopsia, blobs = _autopsia(fixture, partition)
+    _reader, passes = _read(fixture, autopsia, blobs)
+    inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
+    archetypus = _module("u19d_instrument_arm_archetypus", ARCHETYPUS_RUN)
+    for kind in (None, "lectio-prior", "lectio-nuda", "primed-without-prior"):
+        payload = {**inputs["accepted_perlectio"]["payload"]}
+        if kind is None:
+            payload.pop("lectio_kind")
+        else:
+            payload["lectio_kind"] = kind
+        forged = {**inputs["accepted_perlectio"], "payload": payload}
+        with pytest.raises(SchemaRefusal, match="lectio_kind"):
+            archetypus.establish_logical_record(
+                partition=partition,
+                logical_act=logical_act,
+                accepted_perlectio=forged,
+                perlectio_ref={
+                    "relative_path": "4_perlector/artifacts/perlectio/joint.json",
+                    "sha256": digest_of(forged),
+                },
+                accepted_review=inputs["accepted_review"],
+                recensor_ref=inputs["recensor_ref"],
+                cross_capture_dissent=inputs["cross_capture_dissent"],
+                cross_capture_dissent_ref=inputs["cross_capture_dissent_ref"],
+            )
+    # An explicitly non-primed flag is refused even beside the right kind.
+    payload = {**inputs["accepted_perlectio"]["payload"], "primed": False}
+    forged = {**inputs["accepted_perlectio"], "payload": payload}
+    with pytest.raises(SchemaRefusal, match="non-primed"):
+        archetypus.establish_logical_record(
+            partition=partition,
+            logical_act=logical_act,
+            accepted_perlectio=forged,
+            perlectio_ref={
+                "relative_path": "4_perlector/artifacts/perlectio/joint.json",
+                "sha256": digest_of(forged),
+            },
+            accepted_review=inputs["accepted_review"],
+            recensor_ref=inputs["recensor_ref"],
+            cross_capture_dissent=inputs["cross_capture_dissent"],
+            cross_capture_dissent_ref=inputs["cross_capture_dissent_ref"],
+        )
 
 
 def test_a_resealed_logical_record_cannot_forge_identity_or_member_conservation(tmp_path):

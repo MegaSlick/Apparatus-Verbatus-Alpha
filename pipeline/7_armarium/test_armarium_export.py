@@ -2394,7 +2394,10 @@ def test_a_deeply_nested_salvage_item_becomes_a_refusal_not_a_recursion_crash(tm
         nested = {"nested": nested}
     item = {**_salvage_item("scrap"), "provenance": {"collection": "tier", "detail": nested}}
     base = _projection()
-    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+    # The salvage walk's own wording, not the shared "nests too deeply" prefix:
+    # the retained-reference walk and the sources.json parser raise refusals
+    # carrying that prefix too, so a bare match could not prove which guard held.
+    with pytest.raises(SchemaRefusal, match="salvage-tier .* nests too deeply for this machine"):
         build_armarium_bundle(
             replace(base, salvage_items=(item,)),
             _formats(embed_pixels=False),
@@ -3098,3 +3101,45 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
 
     with pytest.raises(SchemaRefusal, match="more than one established-text status"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_the_clean_machine_check_refuses_a_member_key_shared_across_logical_acts():
+    """The verifier's twin of the producer's key screen, at the unit seam.
+
+    Ids are the counted unit, so a rebuilt package repeating one
+    `member_act_keys` entry under two logical acts -- every id still unique --
+    balances the row arithmetic while asserting that two logical acts descend
+    from one proposal row. The clean-machine recompute must refuse it exactly
+    as the producer does.
+    """
+    import armarium_export as _module  # noqa: PLC0415
+
+    logical_denominator = "physical-act-partition logical acts"
+    memberships = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["shared-key"],
+            "member_source_page_ordinals": [1],
+        },
+        "pac_bbbbbbbbbbbbbbbb": {
+            "member_local_act_ids": ["act_2222222222222222"],
+            "member_act_keys": ["shared-key"],
+            "member_source_page_ordinals": [2],
+        },
+    }
+    manifest = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 2,
+                "logical_membership": memberships,
+            }
+        }
+    }
+    categories = {
+        "pac_aaaaaaaaaaaaaaaa": "delivered",
+        "pac_bbbbbbbbbbbbbbbb": "delivered",
+    }
+    sources = {"logical_accounting": {"local_proposal_rows": 2, "memberships": memberships}}
+    with pytest.raises(SchemaRefusal, match="repeats a member"):
+        _module._verify_logical_partition_claim(manifest, categories, sources)

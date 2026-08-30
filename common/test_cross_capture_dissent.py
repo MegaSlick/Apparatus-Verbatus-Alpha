@@ -89,7 +89,9 @@ def _record(**overrides: Any) -> dict[str, Any]:
                         "image_region_refs": [_ref(f"crop/{view_id}.png")],
                         "reason_codes": [],
                     }
-                    for view_id, form in zip(view_ids, ("Maria", "Marta", "Marie"), strict=False)
+                    for view_id, form in zip(
+                        view_ids, ("Maria", "Marta", "Marie")[: len(view_ids)], strict=True
+                    )
                 ],
             }
         ],
@@ -127,7 +129,22 @@ def test_the_record_contains_every_unordered_capture_pair_and_no_variance_number
     """§8.5/47, both halves, over three views rather than the easy two."""
     views = [_view("view:a", A), _view("view:b", B), _view("view:c", C)]
     record = _record(views=views)
-    assert [pair["view_ids"] for pair in sorted(record["pairs"], key=lambda row: row["pair_id"])]
+    assert record["pairs"] == sorted(record["pairs"], key=lambda row: row["pair_id"])
+    # "No variance number": every pair is exactly its closed field set, so no
+    # numeric claim field can travel beside the structural facts.
+    assert all(
+        set(pair)
+        == {
+            "pair_id",
+            "view_ids",
+            "capture_condition",
+            "same_ink",
+            "identical_run_configuration",
+            "act_match_correct",
+            "finding_codes",
+        }
+        for pair in record["pairs"]
+    )
     assert {tuple(pair["view_ids"]) for pair in record["pairs"]} == {
         ("view:a", "view:b"),
         ("view:a", "view:c"),
@@ -167,7 +184,10 @@ def test_a_deeply_nested_model_provenance_becomes_a_refusal_not_a_recursion_cras
     nested: Any = "leaf"
     for _ in range(5000):
         nested = {"chair": "perlector", "nested": nested}
-    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+    # The preference and scalar-claim screens walk iteratively, so the depth
+    # boundary is self_hash's own named refusal; either named refusal proves
+    # the crash cannot escape.
+    with pytest.raises(SchemaRefusal, match="nests too deeply|no canonical serial form"):
         _record(model_provenance=nested)
 
 
@@ -412,3 +432,20 @@ def test_the_seam_refuses_a_record_that_is_not_its_own_sealed_form():
     dropped_pair = {**record, "pairs": []}
     with pytest.raises(SchemaRefusal):
         unit20_dissent_input(dropped_pair)
+
+
+def test_the_unit20_seam_hands_out_copies_never_references_into_the_sealed_record():
+    """A consumer writing to the seam's projection must not move sealed bytes.
+
+    The seam once returned the sealed record's own pair objects; one written-to
+    pair failed verify_self_hash on evidence nobody edited on purpose, and the
+    act was refused downstream with no record of what altered it.
+    """
+    sealed = _record()
+    seam = unit20_dissent_input(sealed)
+    seam["pairs"][0]["finding_codes"].append("smuggled")
+    seam["pairs"][0]["view_ids"].append("view:z")
+    seam["pairs"][0]["capture_condition"]["both_unoccluded"] = False
+    seam["perlectio_ref"]["sha256"] = "0" * 64
+    assert verify_self_hash(sealed)
+    validate_cross_capture_dissent(sealed)

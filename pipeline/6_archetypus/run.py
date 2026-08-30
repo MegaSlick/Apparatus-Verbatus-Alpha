@@ -1312,6 +1312,22 @@ def establish_logical_record(
             "logical establishment's read Perlectio has no string text payload; the "
             "Archetypus is refused because absence or a malformed result is not a reading"
         )
+    # The same discriminator `accepted_primed_perlectio` applies on the
+    # image-local path: the establishing joint pass seals
+    # `lectio_kind = "primed-with-prior"` (the Perlector's combined protocol),
+    # and a Lectio nuda, lectio-prior, or primed-without-prior arm is an
+    # instrument record whose draft text may never become established text.
+    if payload.get("lectio_kind") != "primed-with-prior":
+        raise SchemaRefusal(
+            f"logical establishment's Perlectio names lectio_kind "
+            f"{payload.get('lectio_kind')!r}; only the explicitly primed establishing "
+            "pass may establish, and an instrument arm is evidence, never text"
+        )
+    if payload.get("primed") not in (None, True):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio carries an explicitly non-primed flag, "
+            "which is an instrument record, never an establishing read"
+        )
     if not isinstance(payload.get("dossier"), dict):
         raise SchemaRefusal(
             "logical establishment's Perlectio has no object dossier; the Archetypus is "

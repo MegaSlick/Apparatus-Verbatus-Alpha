@@ -8,7 +8,6 @@ or merge.
 
 from __future__ import annotations
 
-import unicodedata
 from itertools import combinations
 from typing import Any, Final
 
@@ -16,6 +15,7 @@ from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
 from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_capture_preference
+from common.cross_capture_autopsia import _is_printable_nfc
 
 SCHEMA: Final = "cross-capture-dissent.v1"
 CAVEAT: Final = (
@@ -95,13 +95,14 @@ _FAILED_CONDITION_CODES: Final = {
 
 
 def _stable_id(value: Any, label: str) -> str:
-    """Refuse invisible or normalization-variant structural identities."""
-    if (
-        not isinstance(value, str)
-        or not value
-        or not value.isprintable()
-        or unicodedata.normalize("NFC", value) != value
-    ):
+    """Refuse invisible or normalization-variant structural identities.
+
+    The predicate is the autopsia's own `_is_printable_nfc`, not a second
+    copy: both modules guard the same fact -- one accented key cannot become
+    two -- and two copies could drift until the autopsia and the dissent
+    record named views by different keys for one act.
+    """
+    if not isinstance(value, str) or not value or not _is_printable_nfc(value):
         raise SchemaRefusal(
             f"cross-capture dissent: {label} is not a non-empty printable NFC identity; "
             "the dissent record is refused because two spellings of one structural key "
@@ -111,25 +112,30 @@ def _stable_id(value: Any, label: str) -> str:
 
 
 def _refuse_scalar_claim_keys(value: Any) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            lowered = str(key).lower()
-            if any(fragment in lowered for fragment in _FORBIDDEN_PREFERENCE_FIELDS):
-                raise SchemaRefusal(
-                    f"cross-capture dissent: forbidden preference field {key!r}; the dissent "
-                    "record is refused because a compound field name cannot designate a "
-                    "capture or observation as the one to use"
-                )
-            if any(fragment in lowered for fragment in _FORBIDDEN_CLAIM_FRAGMENTS):
-                raise SchemaRefusal(
-                    f"cross-capture dissent: forbidden scalar-claim field {key!r}; this record "
-                    "carries structural observations and image anchors, never a score, a rank, "
-                    "or a variance number"
-                )
-            _refuse_scalar_claim_keys(item)
-    elif isinstance(value, list):
-        for item in value:
-            _refuse_scalar_claim_keys(item)
+    # Iterative like its sibling screens (corpus_register, autopsia,
+    # partition): the value is untrusted caller input, and depth must be this
+    # walk's own list, never the interpreter stack.
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key, item in current.items():
+                lowered = str(key).lower()
+                if any(fragment in lowered for fragment in _FORBIDDEN_PREFERENCE_FIELDS):
+                    raise SchemaRefusal(
+                        f"cross-capture dissent: forbidden preference field {key!r}; the dissent "
+                        "record is refused because a compound field name cannot designate a "
+                        "capture or observation as the one to use"
+                    )
+                if any(fragment in lowered for fragment in _FORBIDDEN_CLAIM_FRAGMENTS):
+                    raise SchemaRefusal(
+                        f"cross-capture dissent: forbidden scalar-claim field {key!r}; this record "
+                        "carries structural observations and image anchors, never a score, a rank, "
+                        "or a variance number"
+                    )
+                pending.append(item)
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def _span_or_gap_ref(value: Any) -> Any:
@@ -345,23 +351,15 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
     """Validate and seal the pair-complete Unit 19 evidence record."""
     candidate = dict(record)
     candidate.pop("self_hash", None)
-    try:
-        _refuse_scalar_claim_keys(candidate)
-        # The fragment sweep above already subsumes these exact names at every
-        # depth.  This is the shared screen every producer of the §7 vocabulary
-        # runs, kept so that narrowing the fragment match can never silently retire
-        # the preference screen with it.
-        refuse_capture_preference(candidate, what="cross-capture dissent")
-    except RecursionError as error:
-        # `model_provenance` is accepted as any object at all (module docstring
-        # above), so an unvalidated caller can nest it past Python's recursion
-        # limit before either screen's own shape checks are reached. A record
-        # this machine cannot walk is refused, never crashed on -- the same
-        # boundary `self_hash` already holds for this record's own digest.
-        raise SchemaRefusal(
-            "cross-capture dissent: the record nests too deeply for this machine to walk, so "
-            "its preference and scalar-claim screens were never computable"
-        ) from error
+    # Both screens are iterative, so a deep `model_provenance` is walked to the
+    # bottom here; the depth boundary is then `self_hash`'s own named refusal
+    # ("no canonical serial form"), never an uncaught RecursionError.
+    _refuse_scalar_claim_keys(candidate)
+    # The fragment sweep above already subsumes these exact names at every
+    # depth.  This is the shared screen every producer of the §7 vocabulary
+    # runs, kept so that narrowing the fragment match can never silently retire
+    # the preference screen with it.
+    refuse_capture_preference(candidate, what="cross-capture dissent")
     supplied_caveat = candidate.pop("caveat", CAVEAT)
     if supplied_caveat != CAVEAT or set(candidate) != _FIELDS - {"self_hash", "caveat"}:
         raise SchemaRefusal("cross-capture dissent: record is outside its closed schema")
@@ -488,10 +486,21 @@ def unit20_dissent_input(record: Any) -> dict[str, Any]:
     projection copies the validated value rather than a caller's.
     """
     checked = validate_cross_capture_dissent(record)
+    # Copies, not references: the seam must not hand a consumer live objects
+    # into the sealed record, where one written-to pair would fail
+    # verify_self_hash on evidence nobody edited on purpose.
     return {
         "schema": SCHEMA,
         "logical_act_id": checked["logical_act_id"],
-        "perlectio_ref": checked["perlectio_ref"],
-        "pairs": checked["pairs"],
+        "perlectio_ref": dict(checked["perlectio_ref"]),
+        "pairs": [
+            {
+                **pair,
+                "view_ids": list(pair["view_ids"]),
+                "capture_condition": dict(pair["capture_condition"]),
+                "finding_codes": list(pair["finding_codes"]),
+            }
+            for pair in checked["pairs"]
+        ],
         "caveat": checked["caveat"],
     }

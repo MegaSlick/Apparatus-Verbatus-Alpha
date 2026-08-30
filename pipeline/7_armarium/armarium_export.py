@@ -843,7 +843,16 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     act_partition = claims["act_partition"]
     if not isinstance(act_partition, dict):
         raise SchemaRefusal("the manifest act_partition claim is not an object")
-    act_partition_fields = _ACT_PARTITION_CLAIM_FIELDS.get(act_partition.get("denominator"))
+    declared_denominator = act_partition.get("denominator")
+    # isinstance before the lookup, exactly as the salvage status below and
+    # `_require_damage_record` do: package JSON can put an unhashable list or
+    # object here, and a TypeError out of the key lookup would be a crash where
+    # the contract owes a named refusal.
+    act_partition_fields = (
+        _ACT_PARTITION_CLAIM_FIELDS.get(declared_denominator)
+        if isinstance(declared_denominator, str)
+        else None
+    )
     if act_partition_fields is None:
         raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
     _require_exact_fields(
@@ -3441,6 +3450,7 @@ def _verify_logical_partition_claim(
     ):
         raise SchemaRefusal("the package logical accounting is malformed")
     member_ids_seen: set[str] = set()
+    member_keys_seen: set[str] = set()
     for act_id, membership in memberships.items():
         if not isinstance(act_id, str) or act_id not in categories:
             raise SchemaRefusal(
@@ -3473,13 +3483,18 @@ def _verify_logical_partition_claim(
             or ordinals != sorted(set(ordinals))
         ):
             raise SchemaRefusal("a package logical membership row is not canonical")
-        repeated = set(ids) & member_ids_seen
+        # Both vocabularies, as the producer's twin tracks both: ids are the
+        # counted unit, so a key repeated across logical acts with unique ids
+        # still balances the row arithmetic while asserting that two logical
+        # acts descend from one proposal row.
+        repeated = (set(ids) & member_ids_seen) | (set(keys) & member_keys_seen)
         if repeated or set(ids) & set(categories):
             raise SchemaRefusal(
                 "the package logical accounting repeats a member or exports one beside its "
                 "own logical act"
             )
         member_ids_seen.update(ids)
+        member_keys_seen.update(keys)
     accounted = len(member_ids_seen) + (len(categories) - len(memberships))
     if accounted != declared:
         raise SchemaRefusal(
