@@ -374,7 +374,7 @@ def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(mon
     observation and drives bounded recovery on evidence the run manufactured.
     Every case here is a rectangle `_proposal_geometry_by_page` already refuses
     of the same sealed proposals."""
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
