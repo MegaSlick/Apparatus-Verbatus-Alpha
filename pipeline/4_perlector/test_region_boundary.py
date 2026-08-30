@@ -535,6 +535,35 @@ def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_regio
         perlector.validate_page_testimonium_record(context, extra_input, proposals)
 
 
+@pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
+def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_region, retained):
+    """Both retained-response shapes are inputs, not payload-only references.
+
+    `RunTree.read_artifact` re-reads `inputs` and nothing else, so a reference
+    that lives only in the payload names bytes no ordinary consumer re-hashes.
+    The Churro capture was already bound this way; the quantized partition's
+    responses are bound the same way, and this seam refuses a record that drops
+    either.
+    """
+    context, _ = real_region
+    proposals = perlector.sealed_proposal_regions(context)
+    testimony = _page_record_with(context, lambda payload: retained in payload)
+    perlector.validate_page_testimonium_record(context, testimony, proposals)
+
+    payload = testimony["payload"]
+    references = (
+        [payload["native_capture"]["raw_response_ref"]]
+        if retained == "native_capture"
+        else payload["raw_response_refs"]
+    )
+    unbound = copy.deepcopy(testimony)
+    unbound["inputs"] = [item for item in unbound["inputs"] if item not in references]
+    assert len(unbound["inputs"]) == len(testimony["inputs"]) - len(references)
+
+    with pytest.raises(SchemaRefusal, match="every retained raw response"):
+        perlector.validate_page_testimonium_record(context, unbound, proposals)
+
+
 def _page_record_with(context, predicate):
     """The first page Testimonium in the sealed tree that satisfies `predicate`."""
     return next(
@@ -648,7 +677,12 @@ def test_page_adapter_crop_cannot_hide_proposals_outside_its_presentation(real_r
         if region["payload"]["transform"]["source_page_id"] == testimony["subject_id"]
     ]
     forged["payload"]["partition_disagreement"] = partition_disagreement(forged, page_proposals)
-    forged["inputs"] = [context.input_ref(crop["payload"]["image_path"])]
+    # The record's retained responses stay bound: dropping them is a different
+    # refusal, and it fires before the disclosure rule this test is about.
+    retained = list(forged["payload"].get("raw_response_refs", []))
+    if forged["payload"].get("native_capture") is not None:
+        retained.append(forged["payload"]["native_capture"]["raw_response_ref"])
+    forged["inputs"] = [context.input_ref(crop["payload"]["image_path"])] + retained
 
     with pytest.raises(SchemaRefusal, match="proposal regions outside its presentation"):
         perlector.validate_page_testimonium_record(context, forged, proposals)

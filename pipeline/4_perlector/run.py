@@ -670,15 +670,25 @@ def validate_page_testimonium_record(
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
+        # Every retained response the record derived from, in the payload's own
+        # order: the partition's responses, then a native capture. Each is
+        # bound beside the presented pixels so an ordinary artifact read
+        # re-hashes it, rather than trusting a nested reference nobody opens.
+        retained = list(payload.get("raw_response_refs", []))
         capture = payload.get("native_capture")
         if capture is not None:
-            # A native capture binds its retained raw response beside the
-            # presented pixels; both and nothing else are the record's inputs.
-            expected_inputs = expected_inputs + [capture["raw_response_ref"]]
+            retained.append(capture["raw_response_ref"])
+        # Sorted the way the envelope stores inputs, exactly as the act-scoped
+        # seam above does. Comparing against the payload's own order passes only
+        # while the retained paths happen to sort after the presented image.
+        expected_inputs = sorted(
+            expected_inputs + retained,
+            key=lambda item: (item["relative_path"], item["sha256"]),
+        )
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "a page Testimonium does not bind exactly its presented image"
-                + (" and retained raw response" if capture is not None else "")
+                + (" and every retained raw response" if retained else "")
                 + ". The consumer cannot prove which immutable pixels produced the page "
                 "report. Restore the digest-bound inputs and remove unrelated ones"
             )

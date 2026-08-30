@@ -368,6 +368,15 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
+            # The same rule as the native capture below, for the responses a
+            # page partition was quantized from: a retained response named only
+            # in the payload is one an ordinary artifact read never re-hashes.
+            for reference in page_payload.get("raw_response_refs", []):
+                if reference not in page_testimonium.get("inputs", []):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} does not bind a retained raw "
+                        "response its own geometry was quantized from as a verified input"
+                    )
             native_capture = page_payload.get("native_capture")
             if native_capture is not None:
                 if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):

@@ -874,6 +874,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # responses (88 -> 90) and review likewise (111 -> 113). Measured twice at
 # two independent run roots through this module's own helpers.
 #
+# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# retained response it derived from in its envelope `inputs`, not only a Churro
+# `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
+# so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
+# re-hashed, although the same envelope already bound the Churro capture that
+# way; the Recensor applies its existing capture rule to them too. Reference
+# fields only -- each page record that names retained responses gains them as
+# inputs. No blob, no artifact, no exit-code change: counts hold at 90/0 and
+# 113/3, and both digests below reproduced twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers at canonical run id "r".
+#
 # Reading this log: it is chronological and append-only, and every entry states
 # the counts and the fixture shape as they stood when that entry was written.
 # Only the last entry describes the tree now; an earlier entry naming a
@@ -881,8 +893,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # measurement it superseded and not a competing claim about today. The two
 # literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 90
-HAPPY_RUN_TREE_DIGEST = "da199675689eae5707aa86c7300f05dba42bd26f8d51a28c4c6ad6d507b6f60e"
-REVIEW_RUN_TREE_DIGEST = "6b7ea777f27e9503052275c689fc0e9fe046b770af4169c54c22e9930c573a61"
+HAPPY_RUN_TREE_DIGEST = "1644e4ffc446d6833280837ccb34a66008740884626f90ea29d4cbd2e6752322"
+REVIEW_RUN_TREE_DIGEST = "8febd1df2970413dce014b3c58a0382fef53a435216ca773954ddcea21ac876c"
 
 
 def orchestrate(
