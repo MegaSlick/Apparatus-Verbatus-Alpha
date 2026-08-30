@@ -689,10 +689,17 @@ def _page_with_churro_capture() -> dict:
         (
             # Path and digest agree here, so only the digest-shape rule refuses
             # it. The retained-response seam above spells the same rule.
+            #
+            # That rule has its own message since the shared reference shape was
+            # given `is_sha256`: this uppercase digest is refused at the shape,
+            # before the path-agreement check whose wording the row above
+            # matches. What is pinned is unchanged -- uppercase is not this
+            # pipeline's lowercase-hex digest -- under the refusal that decides
+            # it.
             lambda value: value["native_capture"]["raw_response_ref"].update(
                 relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
             ),
-            "content-addressed",
+            "invalid raw-response reference",
         ),
         (
             lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),
