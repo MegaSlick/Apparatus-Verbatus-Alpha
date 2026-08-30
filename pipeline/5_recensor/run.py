@@ -253,10 +253,21 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
 
 
 def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
-    """An unattached continuation may not erase another page's attachment."""
-    if current["attached"] and not previous["attached"]:
-        return current
-    return previous
+    """An unattached continuation may not erase another page's attachment.
+
+    Chosen by strength, not by arrival order. `attached` alone decided this
+    before, and `comparable` is a per-page fact -- the producer derives it from
+    that page's own alignment status and that page's own retained text
+    (`pipeline/3_attestatores/run.py`), so one chair's two rows for one act
+    genuinely differ in it. Rows arrive in page order, so a continuation page
+    that attached without comparable text sorted ahead of the primary page that
+    had both and won on `attached` being equal. The chair was then recorded
+    incomparable, dropped out of the witness floor, and the act read
+    under-witnessed -- an act held for a human on evidence that existed.
+
+    Ties keep `previous`, so equal-strength rows behave exactly as before.
+    """
+    return max(previous, current, key=lambda fact: (fact["attached"], fact["comparable"]))
 
 
 def act_attachment_facts(
@@ -628,9 +639,10 @@ def act_attachment_facts(
             # whose page has no anchor cannot erase the primary page's valid
             # attachment; all page references remain separately checked by the
             # content denominator below. Merging whole rows keeps one page's
-            # contribution carrying both predicates — `comparable` is derived
-            # from the shared act payload, so OR-ing booleans across pages
-            # could only manufacture a basis no single page supplied.
+            # contribution carrying both predicates together: the surviving row
+            # is the strongest single page's, never a pair of booleans OR-ed
+            # across pages, which could manufacture a combination no one page
+            # supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
             # Only rows of this same act attempt are merged -- the health
