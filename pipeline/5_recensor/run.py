@@ -378,6 +378,15 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
+            # The same rule as the native capture below, for the responses a
+            # page partition was quantized from: a retained response named only
+            # in the payload is one an ordinary artifact read never re-hashes.
+            for reference in page_payload.get("raw_response_refs", []):
+                if reference not in page_testimonium.get("inputs", []):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} does not bind a retained raw "
+                        "response its own geometry was quantized from as a verified input"
+                    )
             native_capture = page_payload.get("native_capture")
             if native_capture is not None:
                 if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
@@ -1592,7 +1601,32 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            if not isinstance(bounds, dict):
+            # The same rectangle `_proposal_geometry_by_page` requires of these
+            # same sealed proposals: four integer sides, on the page, with
+            # positive area. Two distinct failures follow from accepting less.
+            # A rectangle that is a dict and nothing more reaches
+            # `unrouted_observations`, which indexes all four sides by name, and
+            # leaves the stage that decides recovery as a bare `KeyError` naming
+            # neither page nor act. Worse, a *degenerate* rectangle -- zero or
+            # negative width, or an off-page origin -- indexes cleanly and
+            # overlaps nothing, so `_overlaps` reports that no proposal accounts
+            # for ink a proposal does in fact cover, and the witness's
+            # observation is published as an unrouted-observation finding. That
+            # is manufactured coverage evidence driving bounded recovery
+            # (GOVERNANCE 10, 11), which is why the range checks belong here and
+            # not only in the sibling reader.
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
+                    for side in ("x", "y", "w", "h")
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+            ):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
                 )

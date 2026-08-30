@@ -307,6 +307,36 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
+def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(
+    tmp_path, monkeypatch
+):
+    """The sibling of the native-capture rule below, for a quantized partition.
+
+    A retained response named only in the payload is one that
+    `RunTree.read_artifact` never re-hashes, because it verifies `inputs` and
+    nothing else. The page record would then keep integers whose route back to
+    the floats they came from could be swapped underneath it.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "partition-inputs", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "partition-inputs"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def unbound_responses(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"].get("raw_response_refs"):
+            record = copy.deepcopy(record)
+            retained = record["payload"]["raw_response_refs"]
+            record["inputs"] = [item for item in record["inputs"] if item not in retained]
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", unbound_responses)
+    with pytest.raises(FatalAccounting, match="quantized from as a verified input"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
 def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
     tmp_path, monkeypatch
 ):

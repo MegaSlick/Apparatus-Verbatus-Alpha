@@ -823,12 +823,18 @@ class PodRuntime:
             # re-assessment that closes a pod it will not authorize.  Whatever
             # stops this file being read leaves the remaining liability unknown,
             # which is one answer with one name.
+            # Cause first here too, and for the two phase refusals below. The
+            # reason is truncated at 160 characters and a lease path is as long
+            # as its root: putting the path first pushed "could not be read" off
+            # the end on an ordinary macOS temporary directory, leaving an
+            # operator -- and the test that names this cause -- with a bare path
+            # and no diagnosis.
             try:
                 if path.is_symlink():
-                    return total, f"lease {path} is a symlink"
+                    return total, f"a lease is a symlink: {path}"
                 lease = LeaseStore(path).load()
             except Exception as error:
-                return total, f"lease {path} could not be read: {error}"
+                return total, f"a lease could not be read: {path}: {error}"
             if lease is None:
                 # `glob` listed this path, so something was accounted for here a
                 # moment ago and is now gone.  Excluding it would silently drop a
@@ -842,11 +848,11 @@ class PodRuntime:
             if lease.phase == "close-unverified":
                 return (
                     total,
-                    f"lease {path} has an unverified close and unknown remaining liability",
+                    f"a lease has an unverified close and unknown remaining liability: {path}",
                 )
             remaining = (lease.hard_deadline - now).total_seconds()
             if remaining <= 0:
-                return total, f"lease {path} passed its hard deadline without a verified close"
+                return total, f"a lease passed its hard deadline without a verified close: {path}"
             seconds = math.ceil(remaining)
             total += (
                 (lease.pod_hourly_usd + lease.volume_hourly_usd) * Decimal(seconds) / Decimal(3600)

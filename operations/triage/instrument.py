@@ -74,11 +74,10 @@ OFFSET_SELECTION: Final = (
     "then prefer lower signed y and x"
 )
 VERDICT_RULE: Final = (
-    "near-duplicate iff agreement reaches link threshold and either no component "
-    "exists, or the whole disagreement is below blob share, or at most two "
-    "components include a largest blob reaching blob share; otherwise "
-    "complementary-candidate iff agreement is below link threshold and at most "
-    "three components include a largest blob reaching span share; otherwise "
+    "near-duplicate iff agreement reaches link threshold and either the whole "
+    "disagreement is below blob share or it occupies at most two components; "
+    "otherwise complementary-candidate iff agreement is below link threshold and at "
+    "most three components include a largest blob reaching span share; otherwise "
     "unrelated"
 )
 DETERMINISM_CLAIM: Final = (
@@ -978,22 +977,24 @@ def _verdict_for_metrics(
     config: InstrumentConfig,
 ) -> str:
     agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
-    # A disagreement smaller than the blob share is negligible, not disqualifying.
-    # Requiring the largest blob to *reach* that share made the verdict non-monotone in
-    # its own evidence: at the shipped values a pair disagreeing in one to thirty of
-    # 3072 cells fell past both clauses to "unrelated" — the verdict that tells a human
-    # to stop looking — while a pair disagreeing in a hundred was recorded
-    # near-duplicate. The tightest agreement is the likeliest re-shoot, and a re-shoot
-    # read as unrelated is how two frames of one physical page both enter the corpus as
-    # separate pages. The share keeps one meaning, as the floor below which a
-    # difference is not worth arguing about; a large *diffuse* disagreement is still
-    # not near-duplicate, which is what the component bound was for.
+    # Two questions, and no third: is the disagreement small, or is it confined to a
+    # couple of regions? Either answer means a re-shoot.
+    #
+    # `blob_share_per_mille` was once a floor the *largest* component had to reach,
+    # which made the verdict run backwards against its own evidence. Admitting the
+    # negligible case fixed one blob but not two: at the shipped values forty
+    # disagreeing cells split across two regions of twenty scored "unrelated" — the
+    # verdict that tells a human to stop looking — while thirty-one cells in one
+    # region scored "near-duplicate". A re-shoot of one opening with two small ink or
+    # shadow differences lands in exactly that band, and two frames of one physical
+    # page then enter the corpus as two pages with nothing downstream able to see it.
+    #
+    # The component count is what separates diffuse disagreement from localized, so
+    # the floor is not needed beside it once "too small to argue about" is admitted on
+    # its own. What is still refused is a large disagreement scattered across many
+    # regions — two different pages that happen to agree in most cells.
     negligible = (overlapping - agreeing) * 1000 < config.blob_share_per_mille * overlapping
-    near_duplicate = agreement_reaches_link and (
-        components == 0
-        or negligible
-        or (components <= 2 and largest_share >= config.blob_share_per_mille)
-    )
+    near_duplicate = agreement_reaches_link and (negligible or components <= 2)
     complementary = (
         not agreement_reaches_link
         and components <= 3

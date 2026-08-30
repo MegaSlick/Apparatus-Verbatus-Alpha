@@ -698,6 +698,46 @@ def _temporary_regular(directory_descriptor: int, *, prefix: str) -> tuple[int, 
     raise BackupRefusal("a unique backup temporary name could not be created")
 
 
+@contextmanager
+def _publication_temporary(name: str, directory_descriptor: int, *, what: str) -> Iterator[None]:
+    """Discard a publication temporary without displacing a refusal in flight.
+
+    The removal can only run as the block unwinds, and an ``OSError`` raised
+    there -- ``EACCES`` or ``EIO`` on a sync folder or a network share -- would
+    leave the block carrying an errno about a ``.backup-`` temporary in place of
+    "backup object ... already exists but does not verify". The refusal names
+    the fault the operator has to act on, so it is the one that survives. The
+    cleanup failure is said beside it rather than instead of it, and on the path
+    where nothing else went wrong it is itself the refusal: a temporary left in
+    a content-addressed store is not a finished backup.
+    """
+
+    def _remove() -> str | None:
+        try:
+            os.unlink(name, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            return f"the {what} temporary {name!r} could not be removed afterwards: {error}"
+        return None
+
+    try:
+        yield
+    except BackupRefusal as refusal:
+        lost = _remove()
+        if lost is None:
+            raise
+        raise BackupRefusal(f"{refusal}; additionally, {lost}") from refusal
+    except BaseException as error:
+        lost = _remove()
+        if lost is not None:
+            error.add_note(lost)
+        raise
+    lost = _remove()
+    if lost is not None:
+        raise BackupRefusal(lost)
+
+
 def _copy_verified(
     source_descriptor: int,
     relative: str,
@@ -723,7 +763,7 @@ def _copy_verified(
     except BaseException:
         os.close(source)
         raise
-    try:
+    with _publication_temporary(temporary_name, objects_descriptor, what="backup object"):
         digest = hashlib.sha256()
         with (
             os.fdopen(temporary_descriptor, "wb") as destination,
@@ -765,11 +805,6 @@ def _copy_verified(
         if _existing_digest(objects_descriptor, target.name, what=what) != expected_sha256:
             raise BackupRefusal(f"{what} did not verify after copy")
         return "copied"
-    finally:
-        try:
-            os.unlink(temporary_name, dir_fd=objects_descriptor)
-        except FileNotFoundError:
-            pass
 
 
 def _link_or_refuse(
@@ -864,7 +899,7 @@ def _publish_bytes(snapshots_descriptor: int, name: str, target: Path, data: byt
     if _refuse_a_different_snapshot(snapshots_descriptor, name, data):
         return
     descriptor, temporary = _temporary_regular(snapshots_descriptor, prefix=".snapshot-")
-    try:
+    with _publication_temporary(temporary, snapshots_descriptor, what="backup snapshot"):
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -883,11 +918,6 @@ def _publish_bytes(snapshots_descriptor: int, name: str, target: Path, data: byt
             )
             if published != data:
                 raise BackupRefusal("backup snapshot did not verify after publication")
-    finally:
-        try:
-            os.unlink(temporary, dir_fd=snapshots_descriptor)
-        except FileNotFoundError:
-            pass
 
 
 def verify_backup_snapshot(
@@ -929,8 +959,19 @@ def _verify_backup_snapshot(
     if value["schema"] != SCHEMA or value["run_id"] != run_id:
         raise BackupRefusal("backup snapshot does not name this schema and requested run id")
     files = value["files"]
-    if not isinstance(files, list) or not files or len(files) > MAX_BACKUP_FILES:
+    # Three faults, three sentences, for the reason `from_record` splits its
+    # clauses: an operator who backed up a very large run and is told the
+    # snapshot "has no file inventory" is being told something that did not
+    # happen, and each surviving clause would silently answer for the others.
+    if not isinstance(files, list):
+        raise BackupRefusal("backup snapshot's file inventory is not a list")
+    if not files:
         raise BackupRefusal("backup snapshot has no file inventory")
+    if len(files) > MAX_BACKUP_FILES:
+        raise BackupRefusal(
+            f"backup snapshot names {len(files)} files, past the {MAX_BACKUP_FILES} this "
+            "console will read back"
+        )
     checked_rows: list[tuple[str, str]] = []
     mac_spellings: dict[str, str] = {}
     for row in files:

@@ -1241,7 +1241,7 @@ cmd_dispatch() {
     brief_in="$(outdir_of "$task")/brief.md"
     [ -L "$brief_in" ] && die "brief slot ${brief_in} is a symlink — refusing to write through it"
     python3 "$SAFE_FILE" write "$brief" "$brief_in" "$MAX_BRIEF_BYTES" ||
-        die "brief copy from ${brief} to ${brief_in} was refused — the source or slot is not a safe regular file reachable without an agent-controlled symlink"
+        die "brief copy from ${brief} to ${brief_in} was refused; its reason is printed above — either the source or slot is not a safe regular file reachable without an agent-controlled symlink, or the brief is over the ${MAX_BRIEF_BYTES}-byte limit"
 
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"

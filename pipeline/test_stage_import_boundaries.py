@@ -132,12 +132,21 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
             else:
                 for alias in node.names:
                     found.append((alias.name.split(".")[0], f"{dots}{alias.name}"))
-        elif isinstance(node, ast.Call) and (module := _literal_import_module(node)) is not None:
-            found.append((module.split(".")[0], module))
+        elif isinstance(node, ast.Call):
+            for module in _literal_import_modules(node):
+                found.append((module.split(".")[0], module))
     return found
 
 
-def _literal_import_module(node: ast.Call) -> str | None:
+def _literal_import_modules(node: ast.Call) -> list[str]:
+    """Every module a literal dynamic-import call names, the `fromlist` included.
+
+    `__import__("pkg.stage", fromlist=("helper",))` binds the parent but *loads*
+    `pkg.stage.helper`, so reporting the first argument alone would let the
+    helper arrive under a name no guard here ever sees. The submodules the
+    fromlist names are therefore reported beside their parent. `import_module`
+    has no fromlist; only `__import__` is read this way.
+    """
     function = node.func
     is_import_module = (
         isinstance(function, ast.Name)
@@ -145,15 +154,59 @@ def _literal_import_module(node: ast.Call) -> str | None:
         or isinstance(function, ast.Attribute)
         and function.attr == "import_module"
     )
-    is_builtin_import = isinstance(function, ast.Name) and function.id == "__import__"
-    if (
+    is_builtin_import = (
+        isinstance(function, ast.Name)
+        and function.id == "__import__"
+        or isinstance(function, ast.Attribute)
+        and function.attr == "__import__"
+    )
+    if not (
         (is_import_module or is_builtin_import)
         and node.args
         and isinstance(node.args[0], ast.Constant)
         and isinstance(node.args[0].value, str)
     ):
-        return node.args[0].value
-    return None
+        return []
+    parent = node.args[0].value
+    modules = [parent]
+    if is_builtin_import:
+        names = _literal_fromlist(node)
+        if names is None:
+            modules.append(f"{parent}.{UNVERIFIABLE_FROMLIST}" if parent else UNVERIFIABLE_FROMLIST)
+        else:
+            for name in names:
+                modules.append(f"{parent}.{name}" if parent else name)
+    return modules
+
+
+UNVERIFIABLE_FROMLIST = "<unverifiable fromlist>"
+
+
+def _literal_fromlist(node: ast.Call) -> list[str] | None:
+    """The literal string entries of a `__import__` fromlist, positional or keyword.
+
+    Only literal tuples and lists of literal strings are readable. An absent
+    fromlist is an empty list — the call loads the parent and nothing else. A
+    fromlist that is present but computed, or that carries a computed element,
+    is `None`: what it loads is not statically knowable, and the guard fails
+    closed on that rather than narrowing the call to its parent. `"*"` names no
+    submodule and is dropped.
+    """
+    fromlist: ast.expr | None = node.args[3] if len(node.args) > 3 else None
+    for keyword in node.keywords:
+        if keyword.arg == "fromlist":
+            fromlist = keyword.value
+    if fromlist is None:
+        return []
+    if not isinstance(fromlist, ast.Tuple | ast.List):
+        return None
+    names: list[str] = []
+    for element in fromlist.elts:
+        if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+            return None
+        if element.value != "*":
+            names.append(element.value)
+    return names
 
 
 def test_the_population_covers_every_stage_directory():
@@ -220,6 +273,14 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
     )
 
 
+def _is_forgery_import(root: str, full: str) -> bool:
+    """The reseal guard's one predicate: a route to the forgery helper, or a
+    dynamic import whose loads cannot be statically known. Kept as a named
+    function so the regression tests below exercise the predicate the guard
+    actually runs, not a local restatement of it."""
+    return root == "reseal_chain" or full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
+
+
 def test_production_stage_code_never_imports_the_reseal_forgery_helper():
     """`reseal_chain` exists only to make test forgeries internally coherent.
 
@@ -235,11 +296,29 @@ def test_production_stage_code_never_imports_the_reseal_forgery_helper():
         and not Path(path).name.startswith("test_")
         and Path(path).name != "reseal_chain.py"
         for root, full in _imports_in(ROOT / path)
-        if root == "reseal_chain" or full.split(".")[-1] == "reseal_chain"
+        if _is_forgery_import(root, full)
     ]
     assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
         violations
     )
+
+
+def test_a_computed_fromlist_is_reported_unverifiable_and_refused(tmp_path):
+    """A computed fromlist can load any child of its parent, the forgery helper
+    included, so the walker reports it as an unverifiable submodule and the
+    reseal guard's predicate refuses it rather than trusting the parent name."""
+    source = tmp_path / "computed_fromlist.py"
+    source.write_text(
+        "chosen = ['reseal_chain']\n"
+        "__import__('6_archetypus', fromlist=chosen)\n"
+        "__import__('pipeline.3_attestatores', fromlist=(name for name in ()))\n",
+        encoding="utf-8",
+    )
+    names = {full for _root, full in _imports_in(source)}
+    assert f"6_archetypus.{UNVERIFIABLE_FROMLIST}" in names
+    assert f"pipeline.3_attestatores.{UNVERIFIABLE_FROMLIST}" in names
+    flagged = {full for root, full in _imports_in(source) if _is_forgery_import(root, full)}
+    assert len(flagged) == 2
 
 
 def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
@@ -261,12 +340,18 @@ def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
 
 
 def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path):
-    """Bare, qualified, and relative — the guard reports all three by name.
+    """Bare, qualified, relative, and by fromlist — the guard reports all of them.
 
     No pipeline directory is a package, so the relative forms cannot execute
     there today. They are checked anyway: an AST node kind the walker silently
     skips is a gap the guard would never announce, and the qualified form used to
     be reported only under the root `pipeline`.
+
+    The fromlist routes are the ones that ran while being reported as something
+    else. `__import__` given a fromlist loads the named child, and a stage
+    directory is a namespace package, so `__import__("6_archetypus",
+    fromlist=("reseal_chain",))` executed the helper while the guard saw only the
+    directory — a name owned by no stage, matching no other check here either.
     """
     source = tmp_path / "reseal_routes.py"
     source.write_text(
@@ -274,7 +359,11 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "from importlib import import_module\n"
         "import_module('pipeline.6_archetypus.reseal_chain')\n"
         "from . import reseal_chain as forge\n"
-        "from .reseal_chain import reseal\n",
+        "from .reseal_chain import reseal\n"
+        "__import__('pipeline.6_archetypus', fromlist=('reseal_chain',))\n"
+        "__import__('6_archetypus', fromlist=['reseal_chain'])\n"
+        "import builtins\n"
+        "builtins.__import__('5_recensor', fromlist=('reseal_chain',))\n",
         encoding="utf-8",
     )
 
@@ -286,4 +375,6 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "reseal_chain",
         "pipeline.6_archetypus.reseal_chain",
         ".reseal_chain",
+        "6_archetypus.reseal_chain",
+        "5_recensor.reseal_chain",
     }

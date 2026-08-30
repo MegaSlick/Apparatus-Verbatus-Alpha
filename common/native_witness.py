@@ -625,9 +625,7 @@ def validate_retained_response_refs(
                 or set(reference) != {"relative_path", "sha256"}
                 or not isinstance(reference["relative_path"], str)
                 or not reference["relative_path"]
-                or not isinstance(reference["sha256"], str)
-                or len(reference["sha256"]) != 64
-                or any(character not in "0123456789abcdef" for character in reference["sha256"])
+                or not is_sha256(reference["sha256"])
                 or reference["relative_path"] != expected_prefix + reference["sha256"]
             ):
                 raise SchemaRefusal(
@@ -1120,6 +1118,85 @@ def verify_native_capture_blob(tree: Any, value: Any) -> dict[str, Any]:
     return verify_native_capture_bytes(capture, raw)
 
 
+def _validate_churro_capture(value: dict[str, Any]) -> None:
+    """Close the rules that belong to Churro alone, once the shared shape holds.
+
+    `validate_native_capture` closes what every adapter's retained model view
+    must carry. These are Churro's own: its transport reasons, its prompt and
+    generation view, its terminal XML parse, its single repetition finding and
+    the stop-reason arithmetic over the two. Keeping them here gives the next
+    page adapter a visible slot for its own rules instead of one body where the
+    shared closure and one adapter's specifics are stacked without a seam.
+    """
+    parse = value["parse"]
+    state, parser, findings = parse["state"], parse.get("parser"), value["findings"]
+    if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
+        raise SchemaRefusal(
+            "a Churro page capture has an unknown transport stop reason "
+            f"{value['transport_stop_reason']!r}"
+        )
+    view = value["view"]
+    if set(view) != {"prompt", "generation"}:
+        raise SchemaRefusal(
+            "a Churro page capture does not retain exactly its prompt and generation view"
+        )
+    prompt, generation = view["prompt"], view["generation"]
+    if (
+        not isinstance(prompt, dict)
+        or set(prompt) != {"system", "user"}
+        or any(not isinstance(prompt[field], str) or not prompt[field] for field in prompt)
+    ):
+        raise SchemaRefusal("a Churro page capture has no closed nonblank prompt view")
+    if (
+        not isinstance(generation, dict)
+        or set(generation) != {"max_new_tokens"}
+        or not isinstance(generation["max_new_tokens"], int)
+        or isinstance(generation["max_new_tokens"], bool)
+        or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
+    ):
+        raise SchemaRefusal(
+            f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
+        )
+    if state not in {"parsed", "failed"} or parser != "xml":
+        raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
+    if len(findings) > 1:
+        raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
+    for finding in findings:
+        kind = finding["kind"]
+        if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
+            raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
+        if kind == "post-hoc-repetition":
+            if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
+                not isinstance(finding[field], int)
+                or isinstance(finding[field], bool)
+                or finding[field] <= 0
+                for field in ("unit_characters", "repeats")
+            ):
+                raise SchemaRefusal(
+                    "a Churro page capture has a malformed post-hoc repetition finding"
+                )
+        elif set(finding) != {"kind", "reason", "inspected"} or not (
+            isinstance(finding["reason"], str) and finding["reason"]
+        ):
+            raise SchemaRefusal(
+                "a Churro page capture has a malformed uninspected-repetition finding"
+            )
+        if finding["inspected"] not in {"parsed-text", "raw-response"}:
+            raise SchemaRefusal(
+                "a Churro page capture repetition finding does not name the inspected view"
+            )
+    repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
+    expected_stop = value["transport_stop_reason"]
+    if state == "failed":
+        expected_stop = "partial-parse-failed"
+    elif repeated:
+        expected_stop = "partial-post-hoc-repetition-detected"
+    if value["stop_reason"] != expected_stop:
+        raise SchemaRefusal(
+            "a Churro page capture stop reason disagrees with its parse and findings"
+        )
+
+
 def validate_native_capture(value: Any) -> dict[str, Any]:
     """Close the derived model view; raw response bytes remain in its referenced blob."""
     if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
@@ -1153,11 +1230,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         )
     digest = reference["sha256"]
     expected_path = f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
-    if (
-        len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-        or reference["relative_path"] != expected_path
-    ):
+    if not is_sha256(digest) or reference["relative_path"] != expected_path:
         raise SchemaRefusal(
             "a page Testimonium native capture raw-response reference is not its "
             "content-addressed Attestatores blob path and digest"
@@ -1189,71 +1262,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
             "a page Testimonium native capture claims a parse failure with no reason"
         )
     if value["adapter"] == "churro.v1":
-        if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
-            raise SchemaRefusal(
-                "a Churro page capture has an unknown transport stop reason "
-                f"{value['transport_stop_reason']!r}"
-            )
-        view = value["view"]
-        if set(view) != {"prompt", "generation"}:
-            raise SchemaRefusal(
-                "a Churro page capture does not retain exactly its prompt and generation view"
-            )
-        prompt, generation = view["prompt"], view["generation"]
-        if (
-            not isinstance(prompt, dict)
-            or set(prompt) != {"system", "user"}
-            or any(not isinstance(prompt[field], str) or not prompt[field] for field in prompt)
-        ):
-            raise SchemaRefusal("a Churro page capture has no closed nonblank prompt view")
-        if (
-            not isinstance(generation, dict)
-            or set(generation) != {"max_new_tokens"}
-            or not isinstance(generation["max_new_tokens"], int)
-            or isinstance(generation["max_new_tokens"], bool)
-            or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
-        ):
-            raise SchemaRefusal(
-                f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
-            )
-        if state not in {"parsed", "failed"} or parser != "xml":
-            raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
-        if len(findings) > 1:
-            raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
-        for finding in findings:
-            kind = finding["kind"]
-            if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
-                raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
-            if kind == "post-hoc-repetition":
-                if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
-                    not isinstance(finding[field], int)
-                    or isinstance(finding[field], bool)
-                    or finding[field] <= 0
-                    for field in ("unit_characters", "repeats")
-                ):
-                    raise SchemaRefusal(
-                        "a Churro page capture has a malformed post-hoc repetition finding"
-                    )
-            elif set(finding) != {"kind", "reason", "inspected"} or not (
-                isinstance(finding["reason"], str) and finding["reason"]
-            ):
-                raise SchemaRefusal(
-                    "a Churro page capture has a malformed uninspected-repetition finding"
-                )
-            if finding["inspected"] not in {"parsed-text", "raw-response"}:
-                raise SchemaRefusal(
-                    "a Churro page capture repetition finding does not name the inspected view"
-                )
-        repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
-        expected_stop = value["transport_stop_reason"]
-        if state == "failed":
-            expected_stop = "partial-parse-failed"
-        elif repeated:
-            expected_stop = "partial-post-hoc-repetition-detected"
-        if value["stop_reason"] != expected_stop:
-            raise SchemaRefusal(
-                "a Churro page capture stop reason disagrees with its parse and findings"
-            )
+        _validate_churro_capture(value)
     return value
 
 

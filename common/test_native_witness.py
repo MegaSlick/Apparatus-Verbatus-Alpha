@@ -570,6 +570,20 @@ def test_page_retained_response_digest_is_lowercase_hex():
         validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
+def test_page_retained_response_digest_shape_is_the_module_wide_one():
+    """An uppercase digest is refused although its path is derived from it.
+
+    The path check alone cannot see this: `relative_path` and `sha256` agree
+    with each other. Only the digest-shape rule refuses it, and this seam and
+    the native-capture seam below must spell that rule the same way, or one of
+    them starts binding a blob identity the other refuses.
+    """
+    digest = "A" * 64
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
 def test_page_retained_response_path_is_derived_from_its_digest():
     reference = {
         "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -669,6 +683,14 @@ def _page_with_churro_capture() -> dict:
         (
             lambda value: value["native_capture"]["raw_response_ref"].update(
                 relative_path="3_attestatores/blobs/sha256/not-the-digest"
+            ),
+            "content-addressed",
+        ),
+        (
+            # Path and digest agree here, so only the digest-shape rule refuses
+            # it. The retained-response seam above spells the same rule.
+            lambda value: value["native_capture"]["raw_response_ref"].update(
+                relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
             ),
             "content-addressed",
         ),
@@ -974,25 +996,16 @@ def test_partition_disagreement_ties_from_the_proposal_side_too():
 
 
 def test_page_testimonium_keeps_partition_facts_optional_in_the_record_shape():
-    value = payload()
-    value.update(
-        {
-            "chair": "attestator_1",
-            "act_key": "page-1",
-            "attempt_ordinal": 1,
-            "regions": [],
-            "provenance": {},
-            "format_capabilities": {},
-            "witness_reported": None,
-            "content_health": {},
-            "unpresented_regions": [],
-            "scope": "page",
-            "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
-        }
+    """Optional means both shapes pass, so both shapes are asserted here."""
+    without_partition = _page_payload()
+    assert "partition_disagreement" not in without_partition
+    assert validate_page_testimonium_payload(without_partition) is without_partition
+
+    with_partition = _page_payload()
+    with_partition["partition_disagreement"] = partition_disagreement(
+        {"artifact_id": "page-testimony", "payload": with_partition}, []
     )
-    assert validate_page_testimonium_payload(value) is value
+    assert validate_page_testimonium_payload(with_partition) is with_partition
 
 
 def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_recovery():

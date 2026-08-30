@@ -193,3 +193,64 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
             [],
             set(),
         )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    (
+        pytest.param(
+            {"attachment_basis": "geometric-overlap"},
+            "names an attachment basis other than",
+            id="basis",
+        ),
+        pytest.param(
+            {"span": {"start": 0, "end": 4}},
+            "claims an alignment span",
+            id="span",
+        ),
+    ),
+)
+def test_each_unattached_fault_is_refused_by_the_field_that_caused_it(monkeypatch, change, message):
+    """One message per fault. A single refusal naming only `span` sent the
+    operator to a field that was already null whenever the real fault was the
+    basis, and left them to guess the rest from a stage exit."""
+    attachment = {
+        "chair": "attestator_3",
+        "page_witness": False,
+        "page_ordinal": None,
+        "testimonium_ref": {},
+        "attached": False,
+        "attachment_basis": "unattached",
+        "content_health": {},
+        "alignment": None,
+        "span": None,
+    }
+    attachment.update(change)
+    record = {
+        "payload": {
+            "act_key": "a1",
+            "attempt_ordinal": 1,
+            "attachments": [attachment],
+        }
+    }
+    tree = SimpleNamespace(
+        build_manifest=lambda stage: {
+            "artifacts": [
+                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
+            ]
+        },
+        read_artifact=lambda stage, kind, artifact_id: record,
+    )
+    context = _context(chairs=["attestator_3"], scopes={"attestator_3": "act"})
+    context.tree = tree
+    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
+
+    with pytest.raises(SchemaRefusal, match=message):
+        perlector.act_attachment_view(
+            context,
+            {"act_id": "act_0123456789abcdef", "act_key": "a1"},
+            [{"payload": {"chair": "attestator_3"}}],
+            [],
+            set(),
+            all_proposal_regions=[],
+        )
