@@ -53,6 +53,7 @@ from common.fixture_identity import page_identity
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
     EXIT_HELD,
     _decode_environment,
@@ -1166,7 +1167,12 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         scenario="happy",
         fixture_root=ROOT / "proof",
         models_config=ROOT / "config" / "models.toml",
-        serving_recipes_config=ROOT / "config" / "serving_recipes.toml",
+        # The constant, not a second spelling of the path. This stand-in feeds
+        # mocked subprocess tests, so a catalogue that moved with only
+        # `DEFAULT_SERVING_RECIPES_CONFIG_PATH` updated would leave them passing
+        # while handing every stage a path that is not there. The neighbouring
+        # literals predate this branch and are left as they are.
+        serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
