@@ -378,6 +378,71 @@ def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
         )
 
 
+def test_an_edge_hold_forces_partial_and_names_the_page_once():
+    """GOVERNANCE 2 at page scope, and a held page counted as one page.
+
+    A page whose edge ink no Designator crop claimed keeps the run partial even
+    when every act cut from it was delivered, because no act can own that ink
+    yet. The ordinals are counted as a set: a repeated ordinal is still one held
+    page, and naming it twice would report one page as two to the person reading
+    the reasons.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        edge_hold_pages=[1, 1],
+    )
+    assert aggregate["status"] == "partial"
+    assert [reason for reason in aggregate["reasons"] if "unclaimed-edge-ink" in reason] == [
+        "page 1 carries unreleased unclaimed-edge-ink: ink at its edge that no Designator "
+        "crop on the page claims, so its coverage is not reconciled"
+    ]
+
+
+def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
+    """The chair list is a set of roles, like the edge holds beside it.
+
+    `common/stage.py::unaddressed_chairs` walks `models.chairs`, so in-process
+    its roles are unique. The clean-machine verifier rebuilds this list out of
+    the retained aggregate basis and validates only that it is a list of
+    non-empty strings, so a repeated entry reaches here and would report one
+    unaddressed chair as two. The ink-map rows on that same verifier path are
+    refused outright for a repeated ordinal; this list had no guard at either
+    site while the edge holds it sits beside had two.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        unaddressed_chairs=["attestator_9", "attestator_9"],
+    )
+    assert aggregate["status"] == "partial"
+    assert [reason for reason in aggregate["reasons"] if "attestator_9" in reason] == [
+        "chair attestator_9 is configured and no stage addresses that role, so nothing "
+        "resolved it and no artifact records it"
+    ]
+
+
+def test_an_edge_hold_naming_a_page_the_run_never_counted_is_fatal():
+    """The hold list shares the page denominator, like every other input here.
+
+    A hold over a page outside the census would print a partial reason about a
+    page that does not exist. Witness coverage and text status are already
+    refused on the same ground; this closes the one input that was not.
+    """
+    with pytest.raises(FatalAccounting, match="page census does not account for"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+            edge_hold_pages=[7],
+        )
+
+
 def test_an_act_marked_out_on_a_page_the_exemplar_never_sealed_is_fatal():
     """An act cannot exist over pixels that were refused; that is not a partial run,
     it is a record contradicting itself."""
@@ -568,7 +633,16 @@ def test_coverage_for_an_unknown_act_is_fatal():
 
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
-    files must agree, a test reads both from source and fails on divergence."""
+    files must agree, a test reads both from source and fails on divergence.
+
+    Scope, said plainly so a pass here is not read for more than it proves: the
+    subtraction removes `BOUNDARY_OUTCOMES` from the same vocabulary the loop in
+    `outcomes.py` put them into, so a *third* boundary outcome would be added
+    and taken away again and this check would stay green. What refuses that is
+    `EXPECTED_VOCABULARY_SIZES["armarium"]` above, pinned at 7 -- five
+    categories and two boundary outcomes. The two are one guard, and loosening
+    the size pin removes the half that watches this direction.
+    """
     assert set(outcomes.VOCABULARIES[ARMARIUM]) - set(outcomes.BOUNDARY_OUTCOMES.values()) == {
         category.value for category in ArmariumCategory
     }
@@ -654,12 +728,57 @@ def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
         )
 
 
+def _fact(attached, basis):
+    # `comparable` is required of every mapping fact since the retained-native
+    # seam: an attachment that cannot be compared is not evidence of coverage.
+    # A fact reached geometrically is comparable exactly when it attached.
+    return {"attached": attached, "comparable": attached, "attachment_basis": basis}
+
+
+def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
+    """The shorthand carries no geometry, so it cannot claim the geometric basis.
+
+    `granularity_basis` says *how* the count was reached and travels in the
+    receipt. Derived from the mere presence of the argument, the booleans below
+    would have reported a native-overlap measurement nothing performed
+    (GOVERNANCE 10).
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
+        3,
+        attachments={"s1": True, "s2": False, "s3": True},
+    )
+
+    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
+
+
+def test_one_fact_without_a_basis_withdraws_the_native_claim_for_the_whole_act():
+    """The claim is about the act's count, so any undecided chair unmakes it."""
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read"},
+        2,
+        attachments={
+            "s1": _fact(True, "geometric-overlap"),
+            # A well-formed fact that simply names no basis: the shape is
+            # complete, so what withdraws the native claim is the missing
+            # basis alone and not a malformed attachment.
+            "s2": {"attached": True, "comparable": True},
+        },
+    )
+
+    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
+
+
 def test_granularity_identity_is_executable_for_interim_and_native_bases():
     """The receipt's reading chairs minus page-only count equals the writer's attachments."""
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
         3,
-        attachments={"s1": True, "s2": False, "s3": True},
+        attachments={
+            "s1": _fact(True, "geometric-overlap"),
+            "s2": _fact(False, "unattached"),
+            "s3": _fact(True, "presented-region"),
+        },
     )
     assert coverage["granularity_basis"] == outcomes.NATIVE_GRANULARITY_BASIS
     assert (
@@ -670,6 +789,14 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
     for basis in (outcomes.INTERIM_GRANULARITY_BASIS, outcomes.NATIVE_GRANULARITY_BASIS):
         candidate = {**coverage, "granularity_basis": basis}
         _validate_coverage(candidate, require_complete_granularity=True)
+    # Widening the accepted set from one basis to two must not widen it to any
+    # string: an unnamed basis would let a receipt claim a measurement nothing
+    # in this pipeline performs (GOVERNANCE 10).
+    with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
+        _validate_coverage(
+            {**coverage, "granularity_basis": "invented-basis"},
+            require_complete_granularity=True,
+        )
 
 
 def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():

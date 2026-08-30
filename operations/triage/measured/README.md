@@ -1,10 +1,14 @@
 # Host-only measured pass
 
-This chamber cannot read the Montebello masters or call vision seats. On the host, use
-the authority path `/Users/tyrel/Metis_Research/Parish Master Copies/Montebello (Notre-Dame-de-Bonsecours)/Montebello/`
-and only `005469606_00062.jpeg` through `005469606_00068.jpeg`. Write proxies and all
-real-material artifacts under `private/triage/measured/2026-08-22_005469606_62-68/`,
-never under this repository's tracked paths.
+This chamber cannot read the Montebello masters or call vision seats. On the host, the
+operator supplies the authority path — the Montebello (Notre-Dame-de-Bonsecours) master
+copies — as `$VERBATUS_MASTER_COPIES`, and these instructions never name a machine
+layout of their own: a tracked file that spells one operator's home directory both
+discloses it and works for nobody else. The pass reads only the frames
+`005469606_00062.jpeg` through `005469606_00068.jpeg` from that directory. Write proxies
+and all real-material artifacts under
+`private/triage/measured/2026-08-22_005469606_62-68/`, never under this repository's
+tracked paths.
 
 Run three independent read-only vision seats (Sonnet, Opus, Fable) with the identical
 prompt below. Record their resolved identities, revisions, master/proxy SHA-256s, and the
@@ -123,7 +127,12 @@ remain the evidence needed to replay that correction; the tracked union denomina
 not be read as a claim that the seats enumerated the same acts. Its tracked outputs remain
 historical v1 documents; current v2 outputs also bind both halves to the same validated
 verdict set with `verdicts_sha256` and to the same complete derived pair with
-`reconciliation_sha256`.
+`reconciliation_sha256`. So this pass carries no seal anything in the repository can
+check: `test_every_dated_measured_pass_is_a_whole_pair_and_a_sealed_one_verifies` holds
+every v2 pass to its seal and this one only to its shape — both halves present, one
+schema generation, the same seats. Re-sealing it means re-running the reconciler over
+the private seat files on the host; nothing in this repository can do it, and no reader
+should treat the v1 pair as verified.
 
 ## Consequence for the plan
 

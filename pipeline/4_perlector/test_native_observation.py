@@ -25,7 +25,7 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
-def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path, monkeypatch):
+def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path):
     config_digest = "a" * 64
     tree = RunTree.create(
         tmp_path / "runs",
@@ -51,14 +51,6 @@ def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_pat
     candidate = receipts / f"{digest}.json"
     candidate.symlink_to(outside)
 
-    original_open = Path.open
-
-    def guarded_open(path, *args, **kwargs):
-        if path == candidate:
-            raise AssertionError("approval discovery opened an outward symlink")
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", guarded_open)
     context = SimpleNamespace(tree=tree, config_digest=config_digest)
     # The surviving fd-bound scan opens receipts O_NOFOLLOW relative to the
     # directory descriptor, so the redirect is refused at open time — earlier
@@ -238,7 +230,27 @@ def test_every_degenerate_corner_box_is_reported_separately_and_none_reads_as_co
 
 
 def test_an_unpresented_testimonium_contributes_no_observation():
-    unpresented = {"artifact_id": "t", "payload": {"presented": {}, "observed": []}}
+    """The record carries geometry it could not have seen, and is skipped anyway.
+
+    With an empty `observed` the inner loop has nothing to walk, so the guard
+    could be deleted and this would still pass. The reported box below is what
+    makes the assertion capable of failing: it is exactly what would become a
+    finding if a record with no presentation were ever walked.
+    """
+    unpresented = {
+        "artifact_id": "t",
+        "payload": {
+            "presented": {},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 0, "y": 200, "w": 10, "h": 40},
+                    "bounds_source": "native",
+                }
+            ],
+        },
+    }
+
     assert perlector.unrouted_observations([unpresented], []) == []
 
 

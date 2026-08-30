@@ -47,7 +47,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Iterator, Sequence
 
-from operations.pod.models import _looks_like_credential_field
+from operations.pod.models import looks_like_credential_field
 
 from .errors import ErrorCode, OperatorError
 
@@ -61,7 +61,7 @@ _WRITE_RIGHTS: Final = (
 # to "an unaltered vendor model" (ARCHITECTURE.md), so a future chair's
 # credential need not start with one of these four words, and a scrubber that
 # only knew today's providers would silently stop working the day a new one is
-# wired in. `_looks_like_credential_field` is the same name-shape marker scan
+# wired in. `looks_like_credential_field` is the same name-shape marker scan
 # `operations/pod/models.py` already uses to keep a credential out of a
 # durable controller receipt; reusing it here means both boundaries share one
 # definition of "looks like a secret" rather than drifting apart.
@@ -98,7 +98,7 @@ CHILD_INTERPRETER_FLAGS: Final = ("-I", "-S")
 
 def _is_credential_env_name(key: str) -> bool:
     return any(key.startswith(prefix) for prefix in PROVIDER_ENV_PREFIXES) or (
-        _looks_like_credential_field(key)
+        looks_like_credential_field(key)
     )
 
 
@@ -772,6 +772,13 @@ def run_confined(
         )
     checked_command = [interpreter, *command[1:]]
     environment = custody_environment()
+    # On the narrow mapping alone this check could not fail: the allowlist has
+    # already reduced the environment to six presentation names, none of which
+    # can look like a credential, so it passed because of the allowlist rather
+    # than because the scrub works. `credential_free_environment` is the thing
+    # whose claim needs a witness, so it is checked too -- otherwise nothing on
+    # this path would say so if it ever stopped matching a provider prefix.
+    require_no_provider_credentials(credential_free_environment())
     require_no_provider_credentials(environment)
     backend = confinement()
     checked_cwd = cwd.resolve()

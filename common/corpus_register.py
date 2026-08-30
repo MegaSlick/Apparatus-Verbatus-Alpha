@@ -113,6 +113,34 @@ def read_register_file(register_path: str | Path) -> bytes:
     return _read_register_path(Path(register_path), missing_ok=False)
 
 
+def _resolved_register_path(register_path: str | Path, expected_digest: str) -> Path:
+    """Resolve one register pathname and refuse a malformed expected digest.
+
+    Both writers take this door, so a later tightening of either check cannot reach
+    the appending path and miss the no-op one: a register path that append refused
+    and a no-op confirmation accepted would be two safety rules wearing one name.
+    """
+    try:
+        supplied_path = Path(register_path)
+        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
+    except (OSError, RuntimeError, TypeError) as error:
+        raise SchemaRefusal("corpus-register path could not be resolved") from error
+    if not _is_sha256(expected_digest):
+        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    return path
+
+
+def _require_observed_head(current: bytes, expected_digest: str) -> str:
+    """The compare half of the compare-and-swap, in one wording for both writers."""
+    observed = register_digest(current)
+    if observed != expected_digest:
+        raise IncompatibleReuse(
+            "the corpus register changed after this writer read it; the append was "
+            "not written and must be rebuilt against the current register digest"
+        )
+    return observed
+
+
 def append_records(
     register_path: str | Path,
     records: list[dict[str, Any]],
@@ -132,13 +160,7 @@ def append_records(
     concurrent resolvers from both extending one predecessor and silently losing
     whichever append publishes first.
     """
-    try:
-        supplied_path = Path(register_path)
-        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
-    except (OSError, RuntimeError, TypeError) as error:
-        raise SchemaRefusal("corpus-register path could not be resolved") from error
-    if not _is_sha256(expected_digest):
-        raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
+    path = _resolved_register_path(register_path, expected_digest)
     if (
         not isinstance(records, list)
         or not records
@@ -157,12 +179,7 @@ def append_records(
         except FileNotFoundError:
             current = empty_register()
             predecessor_identity = None
-        observed = register_digest(current)
-        if observed != expected_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
+        _require_observed_head(current, expected_digest)
         value = validate_register_bytes(current)
         successor = canonical_bytes({"schema": SCHEMA, "records": [*value["records"], *records]})
         successor_digest = register_digest(successor)
@@ -171,9 +188,39 @@ def append_records(
         return successor_digest
 
 
+def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -> str:
+    """Prove, under the writer lock, that the register is still the head a caller read.
+
+    An append of no records is still a compare-and-swap. A writer that computes "there
+    is nothing new to append" from bytes it read earlier has read them outside the
+    lock, and a retraction published in between moves the head without changing what
+    that writer would have appended — so returning its own stale digest reports a head
+    that no longer exists, and whatever the caller publishes beside it names memberships
+    the register has since withdrawn. This performs the same locked read-and-compare
+    `append_records` performs, and returns the digest it proved.
+    """
+    path = _resolved_register_path(register_path, expected_digest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _register_lock(path):
+        try:
+            current = _read_register_path(path, missing_ok=False)
+        except FileNotFoundError:
+            current = empty_register()
+        return _require_observed_head(current, expected_digest)
+
+
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
     """Serialize pathname replacement across writers; a crash releases the lock.
+
+    The lock is load-bearing rather than advisory comfort. The append it guards is
+    a read-compare-replace against `expected_digest`, and that compare-and-swap is
+    only sound while one writer at a time holds the section: two writers that both
+    read digest D both satisfy the check, and the second `os.replace` discards the
+    first one's records with nothing anywhere recording that it happened. So every
+    way this function could fail to serialize refuses instead of proceeding — a
+    register append that was silently not serialized is exactly the append-only
+    evidence loss GOVERNANCE 2 and 4 forbid.
 
     The lock name is predictable -- ``.<register name>.lock`` beside the register
     it guards -- so it is opened with ``O_NOFOLLOW``. Without that, anything able
@@ -202,9 +249,12 @@ def _register_lock(path: Path) -> Iterator[None]:
             raise SchemaRefusal("the corpus-register lock is not one unaliased regular file")
         try:
             import fcntl
-        except ImportError:  # pragma: no cover - supported register stores are POSIX
-            yield
-            return
+        except ImportError as error:  # pragma: no cover - supported stores are POSIX
+            raise SchemaRefusal(
+                "this platform cannot lock a corpus register: without flock the "
+                "append's digest compare-and-swap would let one writer discard "
+                "another's records unseen"
+            ) from error
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -323,8 +373,15 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             )
         raise failure from cause
     if cleanup_error is not None:
+        # The replacement and the directory fsync both succeeded, so the new register is
+        # live and this refusal is about the leftover alone. It has to say so: a caller
+        # that reads "could not be removed" as "nothing was written" rebuilds its append
+        # against the previous digest, which the moved head then refuses as a concurrent
+        # change — two refusals for one durable, successful publish.
         raise SchemaRefusal(
-            f"corpus-register temporary {temporary} could not be removed"
+            f"the corpus register was replaced and is durable at digest {digest_bytes(data)}; "
+            f"only the temporary {temporary} could not be removed. Do not retry this append "
+            "against the previous digest"
         ) from cleanup_error
 
 
@@ -442,7 +499,16 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
         )
     try:
         value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+    except RecursionError as error:
+        # Told apart from a parse failure on purpose. A pathologically nested
+        # register is valid UTF-8 and valid JSON; only its depth defeats the
+        # parser. Folded into the message below, it sent an operator to check the
+        # file's encoding, where there is nothing to find.
+        raise SchemaRefusal(
+            "corpus register is nested too deeply for this parser to read; it is "
+            "well-formed JSON whose structure is past the recursion bound"
+        ) from error
+    except (UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("corpus register is not UTF-8 JSON") from error
     if not isinstance(value, dict) or set(value) != {"schema", "records"}:
         raise SchemaRefusal("corpus register must be the closed {schema, records} record")
@@ -453,7 +519,7 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
             f"corpus register has {len(value['records'])} records, past the "
             f"{MAX_REGISTER_RECORDS}-record replay bound"
         )
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     reading = _Reading()
     for record in value["records"]:
         _validate_record(record, reading)
@@ -554,8 +620,13 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
 
 
-def refuse_preference(value: Any, *, what: str = "corpus register") -> None:
-    """Recursively refuse selection vocabulary and name the faulty record kind.
+def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
+    """Refuse a nested capture-preference claim, naming the record it was in.
+
+    Public because the rule is not the corpus register's alone: a Testimonium
+    must not express preference either (ARCHITECTURE, GOVERNANCE 3), and it was
+    reaching this through the private name -- which also told an operator
+    reading a witness record that the *corpus register* was at fault.
 
     Iterative on purpose: the value is untrusted input, and a deeply nested
     payload must exhaust the walk's own list, never the interpreter stack.
@@ -572,10 +643,6 @@ def refuse_preference(value: Any, *, what: str = "corpus register") -> None:
             pending.extend(current.values())
         elif isinstance(current, list):
             pending.extend(current)
-
-
-# The pre-14A private spelling, kept so older callers keep their exact seam.
-_refuse_preference = refuse_preference
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:
@@ -627,12 +694,27 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         # captures are is the one thing about it that grows.
         row = _closed(
             record,
-            {"kind", "corpus_id", "volume_id", "designation", "physical_page_id"},
+            {
+                "kind",
+                "corpus_id",
+                "volume_id",
+                "designation",
+                "physical_page_id",
+                "appending_run",
+            },
             kind,
         )
         expected = physical_page_id(row["corpus_id"], row["volume_id"], row["designation"])
         if row["physical_page_id"] != expected:
             raise SchemaRefusal("physical-page record id does not bind its declaration")
+        # Every other record kind names the run that appended it, and a
+        # declaration needs it most: the register is append-only, so a folio
+        # typed against the wrong volume stands for ever, and without this there
+        # is no field on which to find the rest of what that same pass entered.
+        # It is not one of `physical_page_id`'s bindings, so identity is
+        # unchanged by carrying it.
+        if not isinstance(row["appending_run"], str) or not row["appending_run"]:
+            raise SchemaRefusal("physical-page record names no appending run")
         identity = row["physical_page_id"]
         reading.physical_pages.add(identity)
     elif kind == "membership":
@@ -797,10 +879,14 @@ def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
                 "of its page's chain; every successor contains the captures it declared, so "
                 "withdrawing it would leave them asserted anyway. Retract from the head."
             )
+        # Its own wording, not the generic branch's. The two are reached by different
+        # routes — a target that opened with `membership:` was searched for among the
+        # links, and one that did not was searched for among the correspondences — and
+        # a message that cannot tell an operator which namespace was searched also
+        # cannot tell a test that the routing above still exists.
         raise SchemaRefusal(
-            f"retraction names {row['retracts']!r}, which no earlier correspondence or "
-            "membership link in this register declares; a retraction that corrects "
-            "nothing is not a correction"
+            f"retraction names membership link {target!r}, which this register never declares; "
+            "a retraction that corrects nothing is not a correction"
         )
     chain = reading.membership_chain[page]
     chain.pop()
@@ -828,6 +914,18 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
     if not isinstance(row["appending_run"], str) or not row["appending_run"]:
         raise SchemaRefusal("membership record names no appending run")
     members = frozenset(_digests(row["members"], "membership members"))
+    if not members:
+        # A membership record that names no capture asserts nothing, and it is
+        # immutable once written: no retraction can name an assertion that was
+        # never made. `members_of` would report it as `[]`, which is exactly what
+        # a page with no membership record at all reports — so a triage bug that
+        # wrote one could never be told apart from a page nobody has photographed.
+        # `_evidence` refuses an empty list for this reason; so does this. Later
+        # records cannot be empty anyway, since each must strictly grow.
+        raise SchemaRefusal(
+            f"membership record for {page!r} names no capture; a record that asserts "
+            "nothing cannot be retracted and cannot be told from no record at all"
+        )
     prior = reading.membership_head.get(page)
     if prior is None:
         _require_declared(page, reading.physical_pages, "physical page")

@@ -286,13 +286,22 @@ def test_sampling_approval_scan_refuses_ambiguous_noncanonical_json(tmp_path):
 
 def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
     context = _context(tmp_path, "a" * 64)
+    # A valid approval record sits beside the deep receipt on purpose. Without
+    # it the scan finds no approval subject at all, and the refusal it raised
+    # said so -- a pass this test would have accepted while the deep document
+    # was never examined.
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
     _write_unchecked_receipt(context.tree, b'{"nested":' * 10_000 + b"0" + b"}" * 10_000)
 
     # Parse-time recursion exhaustion is stack-dependent. When the canonical
     # encoder's bound trips first the depth surfaces as a canonicalization
-    # refusal; when the parser survives, the receipt is an object that names no
-    # approval subject and the scan refuses it by shape. Either way the deep
-    # document is a named ContractError, never an escaping crash.
+    # refusal; when the parser survives it is refused as a receipt instead.
+    # Either way the deep document itself is a named ContractError, never an
+    # escaping crash. Only the two depth-dependent outcomes are accepted: both
+    # receipts here are named by `digest_bytes` of their own bytes, so a
+    # content-address refusal cannot fire, and accepting one would let a
+    # regression in digest naming refuse the other receipt first while this deep
+    # document was never parsed at all.
     with pytest.raises(
         ContractError,
         match=(

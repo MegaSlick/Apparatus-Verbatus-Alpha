@@ -737,6 +737,8 @@ def _replace_capture_projection(payload):
     original = payload["payload"]
     forged = ("X" if original[0] != "X" else "Y") + original[1:]
     payload["payload"] = forged
+    # `reported` is a retired projection; the closed schema now refuses the key
+    # itself rather than checking its value.
     payload["native_capture"]["parse"]["text"] = forged
     payload["content_health"]["characters"] = len(forged)
 

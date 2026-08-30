@@ -331,5 +331,35 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
         assert released["flagged"] is False
 
 
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(1, 40), (40, 1), (1, 1)],
+    ids=["one-pixel-wide", "one-pixel-high", "single-pixel"],
+)
+def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, height):
+    """One instrument, not two that disagree about what an edge is.
+
+    `page_edge_ink` floors its band at 1 so the smallest legal image still has
+    an edge. `edge_ink_from_runs` dropped that floor and computed 0, skipping
+    the perimeter measurement entirely. The Ink Map then flagged such a page
+    and the Armarium re-measured it clean, and
+    `pipeline/7_armarium/run.py::ink_map_page_rows` refuses that disagreement
+    with FatalAccounting -- so a single one-pixel-thin page blocked the whole
+    export while naming the wrong problem.
+    """
+    rows = canvas(width, height)
+    paint(rows, 0, 0, width, height)
+    image = encode_grayscale_png(width, height, rows)
+
+    initial = page_edge_ink(image)
+    remeasured = edge_ink_from_runs(ink_runs(image), [])
+
+    assert remeasured["edge_band_pixels"] == initial["edge_band_pixels"] >= 1
+    # Same band, same uncovered page, so the same perimeter ink is seen and the
+    # two detectors reach the same outcome.
+    assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"]
+    assert remeasured["flagged"] == initial["flagged"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

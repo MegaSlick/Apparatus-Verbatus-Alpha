@@ -16,7 +16,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
-from common.corpus_register import refuse_preference
+from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
@@ -128,8 +128,10 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
         or value["source_page_ordinal"] < 1
         or not isinstance(value["image_path"], str)
         or not value["image_path"]
-        or not isinstance(value["image_sha256"], str)
-        or len(value["image_sha256"]) != 64
+        # The lowercase hex shape, not merely 64 characters: a blob identity
+        # that cannot be a digest can never match one, and saying so here names
+        # the malformed presentation instead of a later mismatch.
+        or not is_sha256(value["image_sha256"])
     ):
         raise SchemaRefusal("a Testimonium presented block has invalid source or blob identity")
     transform = value["transform"]
@@ -314,7 +316,7 @@ def validate_native_witness_geometry(
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
-    refuse_preference(payload, what="a Testimonium")
+    refuse_capture_preference(payload, what="a Testimonium")
     presented = payload.get("presented")
     observed = payload.get("observed")
     if presented == {}:
@@ -489,8 +491,11 @@ def validate_page_testimonium_payload(
     page_role = payload["page_role"]
     if (
         payload["scope"] != "page"
-        or not isinstance(payload["page_ordinal"], int)
-        or isinstance(payload["page_ordinal"], bool)
+        or not _integer(payload["page_ordinal"])
+        # Page ordinals are 1-based everywhere; `validate_presented` already
+        # refuses `source_page_ordinal < 1`, and a page record free to name 0 or
+        # a negative page could not be reconciled against any sealed page.
+        or payload["page_ordinal"] < 1
         or not isinstance(page_role, str)
         or page_role not in PAGE_ROLES
         or not isinstance(payload["unjoined_act_attempts"], list)
@@ -498,6 +503,20 @@ def validate_page_testimonium_payload(
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
     validated = validate_native_witness_geometry(payload)
+    # Which page the record says it speaks for, and which page it says it was
+    # shown, are two separate fields. Left unreconciled, a record can name page
+    # 2 while carrying page 5's presentation and page-5 observed boxes; a
+    # consumer keying on `page_ordinal` would then read page-5 geometry as page
+    # 2's (GOALS 5, ARCHITECTURE invariant 3). The Perlector checks this at its
+    # own seam; closing it here means every consumer of the shared contract gets
+    # it, including the Recensor's coverage derivation.
+    presented = payload["presented"]
+    if presented and presented["source_page_ordinal"] != payload["page_ordinal"]:
+        raise SchemaRefusal(
+            "a page Testimonium's presentation names a different page than the record. Its "
+            "observed geometry would be attributed to ink the chair was never shown. Restore "
+            "the page ordinal of the presentation actually served"
+        )
     if "partition_disagreement" in payload:
         presented = payload["presented"]
         disagreement = validate_partition_disagreement(
@@ -581,7 +600,6 @@ def validate_page_testimonium_payload(
                     raise SchemaRefusal(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
-    return validate_native_witness_geometry(payload)
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
@@ -659,6 +677,34 @@ def _overlaps(left: dict[str, int], right: dict[str, int]) -> bool:
     return min(left["x"] + left["w"], right["x"] + right["w"]) > max(left["x"], right["x"]) and min(
         left["y"] + left["h"], right["y"] + right["h"]
     ) > max(left["y"], right["y"])
+
+
+def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
+    """Close only the observation fields a coverage derivation indexes by name.
+
+    `validate_observed` is the full contract and needs the presentation to
+    check containment; a consumer deriving coverage from a retained record
+    holds observations without necessarily re-deriving that presentation. What
+    it does do is index `ordinal`, `bounds_source`, and `bounds` on every row,
+    so a row that is not a closed observation leaves that consumer as a raw
+    KeyError instead of a named refusal — from stages whose whole contract is
+    that a fault arrives with its cause attached (GOVERNANCE 2).
+    """
+    if not isinstance(observed, list):
+        raise SchemaRefusal("a Testimonium observed block is not a list")
+    for item in observed:
+        if not isinstance(item, dict):
+            raise SchemaRefusal("a Testimonium observed entry is not an object")
+        if not _integer(item.get("ordinal")):
+            raise SchemaRefusal("a Testimonium observed entry has no integer ordinal")
+        if item.get("bounds_source") not in BOUNDS_SOURCES:
+            raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
+        # Only reported geometry is measured against proposals; a `presented`
+        # echo is excluded before its box is read, so it is not required to be
+        # a box the consumer would never compare.
+        if item["bounds_source"] in REPORTED_BOUNDS_SOURCES:
+            _bounds(item.get("bounds"), "a Testimonium observed box", page_size=None)
+    return observed
 
 
 def reported_geometry_overlaps(observed: list[dict[str, Any]], bounds: dict[str, int]) -> bool:
@@ -1419,6 +1465,19 @@ def _validate_page_edge_overshoot_response_refs(
     if not isinstance(raw_response_refs, list):
         raise SchemaRefusal(
             "a page-edge finding has no retained response reference. "
+            "The rejected box cannot be traced back to the bytes that produced it. "
+            "Retain the raw response reference before publishing the finding."
+        )
+    # Closed before it is indexed. `reference["sha256"]` over a malformed entry
+    # raised KeyError or TypeError straight through this validator, and an
+    # escaping builtin is not the named refusal a page Testimonium's provenance
+    # contract owes its reader.
+    if any(
+        not isinstance(reference, dict) or not isinstance(reference.get("sha256"), str)
+        for reference in raw_response_refs
+    ):
+        raise SchemaRefusal(
+            "a page-edge finding names a malformed retained response reference. "
             "The rejected box cannot be traced back to the bytes that produced it. "
             "Retain the raw response reference before publishing the finding."
         )

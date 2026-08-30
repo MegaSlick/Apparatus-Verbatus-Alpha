@@ -129,21 +129,49 @@ def test_every_field_round_trips_and_a_derivative_links_to_the_row():
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "field,value,match",
     [
-        ("confidence", 5),
-        ("mode", "automatic"),
-        ("human_override", "yes"),
-        ("actor", {"kind": "model", "identity": "x"}),
-        ("actor", {"kind": "model", "identity": "x", "revision": ""}),
-        ("actor", {"kind": "model", "identity": "x", "revision": None}),
-        ("actor", {"kind": "human", "identity": "Tyrel", "revision": "n/a"}),
+        ("confidence", 5, "outside the closed ordinal"),
+        ("mode", "automatic", "triage mode is not one of"),
+        ("human_override", "yes", "human_override must be present and boolean"),
+        (
+            "actor",
+            {"kind": "model", "identity": "x"},
+            "closed kind/identity/revision record",
+        ),
+        (
+            "actor",
+            {"kind": "robot", "identity": "x", "revision": "r1"},
+            "actor kind must be one of",
+        ),
+        (
+            "actor",
+            {"kind": "model", "identity": "   ", "revision": "r1"},
+            "identity must be a non-blank resolved name",
+        ),
+        ("actor", {"kind": "model", "identity": "x", "revision": ""}, "resolved model revision"),
+        ("actor", {"kind": "model", "identity": "x", "revision": None}, "resolved model revision"),
+        (
+            "actor",
+            {"kind": "human", "identity": "Tyrel", "revision": "n/a"},
+            "human triage actor carries no revision",
+        ),
     ],
 )
-def test_required_provenance_and_closed_values_are_refused(field, value):
+def test_required_provenance_and_closed_values_are_refused(field, value, match):
+    """Pinned to the reason, as the geometry-convention cases below already are.
+
+    Each case mutates a row `make_row` already sealed, so `manifest_row_sha256` no
+    longer binds the payload and `validate_row` has a second reason to refuse it.
+    With a bare `pytest.raises(ContractError)` the digest check answered for every
+    guard named here: delete the confidence ordinal check, or the mode check, or
+    any branch of `_validate_actor`, and the row was still refused and the test was
+    still green. What that would cost in practice is a triage row carrying a
+    confidence nobody declared or a mode nobody declared, and those two fields
+    decide which frames go to human review. Found by CodeRabbit."""
     values = row()
     values[field] = value
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=match):
         validate_manifest(manifest([values]))
 
 
@@ -167,6 +195,8 @@ def test_offline_producer_actor_requires_a_resolved_identity_and_revision():
 
 
 def test_a_non_utf8_actor_identity_stays_inside_the_typed_refusal_algebra():
+    # `canonical_bytes` turns the lone surrogate into TypeError, so this proves the
+    # crossing into `SchemaRefusal`, not a Unicode-specific branch of `_row_digest`.
     malformed = row()
     malformed["actor"] = {"kind": "producer", "identity": "\ud800", "revision": "v1"}
     with pytest.raises(SchemaRefusal, match="cannot be canonically serialized"):
@@ -604,7 +634,14 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
         make_part({"x": index, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1}, 0)
         for index in range(MAX_SPLIT_PARTS + 1)
     ]
-    with pytest.raises(SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit"):
+    # "before its row is serialized" specifically: `make_row` guards the count once
+    # before it derives the digest and `_validate_split` guards it again afterwards,
+    # and while both said the same words this assertion passed with the early guard
+    # deleted — which is the guard that keeps the quadratic work off untrusted input
+    # in the first place. Found by CodeRabbit.
+    with pytest.raises(
+        SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
+    ):
         row(
             frame={"width": MAX_SPLIT_PARTS + 1, "height": 1},
             split=make_split(too_many_parts),

@@ -137,6 +137,28 @@ def _mode_independent_held_stages() -> frozenset[str]:
         and isinstance(tail.value.orelse, ast.Name)
         and tail.value.orelse.id == "EXIT_HELD"
     ):
+        # The tail is only *about* the Armarium because an earlier guard has
+        # already returned for every selection whose last member is something
+        # else. Naming the stage from this file's constant alone would let that
+        # guard be widened or deleted -- the tail would then hold other stages,
+        # the derived set would be wrong, and this test would still be green on
+        # its own assumption. So the guard is read out of the driver too.
+        guards_last_member = any(
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.ops[0], ast.NotEq)
+            and isinstance(node.test.comparators[0], ast.Constant)
+            and node.test.comparators[0].value == stage_names.ARMARIUM
+            and isinstance(node.test.left, ast.Subscript)
+            and isinstance(node.test.left.value, ast.Name)
+            and node.test.left.value.id == "names"
+            for node in ast.walk(function)
+        )
+        assert guards_last_member, (
+            "run_sequence's terminal hold no longer sits behind a guard that returns "
+            "for any selection whose last member is not the Armarium, so the tail can "
+            "hold other stages and this derivation no longer describes the driver"
+        )
         held.add(stage_names.ARMARIUM)
     return frozenset(held)
 
@@ -420,7 +442,9 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
         "This declared selection can require a person-held advance at: armarium, attestatores."
         in rendered
     )
-    assert "This invocation waits" not in rendered
+    # The surface never emits the word "waits", so asserting its absence could
+    # not fail. Assert the line it does emit for the declared mode instead.
+    assert "as you declared it: auto." in rendered
     assert "Advance record:" in rendered
 
 
@@ -477,9 +501,46 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
 
     assert "needs both the first and last stage" in (refusal.value.detail or "")
     rendered = capsys.readouterr().out
-    assert "waits at" not in rendered
+    # The claim line this test exists to keep off the screen is the one the
+    # console actually prints. "waits at" appears nowhere in the surface, so
+    # the previous spelling was true however the code behaved -- printing the
+    # boundary claim before validating the range would not have failed it.
+    assert "person-held advance at" not in rendered
     assert "None" not in rendered
     assert "Current boundary state" in rendered
+
+
+@pytest.mark.parametrize(
+    "missing", ["census", "config_digest", "artifact_inventory", "blob_inventory"]
+)
+def test_a_seal_payload_missing_a_displayed_key_is_a_named_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """Damaged evidence this tool can name must not arrive as an unclassified fault.
+
+    `stored_boundary` converts every read failure into a named refusal, but
+    `boundary_summary` then indexes five payload keys and `latest_attempt`
+    proves only `attempt_ordinal`. A payload that had lost one of the other four
+    raised a bare `KeyError`, which is not an `ApprovalRefusal`, so it passed
+    `_advance_with_confirmation`'s handler and reached the unclassified one --
+    the "photograph this and find a maintainer" path `_bound_run_tree`'s
+    docstring calls a tool that broke rather than a request that was refused.
+
+    Driven at this seam rather than through a rewritten artifact on disk: the
+    run tree's own envelope checks refuse a doctored payload earlier, so a
+    tree-level fixture would prove `read_artifact`'s guard and never reach this
+    one. The claim is only that this function refuses by name when handed such
+    a payload, which is what its caller depends on.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    seal, digest = advance.stored_boundary(tree, "designator")
+    damaged = {**seal, "payload": {k: v for k, v in seal["payload"].items() if k != missing}}
+    monkeypatch.setattr(advance, "stored_boundary", lambda _tree, _stage: (damaged, digest))
+
+    with pytest.raises(ApprovalRefusal, match="could not read designator's stored completion seal"):
+        advance.boundary_summary(tree, "designator")
 
 
 def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(

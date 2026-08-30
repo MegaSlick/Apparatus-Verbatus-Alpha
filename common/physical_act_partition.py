@@ -29,7 +29,7 @@ from common.corpus_register import (
     members_of,
     membership_heads,
     physical_act_page,
-    refuse_preference,
+    refuse_capture_preference,
     resolve_proposal,
 )
 from common.corpus_register import register_digest as read_register_digest
@@ -55,7 +55,7 @@ def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
 
 
 def _refuse_preference(value: Any) -> None:
-    refuse_preference(value, what="physical-act partition")
+    refuse_capture_preference(value, what="physical-act partition")
 
 
 def _refuse_textual(value: Any) -> None:

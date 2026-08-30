@@ -566,7 +566,7 @@ def _write_bytes(path: Path, data: bytes) -> None:
     # This flow requires a freshly empty folder.  An identical existing target is
     # therefore a concurrent change, not an idempotent retry: accepting it could
     # follow a planted symlink and call an output record written when it was not.
-    if not submit._atomic_create(path, data):
+    if not submit.atomic_create(path, data):
         raise ValueError(
             "an ingest output entry appeared after the empty-folder check; no existing "
             "entry was accepted as this commit's evidence"

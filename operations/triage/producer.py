@@ -23,16 +23,16 @@ from typing import Any, Final, Mapping, Sequence
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
-from common.contracts.errors import IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
-    _refuse_preference,
     append_records,
+    confirm_unchanged_head,
     empty_register,
     membership_heads,
     read_register_path,
-    register_digest,
+    refuse_capture_preference,
     validate_register_bytes,
 )
 from common.imaging import ENCODER_LOSSLESS_MODES
@@ -232,7 +232,12 @@ def _whole_frame_row(
 
 
 def _verify_transcribed_row(
-    row: Mapping[str, Any], frame: SubmittedFrame, digest: str, triage_mode: str
+    row: Mapping[str, Any],
+    frame: SubmittedFrame,
+    digest: str,
+    triage_mode: str,
+    *,
+    decoded: tuple[int, int, str],
 ) -> dict[str, Any]:
     """Bind a caller-provided geometry transcription to its submitted master.
 
@@ -255,7 +260,10 @@ def _verify_transcribed_row(
         raise ProducerRefusal(
             "manual refusal digest-bytes-mismatch: transcription names other bytes"
         )
-    width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
+    # The caller's own decode of these exact immutable bytes, by this same function,
+    # three lines earlier. Decoding a second time would prove nothing it did not
+    # already prove and would pay a full master decode twice per transcribed frame.
+    width, height, source_mode = decoded
     if checked["frame"] != {"width": width, "height": height}:
         raise ProducerRefusal(
             "manual refusal frame-dimensions-mismatch: transcription disagrees with decoded master"
@@ -656,7 +664,7 @@ def _confirmation_cluster_ids(
         used_members.update(members)
         used_pages.update(identities)
         result[cluster_id] = (sorted(members), page_records)
-    _refuse_preference(confirmation)
+    refuse_capture_preference(confirmation)
     return result
 
 
@@ -746,7 +754,9 @@ def produce(
         width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
         supplied = transcribed_rows_by_path.get(frame.path)
         row = (
-            _verify_transcribed_row(supplied, frame, digest, mode)
+            _verify_transcribed_row(
+                supplied, frame, digest, mode, decoded=(width, height, source_mode)
+            )
             if supplied is not None
             else _whole_frame_row(
                 corpus_id=corpus_id,
@@ -843,8 +853,8 @@ def produce(
         raise ProducerRefusal(
             f"manual refusal coverage: produced manifest cannot close: {error}"
         ) from error
-    _refuse_preference(manifest)
-    _refuse_preference(clusters)
+    refuse_capture_preference(manifest)
+    refuse_capture_preference(clusters)
     return ProducedTriage(manifest=manifest, clusters=clusters, rows_by_digest=by_digest)
 
 
@@ -865,7 +875,7 @@ def load_confirmation(path: str | Path) -> dict[str, Any]:
         raise ProducerRefusal("confirmation file must be canonical JSON")
     if not isinstance(value, dict) or value.get("schema") != CONFIRMATION_SCHEMA:
         raise ProducerRefusal("confirmation file has an unknown schema")
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     return value
 
 
@@ -941,6 +951,12 @@ def append_confirmation_to_register(
                         "volume_id": page["volume_id"],
                         "designation": page["designation"],
                         "physical_page_id": page_id,
+                        # The same run that appends the membership beside it. A
+                        # declaration is append-only and permanent, so a folio typed
+                        # against the wrong volume stands for ever unless the register
+                        # can say which pass entered it. Not one of `physical_page_id`'s
+                        # bindings, so carrying it leaves page identity unchanged.
+                        "appending_run": confirmation["appending_run"],
                     }
                 )
                 existing_pages.add(page_id)
@@ -964,19 +980,18 @@ def append_confirmation_to_register(
             }
             records.append(membership)
             heads[page_id] = (digest_of(membership), set(members))
-    _refuse_preference(records)
+    refuse_capture_preference(records)
     if not records:
         # Every membership this confirmation names is already in the register: either
         # a genuine no-op resubmission, or the register half of an earlier crash-split
-        # commit. Either way there is nothing new to append. A caller whose expected
-        # digest is stale still gets the ordinary concurrent-write refusal below.
-        current_digest = register_digest(current_bytes)
-        if current_digest != expected_register_digest:
-            raise IncompatibleReuse(
-                "the corpus register changed after this writer read it; the append was "
-                "not written and must be rebuilt against the current register digest"
-            )
-        return current_digest
+        # commit. Either way there is nothing new to append — but that is still a
+        # compare-and-swap, and `current_bytes` was read outside the writer lock. A
+        # retraction published since then moves the head without changing what this
+        # pass would append, so comparing our own stale bytes would return a digest
+        # the register no longer has, and the manifest and cluster records written
+        # next would name a membership that has been withdrawn. The confirmation is
+        # proved against a locked read instead.
+        return confirm_unchanged_head(register_path, expected_digest=expected_register_digest)
     return append_records(register_path, records, expected_digest=expected_register_digest)
 
 
@@ -1096,7 +1111,8 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
         raise failure from cause
     if cleanup_error is not None:
         raise ProducerRefusal(
-            f"confirmed triage document temporary {temporary} could not be removed"
+            f"confirmed triage document {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed. Remove it; do not rewrite the document"
         ) from cleanup_error
 
 
@@ -1179,9 +1195,20 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             try:
                 existing = _read_existing_immutable(path, len(data))
             except OSError as error:
+                # The reason is carried, and the one recoverable cause is named. An
+                # earlier attempt that died between its `os.link` and its cleanup
+                # leaves this record with a second name — its own `.tmp-` sibling —
+                # and the unaliased check then refuses the byte-identical retry this
+                # function documents. "Choose a new path" is the wrong instruction
+                # for that case: the bytes on disk are already correct, and removing
+                # the leftover sibling restores the retry. Nothing is removed here,
+                # because a second link this code did not make is exactly the live
+                # mutation channel into immutable evidence the check exists to catch.
                 raise ProducerRefusal(
-                    f"confirmation authority path {path} already exists but cannot be verified; "
-                    "nothing was overwritten. Choose a new readable authority path."
+                    f"confirmation authority path {path} already exists but cannot be verified "
+                    f"({error}); nothing was overwritten. If an earlier publish was interrupted, "
+                    f"a .{path.name}.tmp-* sibling in {path.parent} is a second name for this "
+                    "record: remove it and retry. Otherwise choose a new readable authority path."
                 ) from error
             if existing != data:
                 raise ProducerRefusal(
@@ -1211,8 +1238,13 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             raise failure from cause
         raise failure
     if cleanup_error is not None:
+        # The temporary here is a second *link* to the published record rather than a
+        # spare copy, so leaving it named is not tidiness: the unaliased check refuses
+        # every later byte-identical retry while it survives.
         raise ProducerRefusal(
-            f"confirmation authority record temporary {temporary} could not be removed"
+            f"confirmation authority record {path} was published and is durable; only the "
+            f"temporary {temporary} could not be removed, and it is a second name for that "
+            "record: remove it, or no retry of this publish can be verified"
         ) from cleanup_error
 
 

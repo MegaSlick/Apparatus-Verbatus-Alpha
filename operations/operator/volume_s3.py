@@ -77,6 +77,14 @@ _ABSENT_CODES: Final = frozenset({"404", "NoSuchKey", "NotFound"})
 
 _DATACENTER = re.compile(r"[A-Z]{2,4}-[A-Z]{2}-[0-9]{1,2}")
 
+# The upload-only credentials, named once. They are read here, and they are the
+# names every child-process environment must have stripped of them, so a third
+# credential added to this transfer without the strippers learning of it is the
+# failure this single definition exists to prevent.
+TRANSFER_ACCESS_KEY_ENV: Final = "RUNPOD_S3_ACCESS_KEY"
+TRANSFER_SECRET_KEY_ENV: Final = "RUNPOD_S3_SECRET_KEY"
+TRANSFER_CREDENTIAL_ENV: Final = frozenset({TRANSFER_ACCESS_KEY_ENV, TRANSFER_SECRET_KEY_ENV})
+
 
 class VolumeTransferRefusal(RuntimeError):
     """This target cannot be built or cannot answer; never a silent 'absent'."""
@@ -88,8 +96,8 @@ class VolumeSpec:
 
     datacenter_id: str
     volume_id: str
-    access_key_env: str = "RUNPOD_S3_ACCESS_KEY"
-    secret_key_env: str = "RUNPOD_S3_SECRET_KEY"
+    access_key_env: str = TRANSFER_ACCESS_KEY_ENV
+    secret_key_env: str = TRANSFER_SECRET_KEY_ENV
 
     def __post_init__(self) -> None:
         if not _DATACENTER.fullmatch(self.datacenter_id):

@@ -65,6 +65,7 @@ from common.stage import (
     verify_final_seal,
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
+from operations.operator import surface, volume_s3
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -671,7 +672,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
 # both authorities without adding an artifact.
 #
-# Re-pinned for the Door's cluster report, a new artifact in every run.
+# *Not* re-pinned for the Door's cluster report, though a note here once said it was.
+# `publish_cluster_report` writes nothing unless some admission carries a
+# `triage_link`, and only the real-ingress route ever supplies triage rows to
+# `expand_sources`; the fixture route these runs take submits none, so the report
+# returns None and no artifact reaches the tree. The pins did move at the merge that
+# landed the report, but for the typed render-origin validator and the page-identity
+# refusal composed in the same commit. Found by CodeRabbit.
 #
 # Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
 # config_digest, so the pins bind those provenance fields even though artifact
@@ -1030,6 +1037,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
+# Audit-round re-pin: each witness-derived flag-location basis row now carries
+# the span it accounts for, so the audit draft is bound to its flags by location
+# rather than by list length. Draft bytes move and the artifacts referencing them
+# follow; no artifact is added or removed, so happy stays 95/0 and review 118/3.
+# Both digests were re-measured twice in independent temporary roots through this
+# module's own `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
 # Unit 14A audit: that renamed reason said something false. Under the legacy
 # page join the outcome carried into an unaligned attachment is THIS ACT'S
 # attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
@@ -1127,10 +1140,32 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # cross_capture_coverage field, and audit chains use the canonical page set.
 # Measured twice at two independent run roots through this module's own
 # helpers at canonical run id "r".
+# Cascade re-pin (pr/11 merged into pr/12): both re-pins above are in this tree
+# at once. pr/12's ink-confirmation gate still removes review's second recovery
+# round (118 -> 106) and pr/11's flag-location basis still carries the span it
+# accounts for, so review's draft bytes moved again without adding or removing
+# an artifact. Counts are unchanged from the entries above -- happy 95/0,
+# review 106/3 -- and both digests were re-measured on the merged tree, twice in
+# independent temporary roots through this module's own `orchestrate` and
+# `semantic_snapshot_digest` at canonical run id "r".
+#
+# Reading this log: it is chronological and append-only, and every entry states
+# the counts and the fixture shape as they stood when that entry was written.
+# Only the last entry describes the tree now; an earlier entry naming a
+# different count, or a different number of declared fixture rows, is the
+# measurement it superseded and not a competing claim about today. The four
+# literals below are the authority, and each re-pin says what moved them.
+# Cascade re-pin (pr/12's tip a8ec9b51c3 merged into pr/13): every re-pin above
+# is in this tree at once. pr/13's sealed run-partition blob and cross-capture
+# fields are present alongside pr/12's ink-confirmation gate and residue work,
+# so neither side's literals below describe this tree -- both were measured on a
+# tree missing the other's change. The four literals are re-measured here on the
+# merged tree, twice in independent temporary roots through this module's own
+# `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "87d61e641f555565e801e8aae95449dd8f2680cce6595934bbd10a5e099caef7"
-REVIEW_RUN_TREE_DIGEST = "46bf9ba1e83349900d1ab9e5fbc62a0d8a602b023e8ca2d28988af6f2b71dff8"
+HAPPY_RUN_TREE_DIGEST = "d82c0727cbb759414012dc932b9ff0d4360c3c89189dc5b6f6039632ddcf6509"
+REVIEW_RUN_TREE_DIGEST = "3d011ddfd358f020322b10684a27c304ff48c0b790e903d6ed602f32fedc4791"
 
 
 def orchestrate(
@@ -1559,6 +1594,49 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     )
     assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
     assert resolved.data_gate_policy.is_file()
+
+
+def test_orchestrator_upload_credentials_are_the_transfers_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both stripping helpers drop the transfer's own names and keep the rest.
+
+    Both this orchestrator and the operator surface strip the upload-only
+    credentials from a stage's environment, and the import boundary keeps this
+    one a duplicate. Without this reconciliation a third credential added to the
+    transfer would go on reaching stages here while the whole suite stayed
+    green -- a live secret in the environment of the process that decodes
+    caller-supplied material.
+
+    Comparing the three sets is not enough on its own: three constants can agree
+    perfectly while a helper has stopped consulting its own. So each helper is
+    run against an environment holding every name, and what it returns is the
+    evidence.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
+    assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    # The names are the transfer's own defaults, not a set that merely happens to
+    # match them today.
+    spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")
+    assert {spec.access_key_env, spec.secret_key_env} == set(volume_s3.TRANSFER_CREDENTIAL_ENV)
+
+    for name in volume_s3.TRANSFER_CREDENTIAL_ENV:
+        monkeypatch.setenv(name, f"upload-secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        # The stripper must remove those names and nothing else: an
+        # implementation that returned an empty environment, or one that dropped
+        # everything it did not recognise, would satisfy the assertion above
+        # while breaking every stage that reads its own settings.
+        assert built["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved", label
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
@@ -5281,10 +5359,19 @@ def test_recovery_stayed_inside_its_budget(review_run):
     `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
+    # pr/12's page-wide grant leaves review with one request, not two. The
+    # allowance it carries is still the configured one: `fallback_recrop +
+    # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
+    # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
+    # is also satisfied by a budget that silently collapsed to 0 or 1, so it
+    # could not fail for the regression it names (GOVERNANCE 10).
     assert len(requests) == 1
-    assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
-        "the absolute cap is a ruling"
-    )
+    allowed = [request["payload"]["budget_allowed"] for request in requests]
+    assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
+    assert all(
+        value <= request["payload"]["recovery_policy"]["absolute_cap"]
+        for value, request in zip(allowed, requests, strict=True)
+    ), "the absolute cap is a ruling (config/recovery.toml absolute_cap)"
 
 
 # --- 6. The held act cannot look complete --------------------------------------

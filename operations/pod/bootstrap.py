@@ -20,12 +20,35 @@ from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
 from .preflight import is_cache_mismatch
 
-BOOTSTRAP_SCHEMA = "pod-bootstrap.v1"
+BOOTSTRAP_SCHEMA = "pod-bootstrap.v2"
+"""Bumped when ``ORDERED_STEPS`` changed: ``MODEL_STORE`` was inserted before
+``CHAIR_CACHE``, so a journal written under v1 lists a completion prefix this
+code no longer recognises. Left at v1, such a journal was rejected as
+"duplicated, reordered, or skips a step" -- the journal blamed for a change in
+the step list. Under its own name it is rejected as an unsupported schema, whose
+remediation is already the correct one: preserve it and start a new journal,
+because every step from ``MODEL_STORE`` onward genuinely has not run.
+"""
 BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
+    # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
+    # $HOME. This environment is explicit and supplies none of those, so where
+    # `uv sync --locked --frozen` cached anything was left to whatever uv could
+    # infer from a passwd entry -- on the money path, with the GPU billing while
+    # it failed. Naming it makes the dependency visible instead of inferred.
+    #
+    # `/tmp` because it is the one absolute path writable by whatever user the
+    # pod image runs as. The cost is honest and bounded: the cache does not
+    # survive a pod, so a fresh pod re-downloads the locked wheels once. It is
+    # deliberately not under the checkout, which must stay exactly the pinned
+    # commit, and not on the model volume, whose contents are evidence.
+    #
+    # Unverified against a real pod image, like the spend template's "$50.00":
+    # check it on the first live boot.
+    "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
 }
 
 

@@ -35,6 +35,7 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
+import common.imaging as common_imaging
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -64,7 +65,13 @@ from operations.triage.instrument import producer_recipe
 POLICY = load_format_policy()
 
 
-def test_an_unreadable_corpus_register_is_a_named_pre_creation_refusal(tmp_path):
+def test_an_unreadable_corpus_register_refusal_names_what_it_promises(tmp_path):
+    """The wording only. What it *claims* about the tree is checked end to end below.
+
+    This calls the helper alone, with no run root and no tree, so nothing here
+    observes the ordering the message asserts. On its own it proves only that a
+    helper raises with the wording the helper itself contains.
+    """
     with pytest.raises(
         ContractError,
         match=(
@@ -101,6 +108,7 @@ RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
@@ -1067,13 +1075,29 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "ambiguous",
+    ("ambiguous", "refusal"),
     [
-        b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
-        b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+        # A duplicate member refuses deterministically at parse time, so this case
+        # pins the parse refusal exactly. Sharing the nesting case's alternation let
+        # it pass with `object_pairs_hook=_unique_json_object` removed: the document
+        # would then parse with the last value winning and fail the closed-schema
+        # check instead, which also matches "invalid" — the guard against a triage
+        # document carrying two values for one field gone with nothing reporting it.
+        (
+            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            "the triage producer recipe is not valid UTF-8 JSON",
+        ),
+        # The nesting case genuinely needs the width: whether the parser gives up
+        # before the closed-schema check is interpreter-dependent.
+        (
+            b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+            "the triage producer recipe is (not valid UTF-8 JSON|invalid)",
+        ),
     ],
 )
-def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_path, ambiguous):
+def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
+    tmp_path, ambiguous, refusal
+):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -1088,10 +1112,7 @@ def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_p
     # at closed-schema validation when the parser happens to survive the depth;
     # either way it is a named ContractError, never an escaping crash, which is
     # the guarantee this test exists for.
-    with pytest.raises(
-        ContractError,
-        match="the triage producer recipe is (not valid UTF-8 JSON|invalid)",
-    ):
+    with pytest.raises(ContractError, match=refusal):
         door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 
 
@@ -1262,13 +1283,31 @@ def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monke
     assert "clusters for one configured shard" in str(refused.value)
 
 
-def test_split_render_uses_the_deterministic_common_encoder():
+def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     """Same-process repetition alone would pass even for a Pillow-chosen framing;
     the claim under test is that a *different* PNG-writing zlib build still yields
     identical bytes, which is what `common.imaging.encode_image_deterministic`
     exists to guarantee (`common/test_imaging_determinism.py`'s own zlib-shim
     pattern). Without varying the encoder, this test cannot tell the project-owned
-    encoder from Pillow's own writer choosing whatever its bundled zlib does."""
+    encoder from Pillow's own writer choosing whatever its bundled zlib does.
+
+    The zlib shim alone did not do that. `encode_image_deterministic` writes stored
+    DEFLATE blocks through `_deterministic_stored_deflate` and never calls
+    `zlib.compress`, and neither does Pillow's PNG writer, which uses a compression
+    object. So the shim changed neither render and the test passed no matter which
+    encoder ran. The encoder call is spied on directly now, and the shim covers
+    `compressobj` too, so a replacement writer would be caught by both halves.
+    Found by CodeRabbit."""
+    calls: list[bytes] = []
+    genuine_encode = common_imaging.encode_image_deterministic
+
+    def spy(image):
+        encoded = genuine_encode(image)
+        calls.append(encoded)
+        return encoded
+
+    monkeypatch.setattr(common_imaging, "encode_image_deterministic", spy)
+
     data = jpeg(6, 4)
     part = door.triage_manifest.make_part(
         {"x": 0, "y": 0, "w": 6, "h": 4},
@@ -1279,16 +1318,23 @@ def test_split_render_uses_the_deterministic_common_encoder():
     first, _, first_contract = door.render_raster_page(data, 0, part)
     assert validate_png(first).width == 4
     assert first_contract["deterministic_encoder"] == "common.imaging.encode_image_deterministic-v1"
+    # The bytes the Door sealed are this encoder's return value, not a writer that
+    # merely produced something a PNG validator accepts.
+    assert calls == [first]
 
     genuine_compress = zlib.compress
+    genuine_compressobj = zlib.compressobj
     try:
         zlib.compress = lambda payload, level=-1, **kwargs: genuine_compress(payload, 6)
+        zlib.compressobj = lambda *args, **kwargs: genuine_compressobj(6)
         shimmed, _, shimmed_contract = door.render_raster_page(data, 0, part)
     finally:
         zlib.compress = genuine_compress
+        zlib.compressobj = genuine_compressobj
 
     assert shimmed == first, "a different zlib compression level renamed the sealed derivative"
     assert shimmed_contract == first_contract
+    assert calls == [first, first]
 
 
 def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
@@ -1582,7 +1628,17 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
     return approved, source, policy, policy_path, ledger_path, ledger
 
 
-def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id, extra=()):
+def _run_real_door(
+    monkeypatch,
+    *,
+    run_root,
+    source,
+    policy_path,
+    ledger_path,
+    run_id,
+    corpus_register=None,
+    extra=(),
+):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1598,6 +1654,7 @@ def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, r
             str(ledger_path),
             "--data-gate-policy",
             str(policy_path),
+            *(["--corpus-register", str(corpus_register)] if corpus_register is not None else []),
             *extra,
         ],
     )
@@ -1678,6 +1735,24 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
 
+    # The Designator now demands its predecessor ink-map seal before it reads
+    # anything, so the ledger boundary this test aims at is reachable only
+    # behind a sealed ink map.
+    ink_map = subprocess.run(
+        [
+            sys.executable,
+            str(INK_MAP_CLI),
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "real-ledger",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert ink_map.returncode == 0, ink_map.stderr
+
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
         [
@@ -1693,7 +1768,8 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         text=True,
     )
     assert boundary.returncode == 2
-    assert "filename-ledger boundary reconciled" in boundary.stderr
+    assert "reconciled the Exemplar filename ledger" in boundary.stderr
+    assert "no proposals or holds were fabricated" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 
@@ -2193,6 +2269,66 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     assert reason_code(records[1]["payload"]["reason"]) is RefusalReason.UNREADABLE
     assert records[2]["payload"]["declared_path"] == "FS-2.png"
     assert records[2]["outcome"] == "admitted"
+
+
+def test_an_unreadable_corpus_register_really_does_leave_no_run_behind(tmp_path, monkeypatch):
+    """The claim the refusal makes, checked against the tree rather than the string.
+
+    `_read_corpus_register` is evaluated as an argument to `RunTree.create`, so
+    the read precedes creation today — but nothing observed that. Move the read
+    below the create and the unit test above still passes while the door leaves a
+    run behind after telling the operator nothing was written.
+    """
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    run_root = _approved / "runs"
+
+    with pytest.raises(ContractError, match="no run or admission record was written"):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="no-register",
+            corpus_register=tmp_path / "missing-register.json",
+        )
+
+    assert not (run_root / "no-register" / "run.json").exists(), "a run was created anyway"
+    assert not (run_root / "no-register").exists() or not list(
+        (run_root / "no-register").rglob("*.json")
+    ), "the refused run left records behind"
+
+
+def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(tmp_path, monkeypatch):
+    """The storage gate runs before the run-level cap, so no run.json is opened.
+
+    The cap check used to run first, in `main`, against the typed run root. For a
+    real submission that meant opening and self-hash-verifying a run authority in
+    a directory the data-handling policy never approved — the exact read the gate
+    exists to stop — and an operator who mistyped the root onto an unapproved
+    volume that happened to hold a run.json was told the run was halted rather
+    than that the root is not an approved location.
+    """
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    outside = tmp_path / "unapproved"
+    (outside / "halted-elsewhere").mkdir(parents=True)
+    # A run.json the cap check would have opened. It is deliberately not a valid
+    # authority: if anything reads it, the failure will not be the gate's.
+    (outside / "halted-elsewhere" / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="run root is outside every approved storage root"):
+        _run_real_door(
+            monkeypatch,
+            run_root=outside,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="halted-elsewhere",
+        )
 
 
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(
@@ -3003,13 +3139,33 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
     assert "Declare the conversion this page needs" in record["payload"]["reason"]
 
 
-def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
-    """The record must retain decoded master mode and bands, not placeholders.
+def test_a_split_derivative_records_a_palette_master_and_the_rgb_it_was_sealed_in():
+    """The lossless case where the decoded mode differs from the encoded one: the
+    deterministic encoder expands P to RGB pixel-for-pixel, so colour_mode "keep"
+    is honoured and the record must still say the master was a palette image. The
+    test below described this case in its docstring and then built an RGB master,
+    so nothing exercised palette provenance at all. Found by CodeRabbit."""
+    palette = Image.new("P", (6, 4))
+    palette.putpalette([10, 20, 30] + [0, 0, 0] * 255)
+    output = BytesIO()
+    palette.save(output, format="PNG")
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        0,
+        colour_mode="keep",
+    )
 
-    The whole-page and split branches share this provenance constraint. A palette
-    master is the lossless case where the decoded mode differs from the PNG mode:
-    the deterministic encoder expands P to RGB pixel-for-pixel.
-    """
+    _bytes, _geometry, contract = door.render_raster_page(output.getvalue(), 0, part)
+
+    assert contract["source_mode"] == "P"
+    assert contract["output"] == {"codec": "png", "color_mode": "RGB"}
+    assert contract["mode_transform"] == "triage-region-crop-rotate-convert-to-rgb"
+
+
+def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
+    """The record must retain the decoded master mode and bands, not placeholders.
+    The whole-page and split branches share this provenance constraint."""
     output = BytesIO()
     Image.new("RGB", (6, 4), (10, 20, 30)).save(output, format="PNG")
     part = door.triage_manifest.make_part(
@@ -3836,8 +3992,10 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
 def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
     """Binding and point-of-use checks must resolve the same triage-modes bytes.
 
-    The paths are independently spelled in the Door and shared stage module; drift
-    would otherwise compare a run against bytes that did not govern it.
+    Both sides now resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
+    weaker remaining coupling: that the binding digest and the point-of-use check
+    still agree about the bytes, whatever that constant later names. Drift would
+    otherwise compare a run against bytes that did not govern it.
     """
 
     class Models:

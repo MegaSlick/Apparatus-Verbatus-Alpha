@@ -61,6 +61,7 @@ def _register(tmp_path: Path):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -455,6 +456,7 @@ def test_a_capture_in_two_proposed_correspondences_is_ambiguous_not_appended(tmp
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -462,6 +464,7 @@ def test_a_capture_in_two_proposed_correspondences_is_ambiguous_not_appended(tmp
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": other_page,
+                "appending_run": "triage",
             },
         ],
         expected_digest=register_digest(empty_register()),
@@ -572,6 +575,7 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -579,6 +583,7 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": other_page,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1012,6 +1017,7 @@ def _two_page_member_register(tmp_path, w):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -1019,6 +1025,7 @@ def _two_page_member_register(tmp_path, w):
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1247,6 +1254,7 @@ def _three_member_register(tmp_path):
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1423,6 +1431,7 @@ def test_a_local_act_corresponding_to_a_physical_act_minted_elsewhere_is_held(tm
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -1430,6 +1439,7 @@ def test_a_local_act_corresponding_to_a_physical_act_minted_elsewhere_is_held(tm
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",
@@ -1937,6 +1947,7 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
                 "volume_id": "book",
                 "designation": "12r",
                 "physical_page_id": PAGE,
+                "appending_run": "triage",
             },
             {
                 "kind": "physical-page",
@@ -1944,6 +1955,7 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
                 "volume_id": "book",
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
+                "appending_run": "triage",
             },
             {
                 "kind": "membership",

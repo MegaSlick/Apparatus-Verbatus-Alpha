@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,13 +34,18 @@ from .custody import (
     python_module_command,
     run_confined,
 )
-from .errors import ErrorCode, OperatorError
+from .errors import ErrorCode, OperatorError, strip_control_bytes
 
 ADVANCE_ACTION = "advance"
 ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
 MAX_ADVANCE_REASON_CHARACTERS = 4_000
 MAX_ADVANCE_REQUEST_CHARACTERS = 65_536
 UTC = timezone.utc
+
+# The worker exits with this when the advance record is on disk but its report
+# could not be written back to the parent. It is neither success nor a refused
+# advance, and the two must not be told to the operator as the same thing.
+WORKER_REPORT_FAILED_EXIT = 3
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
@@ -219,16 +226,29 @@ def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
     """
 
     seal, digest = stored_boundary(tree, stage)
-    payload = seal["payload"]
-    return {
-        "stage": stage,
-        "seal_digest": digest,
-        "attempt_ordinal": payload["attempt_ordinal"],
-        "config_digest": payload["config_digest"],
-        "artifact_inventory": payload["artifact_inventory"],
-        "blob_inventory": payload["blob_inventory"],
-        "census": payload["census"],
-    }
+    # Inside the guard, like every other read of this seal. `stored_boundary`
+    # converts a damaged seal into a named refusal, but `latest_attempt` proves
+    # only `attempt_ordinal`; the other four keys were indexed raw. A payload
+    # that had lost its census or one of its digests raised a bare KeyError,
+    # which is not an `ApprovalRefusal`, so it passed the caller's handler and
+    # reached the unclassified one -- telling the operator to photograph the
+    # message and find a maintainer over evidence this tool can name exactly.
+    try:
+        payload = seal["payload"]
+        return {
+            "stage": stage,
+            "seal_digest": digest,
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "config_digest": payload["config_digest"],
+            "artifact_inventory": payload["artifact_inventory"],
+            "blob_inventory": payload["blob_inventory"],
+            "census": payload["census"],
+        }
+    except (KeyError, TypeError) as error:
+        raise ApprovalRefusal(
+            f"advance could not read {stage}'s stored completion seal ({error}); "
+            "no boundary was advanced"
+        ) from error
 
 
 def held_boundaries_for_mode(
@@ -503,16 +523,16 @@ def trigger_advance(
             # write inside. This is a platform-enforcement refusal, not a
             # verdict on the advance request the worker never saw.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
+        if completed.returncode == WORKER_REPORT_FAILED_EXIT:
+            raise OperatorError(
+                ErrorCode.ADVANCE_REFUSED,
+                detail=(
+                    "the advance record was written and the worker could not report it, so no "
+                    "reference could be checked; read the advance records in review rather "
+                    "than retrying: " + (completed.stderr.strip() or "no diagnostic")
+                ),
+            )
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=completed.stdout or completed.stderr)
-    if completed.stderr:
-        raise OperatorError(
-            ErrorCode.ADVANCE_REFUSED,
-            detail=(
-                "the advance worker reported a refusal despite returning success; it may "
-                "have written an advance record, so inspect review before retrying: "
-                + completed.stderr
-            ),
-        )
     try:
         require_directory_identity(tree.root, run_identity, "the reviewed run tree")
         if receipt_directory_identity(tree.root, run_identity, create=False) != receipt_identity:
@@ -540,13 +560,60 @@ def trigger_advance(
                     "record remains visible as stale, so inspect advance_records before retrying"
                 ),
             ) from error
-        return reference
     except (ApprovalRefusal, ContractError, KeyError, OSError, TypeError, ValueError) as error:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
             detail=(
                 "the advance worker returned no checked decision reference; it may have "
                 "written an advance record, so inspect the review surface before retrying: "
-                f"{error}"
+                f"{error}" + _worker_stderr_clause(completed)
             ),
         ) from error
+    # Read after the reference is checked, deliberately. Deciding on stderr
+    # first made any byte on that pipe a refusal, and the worker runs under
+    # `runpy.run_module(run_name='__main__')`, where an ordinary
+    # `DeprecationWarning` prints by default -- so a completed, verifiable
+    # advance was reported as refused with no fault anywhere. What the worker
+    # wrote is still not discarded (GOVERNANCE 2): the record verified against
+    # the exact request, so this is a note beside a real advance rather than a
+    # verdict on it, and it is the operator who decides what to do about it.
+    if completed.stderr.strip():
+        # `strip_control_bytes`, not `sanitize_detail`. That function's own
+        # contract is "called in exactly one place: `render`, on the way to a
+        # person" -- it truncates at 2000 characters, rewrites vocabulary, and
+        # replaces a structured traceback with a placeholder. A worker traceback
+        # is exactly what this note exists to carry, so sanitizing here threw
+        # away the evidence and left the operator no copy of it (GOVERNANCE 2).
+        # This makes the line safe to print and changes nothing else about it.
+        try:
+            print(
+                "Note: the advance record was written and verified, and the advance worker also "
+                f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
+                file=sys.stderr,
+            )
+        except (OSError, ValueError):
+            # The record is written, verified against the exact request, and
+            # about to be returned. A `BrokenPipeError` — or the `ValueError`
+            # `print` raises on an already-closed stream — here would escape to the
+            # CLI's catch-all and exit 2, telling the operator the advance
+            # failed and inviting a retry of a boundary that is already
+            # advanced and cannot be retracted -- the same fault the worker's
+            # own report had, one process further out. Nothing is silently lost
+            # by swallowing it: a diagnostic channel that cannot be written to
+            # cannot carry a complaint about itself either, and the reference
+            # this returns is what the caller prints.
+            pass
+    return reference
+
+
+def _worker_stderr_clause(completed: subprocess.CompletedProcess) -> str:
+    """Carry the worker's own diagnostic into a refusal that was decided elsewhere.
+
+    Raw, like every other raise site in this module. A detail is persisted whole
+    and shortened only by `render` on its way to a person, so sanitizing it here
+    would discard the one copy of the diagnostic that exists anywhere -- and
+    would do it twice over, since `render` sanitizes again afterwards.
+    """
+
+    text = completed.stderr.strip()
+    return f" (the worker also wrote: {text})" if text else ""

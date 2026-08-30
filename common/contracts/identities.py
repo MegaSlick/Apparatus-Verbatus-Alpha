@@ -210,7 +210,10 @@ def act_id(page: str, act_class: str, bounds: Any) -> str:
     return derive("act", act_bindings(page, act_class, bounds))
 
 
-def _declared_text(value: str) -> str:
+_WHITESPACE_RUN: Final = re.compile(r"\s+")
+
+
+def _declared_text(value: str, what: str) -> str:
     """The one spelling a human-typed declaration is hashed under.
 
     Every other binding in this system is a digest, an integer, or a closed
@@ -219,8 +222,24 @@ def _declared_text(value: str) -> str:
     bytes to `canonical_bytes` — so one physical page would be declared twice,
     with nothing anywhere to reconcile the two. Normalising first turns that
     silent split into the corpus register's loud duplicate-record refusal.
+
+    Whitespace is the same accident on a second axis, and it was left open.
+    `"12r "`, `"12r"`, and `"folio  12r"` are different bytes for what the typist
+    meant as one folio, and a trailing space is not visible in the form they
+    typed it into. It splits a physical page exactly as an NFD spelling does, so
+    it is folded exactly as far: NFC first, then every whitespace run — including
+    a no-break space, which NFC leaves alone — collapsed to one space, then the
+    ends trimmed. A label whose meaning turns on double-spacing is not a thing
+    parish foliation has; a label silently split in two is.
+
+    A declaration that is nothing but whitespace is refused here rather than
+    folded to `""` and hashed, because the callers' non-empty check runs before
+    this and would otherwise pass a blank designation into a real identity.
     """
-    return unicodedata.normalize("NFC", value)
+    folded = _WHITESPACE_RUN.sub(" ", unicodedata.normalize("NFC", value)).strip()
+    if not folded:
+        raise IdentityRefusal(f"{what} is only whitespace, so it declares nothing")
+    return folded
 
 
 def physical_page_bindings(corpus_id: str, volume_id: str, designation: str) -> dict[str, str]:
@@ -229,9 +248,9 @@ def physical_page_bindings(corpus_id: str, volume_id: str, designation: str) -> 
             "physical page bindings require non-empty corpus, volume, and designation"
         )
     return {
-        "corpus_id": _declared_text(corpus_id),
-        "volume_id": _declared_text(volume_id),
-        "designation": _declared_text(designation),
+        "corpus_id": _declared_text(corpus_id, "physical page corpus_id"),
+        "volume_id": _declared_text(volume_id, "physical page volume_id"),
+        "designation": _declared_text(designation, "physical page designation"),
     }
 
 
@@ -247,7 +266,7 @@ def physical_act_bindings(physical_page: str, mint_designation: str) -> dict[str
     _identity(physical_page, "ppg", "physical act page")
     return {
         "physical_page_id": physical_page,
-        "mint_designation": _declared_text(mint_designation),
+        "mint_designation": _declared_text(mint_designation, "physical act mint_designation"),
     }
 
 
