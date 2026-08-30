@@ -4376,6 +4376,73 @@ def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(t
     assert door._membership_sha256(expanded[0]) != door._membership_sha256(expanded[1])
 
 
+def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(tmp_path):
+    """The Door streams a real PDF twice, and only the second stream can see this.
+
+    The raster case is covered above. A streamed PDF takes a different admission
+    path -- it is never read into one bytes object -- and that path re-streams
+    the file rather than reusing the digest `expand_sources` computed. Without
+    this test that re-stream was not measured anywhere: replacing it with the
+    already-recorded expansion digest left the whole suite green, because a
+    stale digest necessarily equals the seal it was itself sealed from, so the
+    comparison passed on bytes nobody had looked at since. Replacing the file
+    between the two streams is the only thing that separates them.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    sealed = single_gray_page_pdf()
+    (folder / "reel.pdf").write_bytes(sealed)
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    (source,) = expand_sources(
+        [
+            {
+                "relative_path": "reel.pdf",
+                "sha256": digest_bytes(sealed),
+                "bytes": len(sealed),
+            }
+        ],
+        unexpected_reader,
+        POLICY,
+        open_source=open_source,
+    )
+    assert source.computed_sha256 == digest_bytes(sealed)
+    tree, context = open_door(tmp_path, [source])
+
+    # The swap happens after membership is sealed and before admission reads,
+    # and it keeps the byte length exactly. A replacement of a different size is
+    # refused by the size comparison beside the digest, which would let this test
+    # pass over a Door that had stopped re-hashing entirely; same-length bytes
+    # leave the digest as the only thing that can tell the two files apart.
+    replacement = bytearray(sealed)
+    replacement[-20] ^= 0xFF
+    replaced = bytes(replacement)
+    assert len(replaced) == len(sealed)
+    assert digest_bytes(replaced) != digest_bytes(sealed)
+    (folder / "reel.pdf").write_bytes(replaced)
+
+    assert (
+        process_sources(
+            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+        )
+        == 0
+    )
+    context.finish(DOOR)
+
+    refusal = admissions(tree)[1]
+    assert refusal["outcome"] == "refused"
+    assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+    # Named, not merely categorised. Three consecutive guards raise this same
+    # reason code -- the ledger byte count, the sealed membership, and the
+    # declared digest -- so the code alone would not say which one saw the swap.
+    assert "shard membership was sealed" in refusal["payload"]["reason"]
+
+
 def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     before, after = png(6, 4), png(8, 5)
     sealed_digest = digest_bytes(before)

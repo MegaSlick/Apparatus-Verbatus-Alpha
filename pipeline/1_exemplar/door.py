@@ -805,6 +805,16 @@ def expand_sources(
                     if detected == "pdf":
                         # Streamed PDFs are not loaded into `data`, but their
                         # inspected identity must exist before membership seals.
+                        # This is the first of the Door's two streams over a real
+                        # PDF. It binds membership to the bytes actually inspected,
+                        # while `run.json` does not exist yet; `process_sources`
+                        # streams the file again at admission to prove those bytes
+                        # did not move after the seal. Neither pass can be dropped
+                        # in favour of the other, and each has its own test:
+                        # `test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie`
+                        # for this one, and
+                        # `test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed`
+                        # for the second.
                         computed, _ = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
@@ -1045,8 +1055,14 @@ def process_sources(
     """Admit or refuse every declared source. Returns the count admitted.
 
     `read_bytes` is called once per distinct raster path within this call. A real
-    PDF is different: its digest is streamed once, then PDFium holds one native
-    descriptor-anchored document handle while every fanned page renders from it.
+    PDF is different: its digest is streamed once *here*, then PDFium holds one
+    native descriptor-anchored document handle while every fanned page renders
+    from it. Once here, not once in the Door: `expand_sources` already streamed
+    the same file to bind its shard membership, before `run.json` existed. That
+    is deliberate rather than redundant -- this second stream is the only thing
+    that can see bytes replaced after the seal, and it is what the
+    `computed_sha256` comparison below refuses on. A reader who takes the
+    earlier digest as sufficient and removes this one deletes that refusal.
     This lets a reel be larger than available Python memory without losing its
     page ordinals or filename ledger link, and prevents a pathname replacement
     from separating the digest from the pixels that are sealed.
