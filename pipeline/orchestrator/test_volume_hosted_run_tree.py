@@ -27,6 +27,8 @@ _spec = importlib.util.spec_from_file_location("orchestrator_acceptance_helpers"
 _acceptance = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_acceptance)
 snapshot = _acceptance.snapshot
+file_identities = _acceptance.file_identities
+is_immutable_evidence = _acceptance.is_immutable_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -315,17 +317,19 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     uninterrupted = snapshot(local)
 
     crashed = _crash_mid_recovery(volume, tmp_path)
+    crashed_identities = file_identities(volume)
     planted = _plant_publication_temporary(volume)
 
     resumed = _run(volume, "r", "review")
     assert resumed.returncode == 3, resumed.stderr
     finished = snapshot(volume)
+    finished_identities = file_identities(volume)
     for path, digest in crashed.items():
-        if path.endswith(("/manifest.json", "/manifest-door.json", "/index.json")) or path.endswith(
-            "run-health/recensor-partition-receipt.json"
-        ):
+        if not is_immutable_evidence(path):
             # A legitimate append rebuilds derived inventories and current-state
             # receipts; the immutable evidence they name must retain its bytes.
+            # The predicate lives beside `file_identities` so that this test and
+            # the acceptance resume tests cannot drift on where the line is.
             continue
         # Membership first. A deleted evidence file is the worst outcome this
         # test can find -- an act removed from a parish, with nothing
@@ -333,6 +337,12 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
         # would report it as a bare KeyError that reads like a broken test.
         assert path in finished, f"resume deleted surviving evidence at {path}"
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
+        # The digest above cannot see a file republished with the same bytes,
+        # which is exactly what "appends without rewriting" denies. Publication
+        # always mints a new inode, so an unchanged one is the direct evidence.
+        assert finished_identities[path] == crashed_identities[path], (
+            f"resume republished surviving evidence at {path} instead of keeping it"
+        )
     # A resumed Recensor re-entry seals its own boundary: it adds one more
     # decode-environment/stage-seal attempt pair, and the stage's derived
     # manifest and terminal seal follow. Every other byte matches the

@@ -1887,6 +1887,47 @@ def snapshot(root: Path) -> dict[str, str]:
     }
 
 
+def file_identities(root: Path) -> dict[str, tuple[int, int]]:
+    """The device and inode of every file, which is what distinguishes reuse.
+
+    A digest cannot tell a reused artifact from one deleted and rewritten with
+    the same bytes, so a test that only compares digests proves the tree is
+    right and says nothing about the claim in its own name (GOVERNANCE 10).
+    Identity can tell them apart: `RunTree` publishes through a temporary that
+    is then `os.link`-ed or `os.replace`-d into place, so every write lands a
+    *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
+    and the receipt's equal-bytes short circuit) return without touching the
+    file at all. The device is carried beside the inode because inode numbers
+    are only unique within a filesystem.
+    """
+    return {
+        str(path.relative_to(root)): (path.stat().st_dev, path.stat().st_ino)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+DERIVED_INVENTORY_SUFFIXES = (
+    "/manifest.json",
+    "/manifest-door.json",
+    "/index.json",
+    "run-health/recensor-partition-receipt.json",
+)
+
+
+def is_immutable_evidence(path: str) -> bool:
+    """Whether a path is evidence, as against a derived inventory or receipt.
+
+    A resume legitimately rebuilds the inventories and current-state receipts
+    that *name* the evidence -- appending to a tree changes what the manifest
+    lists, so republishing it is the append, not a rewrite. The evidence those
+    inventories name is immutable, and it is the only thing whose identity a
+    resume may not disturb. `test_volume_hosted_run_tree` drew this same line
+    for the same reason; it is named here so both tests draw it identically.
+    """
+    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
+
+
 def _sqlite_logical_digest(data: bytes) -> str:
     """Bind a SQLite member to its schema and rows, not its library header."""
     if sqlite3.sqlite_version_info < (3, 37, 0):
@@ -5162,15 +5203,29 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     for stage_directory in ("4_perlector", "5_recensor", "6_archetypus", "7_armarium"):
         shutil.rmtree(root / "r" / stage_directory)
     survivors = snapshot(root)
+    survivor_identities = file_identities(root)
     assert len(survivors) < len(complete)
 
     assert orchestrate(root, "r", "happy").returncode == 0
     resumed = snapshot(root)
+    resumed_identities = file_identities(root)
 
     # Everything that survived is byte-identical: resume reused it rather than
     # redoing it. And the finished tree is identical to the uninterrupted one.
     for path, digest in survivors.items():
         assert resumed[path] == digest, f"{path} was rewritten on resume"
+    # Byte-identity alone cannot tell reuse from an identical rewrite, which is
+    # the whole claim in this test's name. Every publication mints a new inode,
+    # so an unchanged one is proof the evidence was never republished.
+    checked = 0
+    for path, identity in survivor_identities.items():
+        if not is_immutable_evidence(path):
+            continue
+        checked += 1
+        assert resumed_identities[path] == identity, (
+            f"{path} kept its bytes but was republished on resume"
+        )
+    assert checked, "the identity check ran over no evidence at all"
     assert resumed == complete
 
 
@@ -5208,12 +5263,26 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
         )
         assert partial.returncode == 0, partial.stderr
         survivors = snapshot(root)
+        survivor_identities = file_identities(root)
         assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
         assert len(survivors) < len(reference)
 
         assert orchestrate(root, "r", "review").returncode == 3
         resumed = snapshot(root)
+        resumed_identities = file_identities(root)
         assert resumed == reference, f"resuming after {stop_at} did not land on the same tree"
+        # The tree being right does not mean the resume reused what it found; a
+        # stage that redid its work and wrote the same bytes lands the same tree.
+        # The inode is what separates the two.
+        checked = 0
+        for path, identity in survivor_identities.items():
+            if not is_immutable_evidence(path):
+                continue
+            checked += 1
+            assert resumed_identities[path] == identity, (
+                f"resuming after {stop_at} republished {path} instead of reusing it"
+            )
+        assert checked, f"stopping at {stop_at} left no evidence to check the identity of"
         assert tally_hard_failures(RunTree(root, "r"), policy) == reference_tally
 
 
