@@ -239,6 +239,11 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     # this the console never had to reach the folder at all.
     assert ERRORS[ErrorCode.INGEST_UNRESOLVED].what_happened in rendered
     assert ERRORS[ErrorCode.CONSOLE_CUSTODY_REFUSED].what_happened not in rendered
+    # Nor a refused *preview*. That copy promises the output folder is untouched,
+    # which is the one thing an uncertain commit may not say: this test's whole
+    # subject is a failure that may already have written records.
+    assert ERRORS[ErrorCode.INGEST_PREVIEW_UNRESOLVED].what_happened not in rendered
+    assert "the preview runs with no write rights at all" not in rendered
 
 
 @requires_host_boundary

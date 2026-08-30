@@ -1054,6 +1054,54 @@ def test_the_double_click_triage_route_shows_the_queue_and_records_no_decision(m
         )
 
 
+def test_a_malformed_cluster_candidate_is_a_named_refusal_not_a_key_error(tmp_path: Path):
+    """Both public seams index a candidate's evidence; only "is a dict" was required.
+
+    `accept_candidate` and `draft_confirmation` both read
+    `evidence["instrument_config_sha256"]` and `both_digests`. A candidate
+    carrying neither raised a bare `KeyError` out of a module whose entire
+    contract is a named `TriageRefusal`, so a caller got a traceback instead of
+    something to act on. The shape is checked once in `_checked_queue`, which is
+    why both seams are driven here from the same malformed queue.
+    """
+    item = {"kind": "cluster-candidate", "corpus_id": "c"}
+    queue = {
+        "schema": triage.QUEUE_SCHEMA,
+        "manifest_sha256": "b" * 64,
+        "items": [item],
+        "mode_declaration": {
+            "schema": triage.MODE_SCHEMA,
+            "mode": "semi",
+            "batch_id": "batch-1",
+            "operator": "Tyrel",
+        },
+    }
+    digest = digest_of(item)
+
+    with pytest.raises(triage.TriageRefusal, match="queue-item-invalid"):
+        triage.draft_confirmation(
+            queue,
+            item_digest=digest,
+            corpus_id="c",
+            appending_run="r",
+            authority_identity="Tyrel",
+            pages=[],
+        )
+    # A *valid* draft, so the acceptance reaches the queue rather than stopping
+    # at its own draft-shape refusal: preview validation precedes the journal
+    # half by design, and that ordering is not what is under test here.
+    valid_draft = _Batch(tmp_path).draft()
+    with pytest.raises(triage.TriageRefusal, match="queue-item-invalid"):
+        triage.accept_candidate(
+            tmp_path / "state.json",
+            queue,
+            item_digest=digest,
+            draft=valid_draft,
+            confirmation_path=tmp_path / "confirmation.json",
+            preview_sha256=digest_of(valid_draft),
+        )
+
+
 def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -1144,6 +1192,123 @@ def test_an_incomplete_triage_decision_writes_no_mode_record(
     assert refusal in capsys.readouterr().out
     assert not mode_record.exists()
     assert not mode_record.parent.joinpath(".mode.json.lock").exists()
+
+
+def test_decision_arguments_without_a_decision_word_refuse_and_write_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The reverse of the completeness checks, which guarded one direction only.
+
+    `--draft`, `--confirmation-out` and `--preview-sha256` are an acceptance's
+    companions. Supplied with no `--accept` or `--decline`, the command used to
+    load the queue, write the durable mode declaration, print the queue and exit
+    0: the operator was told their acceptance succeeded when nothing had been
+    journalled, and the batch's mode was claimed by that non-decision on the way.
+    """
+    from operations.operator import cli
+
+    mode_record = tmp_path / "mode.json"
+    result = cli.main(
+        [
+            "--workspace",
+            str(MODES.parents[1]),
+            "--state-dir",
+            str(tmp_path / "receipts"),
+            "triage",
+            "--manifest",
+            str(tmp_path / "missing-manifest.json"),
+            "--evidence",
+            str(tmp_path / "missing-evidence.json"),
+            "--proxy-paths",
+            str(tmp_path / "missing-proxies.json"),
+            "--mode",
+            "semi",
+            "--batch-id",
+            "batch-1",
+            "--operator",
+            "Tyrel",
+            "--mode-record",
+            str(mode_record),
+            "--draft",
+            str(tmp_path / "draft.json"),
+            "--confirmation-out",
+            str(tmp_path / "confirmation.json"),
+            "--preview-sha256",
+            "a" * 64,
+        ]
+    )
+
+    assert result == 2
+    assert "decision-word-required" in capsys.readouterr().out
+    assert not mode_record.exists()
+
+
+def test_a_queue_state_alone_stays_a_legitimate_display_run(tmp_path: Path):
+    """The guard above must not catch reading the journal beside the queue.
+
+    `--queue-state` is not an acceptance companion: rendering the queue with the
+    decisions already recorded against it is an ordinary look. It is excluded
+    from the reverse guard for that reason, and this holds the exclusion.
+    """
+    from operations.operator import cli
+
+    batch = _Batch(tmp_path)
+    files = {name: tmp_path / f"{name}.json" for name in ("manifest", "evidence", "proxies")}
+    files["manifest"].write_bytes(canonical_bytes(batch.produced.manifest))
+    files["evidence"].write_bytes(canonical_bytes({"records": batch.evidence}))
+    files["proxies"].write_bytes(canonical_bytes(batch.paths))
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(MODES.parents[1]),
+                "--state-dir",
+                str(tmp_path / "receipts"),
+                "triage",
+                "--manifest",
+                str(files["manifest"]),
+                "--evidence",
+                str(files["evidence"]),
+                "--proxy-paths",
+                str(files["proxies"]),
+                "--mode",
+                "semi",
+                "--batch-id",
+                "batch-1",
+                "--operator",
+                "Tyrel",
+                "--mode-record",
+                str(tmp_path / "mode.json"),
+                "--queue-state",
+                str(tmp_path / "state.json"),
+            ]
+        )
+        == 0
+    )
+
+
+def test_the_double_click_route_never_invents_a_triage_mode(monkeypatch):
+    """A look at the queue must not claim the batch's mode with an unchosen word.
+
+    Every triage invocation writes the mode declaration, which is durable and is
+    never rewritten. The interactive prompt defaulted to `semi`, so choosing
+    `triage` from the double-click window merely to look permanently claimed that
+    batch's mode -- and a later `--mode manual` for the same batch was refused by
+    the operator's own glance. The verb route requires `--mode`; so does this.
+    """
+    from operations.operator import cli
+
+    blank = iter(("triage", "/m.json", "/e.json", "/p.json", "", "batch-1", "Tyrel", "/mode.json"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(blank))
+    assert cli._interactive_arguments() == []
+
+    typed = iter(
+        ("triage", "/m.json", "/e.json", "/p.json", "manual", "batch-1", "Tyrel", "/mode.json")
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(typed))
+    arguments = cli._interactive_arguments()
+    assert arguments[arguments.index("--mode") + 1] == "manual"
 
 
 def test_an_unloadable_batch_writes_no_mode_record(
