@@ -64,6 +64,7 @@ from common.stage import (
     verify_final_seal,
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
+from operations.operator import surface, volume_s3
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -670,7 +671,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
 # both authorities without adding an artifact.
 #
-# Re-pinned for the Door's cluster report, a new artifact in every run.
+# *Not* re-pinned for the Door's cluster report, though a note here once said it was.
+# `publish_cluster_report` writes nothing unless some admission carries a
+# `triage_link`, and only the real-ingress route ever supplies triage rows to
+# `expand_sources`; the fixture route these runs take submits none, so the report
+# returns None and no artifact reaches the tree. The pins did move at the merge that
+# landed the report, but for the typed render-origin validator and the page-identity
+# refusal composed in the same commit. Found by CodeRabbit.
 #
 # Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
 # config_digest, so the pins bind those provenance fields even though artifact
@@ -1191,6 +1198,49 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     )
     assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
     assert resolved.data_gate_policy.is_file()
+
+
+def test_orchestrator_upload_credentials_are_the_transfers_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both stripping helpers drop the transfer's own names and keep the rest.
+
+    Both this orchestrator and the operator surface strip the upload-only
+    credentials from a stage's environment, and the import boundary keeps this
+    one a duplicate. Without this reconciliation a third credential added to the
+    transfer would go on reaching stages here while the whole suite stayed
+    green -- a live secret in the environment of the process that decodes
+    caller-supplied material.
+
+    Comparing the three sets is not enough on its own: three constants can agree
+    perfectly while a helper has stopped consulting its own. So each helper is
+    run against an environment holding every name, and what it returns is the
+    evidence.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
+    assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    # The names are the transfer's own defaults, not a set that merely happens to
+    # match them today.
+    spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")
+    assert {spec.access_key_env, spec.secret_key_env} == set(volume_s3.TRANSFER_CREDENTIAL_ENV)
+
+    for name in volume_s3.TRANSFER_CREDENTIAL_ENV:
+        monkeypatch.setenv(name, f"upload-secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        # The stripper must remove those names and nothing else: an
+        # implementation that returned an empty environment, or one that dropped
+        # everything it did not recognise, would satisfy the assertion above
+        # while breaking every stage that reads its own settings.
+        assert built["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved", label
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):

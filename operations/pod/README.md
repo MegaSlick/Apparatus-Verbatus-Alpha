@@ -126,7 +126,10 @@ check.
   recovery record, while an out-of-bounds value refuses rather than being clamped. It
   also enforces an observed `account_balance_floor_usd`. Its source is an explicit
   provider seam; an unavailable source refuses paid actions, and the refusal names why
-  the balance could not be read. Observations more than 60 seconds old or dated in the
+  the balance could not be read. The RunPod adapter bounds that read: a source that
+  blocks rather than fails becomes a named timeout refusal, because one of these gates
+  runs after `create` has returned a billing pod and before anything is armed to stop
+  it, and a stall there would record no assessment and attempt no close. Observations more than 60 seconds old or dated in the
   future are unusable, never cached authority. The floor is a reserve that must survive
   the run, so it is tested against the observed balance net of this action's estimated
   cost to its hard deadline and every active or pending liability in the same durable

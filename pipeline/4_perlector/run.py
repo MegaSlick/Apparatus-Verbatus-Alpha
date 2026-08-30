@@ -932,10 +932,19 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
-        elif not attachment["attached"] and (
-            attachment["attachment_basis"] != "unattached" or span is not None
-        ):
-            raise SchemaRefusal("an unattached act view claims an alignment span")
+        # Two separate faults, and each names its own field. This branch is
+        # reached by page-witness attachments as well as act-scoped ones, so the
+        # refusal may not call every row an "act view"; and a row whose only
+        # fault is its basis sent the operator to a `span` that was already
+        # null.
+        elif not attachment["attached"]:
+            if attachment["attachment_basis"] != "unattached":
+                raise SchemaRefusal(
+                    "an unattached attachment names an attachment basis other than "
+                    "'unattached'; nothing attached it, so nothing decided the basis"
+                )
+            if span is not None:
+                raise SchemaRefusal("an unattached attachment claims an alignment span")
         chair = attachment["chair"]
         attachment_page = attachment["page_ordinal"]
         # The attachment describes one attempt, and the reread path

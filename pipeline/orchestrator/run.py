@@ -100,6 +100,12 @@ RUN_MODES = ("manual", "semi", "auto")
 # Importing the gate here would cross the orchestrator's common-only boundary;
 # a test reconciles this duplicate path with the gate's constant.
 DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
+# Duplicated for the same reason and closed the same way: importing
+# `operations.operator.volume_s3`, which owns these names, would cross that
+# boundary too, and
+# `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
+# copy with it. A credential added to one list alone would otherwise leave this
+# route carrying it into a stage that decodes caller-supplied material.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 
 

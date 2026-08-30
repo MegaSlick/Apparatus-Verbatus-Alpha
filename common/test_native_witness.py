@@ -911,25 +911,16 @@ def test_partition_disagreement_ties_from_the_proposal_side_too():
 
 
 def test_page_testimonium_keeps_partition_facts_optional_in_the_record_shape():
-    value = payload()
-    value.update(
-        {
-            "chair": "attestator_1",
-            "act_key": "page-1",
-            "attempt_ordinal": 1,
-            "regions": [],
-            "provenance": {},
-            "format_capabilities": {},
-            "witness_reported": None,
-            "content_health": {},
-            "unpresented_regions": [],
-            "scope": "page",
-            "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
-        }
+    """Optional means both shapes pass, so both shapes are asserted here."""
+    without_partition = _page_payload()
+    assert "partition_disagreement" not in without_partition
+    assert validate_page_testimonium_payload(without_partition) is without_partition
+
+    with_partition = _page_payload()
+    with_partition["partition_disagreement"] = partition_disagreement(
+        {"artifact_id": "page-testimony", "payload": with_partition}, []
     )
-    assert validate_page_testimonium_payload(value) is value
+    assert validate_page_testimonium_payload(with_partition) is with_partition
 
 
 def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_recovery():

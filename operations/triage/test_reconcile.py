@@ -11,6 +11,7 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes
 from operations.triage.reconcile import (
+    EXPECTED_SCHEMA,
     ReconciliationRefusal,
     reconcile,
     reconcile_files,
@@ -218,3 +219,105 @@ def test_seats_that_disagree_beyond_the_declared_box_tolerance_do_not_assert_geo
     assert disagreements["facts"]["frame-63"]["failed"] == ["box:act-001"]
     per_seat = disagreements["facts"]["frame-63"]["per_seat"]["box:act-001"]
     assert len(per_seat) == 2 and all("seat" in row and "value" in row for row in per_seat)
+
+
+def test_one_seat_or_one_seat_twice_is_never_unanimity():
+    """Independence is the whole claim; neither bound was exercised.
+
+    Unanimity across one reader is not unanimity, and the same file supplied twice is
+    one reader counted twice. Either would publish `expected.json` as agreement between
+    seats with nothing downstream able to tell that only one reader ever looked.
+    """
+    verdict = json.loads((FIXTURES / "seat-a.json").read_text(encoding="utf-8"))
+    with pytest.raises(ReconciliationRefusal, match="between 2 and 32"):
+        reconcile([verdict])
+    with pytest.raises(ReconciliationRefusal, match="repeat a seat identity and revision"):
+        reconcile([verdict, copy.deepcopy(verdict)])
+    # Two revisions of one identity are two resolved models, and are accepted as two
+    # seats: the refusal is keyed on the resolved pair, not on the identity alone.
+    second_revision = copy.deepcopy(verdict)
+    second_revision["seat"]["revision"] = second_revision["seat"]["revision"] + "-b"
+    expected, _disagreements = reconcile([verdict, second_revision])
+    assert len(expected["seats"]) == 2
+
+
+def test_an_open_face_dialect_is_refused_rather_than_read_as_agreement():
+    """The closed enum is what makes unanimity on this fact decidable by observation.
+
+    Before it was closed, one seat's "up" and another's "recto" were two dialects for
+    one observation, and the reconciler could only record them as disagreement. A
+    return to open vocabularies must refuse, not quietly read as either.
+    """
+    verdict = json.loads((FIXTURES / "seat-a.json").read_text(encoding="utf-8"))
+    other = json.loads((FIXTURES / "seat-b.json").read_text(encoding="utf-8"))
+    dialect = copy.deepcopy(verdict)
+    fact = next(iter(dialect["facts"].values()))
+    fact["categorical"]["loose_document_face"] = "recto"
+    with pytest.raises(ReconciliationRefusal, match="loose_document_face must be one of"):
+        reconcile([dialect, other])
+    for face in ("written-side-up", "written-side-down", "indeterminate", "none"):
+        accepted = copy.deepcopy(verdict)
+        next(iter(accepted["facts"].values()))["categorical"]["loose_document_face"] = face
+        reconcile([accepted, other])
+
+
+def test_every_dated_measured_pass_is_a_whole_pair_and_a_sealed_one_verifies():
+    """A historical measurement is evidence, and evidence is never overwritten.
+
+    `test_checked_in_synthetic_verdicts_replay_exactly` pins only the synthetic
+    fixtures, so nothing watched the dated measured outputs at all. They cannot be
+    replayed here — their seat files hold real material and never enter this repository
+    — but a v2 pair seals itself: `reconciliation_sha256` is taken over both documents
+    together, so an edit to either half breaks the seal unless whoever made it re-ran
+    the reconciler, which is what a legitimate change is.
+
+    The 2026-08-22 pass is a v1 pair, written before those seals existed, and it cannot
+    be upgraded from anything in this repository: re-sealing it means re-running the
+    reconciler over private seat files on the host. So it is checked for the shape it
+    does have — both halves present, same schema generation, same seats — and the
+    unverifiable part is named here rather than left to look guarded.
+    """
+    measured = Path(__file__).with_name("measured")
+    passes = sorted(path for path in measured.iterdir() if path.is_dir())
+    assert passes, "no dated measured pass was checked at all"
+    for dated in passes:
+        expected_path = dated / "expected.json"
+        disagreements_path = dated / "disagreements.json"
+        assert expected_path.is_file() and disagreements_path.is_file(), (
+            f"{dated.name} is half a reconciliation pair; the other half cannot be verified"
+        )
+        expected = json.loads(expected_path.read_text(encoding="utf-8"))
+        disagreements = json.loads(disagreements_path.read_text(encoding="utf-8"))
+        if expected.get("schema") == EXPECTED_SCHEMA:
+            validate_reconciliation_pair(expected, disagreements)
+            continue
+        assert expected["schema"] == "triage-structural-expected.v1", (
+            f"{dated.name} names an unknown expected-document schema"
+        )
+        assert disagreements["schema"] == "triage-structural-disagreements.v1", (
+            f"{dated.name} pairs two different schema generations"
+        )
+        assert expected["seats"] == disagreements["seats"], (
+            f"{dated.name} halves name different seats, so they are not one pass"
+        )
+        assert expected["seats"] and expected["facts"]
+        # The disagreement half is the failure evidence, and a v1 pair carries no
+        # seal to notice its loss: without this, a `disagreements.json` emptied of
+        # its fact groups would still pass on schema and seats alone, and a reader
+        # would hold a pass whose recorded failures had quietly gone.
+        assert set(disagreements["facts"]) == set(expected["facts"]), (
+            f"{dated.name} records disagreements for facts its expected half never names"
+        )
+        for fact_id, group in disagreements["facts"].items():
+            assert isinstance(group, dict) and group, (
+                f"{dated.name} carries an empty disagreement group for {fact_id}"
+            )
+            assert group.get("per_seat"), (
+                f"{dated.name} names a disagreement for {fact_id} without the seat readings"
+            )
+        # The 2026-08-22 pass read seven frames, and each is one fact group. The count
+        # is pinned because both halves losing one group together would otherwise
+        # agree with each other about evidence that is no longer there.
+        if dated.name == "2026-08-22_005469606_62-68":
+            assert len(disagreements["facts"]) == 7
+            assert len(expected["seats"]) == 3

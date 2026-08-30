@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import importlib
 import inspect
 import io
 import json
@@ -15,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.approval import ApprovalRecordReference
+from common.contracts.approval import ApprovalRecordReference, build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.identities import artifact_id
@@ -24,6 +26,8 @@ from common.runtree.store import RunTree
 from operations.operator import advance, advance_worker, cli, console, custody, review
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
+
+from .conftest import requires_absent_landlock, requires_host_boundary, requires_landlock
 
 _EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), None, ())
 
@@ -202,6 +206,7 @@ def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
+@requires_host_boundary
 def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path, monkeypatch):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -563,7 +568,7 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
     assert "never read by this process" in truncated.stderr
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+@requires_landlock("Landlock must be reachable for the kernel to refuse anything")
 def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Path):
     """Split from the import-boundary test so its absence reports as a skip.
 
@@ -571,6 +576,11 @@ def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Pa
     silently did not run anywhere else, while the suite printed one pass for
     both. A reader of the results could not tell which of the two claims had
     actually been measured (GOVERNANCE 10).
+
+    "Nonzero, and the file is absent" is satisfied twice over: by the kernel
+    refusing the write, and by a launcher that rejected its own arguments and
+    never started the child. Only the first is this test's claim, so the
+    launcher's own failure is excluded before the refusal is read.
     """
     target = tmp_path / "evidence-mutation.txt"
     blocked = subprocess.run(
@@ -587,8 +597,127 @@ def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Pa
         text=True,
         check=False,
     )
+    assert custody.confinement("linux").launcher_failure(blocked) is None, blocked.stderr
+    assert "setpriv:" not in blocked.stderr, blocked.stderr
     assert blocked.returncode != 0
+    assert "Traceback" in blocked.stderr, blocked.stderr
+    assert "OSError" in blocked.stderr or "PermissionError" in blocked.stderr, blocked.stderr
     assert not target.exists()
+
+
+@requires_absent_landlock
+def test_a_host_that_cannot_reach_landlock_refuses_instead_of_running_unconfined():
+    """The other side of the skip above, proven where the skip actually applies.
+
+    A Linux host whose `setpriv` predates Landlock is not a host this console
+    may open on: nothing would confine the child. The stub-driven seams prove
+    the classification; this proves it against the real launcher on the real
+    host, so the hosts that skip the boundary tests still measure something
+    rather than reporting an untested pass (GOVERNANCE 10).
+    """
+
+    with pytest.raises(OperatorError) as refusal:
+        custody.verify_confinement(
+            custody.confinement("linux"),
+            writable=None,
+            cwd=ROOT,
+            environment=custody.custody_environment({}),
+        )
+
+    assert refusal.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "could not be established, so nothing ran inside it" in refusal.value.detail
+
+
+def test_the_console_classifies_every_way_its_input_pipe_can_fail(monkeypatch, capsys):
+    """One of three failures was classified and the other two died on a traceback.
+
+    `json.load` on `sys.stdin` raises `JSONDecodeError` for malformed text,
+    `UnicodeDecodeError` when the pipe delivers bytes that are not UTF-8, and
+    `OSError` when the read itself fails. Exiting 1 with a traceback for the
+    last two is the exact outcome `PROJECTION_UNREADABLE_EXIT` exists to
+    prevent: the parent then reports this process's own pipe fault as a claim
+    about the run tree, and the operator is sent to preserve register evidence
+    that was never opened.
+    """
+
+    failures = (
+        json.JSONDecodeError("Expecting value", "", 0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        OSError(errno.EIO, "Input/output error"),
+    )
+    for failure in failures:
+
+        class _FailingPipe:
+            def read(self, *_arguments, _failure=failure):
+                raise _failure
+
+        monkeypatch.setattr(console.sys, "stdin", _FailingPipe())
+
+        assert console.main([]) == console.PROJECTION_UNREADABLE_EXIT, failure
+        printed = capsys.readouterr().err
+        assert "never read by this process" in printed, failure
+        # The shared clause alone would pass for all three even if the message
+        # never said which one happened, and telling them apart is the whole
+        # point of widening the catch -- so the exception's own name is what is
+        # asserted, per failure.
+        assert type(failure).__name__ in printed, failure
+
+
+def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp_path, monkeypatch):
+    """`sealed_boundary` converts contract failures and passes `OSError` through.
+
+    Caught only for `ApprovalRefusal`, a seal artefact that could not be read
+    fell to the CLI's catch-all and told the operator to photograph an
+    unexpected error and find a maintainer -- when the answer is that this
+    boundary cannot be advanced because its own evidence could not be read.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+
+    def _unreadable(*_arguments, **_keywords):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(cli, "sealed_boundary", _unreadable)
+
+    with pytest.raises(OperatorError) as excinfo:
+        cli._advance_with_confirmation(
+            run_root, run_id, "armarium", reason="reviewed", workspace=ROOT
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "Input/output error" in (excinfo.value.detail or "")
+
+
+def test_the_credential_self_check_runs_on_the_mapping_that_could_actually_fail():
+    """On the six-name allowlist alone the check passed for the wrong reason.
+
+    `custody_environment` has already reduced the environment to presentation
+    facts, none of which can look like a credential, so a self-check on that
+    mapping could never fail and said nothing about whether the scrub works.
+    `credential_free_environment` is the claim that needs a witness.
+    """
+
+    with pytest.raises(OperatorError) as excinfo:
+        custody.require_no_provider_credentials({"RUNPOD_API_KEY": "a live secret"})
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+
+    # And the launch path reaches it with the broad mapping, not only the narrow
+    # one: a scrub that stopped matching a provider prefix must stop the launch.
+    original = custody.credential_free_environment
+    try:
+        custody.credential_free_environment = lambda *a, **k: {"RUNPOD_API_KEY": "a live secret"}
+        with pytest.raises(OperatorError) as launch_error:
+            custody.run_confined(
+                [str(Path(sys.executable).resolve())],
+                writable=None,
+                cwd=ROOT,
+                input_text="",
+            )
+    finally:
+        custody.credential_free_environment = original
+
+    assert launch_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "provider credential names" in (launch_error.value.detail or "")
 
 
 def test_console_rejects_actual_process_arguments(monkeypatch):
@@ -935,7 +1064,7 @@ def _exit(returncode: int, *, stdout: str = "", stderr: str = "") -> subprocess.
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires the native Landlock backend")
+@requires_landlock("requires the native Landlock backend")
 def test_a_run_root_containing_a_colon_still_names_one_permitted_path(tmp_path):
     """The Landlock rule is colon-delimited and the run root is operator-chosen.
 
@@ -1053,7 +1182,7 @@ def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_pat
     assert "workspace" not in inspect.signature(custody.python_module_command).parameters
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires the native Landlock backend")
+@requires_landlock("requires the native Landlock backend")
 def test_linux_child_sees_exactly_the_closed_cross_platform_environment():
     """Landlock must not replace the scrubbed mapping with setpriv's account defaults."""
 
@@ -1069,7 +1198,7 @@ def test_linux_child_sees_exactly_the_closed_cross_platform_environment():
     assert json.loads(completed.stdout) == custody.custody_environment()
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux procfs and Landlock")
+@requires_landlock("requires Linux procfs and Landlock")
 def test_linux_child_cannot_recover_the_launchers_original_environment_from_proc():
     """A scrubbed env is not custody if the child can reread its parent's secret env."""
 
@@ -1094,9 +1223,7 @@ def test_linux_child_cannot_recover_the_launchers_original_environment_from_proc
     assert completed.stdout.strip() == "REFUSED"
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="requires Landlock plus the Linux seccomp filter"
-)
+@requires_landlock("requires Landlock plus the Linux seccomp filter")
 def test_linux_child_cannot_delegate_around_landlock_through_a_socket():
     """A privileged local service must not become the compromised UI's writer."""
 
@@ -1186,9 +1313,21 @@ def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_e
     } == receipts_before
 
 
-def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest():
-    stored = b"changed page bytes"
-    tree = types.SimpleNamespace(read_bytes=lambda _path: stored)
+def _tree_serving(tmp_path: Path, data: bytes) -> types.SimpleNamespace:
+    """A stand-in run tree whose one blob really is on disk.
+
+    The projection measures a file before it reads it, so a `read_bytes` stub
+    that returned bytes from nowhere would no longer be exercising the path the
+    console takes.
+    """
+
+    blob = tmp_path / "blob"
+    blob.write_bytes(data)
+    return types.SimpleNamespace(resolve=lambda _path: blob)
+
+
+def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest(tmp_path: Path):
+    tree = _tree_serving(tmp_path, b"changed page bytes")
     page = {
         "ordinal": 1,
         "page_id": "pg_example",
@@ -1295,6 +1434,23 @@ def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
     assert "exceeds the operator review limit" in (excinfo.value.detail or "")
 
 
+def test_no_archive_member_can_be_both_this_name_and_a_directory():
+    """Why the directory branch beside the size limit carries no test of its own.
+
+    `ZipInfo.is_dir()` is decided by a trailing separator, and the member filter
+    above accepts only the exact name `review-items.jsonl`. The two conditions
+    are therefore mutually exclusive: no bundle can reach that branch. It is
+    kept as a defensive check and given its own sentence -- a defensive check
+    that names the wrong fault is worse than none -- but the state it guards is
+    unconstructible, and a test claiming to reach it would be claiming more than
+    is true (GOVERNANCE 10).
+    """
+
+    for spelling in ("review-items.jsonl", "review-items.jsonl/"):
+        member = zipfile.ZipInfo(spelling)
+        assert not (member.filename == review._REVIEW_ITEMS_MEMBER and member.is_dir())
+
+
 def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -1349,7 +1505,39 @@ def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
         assert "Preserve the run tree" not in excinfo.value.render()
 
 
-def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
+def test_review_refuses_a_page_larger_than_the_budget_before_it_reads_the_page():
+    """The refusal has to happen before the bytes are in memory, not after.
+
+    `read_bytes` loaded the whole file and only then asked whether it fitted, so
+    an oversized page exhausted the console at the exact moment the limit
+    existed to refuse it. The stand-in path here reports its size and then
+    refuses to be opened, so a projection that reads first cannot pass.
+    """
+
+    class _MeasuredButUnreadable:
+        def stat(self):
+            return types.SimpleNamespace(st_size=1_000_000)
+
+        def open(self, *_args, **_kwargs):
+            raise AssertionError("the image was read before it was charged to the budget")
+
+    tree = types.SimpleNamespace(resolve=lambda _path: _MeasuredButUnreadable())
+    page = {
+        "ordinal": 1,
+        "page_id": "pg_example",
+        "outcome": "sealed",
+        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_sha256": "0" * 64,
+    }
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._image_row(tree, page, review._ImageBudget(limit=6000))
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "more than the console can project" in (excinfo.value.detail or "")
+
+
+def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold(tmp_path: Path):
     """The bounded review queue sat beside unbounded page and crop bytes.
 
     Each sealed page and each act crop is read whole, expanded to a base64
@@ -1361,7 +1549,7 @@ def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
     """
     data = b"x" * 4096
     digest = digest_bytes(data)
-    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    tree = _tree_serving(tmp_path, data)
     budget = review._ImageBudget(limit=6000)
     page = {
         "ordinal": 1,
@@ -1392,7 +1580,12 @@ def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
     assert "more than the console can project" in (excinfo.value.detail or "")
     assert "intact and unchanged" in (excinfo.value.detail or "")
-    assert review.MAX_PROJECTED_IMAGE_BYTES == 256 * 1024 * 1024
+    # Restating the constant measured nothing: changing a default is a decision,
+    # not a regression. What is worth proving is that the *default* allowance
+    # refuses at all, rather than only the narrow one this test constructs.
+    with pytest.raises(OperatorError) as default_budget:
+        review._ImageBudget().spend(review.MAX_PROJECTED_IMAGE_BYTES + 1, "one impossible page")
+    assert "more than the console can project" in (default_budget.value.detail or "")
 
 
 def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
@@ -1460,6 +1653,7 @@ def test_review_refuses_a_bundle_member_whose_declared_size_is_false():
     assert "could not be read" in (excinfo.value.detail or "")
 
 
+@requires_host_boundary
 def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
     """Digest binding must be proven against a boundary that actually changed."""
     run_root, run_id = _make_run(tmp_path)
@@ -1492,6 +1686,7 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
         advance.verify_advance(tree, "armarium", reference)
 
 
+@requires_host_boundary
 def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visible(tmp_path):
     """Append-only means the second advance is a new record, not a silent overwrite.
 
@@ -1527,6 +1722,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     )
 
 
+@requires_host_boundary
 def test_review_refuses_an_advance_record_copied_under_a_false_content_address(tmp_path):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -1548,6 +1744,7 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
     assert "content-addressed filename is false" in excinfo.value.detail
 
 
+@requires_host_boundary
 def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(tmp_path):
     """An immutable receipt is a regular file, not an alias to equivalent bytes."""
 
@@ -1596,6 +1793,7 @@ def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
     assert "seal digest" in capsys.readouterr().out
 
 
+@requires_host_boundary
 def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_record(
     tmp_path, monkeypatch, capsys
 ):
@@ -1616,7 +1814,19 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
     assert "Advance record:" in capsys.readouterr().out
 
 
-def test_a_worker_refusal_on_stderr_cannot_be_hidden_by_a_zero_exit(tmp_path, monkeypatch):
+def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    """Stderr is read after the returned reference, and neither half is lost.
+
+    Deciding on stderr first made any byte on that pipe a refusal, including
+    the `DeprecationWarning` the worker's own `runpy.run_module` prints by
+    default -- a completed, verifiable advance reported as refused. Deciding on
+    it not at all would drop a diagnostic the worker meant a person to read
+    (GOVERNANCE 2). The record is checked against the exact request first, and
+    what the worker wrote then reaches the operator beside it.
+    """
+
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
@@ -1632,25 +1842,269 @@ def test_a_worker_refusal_on_stderr_cannot_be_hidden_by_a_zero_exit(tmp_path, mo
             [],
             0,
             json.dumps(reference.to_record()),
-            "SECURITY REFUSAL: worker state was inconsistent",
+            "DeprecationWarning: the worker's own diagnostic channel spoke",
         )
         return _StubConfinement(lambda command: command), completed
 
     monkeypatch.setattr(advance, "run_confined", _false_success)
+
+    returned = advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="worker reported both success and refusal",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    assert returned.sha256
+    assert "the worker's own diagnostic channel spoke" in capsys.readouterr().err
+    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+
+
+def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Neither channel may shorten or rewrite the one copy of the diagnostic.
+
+    `sanitize_detail` truncates at 2000 characters, rewrites vocabulary, and
+    replaces a structured traceback with a placeholder -- it exists for `render`
+    alone, on the way to a person. Used here it discarded exactly what these two
+    channels are for. The note is only made safe to print, and the refusal
+    detail is raw, so `render` shortens it once at the end rather than twice.
+    """
+
+    tail = "the last thing the worker said"
+    noisy = (
+        "Traceback (most recent call last):\n"
+        '  File "advance_worker.py", line 1, in <module>\n'
+        + ("filler that pushes this past the sanitizer's bound. " * 60)
+        + f"\nRuntimeError: shutdown {tail}\n"
+    )
+    assert len(noisy) > 2000, "the fixture must exceed the sanitizer's default bound"
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _verified_but_noisy(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree, "armarium", reason="a noisy but correct worker", expected_digest=expected_digest
+        )
+        completed = subprocess.CompletedProcess([], 0, json.dumps(reference.to_record()), noisy)
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _verified_but_noisy)
+
+    advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="a noisy but correct worker",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    printed = capsys.readouterr().err
+    assert tail in printed, "the end of the diagnostic was truncated away"
+    assert "Traceback (most recent call last):" in printed, "the trace was replaced"
+    assert "shutdown" in printed, "the sanitizer rewrote the worker's own vocabulary"
+    assert "detail truncated" not in printed
+
+    # The same text, raw, on the refusal path -- `render` is what shortens it.
+    def _unreadable_but_noisy(*_args, **_kwargs):
+        return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
+            [], 0, "not a decision reference", noisy
+        )
+
+    monkeypatch.setattr(advance, "run_confined", _unreadable_but_noisy)
 
     with pytest.raises(OperatorError) as excinfo:
         advance.trigger_advance(
             run_root,
             run_id,
             "armarium",
-            reason="worker reported both success and refusal",
+            reason="a noisy but correct worker",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    detail = excinfo.value.detail or ""
+    assert tail in detail
+    assert "Traceback (most recent call last):" in detail
+    assert "detail truncated" not in detail
+    # And the render on the way to a person is still the place it is shortened.
+    assert "[technical trace omitted from this message]" in excinfo.value.render()
+
+
+def test_a_broken_stderr_cannot_turn_a_recorded_advance_into_a_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """The note is a courtesy; the advance it describes is already permanent.
+
+    A `BrokenPipeError` writing the note escaped to the CLI's catch-all and
+    exited 2, telling the operator the advance failed and inviting a retry of a
+    boundary that is already advanced and cannot be retracted -- the same fault
+    the worker's own report had, one process further out.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _verified_and_noisy(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree, "armarium", reason="a note nobody can read", expected_digest=expected_digest
+        )
+        return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
+            [], 0, json.dumps(reference.to_record()), "something the operator will never see"
+        )
+
+    class _BrokenStderr:
+        def write(self, _text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def flush(self):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+    monkeypatch.setattr(advance, "run_confined", _verified_and_noisy)
+    monkeypatch.setattr(advance.sys, "stderr", _BrokenStderr())
+
+    returned = advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="a note nobody can read",
+        workspace=ROOT,
+        expected_digest=expected_digest,
+    )
+
+    assert returned.sha256
+    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+
+
+def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusal path must not be the place the worker's words get dropped."""
+
+    run_root, run_id = _make_run(tmp_path)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _unreadable_report(*_args, **_kwargs):
+        completed = subprocess.CompletedProcess(
+            [], 0, "not a decision reference", "the worker explained itself here"
+        )
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _unreadable_report)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="the worker returned something unreadable",
             workspace=ROOT,
             expected_digest=expected_digest,
         )
 
     assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
-    assert "reported a refusal despite returning success" in (excinfo.value.detail or "")
-    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+    assert "returned no checked decision reference" in (excinfo.value.detail or "")
+    assert "the worker explained itself here" in (excinfo.value.detail or "")
+
+
+def test_a_written_record_the_worker_could_not_report_is_not_called_a_refused_advance(
+    tmp_path, monkeypatch
+) -> None:
+    """Exit `WORKER_REPORT_FAILED_EXIT` names the one state a bare nonzero hid.
+
+    The record is appended before it is reported, so a broken stdout pipe used
+    to leave the worker dying on a traceback with a status the parent read as
+    "the advance was refused" -- about a boundary that had in fact been
+    advanced, permanently.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _wrote_but_could_not_report(*_args, **_kwargs):
+        completed = subprocess.CompletedProcess(
+            [],
+            advance.WORKER_REPORT_FAILED_EXIT,
+            "",
+            "the advance record was written and could not be reported: [Errno 32] Broken pipe",
+        )
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _wrote_but_could_not_report)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="the report never reached the parent",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    detail = excinfo.value.detail or ""
+    assert "the advance record was written and the worker could not report it" in detail
+    assert "Broken pipe" in detail
+
+
+def test_the_worker_reports_a_written_record_it_cannot_deliver_with_its_own_status(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The parent's classification is only worth having if the worker emits it.
+
+    The record is appended first, so the report is the one step whose failure
+    must not read as "no advance happened". Everything up to the append is left
+    alone; only stdout is made to fail.
+    """
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+    receipts = tree.root / "receipts" / "sha256"
+    before = {path.name for path in receipts.glob("*.json")}
+
+    class _RefusingStdout:
+        def write(self, _text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def flush(self):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+        def fileno(self):
+            raise io.UnsupportedOperation("this stdout has no descriptor")
+
+    monkeypatch.setattr(
+        advance_worker.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "stage": "armarium",
+                    "reason": "the report never reached the parent",
+                    "expected_digest": expected_digest,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(advance_worker.sys, "stdout", _RefusingStdout())
+
+    status = advance_worker.main(
+        ["--run-root", str(run_root), "--run-id", run_id, *_worker_identity_arguments(tree)]
+    )
+
+    assert status == advance.WORKER_REPORT_FAILED_EXIT
+    assert "could not be reported" in capsys.readouterr().err
+    # The record it could not report is on disk, which is the whole reason the
+    # status must not be told to the operator as a refused advance.
+    assert {path.name for path in receipts.glob("*.json")} - before
 
 
 def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeypatch):
@@ -1703,6 +2157,7 @@ def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeyp
     assert "SECURITY REFUSAL: reviewed run-tree inode changed" in (excinfo.value.detail or "")
 
 
+@requires_host_boundary
 def test_advance_verb_is_the_confirmed_operator_path_to_the_external_worker(
     tmp_path, monkeypatch, capsys
 ):
@@ -1781,6 +2236,7 @@ def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tm
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@requires_host_boundary
 def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_text(
     tmp_path, monkeypatch, capsys
 ):
@@ -1832,13 +2288,34 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
     one beside it. `ACTIONS` also admits `exclusion` and `salvage-promotion`,
     and GOVERNANCE 1 reserves an exclusion to Tyrel; a console that could mint
     one would be an automated agent standing in for the human in a rule.
+
+    **What this measures, and what it does not.** The source scan reads
+    spellings, so a module that resolved either name through `getattr` or
+    `importlib.import_module` inside a function body would write an approval
+    record and leave no matching text -- exactly the growth this test is named
+    against, and exactly what it cannot see. The attribute scan beneath it is a
+    second, different measurement: it imports each module and asks whether the
+    builder is reachable through it under *any* name, which catches an alias and
+    a module-level dynamic import that the text search would miss.
+    `write_approval_record` is a `RunTree` method rather than a module
+    attribute, so no attribute scan reaches it and the spelling is all there is.
+    The reachable write path itself is measured elsewhere, by
+    `test_an_advance_request_cannot_ask_the_worker_for_any_other_approval`,
+    which drives the real request channel rather than reading anything.
     """
-    offenders = [
-        path.relative_to(ROOT).as_posix()
+    candidates = [
+        path
         for path in sorted(OPERATOR_PACKAGE.rglob("*.py"))
         if not path.name.startswith("test_")
+        and path.name != "conftest.py"
         and path.relative_to(ROOT).as_posix() not in APPROVAL_MINTING_OPERATOR_MODULES
-        and (
+    ]
+    assert candidates, "the operator package scan found no modules to examine"
+
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for path in candidates
+        if (
             "build_approval_record" in path.read_text(encoding="utf-8")
             or "write_approval_record" in path.read_text(encoding="utf-8")
         )
@@ -1846,6 +2323,21 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
     assert not offenders, (
         f"{offenders} can mint or store an approval record from the operator surface; only "
         "the advance module may, and only for the advance action"
+    )
+
+    reachable = [
+        f"{path.relative_to(ROOT).as_posix()}:{name}"
+        for path in candidates
+        for name, value in vars(
+            importlib.import_module(
+                path.relative_to(ROOT).as_posix()[: -len(".py")].replace("/", ".")
+            )
+        ).items()
+        if value is build_approval_record
+    ]
+    assert not reachable, (
+        f"{reachable} bind the approval builder under another name, so the operator surface "
+        "reaches it without ever spelling it"
     )
 
 
@@ -1886,8 +2378,8 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
             )
         ),
     )
-    printed: list[str] = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    reported = io.StringIO()
+    monkeypatch.setattr(advance_worker.sys, "stdout", reported)
 
     assert (
         advance_worker.main(
@@ -1902,7 +2394,7 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
         == 0
     )
 
-    reference = json.loads(printed[-1])
+    reference = json.loads(reported.getvalue().strip().splitlines()[-1])
     record = tree.read_approval_record(
         ApprovalRecordReference(reference["relative_path"], reference["sha256"])
     )
@@ -1955,6 +2447,7 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@requires_host_boundary
 def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tree(
     tmp_path, monkeypatch
 ):
@@ -1990,6 +2483,7 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
     advance.verify_advance(tree, "armarium", reference)
 
 
+@requires_host_boundary
 def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_reads(tmp_path):
     """`verify_advance` refuses a moved boundary; the surface has to say so too.
 

@@ -7,6 +7,7 @@ Where a run's evidence lives, and the only code that writes to it.
 <run>/<NN-stage>/artifacts/<kind>/<artifact-id>.json
 <run>/<NN-stage>/blobs/sha256/<digest>
 <run>/<NN-stage>/manifest.json
+<run>/1_exemplar/manifest-door.json
 <run>/receipts/sha256/<digest>.json
 ```
 

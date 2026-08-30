@@ -13,7 +13,12 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import physical_page_id
-from common.corpus_register import append_records, members_of, register_digest
+from common.corpus_register import (
+    append_records,
+    members_of,
+    register_digest,
+    validate_register_bytes,
+)
 from operations.triage import instrument
 from operations.triage import producer as producer_module
 from operations.triage.producer import (
@@ -531,7 +536,6 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
     register_bytes = register.read_bytes()
     left = confirmed["clusters"][0]["pages"][0]
     right = confirmed["clusters"][0]["pages"][1]
-    left_id = next(item for item in produced.clusters.values())
     assert set(
         members_of(
             register_bytes, physical_page_id("synthetic", left["volume_id"], left["designation"])
@@ -542,7 +546,17 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
             register_bytes, physical_page_id("synthetic", right["volume_id"], right["designation"])
         )
     ) == set(right["member_frame_sha256"])
-    assert left_id["cluster_id"] == cluster_id
+    # The id is derived from the pages the cluster covers, so it is checkable against
+    # the confirmation rather than against the dictionary key the record was written
+    # from — which would be the same string whatever the producer did.
+    record = produced.clusters[cluster_id]
+    assert cluster_id == "rsc_" + digest_of(
+        sorted(
+            physical_page_id("synthetic", page["volume_id"], page["designation"])
+            for page in confirmed["clusters"][0]["pages"]
+        )
+    )
+    assert record["cluster_id"] == cluster_id
     # Cluster identity is page-based, so adding a capture must not change it.
     fourth = frame("66")
     extended = frames + [fourth]
@@ -567,7 +581,7 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
         evidence_records=evidence2,
     )
     assert set(produced2.clusters) == {cluster_id}
-    append_confirmation_to_register(
+    second_digest = append_confirmation_to_register(
         confirmed2,
         produced2,
         instrument_recipe=recipe2,
@@ -576,6 +590,23 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
         register_path=register,
         expected_register_digest=first_digest,
     )
+    # Read the grown membership back. Without this the append could stop writing the
+    # right page's new capture and the test would still pass, while the register
+    # replay is the only place a dropped capture would ever have shown.
+    assert second_digest != first_digest
+    grown = register.read_bytes()
+    right_page = physical_page_id("synthetic", right["volume_id"], right["designation"])
+    left_page = physical_page_id("synthetic", left["volume_id"], left["designation"])
+    assert set(members_of(grown, left_page)) == set(
+        confirmed2["clusters"][0]["pages"][0]["member_frame_sha256"]
+    )
+    # The fourth frame is a capture of the left page that the first confirmation did
+    # not name, so this append is where membership grows.
+    assert set(members_of(grown, left_page)) > set(left["member_frame_sha256"])
+    assert set(members_of(grown, right_page)) == set(
+        confirmed2["clusters"][0]["pages"][1]["member_frame_sha256"]
+    )
+    assert set(members_of(grown, right_page)) >= set(right["member_frame_sha256"])
 
 
 def test_no_designation_refuses_before_any_confirmation_output_is_written(tmp_path: Path):
@@ -627,6 +658,16 @@ def test_confirmed_production_publishes_register_and_all_bound_documents(tmp_pat
     published = json.loads((tmp_path / "triage-confirmation.json").read_text(encoding="utf-8"))
     assert published == confirmed
     assert published["authority"] == confirmed["authority"]
+    # A declaration is permanent and append-only, so the register has to say which pass
+    # entered it — the same run that appended the membership beside it, not merely some
+    # non-empty string the closed schema would also accept.
+    declarations = [
+        record
+        for record in validate_register_bytes((tmp_path / "register.json").read_bytes())["records"]
+        if record["kind"] == "physical-page"
+    ]
+    assert declarations, "the confirmation declared no physical page"
+    assert {record["appending_run"] for record in declarations} == {confirmed["appending_run"]}
 
 
 def test_confirmation_authority_is_retained_before_a_register_append_is_attempted(
@@ -997,3 +1038,73 @@ def test_an_interrupted_publish_leaves_a_retry_the_refusal_can_actually_direct(t
     producer_module._publish_immutable_canonical(path, value)
     assert path.read_bytes() == published
     assert sorted(entry.name for entry in tmp_path.iterdir()) == [path.name]
+
+
+def test_a_no_op_confirmation_proves_the_head_under_the_lock_not_from_its_own_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An append of nothing is still a compare-and-swap.
+
+    The producer reads the register before it decides there is nothing new to append,
+    and that read is outside the writer lock. A retraction published in between moves
+    the head without changing what this pass would append, so a check against its own
+    stale bytes would return a digest the register no longer has — and the manifest and
+    clusters written next would name a membership that has been withdrawn. The stale
+    read is simulated directly, because the race cannot be scheduled from a test.
+    """
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    register_path = tmp_path / "register.json"
+    arguments = {
+        "instrument_recipe": recipe,
+        "evidence_manifest": manifest,
+        "evidence_records": evidence,
+        "register_path": register_path,
+    }
+    produced = produce(
+        frames,
+        corpus_id="synthetic",
+        mode="auto",
+        confirmation=confirmed,
+        instrument_recipe=recipe,
+        evidence_manifest=manifest,
+        evidence_records=evidence,
+    )
+    first_head = append_confirmation_to_register(confirmed, produced, **arguments)
+    stale_bytes = register_path.read_bytes()
+
+    # Replaying it against the current head is the honest no-op: nothing to append,
+    # and the head it returns is the head that is there.
+    assert (
+        append_confirmation_to_register(
+            confirmed, produced, expected_register_digest=first_head, **arguments
+        )
+        == first_head
+    )
+
+    page_id = physical_page_id("synthetic", "v1", "opening-31-left")
+    link = next(
+        record
+        for record in json.loads(register_path.read_text(encoding="utf-8"))["records"]
+        if record["kind"] == "membership" and record["physical_page_id"] == page_id
+    )
+    corrected_head = append_records(
+        register_path,
+        [
+            {
+                "kind": "retraction",
+                "retracts": f"membership:{digest_of(link)}",
+                "reason": "the confirmation joined two different blank forms",
+                "appending_run": "triage-correction-1",
+            }
+        ],
+        expected_digest=first_head,
+    )
+    assert members_of(register_path.read_bytes(), page_id) == []
+
+    monkeypatch.setattr(producer_module, "read_register_path", lambda _path: stale_bytes)
+    with pytest.raises(IncompatibleReuse, match="the corpus register changed"):
+        append_confirmation_to_register(
+            confirmed, produced, expected_register_digest=first_head, **arguments
+        )
+    assert register_digest(register_path.read_bytes()) == corrected_head
