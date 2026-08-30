@@ -55,7 +55,11 @@ def _region_record(*, region_id, image_path, page_id, ordinal, bounds):
 
 def _occlusion_record(*, page_id, polygon, z_relationship="above-ink"):
     return {
-        "artifact_id": f"occ-{page_id}-{len(polygon)}",
+        # Keyed by the polygon itself, not its point count. Two occluders over
+        # one page with the same number of points collapsed into one entry in
+        # the artifacts dict, so a pooled-occlusion case would silently lose a
+        # polygon and record coverage the geometry never supported.
+        "artifact_id": f"occ-{page_id}-{'-'.join(f'{p["x"]}.{p["y"]}' for p in polygon)}",
         "payload": {
             "page_id": page_id,
             "polygon": polygon,
@@ -442,7 +446,14 @@ def test_an_occluded_row_carries_the_occlusion_records_it_rests_on():
     result = module.act_cross_capture_coverage(context, "act_x", latest_payload)
     (component,) = result["components"]
     (capture,) = component["captures"]
-    assert capture["occlusion_refs"] == ["occ-pg_a-4"]
+    # Taken from the record the fake actually holds, so the assertion pins that
+    # the row carries its occluder's own identity rather than the fake's id
+    # spelling. The row must name the polygon it rests on; which string that
+    # polygon is keyed by here is this file's business, not the contract's.
+    expected_ref = _occlusion_record(page_id="pg_a", polygon=_rectangle(0, 0, 60, 60))[
+        "artifact_id"
+    ]
+    assert capture["occlusion_refs"] == [expected_ref]
 
 
 def test_a_component_cannot_take_one_members_expected_surface_for_the_others(monkeypatch):

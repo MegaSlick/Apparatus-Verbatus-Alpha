@@ -567,6 +567,10 @@ def physical_act_page(data: bytes, physical_act: str) -> str | None:
     existing physical act proves it against the register rather than against the
     page it happens to be proposing.
     """
+    # Validated like `members_of` and `resolve_proposal` do, so a malformed
+    # identity is a named refusal rather than a `None` that reads identically to
+    # "this physical act was never declared".
+    _identity(physical_act, "pac", "physical act page lookup physical_act")
     return _read(data)[1].physical_act_pages.get(physical_act)
 
 

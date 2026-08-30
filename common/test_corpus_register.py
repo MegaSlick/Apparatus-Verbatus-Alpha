@@ -1115,8 +1115,16 @@ def test_a_reasserted_correspondence_is_retractable_again(tmp_path):
     assert len(json.loads(register)["records"]) == 7
 
 
-def test_a_reasserted_correspondence_must_be_a_new_operator_run():
-    """Redeclaration is a new act, never replay of the withdrawn declaration."""
+def test_replaying_a_withdrawn_correspondence_verbatim_is_refused():
+    """Named for what it measures. The refusal here is the immutable-record one.
+
+    It was called "must be a new operator run", but the identity this replay
+    collides with is the declaration's, held in `seen` from the first
+    declaration -- so the refusal fires whether or not the run qualification
+    exists. The run qualification is proved by
+    `test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected`,
+    which needs the suffix for its reassertion to be accepted at all.
+    """
     act = CAPTURE_ACT
     declaration = _correspondence(CAPTURE_PAGE, act, CAPTURE_BOUNDS)
     withdrawal = {

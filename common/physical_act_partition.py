@@ -111,6 +111,12 @@ def _path(value: Any, what: str) -> str:
     # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
     # the run root, and a digest-bound reference this schema seals must be
     # refused here rather than trusted through to whichever reader dereferences it.
+    # Typed before it is walked. The key-set check upstream proves the field is
+    # present, not that it is a string, so a `relative_path` of None or a number
+    # reached `startswith` and killed the stage with an AttributeError traceback
+    # instead of the named refusal this module exists to produce.
+    if not isinstance(value, str) or not value:
+        raise SchemaRefusal(f"physical-act partition: {what} path is not a non-empty string")
     if value.startswith("/") or ".." in value.split("/"):
         raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
     return value

@@ -2032,6 +2032,28 @@ def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
         validate_physical_act_partition(payload)
 
 
+@pytest.mark.parametrize("path_value", [None, 7, True, ["a"], {"a": 1}, ""])
+def test_the_builder_refuses_a_non_string_proposal_seal_path_by_name(path_value):
+    """The builder's key-set check proves the field is present, not that it is a string.
+
+    The validator already types this field, so the gap was on the build side
+    only: `relative_path` arriving as None or a number reached `startswith` and
+    killed the stage with an AttributeError, where this module's whole contract
+    is to refuse by name. Driven through the builder for that reason -- routed
+    at the validator this case never reaches the check it is about.
+    """
+    register = empty_register()
+    with pytest.raises(SchemaRefusal, match="path is not a non-empty string"):
+        build_physical_act_partition(
+            register=register,
+            register_digest=register_digest(register),
+            proposal_seal_ref={"relative_path": path_value, "sha256": "0" * 64},
+            local_acts=[_local(ACT_A, PG1, SOURCE_A, "a1")],
+            capture_alignments=[],
+            source_ledger={SOURCE_A},
+        )
+
+
 def test_the_textual_screen_walks_a_deep_payload_instead_of_the_interpreter_stack():
     """The sibling of the preference screens, and it had the same defect.
 
