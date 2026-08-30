@@ -183,13 +183,15 @@ def logical_act_projection_entry(
             or not page.startswith("ppg_")
             or not isinstance(captures, list)
             or not captures
-            or captures != sorted(set(captures))
+            # Element types before `set(...)`: an unhashable member would raise
+            # TypeError out of the dedupe itself; the projection must refuse.
             or any(
                 not isinstance(source, str)
                 or len(source) != 64
                 or any(character not in "0123456789abcdef" for character in source)
                 for source in captures
             )
+            or captures != sorted(set(captures))
         ):
             raise SchemaRefusal(
                 "logical Armarium projection has a malformed component identity or capture "
@@ -230,8 +232,9 @@ def logical_act_projection_entry(
             or ordinal < 0
             or not isinstance(proposal_refs, list)
             or not proposal_refs
-            or proposal_refs != sorted(set(proposal_refs))
+            # Element types before `set(...)`, as with the component captures.
             or not all(isinstance(reference, str) and reference for reference in proposal_refs)
+            or proposal_refs != sorted(set(proposal_refs))
         ):
             raise SchemaRefusal(
                 "logical Armarium projection has malformed member identity, key, ordinal, "

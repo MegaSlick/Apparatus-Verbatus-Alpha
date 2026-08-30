@@ -229,6 +229,10 @@ def _logical_component(value: object) -> dict:
         or not page.startswith("ppg_")
         or not isinstance(captures, list)
         or not captures
+        # Element types before `set(...)`: an unhashable member would raise
+        # TypeError out of the dedupe itself, and run_stage catches only the
+        # named contract errors -- the malformed record must refuse, not crash.
+        or not all(isinstance(source, str) for source in captures)
         or captures != sorted(set(captures))
     ):
         raise SchemaRefusal(
@@ -269,8 +273,10 @@ def _logical_member(value: object) -> dict:
         or ordinal < 0
         or not isinstance(refs, list)
         or not refs
-        or refs != sorted(set(refs))
+        # Element types before `set(...)`, for the same reason as the component
+        # captures: an unhashable reference must be a refusal, not a TypeError.
         or not all(isinstance(reference, str) and reference for reference in refs)
+        or refs != sorted(set(refs))
     ):
         raise SchemaRefusal(
             "the logical Archetypus member act has malformed identity, key, ordinal, or "

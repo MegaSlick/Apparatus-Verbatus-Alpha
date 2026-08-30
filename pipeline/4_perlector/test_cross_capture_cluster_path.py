@@ -1431,6 +1431,25 @@ def test_a_resealed_logical_record_cannot_forge_identity_or_member_conservation(
         {**established, "physical_page_components": []},
         {**established, "regions": []},
         {**established, "provenance": {}},
+        # Unhashable-but-canonical elements: a list inside a capture or proposal
+        # set survives canonical_bytes but would raise TypeError out of the
+        # validators' own `set(...)` dedupe unless element types are proved
+        # first. Both must be refusals, never a crash that takes the stage down.
+        {
+            **established,
+            "physical_page_components": [
+                {
+                    **established["physical_page_components"][0],
+                    "required_capture_sha256s": [["f" * 64]],
+                }
+            ],
+        },
+        {
+            **established,
+            "member_local_acts": [
+                {**established["member_local_acts"][0], "proposal_refs": [["prp_forged"]]}
+            ],
+        },
     )
     for variant in variants:
         variant["self_hash"] = archetypus.self_hash(variant)
