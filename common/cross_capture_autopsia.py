@@ -180,18 +180,11 @@ def build_autopsia(
             "cross-capture autopsia: logical_act_id is not printable NFC; the presentation "
             "is refused because normalization variants cannot name different logical acts"
         )
-    try:
-        _reject_preference({"logical_act_id": logical_act_id, "views": views})
-    except RecursionError as error:
-        # `views` is walked here before `_view` ever proves its shape, so an
-        # unvalidated caller can nest it past Python's recursion limit. A record
-        # this machine cannot walk is refused exactly as a forbidden field
-        # would be, never crashed on -- the same boundary `self_hash` already
-        # holds for the digest this presentation carries (`canonical.py`).
-        raise SchemaRefusal(
-            "cross-capture autopsia: the presentation nests too deeply for this machine to "
-            "walk, so its preference screen was never computable"
-        ) from error
+    # `views` is walked here before `_view` ever proves its shape, and the
+    # screen is iterative (its depth is the walk's own list), so a deep
+    # unvalidated nest is walked to the bottom and then refused by the shape
+    # checks below rather than crashing the interpreter stack.
+    _reject_preference({"logical_act_id": logical_act_id, "views": views})
     required = sorted({_sha(item, "required capture sha256") for item in required_capture_sha256s})
     if not required:
         raise SchemaRefusal("cross-capture autopsia: a logical act has no required captures")
