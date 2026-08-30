@@ -847,6 +847,16 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             bytes_by_path.__getitem__,
         )
 
+    # Nor one whose logical act has no page attribution: the terminal ledger
+    # builds page categories from act_pages, so an absent entry would let a
+    # member page read as covered by a sibling or as silent.
+    with pytest.raises(SchemaRefusal, match="no page attribution"):
+        build_armarium_bundle(
+            replace(projection, aggregate_basis={**aggregate_basis, "act_pages": {}}),
+            ArmariumFormats(("jsonl",), False),
+            bytes_by_path.__getitem__,
+        )
+
 
 def _reading_inputs(
     fixture: dict[str, Any],
@@ -1677,7 +1687,11 @@ def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
         expected_acts=2,
         witness_chairs=(),
         witness_floor=0,
-        aggregate_basis={},
+        # Attribution present so the conservation refusals under test fire on
+        # their own condition, not on the missing-act_pages refusal.
+        aggregate_basis={
+            "act_pages": {entry["act_key"]: list(members["member_source_page_ordinals"])}
+        },
         local_proposal_rows=2,
     )
     with pytest.raises(SchemaRefusal) as refusal:

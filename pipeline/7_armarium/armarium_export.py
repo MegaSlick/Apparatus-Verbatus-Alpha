@@ -1230,7 +1230,15 @@ def _validate_logical_act_conservation(
         # page no member proposal was cut on.
         attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
         if attributed is None:
-            continue
+            # Absent attribution is not vacuous compliance: the terminal ledger
+            # builds its page categories from act_pages, so a logical act with
+            # no entry lets a member page be classified as covered by a sibling
+            # or as having no act at all -- the silent-page failure the check
+            # above exists to keep impossible.
+            raise SchemaRefusal(
+                f"logical act {act['act_id']} has no page attribution in the aggregate "
+                "basis; its member pages cannot enter the run's page accounting"
+            )
         uncovered = sorted(set(ordinals) - set(attributed))
         if uncovered:
             raise SchemaRefusal(
