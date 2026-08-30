@@ -404,12 +404,21 @@ class PodRuntime:
             estimate = self.provider.estimate(request)
         except Exception as error:
             return LaunchResult(LaunchState.PROVIDER_FAILURE, detail=f"estimate failed: {error}")
+        try:
+            # A field with no reviewed digest form must refuse through the gate
+            # as a named result, never escape the paid path as a traceback.
+            reviewed = request.reviewed_digest()
+        except ValueError as error:
+            return LaunchResult(
+                LaunchState.REFUSED_REQUEST,
+                detail=f"the pod request cannot be reviewed: {error}; no paid action occurred",
+            )
         return self._preview(
             "create",
             request.name,
             estimate,
             request.hard_deadline,
-            request.reviewed_digest(),
+            reviewed,
             mint=mint,
         )
 
@@ -650,12 +659,22 @@ class PodRuntime:
                 record=record,
                 detail="adopted pod does not prove the requested on-demand image/template/volume/timer contract",
             )
+        try:
+            # The same gate-shaped refusal as preview_create: no traceback on
+            # the paid path for a request that cannot be reviewed.
+            reviewed = expected.reviewed_digest()
+        except ValueError as error:
+            return LaunchResult(
+                LaunchState.REFUSED_REQUEST,
+                record=record,
+                detail=f"the pod request cannot be reviewed: {error}; no paid action occurred",
+            )
         result = self._preview(
             "adopt",
             record.pod_id,
             record.estimate,
             expected.hard_deadline,
-            expected.reviewed_digest(),
+            reviewed,
             mint=mint,
         )
         return LaunchResult(result.state, result.preview, record=record, detail=result.detail)

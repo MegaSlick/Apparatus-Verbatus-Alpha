@@ -1135,6 +1135,14 @@ def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
     _lease(LeaseStore(staging / "other.json"), other, owner="other-process", clock=clock)
 
     lock_path = root.parent / f".{root.name}.spend-gate.lock"
+    # A rename in `_spend_gate_lock` must fail here, not silently unlock this
+    # drill: the holder below locks this exact file, and a runtime that moved
+    # its lock elsewhere would stop contending with it at all.
+    with bare_runtime(provider, clock, root)._spend_gate_lock():
+        assert lock_path.exists(), (
+            f"the runtime no longer uses {lock_path.name}; this drill would stop "
+            "serialising anything"
+        )
     held = tmp_path / "held"
     go = tmp_path / "go"
     holder = _in_repo(
@@ -1173,6 +1181,31 @@ def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
     assert sum(1 for verb, _ in provider.calls if verb == "create") == creates
     # Lease refusal precedes challenge consumption and must render phraseless.
     assert result.preview is not None and result.preview.challenge is None
+
+
+def test_a_request_with_no_reviewed_digest_form_refuses_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    """The reflective digest's own refusal must land as a named gate result.
+
+    Every current field type has a digest form, so the ValueError is
+    unreachable through an honestly built request; a field is planted past
+    the constructor to prove the conversion the day someone adds the field
+    the reflective design exists to catch.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+    object.__setattr__(create_request, "interruptible", 1.5)
+
+    result = pod_runtime.preview_create(create_request)
+
+    assert result.state is LaunchState.REFUSED_REQUEST
+    assert "no reviewed digest form" in (result.detail or "")
+    assert "no paid action occurred" in (result.detail or "")
+    assert not provider.pods
 
 
 def test_validation_and_consumption_share_one_lock_in_the_claim_window(tmp_path: Path) -> None:

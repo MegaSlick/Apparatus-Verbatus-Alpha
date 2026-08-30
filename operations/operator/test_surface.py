@@ -296,6 +296,12 @@ def test_only_the_offline_rehearsal_types_its_own_paid_confirmation() -> None:
     for source in _tracked_production_sources():
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
+            # A phrase parked in a local is the same derivation, one line later.
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                if isinstance(value, ast.Attribute) and value.attr == "confirmation_phrase":
+                    callers.append(source.relative_to(ROOT))
+                continue
             if not isinstance(node, ast.Call):
                 continue
             supplied = [keyword.value for keyword in node.keywords if keyword.arg == "confirmation"]

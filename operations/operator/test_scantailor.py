@@ -35,6 +35,22 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
     assert parsed["source_image_count"] == 1
 
 
+def test_an_unknown_layout_type_is_named_not_reported_as_truncated(tmp_path: Path) -> None:
+    """The refusal names the real fact: a layout this parser does not support.
+
+    An unknown kind yields an empty cutter list, and the shape check would
+    then send the operator hunting for missing XML that is not missing.
+    """
+    project = tmp_path / "scan.ScanTailor"
+    mutated = PROJECT.replace(b'type="two-pages"', b'type="three-pages"')
+    assert mutated != PROJECT
+    project.write_bytes(mutated)
+    with pytest.raises(ValueError) as refused:
+        scantailor_worker.parse(mutated, project)
+    assert "unknown layout type" in str(refused.value)
+    assert "truncated" not in str(refused.value)
+
+
 @pytest.mark.parametrize("bad", (b"<project", PROJECT.replace(b'<point x="0" y="800"/>', b"")))
 def test_malformed_or_truncated_project_refuses_by_name(tmp_path: Path, bad: bytes) -> None:
     with pytest.raises(ValueError, match="ScanTailor project refusal"):
