@@ -813,6 +813,31 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         source_b_ordinal,
     ]
 
+    # The clustered claim shape is its own schema id, and the whole package
+    # verifies -- with `local_proposal_rows` and `logical_membership` derived
+    # again from the package's own `logical_accounting` source block, never
+    # believed off the self-hashed manifest.
+    assert manifest["schema"] == "armarium-export-manifest.v4"
+    verified = armarium_export.verify_export_bundle(bundle.data, tmp_path / "clean-clustered")
+    assert verified["claims"]["act_partition"]["local_proposal_rows"] == 2
+
+    # A rebuilt package that shrinks the seal-row claim -- self-hash recomputed
+    # exactly as a forger would -- is a refusal, not an accepted bundle with a
+    # proposal row quietly missing from the accounting.
+    with ZipFile(BytesIO(bundle.data)) as archive:
+        forged_members = {name: archive.read(name) for name in archive.namelist()}
+    forged_manifest = json.loads(forged_members["EXPORT_MANIFEST.json"])
+    forged_manifest["claims"]["act_partition"]["local_proposal_rows"] = 1
+    forged_manifest.pop("self_hash")
+    forged_manifest["self_hash"] = armarium_export.self_hash(forged_manifest)
+    forged_members["EXPORT_MANIFEST.json"] = armarium_export.canonical_bytes(forged_manifest)
+    forged_buffer = BytesIO()
+    with ZipFile(forged_buffer, "w") as archive:
+        for name, data in forged_members.items():
+            archive.writestr(name, data)
+    with pytest.raises(SchemaRefusal, match="does not match the package's own logical"):
+        armarium_export.verify_export_bundle(forged_buffer.getvalue(), tmp_path / "clean-forged")
+
     # And a clustered projection that does not say how many seal rows its
     # smaller denominator stands for cannot be exported at all.
     with pytest.raises(SchemaRefusal):

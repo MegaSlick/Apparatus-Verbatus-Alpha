@@ -82,6 +82,14 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
 # closed shape without an explicit schema boundary.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
+# v4 is the clustered act-partition claim shape: `denominator` names logical
+# acts, and `local_proposal_rows`/`logical_membership` join the claim. A v3
+# reader keying on the schema id must not misread `expected_count` as
+# proposal-seal rows -- the same silent-rename-under-one-id miss the ids above
+# exist to prevent -- so an image-local bundle stays v3 byte-for-byte and a
+# clustered bundle declares v4. `verify_export_bundle` accepts both and refuses
+# a schema id that disagrees with its own claim's shape.
+EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v4"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
 # apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
@@ -354,22 +362,33 @@ def build_armarium_bundle(
             else None
         ),
     )
-    members["sources.json"] = canonical_bytes(
-        {
-            "schema": SOURCES_SCHEMA,
-            "pages": source_rows,
-            "regions": _source_regions(projection.acts),
-            "act_citations": _act_citations(projection.acts),
-            "act_outcomes": _act_outcomes(projection.acts),
-            "aggregate_basis": projection.aggregate_basis,
-            "witness_chairs": list(projection.witness_chairs),
-            "witness_floor": projection.witness_floor,
-            "salvage_regions": _salvage_regions(projection.salvage_items),
-            # Source evidence must travel with the claim so a clean-machine
-            # verifier can derive the page-level hold independently.
-            "ink_map_pages": list(projection.ink_map_pages),
+    sources_record: dict[str, Any] = {
+        "schema": SOURCES_SCHEMA,
+        "pages": source_rows,
+        "regions": _source_regions(projection.acts),
+        "act_citations": _act_citations(projection.acts),
+        "act_outcomes": _act_outcomes(projection.acts),
+        "aggregate_basis": projection.aggregate_basis,
+        "witness_chairs": list(projection.witness_chairs),
+        "witness_floor": projection.witness_floor,
+        "salvage_regions": _salvage_regions(projection.salvage_items),
+        # Source evidence must travel with the claim so a clean-machine
+        # verifier can derive the page-level hold independently.
+        "ink_map_pages": list(projection.ink_map_pages),
+    }
+    memberships = _logical_membership_map(projection.acts)
+    if memberships:
+        # The clustered claim's source evidence. Without it a verifier could
+        # only field-check `local_proposal_rows` and `logical_membership`, so a
+        # rebuilt package reporting fewer seal rows than the run produced would
+        # pass -- the exact self-consistent edit `_verify_honest_status_claims`
+        # exists to refuse. An image-local bundle omits the key and stays
+        # byte-identical to what this build wrote before the clustered shape.
+        sources_record["logical_accounting"] = {
+            "local_proposal_rows": projection.local_proposal_rows,
+            "memberships": memberships,
         }
-    )
+    members["sources.json"] = canonical_bytes(sources_record)
 
     if "text-bundle" in formats.formats:
         members.update(_text_bundle_members(projection.acts, source_rows))
@@ -446,7 +465,10 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal("EXPORT_MANIFEST.json is not readable canonical JSON") from error
-    if not isinstance(manifest, dict) or manifest.get("schema") != EXPORT_MANIFEST_SCHEMA:
+    if not isinstance(manifest, dict) or manifest.get("schema") not in {
+        EXPORT_MANIFEST_SCHEMA,
+        EXPORT_MANIFEST_CLUSTERED_SCHEMA,
+    }:
         raise SchemaRefusal("the package has no recognized EXPORT_MANIFEST schema")
     if manifest.get("self_hash") != self_hash(manifest):
         raise SchemaRefusal("EXPORT_MANIFEST.json fails its self-hash")
@@ -494,7 +516,15 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_salvage_region_references(sources, root)
     _act_citation_sources(sources)
     _act_outcome_sources(sources)
-    _verify_retained_references(sources)
+    try:
+        _verify_retained_references(sources)
+    except RecursionError as error:
+        # sources.json passed the parser but the availability walk is its own
+        # recursion; a package nested past what this machine can walk is
+        # refused by name, never surfaced as an unnamed recursion failure.
+        raise SchemaRefusal(
+            "the package sources citation nests too deeply for its availability walk"
+        ) from error
     _verify_manifest_source_counts(manifest, sources)
     _verify_pixel_claims(manifest, formats, sources)
     _verify_display_claim(manifest)
@@ -819,6 +849,16 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     _require_exact_fields(
         act_partition, act_partition_fields, subject="the manifest act_partition claim"
     )
+    expected_schema = (
+        EXPORT_MANIFEST_CLUSTERED_SCHEMA
+        if act_partition["denominator"] == _LOGICAL_ACT_PARTITION_DENOMINATOR
+        else EXPORT_MANIFEST_SCHEMA
+    )
+    if manifest.get("schema") != expected_schema:
+        raise SchemaRefusal(
+            "the manifest schema version does not match its act-partition claim shape; a "
+            "clustered claim travels only under the clustered schema id, and vice versa"
+        )
     salvage = claims["salvage"]
     if not isinstance(salvage, dict):
         raise SchemaRefusal("the manifest salvage claim is not an object")
@@ -1033,6 +1073,27 @@ def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     )
 
 
+def _logical_membership_map(acts) -> dict[str, dict[str, list[Any]]]:
+    """One shape for the claim and its source evidence, so equality is the check.
+
+    The manifest's `logical_membership` claim and the `logical_accounting`
+    block in `sources.json` are both built here; verification then re-derives
+    the claim from the source graph and compares, exactly as the terminal
+    ledger is recomputed rather than believed.
+    """
+    return {
+        act["act_id"]: {
+            "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
+            "member_act_keys": list(act["logical_membership"]["member_act_keys"]),
+            "member_source_page_ordinals": list(
+                act["logical_membership"]["member_source_page_ordinals"]
+            ),
+        }
+        for act in sorted(acts, key=lambda item: item["act_id"])
+        if "logical_membership" in act
+    }
+
+
 def _act_partition_claim(
     projection: ArmariumProjection, categories: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1061,16 +1122,7 @@ def _act_partition_claim(
         return claim
     claim["denominator"] = _LOGICAL_ACT_PARTITION_DENOMINATOR
     claim["local_proposal_rows"] = projection.local_proposal_rows
-    claim["logical_membership"] = {
-        act["act_id"]: {
-            "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
-            "member_act_keys": list(act["logical_membership"]["member_act_keys"]),
-            "member_source_page_ordinals": list(
-                act["logical_membership"]["member_source_page_ordinals"]
-            ),
-        }
-        for act in sorted(logical_rows, key=lambda item: item["act_id"])
-    }
+    claim["logical_membership"] = _logical_membership_map(projection.acts)
     return claim
 
 
@@ -2985,7 +3037,14 @@ def _export_manifest(
         edge_hold_pages,
     )
     manifest: dict[str, Any] = {
-        "schema": EXPORT_MANIFEST_SCHEMA,
+        # The schema id moves with the claim shape (see the constants): a
+        # clustered bundle's act-partition claim is a different contract than
+        # the image-local one, and a reader keying on v3 must never receive it.
+        "schema": (
+            EXPORT_MANIFEST_CLUSTERED_SCHEMA
+            if any("logical_membership" in act for act in projection.acts)
+            else EXPORT_MANIFEST_SCHEMA
+        ),
         "canonical_text": {
             "authority": "archetypus",
             "field": CANONICAL_TEXT_FIELD,
@@ -3101,11 +3160,19 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
 def _load_sources(root) -> dict[str, Any]:
     try:
         record = json.loads((root / "sources.json").read_text(encoding="utf-8"))
+    except RecursionError as error:
+        # Package data is untrusted input; a pathologically nested sources.json
+        # is well-formed JSON whose depth defeats the parser, and it must be a
+        # named refusal rather than an unnamed recursion failure.
+        raise SchemaRefusal(
+            "the package sources citation nests too deeply for this parser to read"
+        ) from error
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    if set(record) != {
+    fields = set(record) - {"logical_accounting"}
+    if fields != {
         "schema",
         "pages",
         "regions",
@@ -3159,6 +3226,7 @@ def _load_sources(root) -> dict[str, Any]:
         "witness_chairs": witness_chairs,
         "witness_floor": witness_floor,
         "salvage_regions": salvage_regions,
+        "logical_accounting": record.get("logical_accounting"),
     }
 
 
@@ -3324,6 +3392,100 @@ def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> 
     return keys
 
 
+def _verify_logical_partition_claim(
+    manifest: dict[str, Any], categories: dict[str, str], sources: dict[str, Any]
+) -> None:
+    """Re-derive the clustered act-partition claim from its source evidence.
+
+    `local_proposal_rows` and `logical_membership` are claims about how many
+    Designator seal rows the bundle's smaller act denominator stands for. A
+    self-hash proves the manifest was not edited after it was written, not that
+    what it says was measured -- so both are recomputed here from the package's
+    own `logical_accounting` source block, exactly as the terminal ledger is,
+    and a rebuilt package reporting fewer seal rows than the run produced is a
+    refusal rather than an accepted bundle with a hidden act.
+    """
+    claim = manifest["claims"]["act_partition"]
+    accounting = sources.get("logical_accounting")
+    if claim["denominator"] != _LOGICAL_ACT_PARTITION_DENOMINATOR:
+        if accounting is not None:
+            raise SchemaRefusal(
+                "the package carries logical accounting beside an image-local act claim; the "
+                "two denominators are one number in an image-local run"
+            )
+        return
+    if not isinstance(accounting, dict) or set(accounting) != {
+        "local_proposal_rows",
+        "memberships",
+    }:
+        raise SchemaRefusal(
+            "a clustered package has no logical accounting in its source graph, so its "
+            "proposal-seal row claim cannot be verified on a clean machine"
+        )
+    declared = accounting["local_proposal_rows"]
+    memberships = accounting["memberships"]
+    if (
+        not isinstance(declared, int)
+        or isinstance(declared, bool)
+        or declared < 0
+        or not isinstance(memberships, dict)
+        or not memberships
+    ):
+        raise SchemaRefusal("the package logical accounting is malformed")
+    member_ids_seen: set[str] = set()
+    for act_id, membership in memberships.items():
+        if not isinstance(act_id, str) or act_id not in categories:
+            raise SchemaRefusal(
+                "the package logical accounting names an act outside the exported partition"
+            )
+        if not isinstance(membership, dict) or set(membership) != {
+            "member_local_act_ids",
+            "member_act_keys",
+            "member_source_page_ordinals",
+        }:
+            raise SchemaRefusal("a package logical membership row is not its closed shape")
+        ids = membership["member_local_act_ids"]
+        keys = membership["member_act_keys"]
+        ordinals = membership["member_source_page_ordinals"]
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or not all(isinstance(member, str) and member for member in ids)
+            or ids != sorted(set(ids))
+            or not isinstance(keys, list)
+            or len(keys) != len(ids)
+            or not all(isinstance(member, str) and member for member in keys)
+            or keys != sorted(set(keys))
+            or not isinstance(ordinals, list)
+            or not ordinals
+            or not all(
+                isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal >= 0
+                for ordinal in ordinals
+            )
+            or ordinals != sorted(set(ordinals))
+        ):
+            raise SchemaRefusal("a package logical membership row is not canonical")
+        repeated = set(ids) & member_ids_seen
+        if repeated or set(ids) & set(categories):
+            raise SchemaRefusal(
+                "the package logical accounting repeats a member or exports one beside its "
+                "own logical act"
+            )
+        member_ids_seen.update(ids)
+    accounted = len(member_ids_seen) + (len(categories) - len(memberships))
+    if accounted != declared:
+        raise SchemaRefusal(
+            f"the package accounts for {accounted} proposal-seal row(s) against a declared "
+            f"{declared}; a seal row has been lost or invented between the run and the bundle"
+        )
+    if claim["local_proposal_rows"] != declared or claim["logical_membership"] != memberships:
+        raise SchemaRefusal(
+            "the exported clustered act claim does not match the package's own logical "
+            "accounting; the manifest and source graph disagree about the seal rows this "
+            "bundle stands for"
+        )
+
+
 def _verify_honest_status_claims(
     manifest: dict[str, Any], categories: dict[str, str], sources: dict[str, list[dict[str, Any]]]
 ) -> None:
@@ -3433,6 +3595,7 @@ def _verify_honest_status_claims(
     if status == "complete" and reasons:
         raise SchemaRefusal("a complete exported aggregate carries unresolved reasons")
     act_keys = _manifest_act_keys(manifest, categories)
+    _verify_logical_partition_claim(manifest, categories, sources)
     manifest_basis = manifest.get("aggregate_basis")
     if canonical_text(manifest_basis) != canonical_text(sources["aggregate_basis"]):
         raise SchemaRefusal("the exported aggregate basis disagrees with its source accounting")
