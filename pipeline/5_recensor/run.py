@@ -2701,6 +2701,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # scenario["hold_acts"]` used to state, through the
                     # composer's own `unreconciled` cause.
                     and findings_route is None
+                    # The fourth page-level cause, and the newest. Unit 9 still
+                    # confirming ink in a witness pointer outside every cut is
+                    # exactly the shortfall the three conditions above exist to
+                    # keep out of a terminal seal: with the page's one grant
+                    # already spent, or the budget exhausted, no request is
+                    # published, so this cause appears only in the chain below
+                    # and `confirmed-blank` would silently override it. An act
+                    # sealed COMPLETED-class over measured, unclaimed ink is the
+                    # missed act GOALS 1 puts above every other failure.
+                    and observation_hold is None
                 )
                 else None
             )

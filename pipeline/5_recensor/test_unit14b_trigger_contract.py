@@ -188,6 +188,12 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box, **forbidden}
+    # The inked half below only records a request while this box clears the
+    # floor, and 25 px clears 24 by one. Stated here so a raised floor fails
+    # naming the gate that moved rather than reporting an ink count.
+    assert box["w"] * box["h"] >= MINIMUM_INK_PIXELS, (
+        "the 5x5 stimulus no longer clears MINIMUM_INK_PIXELS; rebuild the box around the new floor"
+    )
 
     empty_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
     assert recensor.unclaimed_ink_observations(empty_maps, [observation], 1, {}) == []
