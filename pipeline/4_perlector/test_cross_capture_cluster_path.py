@@ -259,11 +259,14 @@ def test_a_deeply_nested_autopsia_view_becomes_a_refusal_not_a_recursion_crash()
     (`common/cross_capture_autopsia.py`), so an unvalidated caller can nest it
     past Python's recursion limit. That must become a `SchemaRefusal`, never an
     uncaught `RecursionError` that would crash the whole stage process and take
-    every other logical act in the run down with it."""
+    every other logical act in the run down with it. The composed screen walks
+    iteratively (14A), so a deep nest is either named by a recursion guard (a
+    recursive walk) or walked whole and refused at the closed-shape check --
+    both are named refusals, and both prove the boundary."""
     nested: Any = "leaf"
     for _ in range(5000):
         nested = {"views": nested}
-    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+    with pytest.raises(SchemaRefusal, match="nests too deeply|closed schema"):
         build_autopsia(
             logical_act_id="pac_0123456789abcdef",
             partition_ref={
