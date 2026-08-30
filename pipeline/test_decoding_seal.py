@@ -13,6 +13,7 @@ without being told which policy moved.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,22 @@ def invoke_stage(run_root: Path, program: str, **extra) -> subprocess.CompletedP
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+def _tree_snapshot(run_root: Path) -> dict[str, str]:
+    """Every byte under the run root, so a refusal's own claim can be checked.
+
+    Both refusals below tell the operator that nothing was written. That is a
+    statement about this directory, and until it is compared against the
+    directory it is a statement the suite takes on trust -- exactly the shape
+    GOVERNANCE 10 refuses, since a stage that half-wrote and then refused would
+    still print it.
+    """
+    return {
+        str(path.relative_to(run_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(run_root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _through_designator(tmp_path: Path) -> tuple[Path, RunTree]:
     run_root = tmp_path / "runs"
     for program in (
@@ -72,6 +89,48 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
     # against the tree without trusting its filename or parsed values.
     assert run["sealed_config_digests"]["decoding"] == digest
     assert run["config_digest"] != digest
+
+
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        pytest.param("temperature = ", "is not valid TOML", id="not-toml"),
+        pytest.param(
+            'schema = "decoding.v1"\n\n[reading_of_record]\ntemperature = 0.7\n\n'
+            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n',
+            "decoding reading_of_record must declare temperature 0",
+            id="nonzero-temperature",
+        ),
+    ],
+)
+def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: str, what: str):
+    """The refusal at run creation is measured against the run root, not read.
+
+    `common.decoding` tells the operator that "No run or stage artifact was
+    written" and offers to let them correct the file and retry. That advice is
+    only safe if it is true: a half-created run would leave a `run.json` sealing
+    a policy the loader had already rejected, and the retry would then collide
+    with it rather than proceed. The unit tests beside this one prove the loader
+    refuses; this proves the Door refuses in the same breath, before it writes.
+    """
+    substitute = tmp_path / "decoding.toml"
+    substitute.write_text(body, encoding="utf-8")
+    run_root = tmp_path / "runs"
+
+    refused = invoke_stage(run_root, "pipeline/1_exemplar/door.py", decoding_config=substitute)
+
+    assert refused.returncode != 0, what
+    # The named cause, not merely a refusal: an unparseable file and a policy
+    # that parses but declares a temperature this build will not read are two
+    # different operator problems, and the message has to say which one it is.
+    assert what in refused.stderr, refused.stderr
+    assert "No run or stage artifact was written" in refused.stderr, refused.stderr
+    # Nothing at all, not merely no artifacts: the run root is the thing the
+    # message disowns, and an empty directory tree left behind would already be
+    # a run id claimed under a policy that was never accepted.
+    assert not run_root.exists() or _tree_snapshot(run_root) == {}, sorted(
+        str(path) for path in run_root.rglob("*")
+    )
 
 
 @pytest.mark.parametrize(
@@ -113,12 +172,16 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     substitute.write_text(body, encoding="utf-8")
     assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1], what
 
+    before = _tree_snapshot(run_root)
     refused = invoke_stage(run_root, program, decoding_config=substitute)
 
     assert refused.returncode != 0
     assert "sealed configuration decoding moved" in refused.stderr, refused.stderr
     assert "No stage work was written" in refused.stderr, refused.stderr
     assert "Resume with the original sealed inputs" in refused.stderr, refused.stderr
+    # The sentence above is a claim about the run tree, so it is compared with
+    # the run tree rather than believed.
+    assert _tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
 
 
 @pytest.mark.parametrize("program", CONSUMING_STAGES)

@@ -5238,7 +5238,30 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
     reference = snapshot(reference_root)
     reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
 
-    for stop_at in ("door", "exemplar", INK_MAP, "designator", ATTESTATORES, "perlector"):
+    # Every boundary that leaves a partial tree. `armarium` is deliberately not
+    # here: it is the last operation in the sequence, so stopping at it is the
+    # whole run and there is nothing partial left to resume from -- the
+    # `len(survivors) < len(reference)` premise below would be false, and the
+    # case it would test is the rerun invariant, which section 2 already covers.
+    # Everything before it is included, and the ones after the Perlector matter
+    # most: the recovery round and the held-act tally both live there.
+    # The expected exit is part of the case, not a constant. The `review`
+    # scenario holds an act, and the Recensor is what decides that, so a range
+    # ending before it completes cleanly at 0 while one ending at or after it
+    # reports the hold at 3 -- the same status the whole run ends on. Asserting a
+    # flat 0 would have made every later boundary unreachable and is what kept
+    # this loop stopping at the Perlector.
+    for stop_at, partial_exit in (
+        ("door", 0),
+        ("exemplar", 0),
+        (INK_MAP, 0),
+        ("designator", 0),
+        (ATTESTATORES, 0),
+        ("perlector", 0),
+        ("recensor", 3),
+        ("recovery", 3),
+        ("archetypus", 3),
+    ):
         root = tmp_path / f"stopped-at-{stop_at}"
         partial = subprocess.run(
             [
@@ -5261,7 +5284,7 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
             capture_output=True,
             text=True,
         )
-        assert partial.returncode == 0, partial.stderr
+        assert partial.returncode == partial_exit, partial.stderr
         survivors = snapshot(root)
         survivor_identities = file_identities(root)
         assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
