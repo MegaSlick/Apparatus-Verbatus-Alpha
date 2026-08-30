@@ -349,7 +349,17 @@ def logical_act_projection_entry(
         "provenance": record["provenance"],
         "source_regions": source_regions,
         "reason": None,
-        "evidence_refs": [record["cross_capture_dissent_ref"]],
+        # Reading, review, and dissent, as the held path cites all three: a
+        # reader following evidence_refs from a delivered logical act must
+        # reach the review that accepted it, not only the sibling dissent.
+        "evidence_refs": sorted(
+            (
+                record["recensor_ref"],
+                record["perlectio_ref"],
+                record["cross_capture_dissent_ref"],
+            ),
+            key=lambda reference: reference["relative_path"],
+        ),
         "witnesses": witnesses,
         "perlectio_ref": record["perlectio_ref"],
         "recensor_ref": record["recensor_ref"],

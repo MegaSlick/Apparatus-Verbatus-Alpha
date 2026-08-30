@@ -65,7 +65,11 @@ ARMARIUM_EXPORT = ARMARIUM_DIR / "armarium_export.py"
 
 
 def _module(name: str, path: Path):
-    if str(ARMARIUM_DIR) not in sys.path:
+    # The Armarium dir is on sys.path only while the module executes its own
+    # sibling imports; left in place, a later bare `import run` elsewhere in
+    # the session could load the Armarium's run.py instead of its own stage's.
+    added = str(ARMARIUM_DIR) not in sys.path
+    if added:
         sys.path.insert(0, str(ARMARIUM_DIR))
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -76,6 +80,9 @@ def _module(name: str, path: Path):
     except BaseException:
         sys.modules.pop(name, None)
         raise
+    finally:
+        if added and str(ARMARIUM_DIR) in sys.path:
+            sys.path.remove(str(ARMARIUM_DIR))
     return module
 
 
@@ -1452,6 +1459,14 @@ def test_one_active_capture_after_retraction_still_establishes_and_projects_one_
     )
     assert entry["act_id"] == physical_act
     assert entry["canonical_clean_text"] == fixture["established_text"]
+    # Reading, review, and dissent all reachable through evidence_refs, as on
+    # the image-local held path: a reader following the citation list from a
+    # delivered logical act must reach the review that accepted it.
+    assert {reference["sha256"] for reference in entry["evidence_refs"]} == {
+        established["perlectio_ref"]["sha256"],
+        established["recensor_ref"]["sha256"],
+        established["cross_capture_dissent_ref"]["sha256"],
+    }
     assert entry["logical_membership"]["member_local_act_ids"] == [
         logical_act["member_local_acts"][0]["act_id"]
     ]
@@ -1910,11 +1925,17 @@ def test_neither_established_stage_dispatches_by_logical_act_yet():
     )
     for path in (ARCHETYPUS_RUN, ARMARIUM_RUN):
         tree = ast.parse(path.read_text())
-        (main,) = [
+        mains = [
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "main"
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
         ]
+        assert len(mains) == 1, (
+            f"expected exactly one main() in the stage, found {len(mains)}; the "
+            "clustered-dispatch gap pin cannot say whether the stage dispatches "
+            "by logical act without its entry point"
+        )
+        (main,) = mains
         # Attribute calls too: wiring the clustered path as
         # `archetypus.establish_logical_record(...)` must move this gap pin,
         # not slip past a bare-name-only scan.

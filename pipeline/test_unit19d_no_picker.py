@@ -34,7 +34,9 @@ ARMARIUM_EXPORT_SOURCE = ROOT / "pipeline" / "7_armarium" / "armarium_export.py"
 # bundle route that logical multi-capture output newly activates. A whole-file scan would
 # false-positive on unrelated, already-guarded code (`established[0]` behind a
 # `len(established) != 1` refusal, path/doc-string slicing); a name that stops
-# matching anything here is itself worth noticing; see the completeness test.
+# matching anything here is itself worth noticing -- `_functions_named` fails
+# on a stale name, though nothing mechanically proves the list is complete:
+# a reviewer adding a 19D callable must add it here too.
 ARCHETYPUS_LOGICAL_FUNCTIONS = frozenset(
     {
         "validate_logical_record",
@@ -58,6 +60,12 @@ ARMARIUM_EXPORT_LOGICAL_FUNCTIONS = frozenset(
     {
         "_act_partition_claim",
         "_validate_logical_act_conservation",
+        # The membership rows both the manifest claim and `sources.json` carry,
+        # and the clean-machine recompute that decides whether a rebuilt
+        # bundle's member accounting is honest. Both walk member ids, keys and
+        # page ordinals, which is where a positional read would be born.
+        "_logical_membership_map",
+        "_verify_logical_partition_claim",
         # The bundle writer groups output by source folder. A positional read
         # here would let region order pick one capture to represent a logical
         # act, even though the projection itself retained every capture.

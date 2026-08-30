@@ -3410,7 +3410,10 @@ def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> 
 
 
 def _verify_logical_partition_claim(
-    manifest: dict[str, Any], categories: dict[str, str], sources: dict[str, Any]
+    manifest: dict[str, Any],
+    categories: dict[str, str],
+    act_keys: dict[str, str],
+    sources: dict[str, Any],
 ) -> None:
     """Re-derive the clustered act-partition claim from its source evidence.
 
@@ -3486,15 +3489,40 @@ def _verify_logical_partition_claim(
         # Both vocabularies, as the producer's twin tracks both: ids are the
         # counted unit, so a key repeated across logical acts with unique ids
         # still balances the row arithmetic while asserting that two logical
-        # acts descend from one proposal row.
+        # acts descend from one proposal row. Keys are also held against the
+        # exported act keys themselves: one proposal row exported once as a
+        # standalone act and once as a member -- different ids, one key --
+        # balances every count while one act of the register leaves twice.
         repeated = (set(ids) & member_ids_seen) | (set(keys) & member_keys_seen)
-        if repeated or set(ids) & set(categories):
+        if repeated or set(ids) & set(categories) or set(keys) & set(act_keys.values()):
             raise SchemaRefusal(
                 "the package logical accounting repeats a member or exports one beside its "
                 "own logical act"
             )
         member_ids_seen.update(ids)
         member_keys_seen.update(keys)
+        # The producer requires every member ordinal to appear in the act's own
+        # page attribution (superset, for continuations); re-derive it here so
+        # a rebuilt package cannot drop a member capture's page out of the
+        # page-coverage check.
+        basis = sources.get("aggregate_basis")
+        attributed = (
+            (basis.get("act_pages") or {}).get(act_keys[act_id])
+            if isinstance(basis, dict)
+            else None
+        )
+        if (
+            not isinstance(attributed, list)
+            or not all(
+                isinstance(ordinal, int) and not isinstance(ordinal, bool) for ordinal in attributed
+            )
+            or not set(ordinals) <= set(attributed)
+        ):
+            raise SchemaRefusal(
+                f"the package logical accounting for {act_id} names member page ordinal(s) "
+                "its own page attribution does not carry; a member capture's page may not "
+                "drop out of the run's page coverage"
+            )
     accounted = len(member_ids_seen) + (len(categories) - len(memberships))
     if accounted != declared:
         raise SchemaRefusal(
@@ -3618,7 +3646,7 @@ def _verify_honest_status_claims(
     if status == "complete" and reasons:
         raise SchemaRefusal("a complete exported aggregate carries unresolved reasons")
     act_keys = _manifest_act_keys(manifest, categories)
-    _verify_logical_partition_claim(manifest, categories, sources)
+    _verify_logical_partition_claim(manifest, categories, act_keys, sources)
     manifest_basis = manifest.get("aggregate_basis")
     if canonical_text(manifest_basis) != canonical_text(sources["aggregate_basis"]):
         raise SchemaRefusal("the exported aggregate basis disagrees with its source accounting")

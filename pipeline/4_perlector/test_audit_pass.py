@@ -1189,6 +1189,28 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
     )
 
     assert finding["flags"] and finding["uncertain_spans"] == []
+    # And the contract itself refuses an invented zero-width span, so a
+    # producer regression cannot smuggle one past this test's empty list.
+    with pytest.raises(SchemaRefusal, match="no exhausted-cap reason or width"):
+        audit.validate_finding(
+            {
+                "act_key": "a1",
+                "attempt_ordinal": 1,
+                "page_ids": ["p1"],
+                "round_cap": 0,
+                "policy": {
+                    "schema": "perlector-audit.v1",
+                    "sha256": "0" * 64,
+                    "approval_ref": "",
+                },
+                "flags": [{"class": "testimony-diff", "location": {"start": 3, "end": 3}}],
+                "change_record": [],
+                "uncertain_spans": [{"start": 3, "end": 3, "reason": "audit-round-cap-exhausted"}],
+                "unresolved": True,
+            },
+            text="abc",
+            flag_text="abc",
+        )
     outcome, reason = _recensor().review_route_from_findings(
         testimony_shortfall=False,
         audit_unresolved=finding["unresolved"],

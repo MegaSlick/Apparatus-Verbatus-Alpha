@@ -3140,6 +3140,73 @@ def test_the_clean_machine_check_refuses_a_member_key_shared_across_logical_acts
         "pac_aaaaaaaaaaaaaaaa": "delivered",
         "pac_bbbbbbbbbbbbbbbb": "delivered",
     }
-    sources = {"logical_accounting": {"local_proposal_rows": 2, "memberships": memberships}}
+    act_keys = {
+        "pac_aaaaaaaaaaaaaaaa": "logical:pac_aaaaaaaaaaaaaaaa",
+        "pac_bbbbbbbbbbbbbbbb": "logical:pac_bbbbbbbbbbbbbbbb",
+    }
+    sources = {
+        "logical_accounting": {"local_proposal_rows": 2, "memberships": memberships},
+        "aggregate_basis": {
+            "act_pages": {
+                "logical:pac_aaaaaaaaaaaaaaaa": [1],
+                "logical:pac_bbbbbbbbbbbbbbbb": [2],
+            }
+        },
+    }
     with pytest.raises(SchemaRefusal, match="repeats a member"):
-        _module._verify_logical_partition_claim(manifest, categories, sources)
+        _module._verify_logical_partition_claim(manifest, categories, act_keys, sources)
+
+    # One proposal row exported twice under two identities -- a member key that
+    # also names an exported act row -- balances the arithmetic and must still
+    # refuse.
+    disguised = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["logical:pac_bbbbbbbbbbbbbbbb"],
+            "member_source_page_ordinals": [1],
+        }
+    }
+    manifest_disguised = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 2,
+                "logical_membership": disguised,
+            }
+        }
+    }
+    sources_disguised = {
+        "logical_accounting": {"local_proposal_rows": 2, "memberships": disguised},
+        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
+    }
+    with pytest.raises(SchemaRefusal, match="repeats a member"):
+        _module._verify_logical_partition_claim(
+            manifest_disguised, categories, act_keys, sources_disguised
+        )
+
+    # And a member page ordinal missing from the act's own attribution is a
+    # dropped page, not an accepted package.
+    unattributed = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111", "act_3333333333333333"],
+            "member_act_keys": ["key-one", "key-two"],
+            "member_source_page_ordinals": [1, 7],
+        }
+    }
+    manifest_unattributed = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 3,
+                "logical_membership": unattributed,
+            }
+        }
+    }
+    sources_unattributed = {
+        "logical_accounting": {"local_proposal_rows": 3, "memberships": unattributed},
+        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
+    }
+    with pytest.raises(SchemaRefusal, match="page attribution does not carry"):
+        _module._verify_logical_partition_claim(
+            manifest_unattributed, categories, act_keys, sources_unattributed
+        )

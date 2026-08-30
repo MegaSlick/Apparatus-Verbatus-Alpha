@@ -849,6 +849,21 @@ def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
     )
 
     assert set(TRIAGE_FACT_FIELDS) <= _manifest_module._ROW_FIELDS
+    # Fail closed on schema growth: every row field is either a capture-
+    # condition fact the comparability derivation reads, or a member of this
+    # explicit non-condition allowlist (identity, geometry, provenance-of-row).
+    # A new row field forces a decision here -- read it in the derivation, or
+    # name it below as not describing the capture condition -- instead of two
+    # differently-captured rows quietly comparing equal (GOVERNANCE 10).
+    assert _manifest_module._ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
+        "corpus_id",
+        "source_frame_sha256",
+        "frame",
+        "split",
+        "re_shoot_cluster_id",
+        "confidence",
+        "manifest_row_sha256",
+    }
     assert TRIAGE_ACTOR_KINDS == _manifest_module.ACTOR_KINDS
     sealed = make_row(
         corpus_id="montebello",
