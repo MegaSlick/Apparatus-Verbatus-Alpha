@@ -468,7 +468,15 @@ def logical_cross_capture_review_entry(
             "physical-page components and captures; the review row is refused because a "
             "finding about other evidence cannot hold this act"
         )
-    if not isinstance(witness_coverage, dict) or not isinstance(witnesses, list):
+    # `under_witnessed` is required, not defaulted: a None here would let a
+    # reader confuse "the witness floor was met" with "nobody measured the
+    # witness floor" (GOVERNANCE 2). The image-local path indexes the key
+    # directly for the same reason.
+    if (
+        not isinstance(witness_coverage, dict)
+        or not isinstance(witness_coverage.get("under_witnessed"), bool)
+        or not isinstance(witnesses, list)
+    ):
         raise SchemaRefusal(
             "logical Armarium review projection has malformed witness accounting; the review "
             "row is refused because cross-capture coverage cannot replace the chair denominator"
@@ -531,7 +539,7 @@ def logical_cross_capture_review_entry(
         "recensor_ref": review_ref,
         "dissent_ref": dissent_ref,
         "uncertainty": None,
-        "under_witnessed": witness_coverage.get("under_witnessed"),
+        "under_witnessed": witness_coverage["under_witnessed"],
         "witness_coverage": witness_coverage,
         "cross_capture_coverage": coverage,
     }

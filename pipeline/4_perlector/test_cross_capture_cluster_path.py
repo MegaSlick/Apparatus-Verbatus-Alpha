@@ -1204,6 +1204,19 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
             witness_coverage=witness_coverage,
             witnesses=[{"chair": "attestator_1"}],
         )
+    # `under_witnessed` is a required measurement, never a defaulted None: a
+    # review row that omits it would let "the floor was met" read identically
+    # to "nobody measured the floor" (GOVERNANCE 2).
+    unmeasured = {key: value for key, value in witness_coverage.items() if key != "under_witnessed"}
+    with pytest.raises(SchemaRefusal, match="malformed witness accounting"):
+        armarium.logical_cross_capture_review_entry(
+            partition=partition,
+            logical_act=logical_act,
+            review=held_review,
+            review_ref=held_ref,
+            witness_coverage=unmeasured,
+            witnesses=[{"chair": "attestator_1"}],
+        )
     entry = armarium.logical_cross_capture_review_entry(
         partition=partition,
         logical_act=logical_act,
@@ -1212,6 +1225,7 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
         witness_coverage=witness_coverage,
         witnesses=[{"chair": "attestator_1"}],
     )
+    assert entry["under_witnessed"] is False
     assert entry["canonical_clean_text"] is None
     assert "occluded-everywhere" in entry["reason"]
 
@@ -1901,10 +1915,13 @@ def test_neither_established_stage_dispatches_by_logical_act_yet():
             for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef) and node.name == "main"
         ]
+        # Attribute calls too: wiring the clustered path as
+        # `archetypus.establish_logical_record(...)` must move this gap pin,
+        # not slip past a bare-name-only scan.
         called = {
-            node.func.id
+            node.func.id if isinstance(node.func, ast.Name) else node.func.attr
             for node in ast.walk(main)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
         }
         assert not called & set(logical_callables), (
             f"{path.name}::main now dispatches by logical act; the composed-acceptance gap "

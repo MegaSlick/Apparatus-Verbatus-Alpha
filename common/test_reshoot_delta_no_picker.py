@@ -48,7 +48,18 @@ def test_the_unit20_modules_name_no_shape_one_preference_word(tree: ast.Module):
             read.add(node.arg)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             read.add(node.value)
-    assert not read & SHAPE_ONE_WORDS, sorted(read & SHAPE_ONE_WORDS)
+    # Fragment containment, lower-cased, exactly as the runtime preference
+    # screens match: a helper named `preferred_view_for` or a constant
+    # "best_capture_sha256" spells the forbidden idea without being a whole
+    # member of the vocabulary. (Whole-string constants are still collected,
+    # so a bare forbidden word is caught either way.)
+    offences = sorted(
+        f"{name!r} contains {word!r}"
+        for name in read
+        for word in SHAPE_ONE_WORDS
+        if word.lower() in name.lower()
+    )
+    assert offences == [], offences
 
 
 def _is_integer_literal(value: ast.AST) -> bool:

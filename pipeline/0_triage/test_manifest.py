@@ -872,3 +872,19 @@ def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
     )
     assert set(ACTOR_FACT_FIELDS) == set(sealed["actor"])
     assert comparability_from_triage(sealed, sealed)["comparably_captured"] is True
+    # And a pair that really differs must fail with named codes -- a
+    # self-comparison alone proves only that the extractor accepts the row,
+    # not that the comparability rule can ever say no.
+    differing = make_row(
+        **{
+            **{key: value for key, value in sealed.items() if key != "manifest_row_sha256"},
+            "mode": "manual",
+            "human_override": True,
+        }
+    )
+    verdict = comparability_from_triage(sealed, differing)
+    assert verdict["comparably_captured"] is False
+    assert set(verdict["difference_codes"]) == {
+        "triage-mode-differs",
+        "triage-human-override-differs",
+    }
