@@ -693,20 +693,50 @@ def _attachment_row(**overrides) -> dict:
     return row
 
 
-def _verify_rows(attachments: list[dict]) -> None:
+_ABSENT = object()
+
+
+def _verify_rows(attachments: list[dict], **view_overrides) -> None:
+    view = {
+        "reference": _READING_REF,
+        "page_witness_count": 1,
+        "comparison_views": {},
+        # Required of the embedded view since sealed-proposal edge deltas
+        # joined it. Empty by default on purpose: the scope-rule tests below
+        # are about the rows, and a fixture missing the field would be refused
+        # for its own shape before reaching them.
+        "edge_deltas": {},
+    }
+    view.update(view_overrides)
     archetypus._verify_act_attachment_view(
         _attachment_context(attachments),
         "act_0000000000000001",
         "pg_0000000000000001",
         [{"source_page_id": "pg_0000000000000001"}],
-        {
-            "act_attachment": {
-                "reference": _READING_REF,
-                "page_witness_count": 1,
-                "comparison_views": {},
-            }
-        },
+        {"act_attachment": {key: value for key, value in view.items() if value is not _ABSENT}},
     )
+
+
+@pytest.mark.parametrize(
+    ("edge_deltas", "case"),
+    [
+        (_ABSENT, "absent"),
+        ([], "a list rather than a mapping"),
+        ("", "an empty string"),
+        (None, "null"),
+    ],
+)
+def test_the_embedded_view_refuses_an_edge_deltas_field_that_is_not_a_mapping(edge_deltas, case):
+    """The field the scope fixtures supply is a contract, not fixture furniture.
+
+    Supplied empty everywhere else, so nothing here would have failed if the
+    field stopped being required, started accepting a non-mapping, or were
+    ignored outright -- and this stage re-derives the Perlectio's page-witness
+    facts from it. `None` and `[]` matter as much as absence: each is a way for
+    "no geometry was measured" to arrive dressed as "no geometry disagreed".
+    """
+    with pytest.raises(SchemaRefusal, match="malformed embedded act-attachment facts"):
+        _verify_rows([_attachment_row()], edge_deltas=edge_deltas)
 
 
 def test_a_page_witness_row_without_a_page_ordinal_is_refused_as_the_recensor_refuses_it():

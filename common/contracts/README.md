@@ -13,10 +13,10 @@ ink. `DATA_CONTRACT.md` is written later, from what specs 01–03 actually taugh
 |---|---|
 | `canonical.py` | one serialization, so a digest means the same thing on every machine |
 | `identities.py` | the six identities, derived from their bindings and therefore verifiable |
-| `outcomes.py` | the outcome algebra — three classes, eight vocabularies, one total transition table |
+| `outcomes.py` | the outcome algebra — three classes, nine vocabularies, one total transition table |
 | `envelope.py` | what every artifact wears, and what a consumer refuses at a handoff |
 | `approval.py` | the one shape a Tyrel-approval is recorded in |
-| `stages.py` | the stage names and the seven handoffs |
+| `stages.py` | the stage names and the eight handoffs |
 | `errors.py` | the refusals, kept separate so a stage can catch what it means to catch |
 
 ## Three things worth knowing before you change anything here

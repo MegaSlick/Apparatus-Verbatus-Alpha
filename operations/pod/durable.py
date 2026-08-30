@@ -76,3 +76,52 @@ def sync_directory(path: Path, *, strict: bool = False) -> None:
             raise
     finally:
         os.close(descriptor)
+
+
+def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None:
+    """Create ``path`` with ``payload`` durably, or raise if it already exists.
+
+    ``atomic_write`` replaces whatever was there.  A record whose *existence* is
+    the fact being kept -- a spent authorization, a boot that happened -- needs
+    the opposite: the create itself must be the exclusion, so two processes that
+    both believe they hold the same grant cannot both proceed.  ``O_EXCL`` is
+    that exclusion, and the caller decides whether ``FileExistsError`` means a
+    replay to refuse or identical evidence to accept.
+
+    Durability matches ``atomic_write``: the bytes are always fsynced, and the
+    directory entry too wherever ``sync_directory`` can open and sync it.
+    ``strict=True`` is for money evidence and other callers that must refuse a
+    paid action unless the directory entry itself is proved durable.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # A hard link publishes the already-complete inode without replacing an
+        # existing target. Unlike opening the target with O_EXCL and then
+        # filling it, no reader can observe an empty or partially written final
+        # record, and a process death before this line leaves no false claim.
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            # The name is published, but *this* call has proved nothing about
+            # its directory entry. That is exactly the retry path: a strict
+            # sync failure leaves the record linked and unsynced, the caller
+            # refuses the paid action, and the operator runs it again --
+            # `StageCostStore._append` then sees FileExistsError, compares the
+            # bytes, and reports success. Without a sync here that success is a
+            # claim nothing established, and the record it covers is the one
+            # that tells a human a pod may still be billing.
+            sync_directory(path.parent, strict=strict)
+            raise
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    sync_directory(path.parent, strict=strict)

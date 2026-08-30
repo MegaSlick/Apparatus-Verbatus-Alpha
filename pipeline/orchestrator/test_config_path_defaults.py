@@ -22,6 +22,7 @@ SEALED_CONFIG_FLAGS = (
     "--alignment-config",
     "--perlector-protocol-config",
     "--perlector-audit-config",
+    "--serving-recipes-config",
     "--formats-config",
     "--recovery-config",
     "--hard-failure-config",

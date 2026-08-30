@@ -84,6 +84,15 @@ def _validate(payload, outcome="read"):
     )
 
 
+@pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
+def test_perlectio_refuses_witness_preference_vocabulary(published_payload, field):
+    """A selector cannot enter a Perlectio under a voting synonym."""
+    payload = copy.deepcopy(published_payload)
+    payload[field] = True
+    with pytest.raises(SchemaRefusal, match="preference"):
+        _validate(payload)
+
+
 def _reblinded(payload, *, run_id, config_digest):
     """The published named payload, rewritten as its blinded twin.
 

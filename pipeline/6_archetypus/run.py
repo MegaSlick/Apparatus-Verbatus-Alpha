@@ -240,11 +240,13 @@ def _verify_act_attachment_view(
     attachment_view = dossier.get("act_attachment")
     if (
         not isinstance(attachment_view, dict)
-        or set(attachment_view) != {"reference", "page_witness_count", "comparison_views"}
+        or set(attachment_view)
+        != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
         or not isinstance(attachment_view["page_witness_count"], int)
         or isinstance(attachment_view["page_witness_count"], bool)
         or attachment_view["page_witness_count"] < 0
         or not isinstance(attachment_view["comparison_views"], dict)
+        or not isinstance(attachment_view["edge_deltas"], dict)
     ):
         raise SchemaRefusal(f"act {act_id} has malformed embedded act-attachment facts")
     reference = attachment_view["reference"]
@@ -337,8 +339,8 @@ def _verify_act_attachment_view(
         # Guarded like `alignment` above: a payload that is present but not a
         # mapping would otherwise reach `.get` and raise AttributeError, and a
         # traceback is not a refusal -- this stage's contract is a named one.
-        payload = testimony.get("payload")
-        reported = payload.get("reported") if isinstance(payload, dict) else None
+        testimony_payload = testimony.get("payload")
+        reported = testimony_payload.get("payload") if isinstance(testimony_payload, dict) else None
         if (
             not isinstance(reported, str)
             or not isinstance(span, dict)
@@ -671,7 +673,7 @@ def accepted_primed_perlectio(
         testimonium_payload = testimonium.get("payload")
         if not isinstance(testimonium_payload, dict):
             raise SchemaRefusal(f"act {act_id} Testimonium basis {index} has no object payload")
-        reported = testimonium_payload.get("reported")
+        reported = testimonium_payload.get("payload")
         witnesses[reference_key] = (
             reported if testimonium["outcome"] in WITNESS_READING_OUTCOMES else None
         )

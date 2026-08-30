@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
 
@@ -57,6 +57,25 @@ class _Context(SimpleNamespace):
         }
 
 
+class _PublishingContext:
+    def publish(self, **kwargs):
+        return kwargs
+
+
+@pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
+def test_review_payload_refuses_witness_preference_vocabulary(field):
+    """The durable review write has the same selector guard as Perlectio."""
+    with pytest.raises(SchemaRefusal, match="preference"):
+        RUN.publish_review(
+            _PublishingContext(),
+            subject_id="act-1",
+            outcome="accepted",
+            attempt="act-1:recense:1",
+            inputs=[],
+            payload={field: True},
+        )
+
+
 def _context(*records):
     return _Context(tree=_ArtifactTree(records))
 
@@ -74,7 +93,7 @@ def _no_expected_acts(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
 
-def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
+def _page_testimonium(*, outcome, retained=..., attempt_ordinal=1, artifact_id=None):
     subject_id = "page-1"
     chair = "attestator_1"
     # `page_role` is part of the closed page-Testimonium shape the producer
@@ -86,8 +105,11 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
         "chair": chair,
         "attempt_ordinal": attempt_ordinal,
     }
-    if reported is not ...:
-        payload["reported"] = reported
+    # `retained`, not `reported`: the page Testimonium's text field is
+    # `payload`, and a double whose parameter still said `reported` invited
+    # the next case here to build a record no producer can emit.
+    if retained is not ...:
+        payload["payload"] = retained
     return {
         "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
         "stage": RUN.ATTESTATORES,
@@ -184,11 +206,12 @@ def _attachment_fact_record(rows):
     }
 
 
-def _page_fact(*, ordinal, attached, anchor_basis=None):
+def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
     alignment = (
         {
             "status": "aligned",
             "anchor_basis": anchor_basis,
+            "anchor_chair": "attestator_1" if anchor_basis == "act-anchor" else None,
             "anchor_span": {"start": 0, "end": 1},
             "witness_span": {"start": 0, "end": 1},
             "line_geometry": [],
@@ -203,6 +226,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
         "page_witness": True,
         "page_ordinal": ordinal,
         "attached": attached,
+        "comparable": attached if comparable is None else comparable,
         "attachment_basis": "geometric-overlap" if attached else "unattached",
         "testimonium_ref": {"artifact_id": f"pt-{ordinal}"},
         "content_health": {"truncated": False},
@@ -211,7 +235,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
 
 
 def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
-    page = _page_testimonium(outcome="read", reported="page text")
+    page = _page_testimonium(outcome="read", retained="page text")
     conservation = _conservation("conservation-1")
     tree = _ArtifactTree([page, conservation])
 
@@ -228,13 +252,17 @@ def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
 
 def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip(monkeypatch):
     """V4: the no-report skip belongs only to a non-reading page record."""
+
+
+def test_a_reading_page_testimonium_cannot_lose_its_native_payload_and_take_the_skip(monkeypatch):
+    """V4: the no-payload skip belongs only to a non-reading page record."""
     act_reading = {
         "artifact_id": "act-reading-1",
         "stage": RUN.ATTESTATORES,
         "kind": "testimonium",
         "subject_id": "act-1",
         "outcome": "read",
-        "payload": {"chair": "attestator_1", "reported": "real act text"},
+        "payload": {"chair": "attestator_1", "payload": "real act text"},
     }
     context = _context(act_reading, _page_testimonium(outcome="read"))
     context.tree.records["attachment-1"] = _attachment(context, end=0)
@@ -244,7 +272,10 @@ def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_s
         lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
     )
 
-    with pytest.raises(FatalAccounting, match="reading page Testimonium has no reported text"):
+    with pytest.raises(
+        FatalAccounting,
+        match="reading page Testimonium has no retained derived payload for content coverage",
+    ):
         RUN.testimony_content_findings(context)
 
 
@@ -272,7 +303,7 @@ def test_an_orphaned_page_testimonium_cannot_become_an_unowned_finding():
 
 
 def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding(monkeypatch):
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -343,7 +374,7 @@ def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(mon
     observation and drives bounded recovery on evidence the run manufactured.
     Every case here is a rectangle `_proposal_geometry_by_page` already refuses
     of the same sealed proposals."""
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -438,7 +469,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
             "bounds_source": "native",
         }
     ]
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -482,7 +513,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
 def test_large_untrusted_page_text_does_not_allocate_a_character_bitmap(monkeypatch):
     """Coverage memory stays bounded by attachment spans, not response length."""
     text = "x" * 1_000_000
-    page = _page_testimonium(outcome="read", reported=text)
+    page = _page_testimonium(outcome="read", retained=text)
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
@@ -545,7 +576,7 @@ def test_an_unaligned_continuation_still_requires_its_current_page_testimonium(m
         RUN.testimony_content_findings(context)
 
 
-def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
+def _patched_page_geometry(monkeypatch, context, observed_by_ordinal, textless=()):
     """Stand in for 10C's geometric sub-derivation so merge/duplicate/enum
     protections stay testable in isolation. Attached rows get one native box
     overlapping the page's sole proposal; unattached rows get none. The real
@@ -570,10 +601,21 @@ def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
         )
         return {
             "artifact_id": f"pt-{ordinal}",
+            "outcome": "read" if observed_by_ordinal[ordinal] else "failed",
             "payload": {
                 "chair": "attestator_1",
                 "page_ordinal": ordinal,
                 "observed": observed,
+                # Retained page text: comparability requires an aligned slice
+                # of it, and the fake mirrors the real record's shape. A page in
+                # `textless` is observed but retained no text of its own -- the
+                # continuation a witness reached without producing a page slice,
+                # which is how one chair's two rows differ in `comparable`.
+                "payload": (
+                    "page text"
+                    if observed_by_ordinal[ordinal] and ordinal not in textless
+                    else None
+                ),
             },
         }
 
@@ -595,10 +637,54 @@ def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
     context = _context(_attachment_fact_record(rows))
     _patched_page_geometry(monkeypatch, context, {1: False, 2: True})
 
-    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+@pytest.mark.parametrize(
+    "comparable_first",
+    (True, False),
+    ids=("comparable-page-first", "comparable-page-second"),
+)
+def test_page_attachment_facts_keep_the_comparable_page_in_either_row_order(
+    monkeypatch, comparable_first
+):
+    """`comparable` is a per-page fact, so the merge may not depend on row order.
+
+    The producer derives it from that page's own alignment status and that
+    page's own retained text, so one chair's two rows for one act genuinely
+    differ in it. Merged on `attached` alone, whichever row arrived first won --
+    and rows arrive in page order, so a continuation page that attached without
+    comparable text erased the primary page that had both. The chair then
+    dropped out of the witness floor and the act read under-witnessed, held for
+    a human on evidence that was there all along.
+    """
+    comparable_page = _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor")
+    # Attached with a real alignment, but no comparable text of its own: the
+    # continuation page a witness reached without producing a page slice.
+    incomparable_page = _page_fact(
+        ordinal=2, attached=True, anchor_basis="no-page-anchor", comparable=False
+    )
+    rows = (
+        [comparable_page, incomparable_page]
+        if comparable_first
+        else [incomparable_page, comparable_page]
+    )
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: True}, textless=(2,))
+
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["comparable"] is True, (
+        "the page that produced comparable text was discarded because of its row order"
+    )
 
 
 def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch):
@@ -614,7 +700,9 @@ def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch
     context = _context(_attachment_fact_record(rows))
     _patched_page_geometry(monkeypatch, context, {1: True, 2: False})
 
-    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
@@ -641,7 +729,9 @@ def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases, mo
     context = _context(_attachment_fact_record(rows))
     _patched_page_geometry(monkeypatch, context, {1: True, 2: True})
 
-    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
 
     assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
 
@@ -655,7 +745,9 @@ def test_page_attachment_facts_refuse_a_duplicate_page_pair(monkeypatch):
     _patched_page_geometry(monkeypatch, context, {1: False})
 
     with pytest.raises(FatalAccounting, match="repeats attachment pair.*exactly one row"):
-        RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+        RUN.act_attachment_facts(
+            context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+        )
 
 
 @pytest.mark.parametrize(
@@ -670,7 +762,9 @@ def test_page_attachment_facts_name_unhashable_alignment_enums(field, message, m
     _patched_page_geometry(monkeypatch, context, {1: True})
 
     with pytest.raises(FatalAccounting, match=message):
-        RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+        RUN.act_attachment_facts(
+            context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+        )
 
 
 def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(monkeypatch):
@@ -754,7 +848,7 @@ def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_ro
     assert content == RUN.NO_PAGE_CONTENT_COVERAGE
     assert content["by_chair"] is None
     assert content["shortfall"] is None
-    assert "no page witness reported text for this page" in content["reason"]
+    assert "no page witness supplied comparable page text for this page" in content["reason"]
     assert content is not RUN.NO_PAGE_CONTENT_COVERAGE
     assert (
         RUN.review_route_from_findings(
@@ -768,7 +862,7 @@ def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_ro
 
 def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch):
     """V2a: a genuine content shortfall is measured and reaches the hold route."""
-    page = _page_testimonium(outcome="read", reported="alphaXYZ \tQ")
+    page = _page_testimonium(outcome="read", retained="alphaXYZ \tQ")
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=5)
     monkeypatch.setattr(
@@ -797,8 +891,8 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
-    historical = _page_testimonium(outcome="read", reported="obsolete", attempt_ordinal=1)
-    current = _page_testimonium(outcome="read", reported="new", attempt_ordinal=2)
+    historical = _page_testimonium(outcome="read", retained="obsolete", attempt_ordinal=1)
+    current = _page_testimonium(outcome="read", retained="new", attempt_ordinal=2)
     context = _context(historical, current)
     context.tree.records["attachment-1"] = _attachment(
         context, end=3, testimonium_id="page-witness-2"
@@ -823,9 +917,9 @@ def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkey
 
 
 def test_ambiguous_current_page_testimonia_refuse():
-    first = _page_testimonium(outcome="read", reported="first", artifact_id="page-witness-a")
+    first = _page_testimonium(outcome="read", retained="first", artifact_id="page-witness-a")
     duplicate = _page_testimonium(
-        outcome="read", reported="duplicate", artifact_id="page-witness-b"
+        outcome="read", retained="duplicate", artifact_id="page-witness-b"
     )
 
     with pytest.raises(FatalAccounting, match="duplicate attempt ordinal 1"):
@@ -1045,7 +1139,11 @@ def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
 
 def test_a_non_textual_reported_page_body_is_named_as_its_own_fault(monkeypatch):
     """F-O2: two distinct producer faults may not share one refusal string."""
-    context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
+
+
+def test_a_structured_native_page_payload_is_retained_without_text_coverage(monkeypatch):
+    """A declared non-comparable native payload is not forged into text."""
+    context = _context(_page_testimonium(outcome="read", retained={"lines": []}))
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
         RUN,
@@ -1053,8 +1151,7 @@ def test_a_non_textual_reported_page_body_is_named_as_its_own_fault(monkeypatch)
         lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
     )
 
-    with pytest.raises(FatalAccounting, match="reported page text is not text"):
-        RUN.testimony_content_findings(context)
+    assert RUN.testimony_content_findings(context) == {}
 
 
 def test_content_and_audit_holds_compose_in_stable_recorded_order():

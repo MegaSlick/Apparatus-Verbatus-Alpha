@@ -12,7 +12,8 @@ The knobs. One question per planned file, each answerable without reading code.
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
-| `serving_recipes.toml` | the complete vLLM flag profile for one configured chair at one measured GPU tier |
+| `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
+| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
 | `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
@@ -135,12 +136,16 @@ stage context and records them in its launch audit.
 Every row declares its `kind`. A `fixture` row is the offline walking skeleton's
 stand-in: it holds only its recipe, chair, tier and a reason, because a chair
 that is never launched has no flags, and the serving manager refuses one by that
-name rather than by a version pin it could not satisfy. Today every committed
-row is a fixture row, and a `vllm` row appearing here would mean a real chair had
-been configured to serve. That is not a config edit: it needs the real roster
+name rather than by a version pin it could not satisfy. Every committed row in
+`serving_recipes.toml` is a fixture row, and a `vllm` row appearing in *that*
+file would mean a real chair had been configured to serve by default.
+(`serving_recipes_real.toml` holds locked but unproven `vllm` rows and is
+reached only when both real-config flags select it, which is why the sentence
+above is bound to the default catalogue rather than to the directory.) Putting
+a `vllm` row in the default file is not a config edit: it needs the real roster
 uncommented in `models.toml`, a verified manifest per chair, and reviewed,
 locked vLLM and model-stack versions proven on real silicon.
-`operations/serving/config.py::verify_recipes_cover_chairs` reconciles this file
+`operations/serving/config.py::verify_recipes_cover_chairs` reconciles the selected file
 against `models.toml` and `pod_placement.toml` offline, so a chair, recipe or
 tier that nothing could resolve fails in the test suite rather than on a pod.
 

@@ -547,7 +547,11 @@ def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_r
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
-    testimony = _page_record_with(context, lambda payload: retained in payload)
+    # Selected on the value, not the key: `raw_response_refs: []` and
+    # `native_capture: None` both satisfy mere presence while carrying nothing
+    # retained, and such a record reaches no refusal at all -- the test would
+    # then fail pointing at the Perlector rather than at its own fixture.
+    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
     perlector.validate_page_testimonium_record(context, testimony, proposals)
 
     payload = testimony["payload"]
@@ -588,7 +592,11 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
-    testimony = _page_record_with(context, lambda payload: retained in payload)
+    # Selected on the value, not the key: `raw_response_refs: []` and
+    # `native_capture: None` both satisfy mere presence while carrying nothing
+    # retained, and such a record reaches no refusal at all -- the test would
+    # then fail pointing at the Perlector rather than at its own fixture.
+    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
 
     forged = copy.deepcopy(testimony)
     forged["outcome"] = "not-run"
@@ -834,8 +842,8 @@ def _replace_capture_projection(payload):
     original = payload["payload"]
     forged = ("X" if original[0] != "X" else "Y") + original[1:]
     payload["payload"] = forged
-    payload["reported"] = forged
     payload["native_capture"]["parse"]["text"] = forged
+    payload["content_health"]["characters"] = len(forged)
 
 
 @pytest.mark.parametrize(
@@ -926,7 +934,9 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
                 if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
-            entry.update(attached=False, attachment_basis="unattached", span=None)
+            # Comparability implies attachment; a coherent forgery drops both
+            # or the comparable seam names it before the outcome check.
+            entry.update(attached=False, attachment_basis="unattached", span=None, comparable=False)
         return record
 
     def failed_page(reference, *, stage, kind, subject_id):

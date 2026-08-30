@@ -12,6 +12,7 @@ from common.imaging import crop_png
 from common.native_witness import (
     partition_disagreement,
     unpresented_region_ids,
+    validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
@@ -21,6 +22,25 @@ from common.native_witness import (
     validate_retained_response_refs,
     verify_native_capture_bytes,
 )
+
+
+def _native_capture() -> dict:
+    return {
+        "schema": "attestatores-model-view.v1",
+        "adapter": "churro.v1",
+        "view": {
+            "prompt": {"system": "system prompt", "user": "user prompt"},
+            "generation": {"max_new_tokens": 24_000},
+        },
+        "raw_response_ref": {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "a" * 64,
+        },
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "xml", "text": "read"},
+    }
 
 
 def payload():
@@ -621,7 +641,6 @@ def _page_with_churro_capture() -> dict:
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
-            "reported": text,
             "content_health": {
                 "native_type": "string",
                 "encoding": "utf-8-json-native",
@@ -670,10 +689,17 @@ def _page_with_churro_capture() -> dict:
         (
             # Path and digest agree here, so only the digest-shape rule refuses
             # it. The retained-response seam above spells the same rule.
+            #
+            # That rule has its own message since the shared reference shape was
+            # given `is_sha256`: this uppercase digest is refused at the shape,
+            # before the path-agreement check whose wording the row above
+            # matches. What is pinned is unchanged -- uppercase is not this
+            # pipeline's lowercase-hex digest -- under the refusal that decides
+            # it.
             lambda value: value["native_capture"]["raw_response_ref"].update(
                 relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
             ),
-            "content-addressed",
+            "invalid raw-response reference",
         ),
         (
             lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),
@@ -736,7 +762,6 @@ def test_churro_native_capture_closes_its_evidence_reference_and_derived_facts(c
 def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence():
     value = _page_with_churro_capture()
     value["payload"] = ""
-    value.pop("reported")
     value["content_health"].update(
         empty=True,
         blank=True,
@@ -751,8 +776,10 @@ def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence
 
     assert validate_page_testimonium_payload(value) is value
 
+    # The `reported` projection is retired; the closed schema refuses the key
+    # itself, so a claimed absence has no field left to ride in on.
     value["reported"] = ""
-    with pytest.raises(SchemaRefusal, match="claims a reported absence"):
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
         validate_page_testimonium_payload(value)
 
 
@@ -788,6 +815,49 @@ def _page_payload(**changes):
     )
     value.update(changes)
     return value
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        {"relative_path": "3_attestatores/blobs/sha256/deadbeef"},
+        {"relative_path": "3_attestatores/blobs/sha256/deadbeef", "sha256": None},
+        "not a reference at all",
+        None,
+    ),
+)
+def test_a_page_edge_finding_refuses_a_malformed_retained_reference_by_name(reference):
+    """Its provenance check indexed the reference before proving it was one.
+
+    A rejected box is traced to the bytes that produced it by matching its
+    `response_sha256` against the page record's retained references. Read
+    straight through, a reference that is not a mapping, or carries no string
+    digest, escaped this validator as a bare `KeyError` or `TypeError` -- and a
+    traceback out of a provenance contract is not the named refusal it owes the
+    reader who has to act on it.
+    """
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    overshoots = [
+        {
+            "kind": "page-edge-overshoot",
+            "response_sha256": digest,
+            "ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 201, "h": 260},
+            "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        }
+    ]
+    value = _page_payload(raw_response_refs=[reference])
+    value["partition_disagreement"] = partition_disagreement(
+        {"artifact_id": "page-testimonium", "payload": value},
+        [],
+        page_edge_overshoots=overshoots,
+    )
+
+    with pytest.raises(SchemaRefusal, match="malformed retained response reference"):
+        validate_page_testimonium_payload(
+            value, testimonium_id="page-testimonium", read_bytes=lambda _path: raw
+        )
 
 
 def test_a_valid_page_testimonium_passes_its_closed_contract():
@@ -1076,3 +1146,39 @@ def test_a_resize_recipe_refuses_an_over_bound_target_as_its_own_schema_error():
 
     with pytest.raises(SchemaRefusal, match="target exceeds.*pixel bound"):
         validate_presented(presented)
+
+
+def test_native_capture_accepts_a_genuine_blob_reference():
+    validate_native_capture(_native_capture())
+
+
+@pytest.mark.parametrize(
+    "sha256",
+    [
+        "b" * 63,  # too short
+        "b" * 65,  # too long
+        "g" * 64,  # non-hex character
+        ("B" * 64),  # uppercase is not this pipeline's lowercase-hex shape
+        # Exactly 64 characters, checked: at 63 this row was refused for its
+        # length like `"b" * 63` above, and reported coverage of the
+        # full-length non-hex case that it never exercised.
+        "not-a-digest-but-still-non-empty-and-sixty-four-characters-longg",
+    ],
+)
+def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):
+    """A shape check alone (any two non-empty strings) let a malformed or
+    forged digest stand as this record's claim to trace back to retained
+    bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same gap `is_sha256`
+    closes everywhere else this pipeline validates a blob reference.
+    """
+    value = _native_capture()
+    value["raw_response_ref"]["sha256"] = sha256
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)
+
+
+def test_native_capture_refuses_a_blank_relative_path():
+    value = _native_capture()
+    value["raw_response_ref"]["relative_path"] = ""
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)

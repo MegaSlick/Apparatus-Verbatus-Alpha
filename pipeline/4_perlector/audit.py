@@ -30,6 +30,7 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     REPROOF_PASS_KIND,
     REQUEST_SCHEMA,
     SCHEMA,
+    WITNESS_DERIVED_LOCATION_CLASSES,
     audit_digest,
     audit_request,
     change_record,

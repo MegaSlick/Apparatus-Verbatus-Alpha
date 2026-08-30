@@ -19,6 +19,7 @@ FIXTURE = "synthetic-two-page-v0"
 SEQUENCE = (
     "door",
     "exemplar",
+    "ink-map",
     "designator",
     "attestatores",
     "perlector",
@@ -113,7 +114,7 @@ def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):
     result = drive(root, "r", "happy", "--from", "designator", "--to", "designator")
 
     assert result.returncode == 2
-    assert "predecessor exemplar has no stage-seal" in result.stderr
+    assert "predecessor ink-map has no stage-seal" in result.stderr
 
 
 def test_invalid_selection_combinations_refuse_before_creating_a_tree(tmp_path):

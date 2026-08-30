@@ -98,7 +98,11 @@ def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(
     comparing two crops has no reason to suspect the policy moved between them.
     """
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _invoke(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -133,7 +137,11 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
     root = tmp_path / "runs"
     padding_path = tmp_path / "designator_padding.toml"
     shutil.copyfile(SHIPPED_PADDING, padding_path)
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _invoke(program, root, "--designator-padding-config", str(padding_path))
         assert result.returncode == 0, f"{program}: {result.stderr}"
 

@@ -86,6 +86,7 @@ def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shap
     assert {row["stage"] for row in projected.boundaries} == {
         "door",
         "exemplar",
+        "ink-map",
         "designator",
         "attestatores",
         "perlector",

@@ -35,6 +35,14 @@ fatal accounting error; it is never resolved by sort order. Completed coverage i
 `read` plus `genuinely-empty`, while failed and not-run outcomes remain visible
 shortfalls.
 
+The act-attachment mirror is checked against those exact current records before
+the witness floor is counted. For a page witness, geometry against the sealed
+proposal independently derives `attached`; for an act-scoped witness, the exact
+current Testimonium's outcome derives `attached` and its retained payload derives
+`comparable`. The attachment must reference that current artifact. Thus a paired
+`attached: false, comparable: false` forgery cannot pass merely because the two
+booleans remain internally consistent.
+
 It reads the current Perlectio in the same unique-ordinal manner, verifies its
 direct evidence, and reconciles the Designator's proposed continuation flag
 against its own authoritative continuation link (see below). A non-completed
@@ -162,12 +170,20 @@ proposal at all. `payload["page_coverage"]` (`checked_pages`, `flagged_pages`)
 is recorded for every act, the same way `continuation` is, not only when it
 flags something.
 
-**A page with zero regions cut on it at all has no finding here.** The
-classic silent-failure shape this check exists to catch — the old pipeline's
-own measured 218-of-29,950 pages that claimed success while producing nothing
-— is a page the Designator marked out *nothing* on, and this check has no
-evidence to read a region's absence against there: nothing ever examined
-those pixels. Closing that gap needs either a real structural Designator that
+**A page with zero regions cut on it at all has no late finding here.** The
+preceding Ink Map stage now measures every sealed page before detection,
+including this shape, through the same `common.residual_ink` implementation.
+This late proposal/recovery reconciliation still has no act to attach such a
+finding to; Unit 14 owns the hold outcome. The classic silent-failure shape
+this check exists to catch — the old pipeline's own measured 218-of-29,950
+pages that claimed success while producing nothing — is a page the Designator
+marked out *nothing* on. What changed with Unit 9 is that the pixels are no
+longer unexamined: the early map holds a record for that page, measured before
+any proposal existed. What has not changed is that this late pass has no act
+to hang a finding on, and that the run aggregate still becomes `partial` for
+such a page only through the Designator's own silent-page reason
+(`common/contracts/outcomes.py`), not through anything the map records.
+Closing the rest of that gap needs either a real structural Designator that
 can be *wrong* about finding zero acts (the walking skeleton's synthetic
 proposer always agrees with the declared fixture) or a page-level reread
 capability neither this pass nor spec 08 builds yet. Left named, not papered over.

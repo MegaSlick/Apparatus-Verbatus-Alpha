@@ -108,6 +108,7 @@ RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
@@ -1605,6 +1606,60 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     assert baseline["config_digest"] != changed["config_digest"]
 
 
+def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
+    """A real run authority must say which serving catalogue governed it.
+
+    The fixture path binds the catalogue's bytes into `config_digest`; the real
+    path did not, so two real submissions selecting different
+    `--serving-recipes-config` files produced the same digest. `RunTree.create`
+    saw no change, the same run id was reusable across them, and nothing in the
+    authority could afterwards say which catalogue the run had been served from
+    (GOVERNANCE 6).
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    recovery = door.load_recovery_policy()
+    common = (
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+    )
+    baseline = door._real_bindings(*common, **_sealed_binding_digests())
+
+    other = tmp_path / "serving_recipes_other.toml"
+    other.write_bytes(
+        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH).read_bytes() + b"\n# a different catalogue\n"
+    )
+    changed = door._real_bindings(
+        *common, serving_recipes_config_path=other, **_sealed_binding_digests()
+    )
+
+    assert baseline["config_digest"] != changed["config_digest"]
+    assert (
+        baseline["sealed_config_digests"]["serving-recipes"]
+        != (changed["sealed_config_digests"]["serving-recipes"])
+    )
+    # Named for a point of use, exactly as the fixture path names it.
+    assert "pod-placement" in baseline["sealed_config_digests"]
+
+
 def _approved_submission(tmp_path, files: dict[str, bytes]):
     """Create synthetic source files, an approved-root policy, and the filename ledger."""
     approved = tmp_path / "approved"
@@ -1734,6 +1789,24 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
 
+    # The Designator now demands its predecessor ink-map seal before it reads
+    # anything, so the ledger boundary this test aims at is reachable only
+    # behind a sealed ink map.
+    ink_map = subprocess.run(
+        [
+            sys.executable,
+            str(INK_MAP_CLI),
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "real-ledger",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert ink_map.returncode == 0, ink_map.stderr
+
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
         [
@@ -1749,7 +1822,8 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         text=True,
     )
     assert boundary.returncode == 2
-    assert "filename-ledger boundary reconciled" in boundary.stderr
+    assert "reconciled the Exemplar filename ledger" in boundary.stderr
+    assert "no proposals or holds were fabricated" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 

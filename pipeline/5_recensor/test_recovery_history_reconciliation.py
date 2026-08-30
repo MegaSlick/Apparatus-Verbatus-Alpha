@@ -53,6 +53,7 @@ def through_perlector(root: Path, run_id: str, scenario: str) -> None:
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -231,6 +232,14 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
         for flag in draft["payload"]["flags"]
     ]
     draft["payload"]["flags"] = blank_flags
+    # The witness-derived basis is bound to its flag by location, so a forgery
+    # that blanks the flags and leaves the basis behind is refused for naming a
+    # span the blanked text no longer has. A genuinely-blank Pass-B reading
+    # would have produced both at the same collapsed location.
+    draft["payload"]["flag_location_basis"] = [
+        {**row, "location": {"start": 0, "end": 0}}
+        for row in draft["payload"]["flag_location_basis"]
+    ]
     validate_draft(draft["payload"])
     draft["self_hash"] = self_hash(draft)
     validate_envelope(draft)

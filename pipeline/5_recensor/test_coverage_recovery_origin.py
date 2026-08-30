@@ -273,6 +273,11 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
                 if row["chair"] == "attestator_1" and row["page_ordinal"] == 1
             )
             row["attached"] = False
+            # The retired act-scoped bridge no longer supplies a separate
+            # comparable text once this native page observation is unattached.
+            # Keep the forged row internally coherent so the test reaches the
+            # recovery-origin floor assertion below.
+            row["comparable"] = False
             row["attachment_basis"] = "unattached"
             row["span"] = None
         return record
@@ -317,7 +322,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     monkeypatch.setattr(context.tree, "read_artifact_reference", recovery_only_geometry)
     current = recensor.chair_current_attempts(context, act["act_id"])
     outcomes = recensor.chair_outcomes(current)
-    facts = recensor.act_attachment_facts(context, act["act_id"], outcomes)
+    facts = recensor.act_attachment_facts(context, act["act_id"], current)
     assert facts["attestator_1"]["attached"] is False
     assert facts["attestator_1"]["attachment_basis"] == "unattached"
     coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)

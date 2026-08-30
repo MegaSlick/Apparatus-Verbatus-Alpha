@@ -5131,3 +5131,46 @@ def test_preflight_with_no_smoke_read_anywhere_is_red_with_a_named_issue(tmp_pat
     assert report.color == "red"
     assert "no-chair-verified" in {issue.code for issue in report.issues}
     assert not report.smoke_receipts
+
+
+def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
+    tmp_path: Path,
+) -> None:
+    """The money gate is per-process, and a restart makes that a refusal, not a hole.
+
+    Unit 17's per-stage lifecycle refuses to spend one recorded grant twice, and
+    that refusal is now durable. This is the check underneath it: even where a
+    caller carries a phrase that was genuinely previewed, typed and spent before
+    a restart, the process that comes up afterwards holds no outstanding
+    challenge for it. Both shapes are covered, because an operator restarting a
+    run will plausibly try either -- replay the old phrase cold, and replay it
+    after asking for a fresh preview. The second is only a refusal because a new
+    preview mints a *different* challenge, which `mint_challenge` guarantees and
+    `test_minted_challenges_are_unpredictable_and_do_not_repeat` pins; the fixed
+    factory here would otherwise hand the restarted process the same one back.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    create_request = request(clock)
+
+    before = bare_runtime(provider, clock, tmp_path)
+    before.preview_create(create_request)
+    assert before.create(create_request, confirmation=CREATE_CONFIRMATION).green
+    creates = sum(1 for verb, _ in provider.calls if verb == "create")
+
+    # The same lease root, a new process: nothing of the gate's state survives.
+    after = bare_runtime(provider, clock, tmp_path, challenge="1234567890ABCDEF")
+
+    cold = after.create(create_request, confirmation=CREATE_CONFIRMATION)
+    assert cold.state is LaunchState.REFUSED_CONFIRMATION
+    assert "no preview in this run issued a challenge" in cold.detail
+
+    after.preview_create(create_request)
+    previewed = after.create(create_request, confirmation=CREATE_CONFIRMATION)
+    assert previewed.state is LaunchState.REFUSED_CONFIRMATION
+    assert "different preview challenge" in previewed.detail
+
+    assert sum(1 for verb, _ in provider.calls if verb == "create") == creates, (
+        "a phrase spent before the restart created a second billing pod after it"
+    )

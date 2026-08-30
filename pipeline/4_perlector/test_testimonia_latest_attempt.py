@@ -95,7 +95,16 @@ def run_with_a_superseded_attempt(tmp_path):
     second = copy.deepcopy(first)
     second["payload"]["attempt_ordinal"] = 2
     second["outcome"] = "failed"
-    second["payload"]["reported"] = "a later, failed re-read"
+    second["payload"]["payload"] = "a later, failed re-read"
+    # The native-derived payload is now the one retained text layer; the retired
+    # `reported` bridge is gone.  Keep this forged later response internally
+    # consistent so the test reaches current-attempt selection rather than the
+    # unrelated wall that refuses a stale text span or character count.
+    second["payload"]["observed"][0]["span"] = {
+        "start": 0,
+        "end": len(second["payload"]["payload"]),
+    }
+    second["payload"]["content_health"]["characters"] = len(second["payload"]["payload"])
     second["payload"]["reason"] = "the chair returned no usable report on the second attempt"
     second["attempt_id"] = attempt_id(act_id, f"read:{chair}", 2)
     second["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, second["attempt_id"])
@@ -157,7 +166,16 @@ def _forge_attempt(tree, first, act_id, chair, *, sealed_ordinal, payload_ordina
     deliberately disagree, and return the forged record."""
     forged = copy.deepcopy(first)
     forged["payload"]["attempt_ordinal"] = payload_ordinal
-    forged["payload"]["reported"] = "a reading nobody sealed under this ordinal"
+    forged_text = "a reading nobody sealed under this ordinal"
+    forged["payload"]["payload"] = forged_text
+    # The observed span travels with the text it addresses.
+    # `validate_testimonium_regions` reaches `validate_observed` with the
+    # changed payload, so a span left addressing the original could refuse this
+    # record for its geometry before `latest_attempt` ever compared the sealed
+    # attempt identity this helper exists to forge.
+    for observation in forged["payload"].get("observed", []):
+        if isinstance(observation.get("span"), dict):
+            observation["span"] = {"start": 0, "end": len(forged_text)}
     forged["attempt_id"] = attempt_id(act_id, f"read:{chair}", sealed_ordinal)
     forged["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, forged["attempt_id"])
     forged["self_hash"] = self_hash(forged)
@@ -269,6 +287,7 @@ def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
     ):

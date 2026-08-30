@@ -91,6 +91,7 @@ from common.contracts.approval import (  # noqa: E402
 from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import read_register_file  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
@@ -101,6 +102,8 @@ from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     DEFAULT_TRIAGE_MODES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
@@ -1786,6 +1789,7 @@ def fixture_submission(args, registry) -> int:
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        serving_recipes_config_path=args.serving_recipes_config,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
@@ -1967,6 +1971,7 @@ def real_submission(args, registry) -> int:
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
         alignment_config_path=args.alignment_config,
+        serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
@@ -2160,6 +2165,8 @@ def _real_bindings(
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     draft_fed: bool = True,
+    serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+    pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -2177,6 +2184,25 @@ def _real_bindings(
     policy performed the storage-root check), never as a sign-off.
     """
     validate_witness_adapter_bindings(models)
+    # Read and bound exactly as `common/stage.py::run_config_bindings` binds
+    # them on the fixture path. Without these a real submission reusing one run
+    # id under a different `--serving-recipes-config` produced the same
+    # `config_digest`, so `RunTree.create` saw no change and the run authority
+    # could not say which catalogue governed the run (GOVERNANCE 6).
+    try:
+        serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the serving recipes configuration binding at "
+            f"{serving_recipes_config_path} could not be read"
+        ) from error
+    try:
+        pod_placement_config_digest = digest_bytes(Path(pod_placement_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the pod placement configuration binding at "
+            f"{pod_placement_config_path} could not be read"
+        ) from error
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
         witness_context=witness_context,
@@ -2287,6 +2313,11 @@ def _real_bindings(
                 "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
                 "perlector_audit_config_sha256": perlector_audit_config_sha256,
                 "draft_fed": draft_fed,
+                "serving_config_inputs": {
+                    "schema": SERVING_CONFIG_INPUTS_SCHEMA,
+                    "serving_recipes_sha256": serving_recipes_config_digest,
+                    "pod_placement_sha256": pod_placement_config_digest,
+                },
             }
         ),
         "adapter_recipes": adapter_recipes,
@@ -2317,6 +2348,8 @@ def _real_bindings(
             # seals no data-handling name and a point of use that asked for one
             # there would be asking about a check that never happened.
             "data-handling": data_handling_config_sha256,
+            "serving-recipes": serving_recipes_config_digest,
+            "pod-placement": pod_placement_config_digest,
         },
     }
 

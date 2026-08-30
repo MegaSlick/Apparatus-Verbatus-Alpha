@@ -47,6 +47,7 @@ from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
     partition_disagreement,
     reported_geometry_overlaps,
+    split_page_edge_overshoots,
     unpresented_region_ids,
     validate_native_witness_geometry,
     validate_presented_page_binding,
@@ -340,6 +341,38 @@ def _fixture_native_observations(
             }
         )
     return observations
+
+
+def chandra_page_partition_entries(
+    observed: list[dict[str, Any]],
+    *,
+    page_size: tuple[int, int],
+    raw_response_ref: dict[str, str] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return surviving Chandra boxes and response-linked page-edge findings.
+
+    `page_size` is the sealed source page, never a presentation crop: a block
+    may cross the crop edge while remaining valid page-space geometry.
+
+    The page Testimonium, rather than the retired textual act bridge, owns the
+    witness partition.  A finding without the raw response that supplied its
+    block is a named but unauditable assertion, so this narrow join refuses it
+    before either a page record or an attachment can be published.
+    """
+    survivors, overshoots = split_page_edge_overshoots(observed, page_size=page_size)
+    if overshoots and (
+        not isinstance(raw_response_ref, dict)
+        or not isinstance(raw_response_ref.get("sha256"), str)
+        or len(raw_response_ref["sha256"]) != 64
+    ):
+        raise SchemaRefusal(
+            "a Chandra page-edge finding has no retained response reference. "
+            "The rejected block cannot be traced to the response that produced it. "
+            "Retain the raw Chandra response before deriving the page partition."
+        )
+    return survivors, [
+        {**finding, "response_sha256": raw_response_ref["sha256"]} for finding in overshoots
+    ]
 
 
 def _sealed_source_page(
@@ -889,8 +922,7 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     }
 
 
-# Every field a Testimonium payload must carry, whatever the outcome. `reason` and
-# the `reported` bridge below are conditional and deliberately outside it.
+# `reason` is outcome-dependent; `payload` is the sole derived report layer.
 TESTIMONIUM_FIELDS = frozenset(
     {
         "chair",
@@ -912,7 +944,7 @@ TESTIMONIUM_FIELDS = frozenset(
 # belong to the page-scoped kind, which this closed act-level payload never
 # carries, and allowing them here let a resealed act record wear page clothing.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
-    {"adapter_metadata", "raw_response_ref", "reason", "reported", "page_witness"}
+    {"adapter_metadata", "raw_response_ref", "reason", "page_witness"}
 )
 
 # A page Testimonium is a different, closed record from the act-scoped
@@ -969,10 +1001,6 @@ def testimonium_payload(
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
 
-    # `reported` is only a compatibility projection of textual native payloads;
-    # structured payloads must not acquire coerced substitute text.
-    if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
-        record["reported"] = native_payload
     return validate_testimonium_payload(record)
 
 
@@ -1496,16 +1524,6 @@ def validate_tallied_testimonium(
     if problem := _native_problem(payload["witness_reported"], "witness_reported"):
         raise SchemaRefusal(problem)
     validate_content_health(payload["payload"], payload["content_health"])
-    if record["outcome"] in WITNESS_READING_OUTCOMES and isinstance(payload["payload"], str):
-        if payload.get("reported") != payload["payload"]:
-            raise SchemaRefusal(
-                "a textual Testimonium's compatibility projection differs from its "
-                "verbatim native payload"
-            )
-    elif "reported" in payload:
-        raise SchemaRefusal(
-            "a non-textual or non-reading Testimonium carries a compatibility projection"
-        )
     if record["outcome"] in {"failed", "dead", "not-run"}:
         reason = payload.get("reason")
         if not isinstance(reason, str) or not reason.strip():
@@ -2230,6 +2248,24 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+def declared_chandra_anchor_chair(context) -> str:
+    """The sole configured Chandra chair named as the alignment anchor."""
+    chairs = [
+        chair
+        for chair in context.witness_chairs
+        if isinstance(context.registry.config.chairs.get(chair), ChairIdentity)
+        and context.registry.config.chairs[chair].witness_adapter == "chandra.v1"
+    ]
+    if len(chairs) != 1:
+        raise SchemaRefusal(
+            "anchor-line alignment requires exactly one configured Chandra chair; "
+            "the Designator has no text and may not be used as an anchor. "
+            "The alignment's textual anchor identity is therefore unresolved. "
+            "Configure exactly one Chandra witness chair before running Attestatores."
+        )
+    return chairs[0]
+
+
 def publish_attempt(
     context,
     *,
@@ -2278,6 +2314,16 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
+    if (
+        presented
+        and isinstance(resolved, ChairIdentity)
+        and resolved.witness_adapter == "chandra.v1"
+    ):
+        # The act view cannot retain partition findings, but it must exclude an
+        # overshoot so one bad block does not prevent the page record retaining it.
+        observed, _ = split_page_edge_overshoots(
+            observed, page_size=_sealed_source_page(context, presented)[2]
+        )
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -2524,6 +2570,58 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     )
 
 
+def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> None:
+    """Unalign, in place, every pair of act spans one chair cannot tell apart.
+
+    The page-wide matcher runs once per (page, chair) and each act clips its own
+    hull out of it, so two acts can end up claiming overlapping stretches of one
+    chair's page reading.  Both claims are then unattributable: choosing between
+    them by span size, act order, or overlap fraction would be a picker over one
+    witness's text (GOVERNANCE 3, hard rule 8), and letting both stand would feed
+    the same characters to two acts' dissent rows as though the witness had said
+    them twice.
+
+    So neither wins.  Both stay geometrically attached -- the chair really did
+    report ink there -- while their text correspondence becomes explicitly
+    unaligned with a named reason, and neither can count toward the witness
+    floor.  A zero-width span (the trivial attach a genuinely-empty page reading
+    gets) touches nothing and is deliberately not an overlap.
+
+    Extracted from the attachment pass so it can be exercised directly: the
+    combination needs one chair's page reading to match one act's anchor range in
+    two separate places, which no fixture currently produces.
+    """
+    by_page_chair: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for entries in rows_by_act:
+        for entry in entries:
+            alignment = entry["alignment"]
+            if (
+                entry["page_witness"]
+                and entry["page_ordinal"] is not None
+                and entry["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                by_page_chair.setdefault((entry["page_ordinal"], entry["chair"]), []).append(entry)
+    for entries in by_page_chair.values():
+        ambiguous: set[int] = set()
+        for index, left in enumerate(entries):
+            left_span = left["alignment"]["witness_span"]
+            for other_index, right in enumerate(entries[index + 1 :], start=index + 1):
+                right_span = right["alignment"]["witness_span"]
+                if min(left_span["end"], right_span["end"]) > max(
+                    left_span["start"], right_span["start"]
+                ):
+                    ambiguous.update({index, other_index})
+        for index in ambiguous:
+            entries[index]["alignment"] = {
+                "status": "unaligned",
+                "reason": "ambiguous-overlapping-act-alignment",
+            }
+            entries[index]["span"] = None
+            entries[index]["comparable"] = False
+
+
 def act_scoped_attachment_entry(
     context,
     act: dict[str, Any],
@@ -2556,6 +2654,7 @@ def act_scoped_attachment_entry(
             artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
         ),
         "attached": attached,
+        "comparable": attached and isinstance(attempt.native_payload, str),
         "attachment_basis": "presented-region" if attached else "unattached",
         "content_health": attempt.health,
         "alignment": None,
@@ -2570,6 +2669,23 @@ def act_scoped_attachment_entry(
             else None
         ),
     }
+
+
+def non_reading_alignment_reason(outcome: str, *, native_page_capture: bool) -> str:
+    """Name the record whose non-reading outcome prevents page alignment.
+
+    A native page capture owns the page Testimonium's outcome.  The legacy
+    synthetic join instead gates this act on its own act attempt, because the
+    joined page record can still read on the strength of a different act.
+    """
+    if outcome in WITNESS_READING_OUTCOMES:
+        raise FatalAccounting(
+            f"a reading outcome {outcome!r} cannot explain a non-reading page alignment. "
+            "The unaligned reason would contradict the outcome it names. "
+            "Derive this reason only from the non-reading record that blocked alignment."
+        )
+    subject = "page-testimonium" if native_page_capture else "act-attempt"
+    return f"non-reading-{subject}-{outcome}"
 
 
 def publish_page_testimonia_and_attachments(
@@ -2591,14 +2707,17 @@ def publish_page_testimonia_and_attachments(
     # Scope is authoritative only after the sealed roster and configured
     # occupants agree.
     page_chairs = declared_page_witness_chairs(context)
+    anchor_chair = declared_chandra_anchor_chair(context)
+    # Declared Churro responses are validated in the attempt preflight now,
+    # before any compatibility record publishes.
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
-    # Native page outcomes are independent of compatibility act outcomes; legacy
-    # page outcomes remain derived from those act outcomes.
-    page_attempts: dict[tuple[int, str], Attempt] = {}
+    # Native captures own their page outcome; legacy joins derive it from act
+    # attempts, so the two paths cannot share an attempt-object fallback.
+    page_outcomes: dict[tuple[int, str], str] = {}
     # The anchor is a page fact, not a chair's report, and it is kept in its own
     # map for that reason: parked in `page_texts` under a reserved chair slot it
     # shared a key space with the configured roster, so a chair carrying that
@@ -2658,36 +2777,48 @@ def publish_page_testimonia_and_attachments(
                 context, page_ordinal, chair, resolved.witness_adapter
             )
             if captured is None:
+                # Legacy fixture rows retain their deliberately synthetic join.
+                # A Churro row above never takes this path.
                 join = page_join(
                     [(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts]
                 )
-                native_capture = None
+                page_attempt_result, native_capture = join, None
                 native_payload, outcome = join.native_payload, join.outcome
                 unjoined_act_attempts = join.unjoined_act_attempts
-                failure_reason = page_failure_reason(
-                    unjoined_act_attempts, join.joined_act_attempts
-                )
             else:
                 # Not `page_attempt`: that name is rebound below to this page
                 # record's attempt *identity* string, and one name meaning both
                 # an Attempt and an attempt id is how a page record ends up
                 # published under the wrong identity when this loop is edited.
-                captured_attempt, native_capture = captured
-                native_payload = captured_attempt.native_payload
-                outcome = captured_attempt.outcome
+                page_attempt_result, native_capture = captured
+                native_payload, outcome = (
+                    page_attempt_result.native_payload,
+                    page_attempt_result.outcome,
+                )
                 unjoined_act_attempts = []
-                failure_reason = captured_attempt.reason
-                health = captured_attempt.health
-                page_attempts[(page_ordinal, chair)] = captured_attempt
+                page_outcomes[(page_ordinal, chair)] = page_attempt_result.outcome
             reading = outcome in WITNESS_READING_OUTCOMES
-            if native_capture is None:
-                health = content_health(native_payload, completed=reading)
-            attempted_page = native_capture is not None or page_witness_attempted(
+            attempted_page = captured is not None or page_witness_attempted(
                 page_acts, chair, attempts_by_pair
             )
-            # Failed captures must not masquerade as a missing page anchor.
+            failure_reason = (
+                page_attempt_result.reason
+                if captured is not None
+                else page_failure_reason(
+                    unjoined_act_attempts, page_attempt_result.joined_act_attempts
+                )
+            )
+            # Only a retained reading. A failed native capture has no text, and
+            # a `None` parked here read back as "this page has no anchor" three
+            # hundred lines below. The page-attempt gate below keeps that lookup
+            # from being reached; this keeps the map's own type honest.
             if isinstance(native_payload, str):
                 page_texts[(page_ordinal, chair)] = native_payload
+            health = (
+                page_attempt_result.health
+                if captured is not None
+                else content_health(native_payload, completed=reading)
+            )
             presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
             adapter = (
                 witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
@@ -2708,6 +2839,15 @@ def publish_page_testimonia_and_attachments(
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
             page_response_refs: list[dict[str, str]] = []
+            page_edge_overshoots: list[dict[str, Any]] = []
+            # Two acts on one page legitimately share one chair's raw response
+            # (the comment below dedupes `page_response_refs` for exactly this
+            # reason), so re-deriving that response's overshoots once per act
+            # would re-add the identical (response_sha256, ordinal) finding more
+            # than once. `validate_partition_disagreement` refuses that as one
+            # rejected block counted twice, aborting the whole page publish over
+            # ordinary shared testimony rather than a malformed record.
+            seen_page_edge_overshoots: set[tuple[str, int]] = set()
             # Declared fixture observations simulate native geometry; for a
             # Chandra chair they are additive marginal evidence rather than the
             # whole derived layer.
@@ -2737,13 +2877,25 @@ def publish_page_testimonia_and_attachments(
                     if raw is None:
                         continue
                     captured_geometry = True
-                    # The page record must directly name each distinct source
-                    # blob in partition order; its geometry cannot depend on a
-                    # consumer reconstructing custody through act records.
+                    # Keep the reference to the bytes this page's geometry was
+                    # quantized from, in the record that carries the geometry.
+                    # Retained once per distinct blob and in the order the
+                    # partition was built, so the record answers "derived from
+                    # what?" without rejoining act-scoped compatibility records.
                     reference = source_attempt.raw_response_ref
                     if reference is not None and reference not in page_response_refs:
                         page_response_refs.append(reference)
-                    for item in adapter.observe(presented, raw):
+                    source_observed, overshoots = chandra_page_partition_entries(
+                        adapter.observe(presented, raw),
+                        page_size=_sealed_source_page(context, presented)[2],
+                        raw_response_ref=reference,
+                    )
+                    for overshoot in overshoots:
+                        overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
+                        if overshoot_key not in seen_page_edge_overshoots:
+                            seen_page_edge_overshoots.add(overshoot_key)
+                            page_edge_overshoots.append(overshoot)
+                    for item in source_observed:
                         observed.append({**item, "ordinal": len(observed)})
                 if needs_default_observation or not captured_geometry:
                     observed.extend(
@@ -2783,6 +2935,7 @@ def publish_page_testimonia_and_attachments(
                         "payload": {"presented": presented, "observed": observed},
                     },
                     page_proposals,
+                    page_edge_overshoots=page_edge_overshoots,
                 )
                 if presented
                 else None
@@ -2971,6 +3124,7 @@ def publish_page_testimonia_and_attachments(
                     # formulaic opening resolve into this line's text.
                     search_from = start + len(needle)
 
+    attachment_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for act in acts:
         entries: list[dict[str, Any]] = []
         for chair in context.witness_chairs:
@@ -2979,10 +3133,23 @@ def publish_page_testimonia_and_attachments(
             alignment: dict[str, Any] | None = None
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
-                # Align against the page attempt the attachment references;
-                # legacy joins still derive from the compatibility act attempt.
-                attempt = page_attempts.get((act["page_ordinal"], chair), act_attempt)
-                if attempt.outcome not in WITNESS_READING_OUTCOMES:
+                # Whose reading this attachment is a view OF. The entry names one
+                # page Testimonium, so the answer is that record's own attempt
+                # wherever a native capture produced one -- and it is resolved per
+                # contributing page, because a chair can be captured on the act's
+                # primary page and not on its continuation. Under a native capture
+                # the act-scoped rows are a separate compatibility channel, and
+                # reading them here published an act attachment describing a
+                # response the referenced page record never made: an alignment
+                # computed over a page the chair failed to deliver, or a failed
+                # page laundered into `attached: true`. The legacy join keeps the
+                # act attempt because its page outcome is derived from exactly
+                # those attempts.
+                captured_outcome = page_outcomes.get((act["page_ordinal"], chair))
+                page_outcome = (
+                    captured_outcome if captured_outcome is not None else act_attempt.outcome
+                )
+                if page_outcome not in WITNESS_READING_OUTCOMES:
                     # There is no reading to place. Running the page alignment
                     # here would manufacture an `aligned` status for text this
                     # chair never delivered on this act, and the Perlector
@@ -2993,9 +3160,15 @@ def publish_page_testimonia_and_attachments(
                     # reason instead.
                     alignment = {
                         "status": "unaligned",
-                        "reason": f"non-reading-page-attempt-{attempt.outcome}",
+                        # Native captures name the page attempt; legacy joins name
+                        # this act's attempt because another act can make the joined
+                        # page record read successfully.
+                        "reason": non_reading_alignment_reason(
+                            page_outcome,
+                            native_page_capture=captured_outcome is not None,
+                        ),
                     }
-                elif attempt.outcome == "genuinely-empty":
+                elif page_outcome == "genuinely-empty":
                     # There is no witness text to place, which is a different fact
                     # from text that was placed and searched for in vain: bounded
                     # alignment can never succeed against an empty string (an empty
@@ -3028,6 +3201,7 @@ def publish_page_testimonia_and_attachments(
                                 else "act-line-not-located"
                             )
                         ),
+                        "anchor_chair": anchor_chair if act_anchor is not None else None,
                         "anchor_span": (
                             {"start": act_anchor["start"], "end": act_anchor["start"]}
                             if act_anchor is not None
@@ -3118,6 +3292,7 @@ def publish_page_testimonia_and_attachments(
                                 alignment = {
                                     "status": "aligned",
                                     "anchor_basis": "act-anchor",
+                                    "anchor_chair": anchor_chair,
                                     "anchor_span": {
                                         key: act_anchor[key] for key in ("start", "end")
                                     },
@@ -3167,18 +3342,16 @@ def publish_page_testimonia_and_attachments(
                     # text.  The attachment itself is the page geometry this
                     # chair reported against the sealed proposal; no anchor
                     # selects a witness/proposal correspondence.
-                    contributing_attempt = page_attempts.get(
-                        (contributing_page, chair), act_attempt
+                    contributing_outcome = page_outcomes.get(
+                        (contributing_page, chair), act_attempt.outcome
                     )
-                    page_attached = (
-                        contributing_attempt.outcome in WITNESS_READING_OUTCOMES
-                        and any(
-                            reported_geometry_overlaps(
-                                page_observations[(contributing_page, chair)], bounds
-                            )
-                            for bounds in page_bounds
+                    page_attached = contributing_outcome in WITNESS_READING_OUTCOMES and any(
+                        reported_geometry_overlaps(
+                            page_observations[(contributing_page, chair)], bounds
                         )
+                        for bounds in page_bounds
                     )
+                    attachment_basis = "geometric-overlap" if page_attached else "unattached"
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {
@@ -3187,11 +3360,20 @@ def publish_page_testimonia_and_attachments(
                             "page_ordinal": contributing_page,
                             "testimonium_ref": reference,
                             "attached": page_attached,
-                            "attachment_basis": (
-                                "geometric-overlap" if page_attached else "unattached"
-                            ),
-                            # Consumers compare this with the current act stream
-                            # to detect a stale attachment after a reread.
+                            "comparable": page_attached
+                            and page_alignment["status"] == "aligned"
+                            and isinstance(page_texts.get((contributing_page, chair)), str),
+                            "attachment_basis": attachment_basis,
+                            # The ACT attempt's health, deliberately, even under a
+                            # native page capture: both later readers require this
+                            # field to equal the chair's current act-scoped
+                            # Testimonium health, as the staleness check that
+                            # catches a reread appended after this derived view
+                            # was written (`pipeline/4_perlector/run.py`, reopened
+                            # F-O1; `pipeline/5_recensor/run.py`). It is a currency
+                            # check on the per-(act, chair) stream, not a claim
+                            # about the page response -- which is what `attached`
+                            # and `alignment` beside it describe.
                             "content_health": act_attempt.health,
                             "alignment": page_alignment,
                             "span": (
@@ -3208,6 +3390,11 @@ def publish_page_testimonia_and_attachments(
                 entries.append(
                     act_scoped_attachment_entry(context, act, chair, act_attempt, ordinal)
                 )
+        attachment_rows.append((act, entries))
+
+    refuse_ambiguous_act_alignments([entries for _act, entries in attachment_rows])
+
+    for act, entries in attachment_rows:
         context.publish(
             kind="act-attachment",
             subject_id=act["act_id"],

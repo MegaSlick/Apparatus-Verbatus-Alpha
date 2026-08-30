@@ -176,6 +176,38 @@ instrument that never ran.
 
 ### `dossier` — the input contract, persisted as evidence (spec 08)
 
+#### Unit 14A native-testimony seam
+
+The dossier consumes retained **derived** testimony, never a raw vendor blob.
+`reported` is this chair's text for this act or null, and `reported_basis` is
+exactly `own-report`, `page-slice`, or `none`. A structured derived payload is
+visible as `reported: null` / `reported_basis: none`; it is not coerced and it
+cannot satisfy the witness floor because coverage requires both `attached` and
+`comparable`.
+
+`presented` is what this chair was shown for this act — `region`, `page`,
+`adapter-crop`, or `none` — and it is a fact about the presentation, not about
+where the text came from: a page witness under a native capture legitimately
+records `presented: region` for its act-scoped channel beside
+`reported_basis: page-slice`. `observed` is that chair's own boxes for this act,
+`{ordinal, bounds, bounds_source}` sorted by ordinal.
+
+`edge_deltas` are four signed offsets from one chair's native/derived observed
+box to a **sealed proposal** region: `{ordinal, region_id, offsets:{left, top,
+right, bottom}}`, one row per overlapping sealed region, ordered by
+`(ordinal, region_id)`. They are never chair-vs-chair, they are never ranked,
+and nothing thresholds them. `test_edge_delta_evidence.py` combines behavioral
+derivation checks with a narrow AST guard against direct ordering expressions
+that still name `edge_delta` or `offsets`; aliases remain a code-review concern.
+A `presented` box contributes none: only reported geometry counts. Page-scoped
+unclaimed/unobserved/ambiguous partition facts remain on the page Testimonium
+for the Recensor; the dossier carries only act-scoped correspondences.
+
+`unpresented` lists the act's region ids this chair was not shown. Its two empty
+spellings are different facts and stay distinguishable through `presented`:
+`[]` beside a real presentation means every bound region was presented; `[]`
+beside `presented: none` means no presentation speaks for any region at all.
+
 ```text
 act_id, act_key, witness_regime
 regions       = [{region_id, image_path, image_sha256, witness_covered}, ...]
@@ -184,7 +216,8 @@ regions       = [{region_id, image_path, image_sha256, witness_covered}, ...]
 page_renders  = [{source_page_id, source_page_ordinal, source, image_path,
                    image_sha256, transform}, ...]
 testimonia    = [{witness_label, model_name, resolved_provenance,
-                   training_domain, outcome, reported}, ...]
+                   training_domain, outcome, reported, reported_basis,
+                   presented, observed, edge_deltas, unpresented}, ...]
 dossier_digest
 ```
 

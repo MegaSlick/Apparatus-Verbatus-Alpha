@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.models import AbsentChair
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS
 from common.contracts.stages import ATTESTATORES, RECENSOR
@@ -43,6 +44,7 @@ def through_perlector(root: Path, run_id: str, scenario: str) -> None:
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -200,19 +202,47 @@ def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
-    with pytest.raises(FatalAccounting, match="act-scoped attachment"):
+    # Pinned per drift, not as an alternation. `validate_chair_coverage` raises
+    # "disagrees with the current Testimonium outcome" from its own superseded
+    # check, independently of `act_attachment_facts` -- so accepting that
+    # wording for the `stored-false` case let this test pass with the act-scoped
+    # re-derivation it is named for deleted. Each drift now names the refusal
+    # that must answer for it.
+    # One refusal per drift, rather than an alternation either could satisfy.
+    # Accepting both wordings for both drifts meant `stored-false` passed on the
+    # superseded check alone, so the act-scoped re-derivation this test is named
+    # for could have been deleted with the suite still green.
+    #
+    # Checked against the code rather than assumed: `stored-false` cannot reach
+    # that re-derivation at all. Clearing `attached` on a chair whose current
+    # Testimonium reads is itself an outcome disagreement, and the superseded
+    # check inside `act_attachment_facts` answers first -- calling that function
+    # directly raises the same superseded refusal. So `wrong-basis` is the drift
+    # that proves the label was re-derived, and `stored-false` proves the
+    # staleness gate in front of it. Each is asserted for what it actually does.
+    expected = {
+        "stored-false": "disagrees with the current Testimonium outcome",
+        "wrong-basis": "act-scoped attachment",
+    }[drift]
+    with pytest.raises(FatalAccounting, match=expected):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
 def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
     recensor = _load_recensor()
+    # `comparable` travels with `attached` in every fact the caller builds, and
+    # the merge now reads both. Supplied here rather than defaulted inside the
+    # helper: a missing predicate silently read as False is the substitution
+    # this stage refuses everywhere else.
     unattached = {
         "attached": False,
+        "comparable": False,
         "attachment_basis": "unattached",
         "anchor_basis": None,
     }
     attached = {
         "attached": True,
+        "comparable": True,
         "attachment_basis": "geometric-overlap",
         "anchor_basis": "act-anchor",
     }
@@ -256,7 +286,10 @@ def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monk
                 if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
-            entry.update(attached=False, attachment_basis="unattached", span=None)
+            # A coherent forgery: comparability implies attachment, so the
+            # forged row must drop both or the comparable seam names it first
+            # instead of the page-outcome check this test is aimed at.
+            entry.update(attached=False, attachment_basis="unattached", span=None, comparable=False)
         return record
 
     def failed_page(reference, *, stage, kind, subject_id):
@@ -293,6 +326,33 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
     monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)
     with pytest.raises(FatalAccounting, match="configured boundary"):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+def test_recensor_names_an_absent_chair_that_still_carries_a_native_capture(tmp_path, monkeypatch):
+    """The sibling above reads `witness_adapter` off whatever `resolve` returns.
+
+    `ChairRegistry.resolve` answers with an identity *or* an `AbsentChair`, and
+    an absence carries no adapter. A page record naming a chair the roster marks
+    absent therefore reached the attribute directly and stopped this stage with
+    an `AttributeError`: a traceback where the contract owes a refusal, naming
+    neither the act nor the chair the operator has to go and look at.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "absent-capture", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "absent-capture"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.registry.resolve
+
+    def absent_third_chair(chair):
+        if chair == "attestator_3":
+            return AbsentChair(role=chair, reason="withdrawn for this run")
+        return original(chair)
+
+    monkeypatch.setattr(context.registry, "resolve", absent_third_chair)
+    with pytest.raises(FatalAccounting, match="roster records that chair as absent") as caught:
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+    assert "attestator_3" in str(caught.value)
 
 
 def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(
@@ -343,8 +403,8 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
             text = payload["payload"]
             forged = ("X" if text[0] != "X" else "Y") + text[1:]
             payload["payload"] = forged
-            payload["reported"] = forged
             payload["native_capture"]["parse"]["text"] = forged
+            payload["content_health"]["characters"] = len(forged)
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", forged_projection)
@@ -961,9 +1021,24 @@ def _coverage_with_an_excluded_chair() -> dict:
 
     outcomes = {"attestator_1": "read", "attestator_2": "read", "attestator_3": "excluded"}
     attachments = {
-        "attestator_1": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_2": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_3": {"attached": False, "truncated": None, "health_unrecorded": True},
+        "attestator_1": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_2": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_3": {
+            "attached": False,
+            "comparable": False,
+            "truncated": None,
+            "health_unrecorded": True,
+        },
     }
     return witness_coverage(outcomes, 3, attachments=attachments)
 

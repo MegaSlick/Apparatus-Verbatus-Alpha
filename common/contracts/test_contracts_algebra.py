@@ -27,7 +27,7 @@ from common.contracts.outcomes import (
     terminal_category,
     witness_coverage,
 )
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
 from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
@@ -37,6 +37,7 @@ from common.recensor_receipt import _validate_coverage
 EXPECTED_VOCABULARY_SIZES = {
     "door": 4,
     "exemplar": 3,
+    "ink-map": 4,
     "designator": 6,
     "attestatores": 8,
     "perlector": 7,
@@ -49,6 +50,11 @@ EXPECTED_VOCABULARY_SIZES = {
 def test_algebra_is_total():
     """Both mappings total, and the two layers agree at every terminal edge."""
     check_algebra_is_total()
+
+
+def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
+    assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
+    assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
 
 
 def test_vocabulary_shape_is_pinned():
@@ -589,10 +595,17 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
     Written on this audit: the repair landed with no named test holding it, and
     the fixture cannot produce the divergence today.
     """
+    # Stated in full rather than through the boolean shorthand: what this test
+    # needs is two chairs that attached *and* compared, and the shorthand says
+    # nothing about comparability.
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "read"},
         3,
-        attachments={"s1": True, "s2": True, "s3": False},
+        attachments={
+            "s1": {"attached": True, "comparable": True},
+            "s2": {"attached": True, "comparable": True},
+            "s3": {"attached": False, "comparable": False},
+        },
     )
     assert coverage["under_witnessed"] is True
     assert coverage["by_class"]["completed"] == 3, "the wider class still counts all three"
@@ -658,7 +671,28 @@ def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
 
 
 def _fact(attached, basis):
-    return {"attached": attached, "attachment_basis": basis}
+    # `comparable` is required of every mapping fact since the retained-native
+    # seam: an attachment that cannot be compared is not evidence of coverage.
+    # A fact reached geometrically is comparable exactly when it attached.
+    return {"attached": attached, "comparable": attached, "attachment_basis": basis}
+
+
+def test_a_bare_boolean_attachment_claims_no_comparability_either():
+    """The shorthand states attachment, and attachment is not comparability.
+
+    Copying `attached` into `comparable` gave a caller that measured no
+    comparison one toward the witness floor for free -- the same unearned claim
+    the granularity basis refuses it just below. A caller holding comparability
+    evidence says so in the mapping form.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read"},
+        2,
+        attachments={"s1": True, "s2": True},
+    )
+
+    assert coverage["page_granularity_only"] == 2
+    assert coverage["under_witnessed"] is True
 
 
 def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
@@ -685,7 +719,10 @@ def test_one_fact_without_a_basis_withdraws_the_native_claim_for_the_whole_act()
         2,
         attachments={
             "s1": _fact(True, "geometric-overlap"),
-            "s2": {"attached": True},
+            # A well-formed fact that simply names no basis: the shape is
+            # complete, so what withdraws the native claim is the missing
+            # basis alone and not a malformed attachment.
+            "s2": {"attached": True, "comparable": True},
         },
     )
 
@@ -720,6 +757,33 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
             {**coverage, "granularity_basis": "invented-basis"},
             require_complete_granularity=True,
         )
+
+
+def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():
+    """Attachment and comparability must remain independent floor predicates.
+
+    Attachment records geometry; comparability records whether retained derived
+    testimony supplies this act's text.  A native box can establish the first
+    while the report is structured, but it must land in the existing unaligned
+    shortfall and in `page_granularity_only`, never satisfy the floor.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "read"},
+        3,
+        attachments={
+            "s1": {"attached": True, "comparable": True},
+            "s2": {"attached": True, "comparable": True},
+            "s3": {"attached": True, "comparable": False},
+        },
+    )
+    assert coverage["under_witnessed"] is True
+    assert coverage["page_granularity_only"] == 1
+    assert coverage["shortfalls"]["unaligned"] == 1
+    assert (
+        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
+        - coverage["page_granularity_only"]
+        == 2
+    )
 
 
 # --- The established text's own status: damage the category cannot express ------

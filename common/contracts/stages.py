@@ -1,4 +1,4 @@
-"""The stage names, in flow order, and the seven handoffs between them.
+"""The stage names, in flow order, and the eight handoffs between them.
 
 Named once here so the run tree, the outcome algebra, and the boundary tests
 cannot drift apart on what a stage is called. The directory names match
@@ -8,13 +8,14 @@ like the diagram in ARCHITECTURE.md.
 The door is a producer but not a numbered stage: it is the submit surface that
 decides what may enter at all, and it writes its refusals where the Exemplar can
 account for them. Giving it a name here is what lets "door -> Exemplar" be one of
-the seven tested handoffs rather than an unexamined edge.
+the eight tested handoffs rather than an unexamined edge.
 """
 
 from typing import Final
 
 DOOR: Final = "door"
 EXEMPLAR: Final = "exemplar"
+INK_MAP: Final = "ink-map"
 DESIGNATOR: Final = "designator"
 ATTESTATORES: Final = "attestatores"
 PERLECTOR: Final = "perlector"
@@ -27,6 +28,7 @@ ARMARIUM: Final = "armarium"
 STAGES: Final = (
     DOOR,
     EXEMPLAR,
+    INK_MAP,
     DESIGNATOR,
     ATTESTATORES,
     PERLECTOR,
@@ -41,6 +43,7 @@ STAGES: Final = (
 # evidence to go quiet.
 STAGE_DIRECTORIES: Final = {
     EXEMPLAR: "1_exemplar",
+    INK_MAP: "1_ink_map",
     DESIGNATOR: "2_designator",
     ATTESTATORES: "3_attestatores",
     PERLECTOR: "4_perlector",
@@ -49,12 +52,12 @@ STAGE_DIRECTORIES: Final = {
     ARMARIUM: "7_armarium",
 }
 
-# The seven boundaries spec 01 names, in order. Every one of these is driven by the
-# table-driven boundary test: the consumer must refuse a corrupted schema, a
-# malformed identity, a mismatched input digest, and a duplicate accounting entry.
+# Every boundary is driven by the table-based corruption tests: its consumer must
+# refuse a malformed schema or identity, a mismatched digest, and duplicate accounting.
 HANDOFFS: Final = (
     (DOOR, EXEMPLAR),
-    (EXEMPLAR, DESIGNATOR),
+    (EXEMPLAR, INK_MAP),
+    (INK_MAP, DESIGNATOR),
     (DESIGNATOR, ATTESTATORES),
     (ATTESTATORES, PERLECTOR),
     (PERLECTOR, RECENSOR),
@@ -68,7 +71,7 @@ ORCHESTRATOR: Final = "orchestrator"
 # Keys are consumers, including the orchestrator as Armarium's final consumer.
 #
 # Derived from HANDOFFS rather than restated. A seal is the witness to exactly the
-# boundary above it, so a hand-kept second copy of the same seven pairs could drift
+# boundary above it, so a hand-kept second copy of the same eight pairs could drift
 # from the list this module exists to be the single source of — and a seal bound to
 # a boundary nobody hands off across is a statement about nothing. The orchestrator
 # is the one entry HANDOFFS cannot carry: it consumes the Armarium's pass without

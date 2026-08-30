@@ -52,6 +52,7 @@ PIPELINE = ROOT / "pipeline"
 # "imports only common/ and its own files" rule.
 STAGE_DIRECTORIES = (
     "1_exemplar",
+    "1_ink_map",
     "2_designator",
     "3_attestatores",
     "4_perlector",

@@ -54,7 +54,20 @@ MAX_REGISTER_BYTES: Final = 64 * 1024 * 1024
 MAX_REGISTER_RECORDS: Final = 100_000
 MAX_RECORD_LIST_ITEMS: Final = 100_000
 _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
-    {"primary", "canonical", "best", "preferred", "superseded_by"}
+    {
+        "primary",
+        "canonical",
+        "best",
+        "preferred",
+        "superseded_by",
+        # These are witness-selection mechanisms under a different spelling.
+        # `agree` is deliberately absent: page partition evidence legitimately
+        # records `partition_disagreement`.
+        "consensus",
+        "majority",
+        "vote",
+        "quorum",
+    }
 )
 
 
@@ -378,8 +391,8 @@ def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:
 def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -> None:
     """The live register must still be the register this run sealed a snapshot of.
 
-    One implementation, called by every stage's context opener, so the Exemplar
-    and the six stages behind it cannot drift on what "the register moved" means.
+    One implementation for stage context openers, so every caller that accepts a
+    live register applies the same meaning of "the register moved".
 
     A run created against a real register refuses when no register is offered at
     all. The check is what makes the snapshot binding, and a check that an
@@ -560,6 +573,9 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
     must not express preference either (ARCHITECTURE, GOVERNANCE 3), and it was
     reaching this through the private name -- which also told an operator
     reading a witness record that the *corpus register* was at fault.
+
+    Iterative on purpose: the value is untrusted input, and a deeply nested
+    payload must exhaust the walk's own list, never the interpreter stack.
     """
     pending = [value]
     while pending:

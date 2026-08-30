@@ -412,9 +412,7 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # make `copied` smaller than the crashed set with the backup behaving
     # correctly -- and the joined assertion would then fail without saying which
     # half broke, leaving a reader unable to tell a lost file from de-duplication.
-    published = json.loads(
-        (mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json").read_text()
-    )
+    published = _snapshot_manifest(mac, report.snapshot_sha256)
     # A tree killed mid-write can hold a `.<target>.tmp-*` publication temporary,
     # which the backup excludes by design and records by name so the exclusion
     # cannot be silent. Comparing against the raw crashed set therefore fails

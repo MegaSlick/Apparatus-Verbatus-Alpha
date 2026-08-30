@@ -148,6 +148,27 @@ check.
   live run. All paid actions for one provider account must use the same lease root; the
   first live checklist records that operational binding because the provider-neutral seam
   has no stable account identifier from which to derive it.
+- `staged.py` is the per-stage layer above that gate: one collection stage, one
+  independently authorized boot, then pod-down by default. It creates and closes; it
+  does not adopt, and recovering a pod a crashed stage left running stays with the
+  lease-backed controllers. Durable records land on the run volume, and between them no
+  boot can happen without money evidence. A **claim**, keyed by the grant reference and
+  written before the provider is touched, is what makes one grant unable to buy a second
+  pod — durably, so a restart or a second lifecycle over the same volume is refused
+  rather than allowed. It also means a create that refuses spends the *reference*: a
+  retry records a fresh one, which is bookkeeping and not a second permission. An
+  explicitly unknown **cost intent** is fsynced before the provider call; if any later
+  write fails or the create response is lost, that durable liability can never read as
+  zero. A **boot record** binds the pod id to its collection, stage and grant the moment
+  the machine exists, which is the one thing the lease cannot say. A failure to land it
+  triggers immediate pod-down rather than returning with avoidable spend. And one
+  **close record** per boot: a cost record carrying the close report, or a
+  separately-schema'd close failure
+  when the close raised, returned nothing usable, or could not be attempted — the case
+  where a pod is most likely still billing, and so the last one allowed to vanish behind
+  an exception. `render_boot_schedule` prints the whole collection's expected boots
+  before any of them is asked for, chairs named per stage from the real roster and
+  reconciled against it by test, so a grant is never asked for one boot at a time.
 - `transfer.py` carries Spec 03's sealed submission-manifest rows through a generic
   storage seam. It streams and verifies SHA-256/size before and after upload, persists
   verified rows, and refuses conflicting target bytes rather than overwriting them.

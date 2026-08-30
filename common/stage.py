@@ -745,7 +745,7 @@ _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
 # Every stage that decodes or transforms image bytes in its own pass must seal
 # ``produced_pixels: true``; DAI makes Attestatores such a stage.
 _PIXEL_STAGES: Final = frozenset(
-    {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
+    {"door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor"}
 )
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
@@ -858,6 +858,10 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
+        # `grayscale_rows` owns its Pillow fallback inside the project-PNG route.
+        # Naming that fallback as a second route would manufacture decoder drift
+        # at both boundaries around the Ink Map.
+        "ink-map": {"project-png"},
         "designator": {"project-png"},
         # Decode paths name the project-owned deterministic codec route; the
         # executable presentation transform separately names its resampler.
@@ -1424,6 +1428,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         help="append-only corpus register to snapshot at ingress and verify at later stages",
     )
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument(
+        "--serving-recipes-config",
+        default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
+        help=(
+            "complete serving-profile catalogue sealed into this run; the default is the "
+            "fixture-only catalogue"
+        ),
+    )
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument(
@@ -2736,6 +2748,7 @@ def open_context(
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        serving_recipes_config_path=args.serving_recipes_config,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
