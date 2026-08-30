@@ -164,7 +164,7 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     bounds = dict(source_transform["bounds"])
     crop = crop_png(page_bytes, bounds)
     source_width, source_height = bounds["w"], bounds["h"]
-    target_width, target_height = feeding._dai_dimensions(source_width, source_height)
+    target_width, target_height = feeding.dai_dimensions(source_width, source_height)
     model_transform: dict[str, Any] = {
         "operation": "crop",
         "source_page_id": page_id,
@@ -239,10 +239,21 @@ def validate_adapter_presentation(
                 f"{resolved} presentation differs from the exact image it was given"
             )
         return
+    if resolved != "dai.v1":
+        # Everything below is DAI's crop and resize contract. Falling through to
+        # it means a fourth adapter's correct presentation is measured against
+        # DAI's ceilings and refused under DAI's name, sending an operator to
+        # the wrong adapter. The module docstring already says a new adapter
+        # moves every dispatch site together; this makes the dispatch total so
+        # the omission is named instead of mis-attributed.
+        raise SchemaRefusal(
+            f"adapter {resolved!r} has no presentation contract at this seam; add its own rule "
+            "here beside its runnable binding"
+        )
     if source["kind"] != "region":
         raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
     bounds = source["transform"]["bounds"]
-    target_width, target_height = feeding._dai_dimensions(bounds["w"], bounds["h"])
+    target_width, target_height = feeding.dai_dimensions(bounds["w"], bounds["h"])
     transform: dict[str, Any] = {
         "operation": "crop",
         "source_page_id": source["source_page_id"],

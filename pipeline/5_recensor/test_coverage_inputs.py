@@ -93,7 +93,7 @@ def _no_expected_acts(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
 
-def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
+def _page_testimonium(*, outcome, retained=..., attempt_ordinal=1, artifact_id=None):
     subject_id = "page-1"
     chair = "attestator_1"
     # `page_role` is part of the closed page-Testimonium shape the producer
@@ -105,8 +105,11 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
         "chair": chair,
         "attempt_ordinal": attempt_ordinal,
     }
-    if reported is not ...:
-        payload["payload"] = reported
+    # `retained`, not `reported`: the page Testimonium's text field is
+    # `payload`, and a double whose parameter still said `reported` invited
+    # the next case here to build a record no producer can emit.
+    if retained is not ...:
+        payload["payload"] = retained
     return {
         "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
         "stage": RUN.ATTESTATORES,
@@ -232,7 +235,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None):
 
 
 def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
-    page = _page_testimonium(outcome="read", reported="page text")
+    page = _page_testimonium(outcome="read", retained="page text")
     conservation = _conservation("conservation-1")
     tree = _ArtifactTree([page, conservation])
 
@@ -300,7 +303,7 @@ def test_an_orphaned_page_testimonium_cannot_become_an_unowned_finding():
 
 
 def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding(monkeypatch):
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -346,6 +349,117 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
     ]
 
 
+@pytest.mark.parametrize(
+    "bounds",
+    (
+        pytest.param({"x": 0, "y": 0, "h": 10}, id="missing-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 10, "z": 1}, id="extra-side"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": True}, id="boolean-height"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": "10"}, id="string-height"),
+        pytest.param({"x": -1, "y": 0, "w": 10, "h": 10}, id="negative-x"),
+        pytest.param({"x": 0, "y": -1, "w": 10, "h": 10}, id="negative-y"),
+        pytest.param({"x": 0, "y": 0, "w": 0, "h": 10}, id="zero-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": 0}, id="zero-height"),
+        pytest.param({"x": 0, "y": 0, "w": -10, "h": 10}, id="negative-width"),
+        pytest.param({"x": 0, "y": 0, "w": 10, "h": -10}, id="negative-height"),
+    ),
+)
+def test_a_proposal_rectangle_short_of_its_four_numbers_is_named_not_indexed(monkeypatch, bounds):
+    """Two failures, one refusal. A rectangle missing a side travels on as a
+    proposal box into `unrouted_observations`, which indexes all four by name,
+    and leaves the stage that decides recovery as a bare `KeyError` naming
+    neither page nor act. A rectangle that is merely degenerate -- off-page
+    origin, or zero/negative extent -- is worse: it indexes cleanly and overlaps
+    nothing, so ink a real proposal covers is published as an unrouted
+    observation and drives bounded recovery on evidence the run manufactured.
+    Every case here is a rectangle `_proposal_geometry_by_page` already refuses
+    of the same sealed proposals."""
+    page = _page_testimonium(outcome="read", retained="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": bounds,
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    with pytest.raises(FatalAccounting, match="has no page-pixel bounds"):
+        RUN.testimony_content_findings(context)
+
+
+def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
+    """A failed page has no text to diff, and must not look like a covered one.
+
+    The unclaimed-observation route creates the page finding, seeded
+    `shortfall: False`. On a page whose witness reported no text, nothing then
+    measures anything -- and the seed would be published as a clean text
+    coverage result, byte-identical to a page whose witnesses were read and
+    covered every character (GOVERNANCE 10). The geometry stays; the text fact
+    goes back to unmeasured.
+    """
+    page = _page_testimonium(outcome="failed")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"] == {}
+    assert finding["shortfall"] is None, "no chair's text was measured on this page"
+    assert "was not measured" in finding["reason"]
+    assert len(finding["unclaimed_observations"]) == 1, "the geometry finding still stands"
+
+
 def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch):
     """An internally consistent stale snapshot is still false evidence."""
     observed = [
@@ -355,7 +469,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
             "bounds_source": "native",
         }
     ]
-    page = _page_testimonium(outcome="read", reported="ink")
+    page = _page_testimonium(outcome="read", retained="ink")
     page["payload"].update(
         {
             "presented": {"source_page_id": "page-1"},
@@ -399,7 +513,7 @@ def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch
 def test_large_untrusted_page_text_does_not_allocate_a_character_bitmap(monkeypatch):
     """Coverage memory stays bounded by attachment spans, not response length."""
     text = "x" * 1_000_000
-    page = _page_testimonium(outcome="read", reported=text)
+    page = _page_testimonium(outcome="read", retained=text)
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
@@ -503,7 +617,12 @@ def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
 
 
 def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
-    """An earlier-page continuation cannot erase the act's primary alignment."""
+    """An earlier-page continuation cannot erase the act's primary alignment.
+
+    This order alone does not discriminate — last-row-wins would report the same
+    two values — so the reverse order below is the half that can actually fail.
+    Both are kept because the merge has to hold in either direction.
+    """
     rows = [
         _page_fact(ordinal=1, attached=False),
         _page_fact(ordinal=2, attached=True, anchor_basis="act-anchor"),
@@ -517,6 +636,55 @@ def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch):
+    """A later continuation row may not overwrite the primary page's alignment.
+
+    The discriminating order: replace the `attached or attached` merge with
+    last-row-wins and this reports False and None instead.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor"),
+        _page_fact(ordinal=2, attached=False),
+    ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: False})
+
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+@pytest.mark.parametrize(
+    "bases",
+    (("act-line-not-located", "act-anchor"), ("act-anchor", "act-line-not-located")),
+    ids=("failure-first", "failure-second"),
+)
+def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases, monkeypatch):
+    """`act-line-not-located` survives an aligned sibling row, in either order.
+
+    This is the clause the merge's second condition exists for, and it decides
+    whether blank_corroboration can block a confirmed-blank. Drop it and an act
+    whose page geometry located no line for it seals as a proved blank — a real
+    baptism or burial leaving the export as "no readable text", with nothing
+    downstream able to tell.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis=bases[0]),
+        _page_fact(ordinal=2, attached=True, anchor_basis=bases[1]),
+    ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: True})
+
+    facts = RUN.act_attachment_facts(
+        context, "act-1", {"attestator_1": {"outcome": "read", "read_evidence": {}}}
+    )
+
+    assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
 
 
 def test_page_attachment_facts_refuse_a_duplicate_page_pair(monkeypatch):
@@ -645,7 +813,7 @@ def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_ro
 
 def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch):
     """V2a: a genuine content shortfall is measured and reaches the hold route."""
-    page = _page_testimonium(outcome="read", reported="alphaXYZ \tQ")
+    page = _page_testimonium(outcome="read", retained="alphaXYZ \tQ")
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=5)
     monkeypatch.setattr(
@@ -674,8 +842,8 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
-    historical = _page_testimonium(outcome="read", reported="obsolete", attempt_ordinal=1)
-    current = _page_testimonium(outcome="read", reported="new", attempt_ordinal=2)
+    historical = _page_testimonium(outcome="read", retained="obsolete", attempt_ordinal=1)
+    current = _page_testimonium(outcome="read", retained="new", attempt_ordinal=2)
     context = _context(historical, current)
     context.tree.records["attachment-1"] = _attachment(
         context, end=3, testimonium_id="page-witness-2"
@@ -700,9 +868,9 @@ def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkey
 
 
 def test_ambiguous_current_page_testimonia_refuse():
-    first = _page_testimonium(outcome="read", reported="first", artifact_id="page-witness-a")
+    first = _page_testimonium(outcome="read", retained="first", artifact_id="page-witness-a")
     duplicate = _page_testimonium(
-        outcome="read", reported="duplicate", artifact_id="page-witness-b"
+        outcome="read", retained="duplicate", artifact_id="page-witness-b"
     )
 
     with pytest.raises(FatalAccounting, match="duplicate attempt ordinal 1"):
@@ -926,7 +1094,7 @@ def test_a_non_textual_reported_page_body_is_named_as_its_own_fault(monkeypatch)
 
 def test_a_structured_native_page_payload_is_retained_without_text_coverage(monkeypatch):
     """A declared non-comparable native payload is not forged into text."""
-    context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
+    context = _context(_page_testimonium(outcome="read", retained={"lines": []}))
     context.tree.records["attachment-1"] = _attachment(context, end=0)
     monkeypatch.setattr(
         RUN,

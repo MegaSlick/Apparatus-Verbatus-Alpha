@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
-from operations.operator import cli, ingest, ingest_worker
+from operations.operator import cli, custody, ingest, ingest_worker
 from operations.operator.ingest_protocol import EXPECTED_DIGEST_FIELDS
 from operations.submit import gate, inventory
 from operations.triage import instrument
@@ -566,12 +566,25 @@ def test_each_ingest_relevant_verb_has_a_double_click_console_surface(
 
 
 def test_ingest_presenter_has_no_image_or_producer_writer_and_uses_the_custody_seam():
+    """The presenter names neither producer nor submit, and launches through custody.
+
+    The two negatives read the source text on purpose. A module-namespace or
+    resolved-import check sees only what the module imported at import time, and
+    would pass a function-local `import operations.triage` inside a branch no
+    test happens to take — which is exactly how the producer would come back
+    into the presenter. Reading the text catches it wherever it is written.
+
+    The writable targets are *not* asserted here as text. They are pinned as
+    behaviour by the custody-launch coverage in
+    `test_the_double_click_route_reaches_the_one_confined_ingest_implementation`,
+    which records every launch and asserts `[None, output.resolve()]` — the same
+    property, checked by observing it rather than by matching a keyword
+    argument's spelling.
+    """
     source = inspect.getsource(ingest)
     assert "operations.triage" not in source
     assert "operations.submit" not in source
-    assert "run_confined" in source
-    assert "writable=None" in source
-    assert "writable=output_path.resolve()" in source
+    assert ingest.run_confined is custody.run_confined
 
 
 def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(

@@ -12,9 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from common.runtree import store
+from common.runtree.store import RunTree
+
 from . import backup as backup_module
 from . import backup_worker, cli
 from .backup import SCHEMA, BackupRefusal, sync_run_tree
+from .conftest import requires_landlock
 from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError
 
@@ -62,6 +66,28 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
 
 
+def test_two_inventory_passes_from_one_descriptor_see_the_same_tree(tmp_path: Path) -> None:
+    """`sync_run_tree` scans the anchored root twice and compares the two views.
+
+    The passes therefore have to be independent of each other's directory
+    position. `os.dup` would not be: it shares one open file description, and
+    on Linux `getdents64` advances that shared offset, so the second pass
+    would start at end of directory, find nothing, and refuse a backup whose
+    bytes had just been copied correctly. macOS does not advance the shared
+    offset, which is exactly why this asymmetry has to be asserted rather than
+    left to whichever platform the suite happens to run on.
+    """
+    volume, run_id = _run_tree(tmp_path)
+    managed = backup_module.RunTree(volume, run_id).inventory_scope()
+
+    with backup_module._open_directory(volume / run_id, what="source run tree") as descriptor:
+        first = backup_module._inventory_descriptor(descriptor, managed)
+        second = backup_module._inventory_descriptor(descriptor, managed)
+
+    assert first[0], "the first inventory pass found no files to compare"
+    assert first == second
+
+
 def test_backup_never_overwrites_an_object_with_the_wrong_digest(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -83,20 +109,34 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     original = backup_module._copy_verified
-    changed = False
 
-    def copy_then_change(source_descriptor, relative, objects_descriptor, target, digest):
-        nonlocal changed
-        result = original(source_descriptor, relative, objects_descriptor, target, digest)
-        if not changed:
-            changed = True
+    # Bound to the member being copied, not to "the first copy, whichever that
+    # was". `_inventory_descriptor` records members in `os.scandir` order and
+    # that order is not guaranteed: on a walk that listed `run.json` first, the
+    # rewrite landed after its copy, the per-file digest check never saw it, and
+    # the whole-tree comparison answered instead -- a green-or-red result
+    # decided by the filesystem rather than by the behaviour under test.
+    def change_before_copying_run_json(
+        source_descriptor, relative, objects_descriptor, target, digest
+    ):
+        if relative.endswith("run.json"):
             (volume / run_id / "run.json").write_bytes(b"changed after copy\n")
-        return result
+        return original(source_descriptor, relative, objects_descriptor, target, digest)
 
-    monkeypatch.setattr("operations.operator.backup._copy_verified", copy_then_change)
-    with pytest.raises(BackupRefusal, match="changed while"):
+    monkeypatch.setattr("operations.operator.backup._copy_verified", change_before_copying_run_json)
+    # Splitting the two refusals showed which check this case actually
+    # reaches, and it is not the tree-level before/after comparison: the
+    # rewrite lands before `run.json` is copied, so the per-file read hashes
+    # to bytes the inventory does not name while the metadata it captured
+    # around that read holds still. The loose "changed while" pattern matched
+    # either mechanism and so named neither.
+    with pytest.raises(BackupRefusal, match="hashed to different bytes than the inventory"):
         sync_run_tree(volume, run_id, mac)
-    assert not list((mac / "snapshots").rglob("*.json")) if (mac / "snapshots").exists() else True
+    # `Path.glob` on a missing directory yields nothing, so no existence guard
+    # is needed. `assert X if cond else True` is one conditional expression and
+    # passes outright whenever the directory is absent, which a later reader
+    # can easily take for two assertions.
+    assert not list((mac / "snapshots").rglob("*.json"))
 
 
 def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path) -> None:
@@ -183,7 +223,7 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
     }
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="the chamber proves the Landlock worker")
+@requires_landlock("the chamber proves the Landlock worker")
 def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -192,6 +232,32 @@ def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_pat
 
     assert list((mac / "objects" / "sha256").iterdir())
     assert list((mac / "snapshots" / "sha256").iterdir())
+
+
+def test_backup_worker_refuses_a_deeply_nested_request_in_one_line() -> None:
+    """A nesting bomb must refuse like everything else, not print a traceback.
+
+    `json.loads` raises `RecursionError`, not `ValueError`, and the byte bound
+    above still admits tens of thousands of nesting levels. Uncaught, the
+    worker dies with a stack trace and that becomes the detail the operator is
+    told to keep. `advance_worker` already lists `RecursionError` for this.
+    """
+    depth = 20_000
+    request = "[" * depth + "]" * depth
+    assert len(request) <= backup_worker.MAX_REQUEST_BYTES
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "operations.operator.backup_worker"],
+        cwd=ROOT,
+        input=request,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "Traceback" not in completed.stderr
+    assert len(completed.stderr.strip().splitlines()) == 1
 
 
 def test_backup_worker_bounds_its_request_before_json_deserialization() -> None:
@@ -262,23 +328,49 @@ def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> 
     assert "run id is invalid" in failure.value.render()
 
 
+# Each case names the refusal it must produce. Asserting only the shared
+# phrase "backup worker report" let one surviving check answer for all five:
+# delete the integer test, or the ceiling test, and the suite stayed green
+# while the CLI accepted a report it cannot prove.
 @pytest.mark.parametrize(
-    "report",
+    ("report", "expected_detail"),
     (
-        {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
-        {
-            "schema": SCHEMA,
-            "snapshot_sha256": "a" * 64,
-            "copied": backup_module.MAX_BACKUP_FILES + 1,
-            "reused": 0,
-        },
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+        pytest.param(
+            {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "declares schema",
+            id="schema-is-not-this-backup-format",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
+            "'copied' is not an integer",
+            id="count-is-a-string",
+        ),
+        pytest.param(
+            {
+                "schema": SCHEMA,
+                "snapshot_sha256": "a" * 64,
+                "copied": backup_module.MAX_BACKUP_FILES + 1,
+                "reused": 0,
+            },
+            "'copied' is outside",
+            id="count-is-past-the-file-ceiling",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
+            "successful snapshot of no files",
+            id="claims-success-over-nothing",
+        ),
+        pytest.param(
+            # Well-formed on its face, and still refused: no snapshot with that
+            # digest was published, so the read-back has nothing to verify.
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "snapshot that does not exist",
+            id="names-a-snapshot-that-was-never-written",
+        ),
     ),
 )
 def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
-    tmp_path: Path, monkeypatch, report: dict[str, object]
+    tmp_path: Path, monkeypatch, report: dict[str, object], expected_detail: str
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
 
@@ -297,7 +389,7 @@ def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
         cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
 
     assert failure.value.code is ErrorCode.BACKUP_FAILED
-    assert "backup worker report" in failure.value.render()
+    assert expected_detail in failure.value.render()
 
 
 def test_backup_cli_classifies_a_worker_report_json_conversion_failure(
@@ -485,7 +577,7 @@ def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Pat
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     source, destination = backup_module.resolve_backup_paths(volume, run_id, mac)
-    backup_module._prepare_backup_layout(source, destination)
+    backup_module.prepare_backup_layout(source, destination)
     expected = backup_module.destination_identities(destination)
     object_store = mac / "objects" / "sha256"
     object_store.rename(mac / "objects" / "sha256-before-swap")
@@ -513,6 +605,113 @@ def test_backup_refuses_an_oversized_snapshot_before_publication(
         sync_run_tree(volume, run_id, mac)
 
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_a_failed_cleanup_is_added_to_the_refusal_and_never_put_in_its_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The refusal names the fault the operator must act on, so it must survive.
+
+    The temporary is removed as the block unwinds, and an `EACCES` or `EIO`
+    there -- ordinary on a sync folder or a share -- used to leave the block
+    carrying an errno about a `.backup-` file in place of "source ... hashed to
+    different bytes than the inventory recorded". The operator would go looking
+    for a temp-file permission problem instead of a storage fault returning
+    wrong content for a register page.
+    """
+
+    volume, run_id = _run_tree(tmp_path)
+    original = backup_module._copy_verified
+    real_unlink = backup_module.os.unlink
+    copying_run_json = False
+
+    def _change_before_copying_run_json(
+        source_descriptor, relative, objects_descriptor, target, digest
+    ):
+        nonlocal copying_run_json
+        if not relative.endswith("run.json"):
+            return original(source_descriptor, relative, objects_descriptor, target, digest)
+        (volume / run_id / "run.json").write_bytes(b"changed before the copy\n")
+        copying_run_json = True
+        try:
+            return original(source_descriptor, relative, objects_descriptor, target, digest)
+        finally:
+            copying_run_json = False
+
+    # Bound to the copy whose refusal is under test, so the walk order cannot
+    # decide which of the two faults this test actually measures.
+    def _refuse_to_unlink(path, *args, **kwargs):
+        if copying_run_json and isinstance(path, str) and path.startswith(".backup-"):
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(backup_module, "_copy_verified", _change_before_copying_run_json)
+    monkeypatch.setattr(backup_module.os, "unlink", _refuse_to_unlink)
+
+    with pytest.raises(BackupRefusal) as refusal:
+        sync_run_tree(volume, run_id, tmp_path / "mac")
+
+    assert "hashed to different bytes than the inventory" in str(refusal.value)
+    assert "could not be removed afterwards" in str(refusal.value)
+
+
+def test_a_cleanup_failure_with_nothing_else_wrong_is_itself_the_refusal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A temporary left in a content-addressed store is not a finished backup."""
+
+    volume, run_id = _run_tree(tmp_path)
+    real_unlink = backup_module.os.unlink
+
+    def _refuse_to_unlink(path, *args, **kwargs):
+        if isinstance(path, str) and path.startswith(".backup-"):
+            raise OSError(errno.EIO, "Input/output error")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(backup_module.os, "unlink", _refuse_to_unlink)
+
+    with pytest.raises(BackupRefusal, match="could not be removed afterwards"):
+        sync_run_tree(volume, run_id, tmp_path / "mac")
+
+
+def test_each_snapshot_inventory_fault_is_named_as_the_fault_it_is(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Three faults, three sentences.
+
+    One message for a missing list, an empty list and an over-long list told an
+    operator who backed up a very large run that the snapshot had no inventory
+    at all, which is not what happened, and left each surviving clause silently
+    answering for the others.
+    """
+
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    report = sync_run_tree(volume, run_id, mac)
+    snapshot = mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json"
+    record = json.loads(snapshot.read_text())
+
+    def _refusal_for(files: object) -> str:
+        rewritten = {**record, "files": files}
+        data = json.dumps(rewritten).encode("utf-8")
+        rewritten_digest = hashlib.sha256(data).hexdigest()
+        (mac / "snapshots" / "sha256" / f"{rewritten_digest}.json").write_bytes(data)
+        with pytest.raises(BackupRefusal) as refusal:
+            backup_module.verify_backup_snapshot(
+                mac,
+                run_id,
+                backup_module.BackupReport(
+                    snapshot_sha256=rewritten_digest,
+                    copied=report.copied,
+                    reused=report.reused,
+                ),
+            )
+        return str(refusal.value)
+
+    assert "is not a list" in _refusal_for("not a list at all")
+    assert "has no file inventory" in _refusal_for([])
+    monkeypatch.setattr(backup_module, "MAX_BACKUP_FILES", 1)
+    assert "past the 1 this console will read back" in _refusal_for(record["files"] * 2)
 
 
 def test_backup_bounds_source_entry_count_before_publication(tmp_path: Path, monkeypatch) -> None:
@@ -656,7 +855,7 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
         return result
 
     monkeypatch.setattr(backup_module, "_copy_verified", copy_then_append)
-    with pytest.raises(BackupRefusal, match="changed while it was being copied"):
+    with pytest.raises(BackupRefusal, match="the run tree changed while it was being copied"):
         sync_run_tree(volume, run_id, mac)
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 
@@ -674,3 +873,35 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
         stored = mac / "objects" / "sha256" / row["sha256"]
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
     assert finished.reused == 2 and finished.copied == 1
+
+
+def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
+    tmp_path: Path,
+) -> None:
+    """The store's temporary spelling and this module's predicate are one rule.
+
+    `_is_publication_temporary` decides what a backup silently leaves behind, and
+    `common.runtree.store` decides what an interrupted publication leaves on disk.
+    Every test that had exercised the exclusion, here and in the orchestrator's
+    volume tests, wrote `.tmp-` by hand — so if the store's prefix ever moved, the
+    predicate would stop recognising real residue and the backup would publish an
+    in-flight temporary as evidence, with the excluded list reporting nothing. The
+    name is taken from the store rather than typed here: this fails on the drift
+    instead of agreeing with whichever half changed.
+    """
+    published = tmp_path / "volume" / "r" / "1_exemplar" / "artifacts" / "page" / "art_x.json"
+    published.parent.mkdir(parents=True)
+    temporary = store._write_temporary(published, b"an interrupted publication")
+    try:
+        relative = temporary.relative_to(tmp_path / "volume" / "r").as_posix()
+        scope = RunTree(tmp_path / "volume", "r").inventory_scope()
+        assert backup_module._is_publication_temporary(relative, scope), (
+            f"the store publishes through {temporary.name!r}, which the backup's "
+            "exclusion does not recognise as a publication temporary"
+        )
+        # The published target itself is never residue, whatever it is named.
+        assert not backup_module._is_publication_temporary(
+            published.relative_to(tmp_path / "volume" / "r").as_posix(), scope
+        )
+    finally:
+        temporary.unlink()

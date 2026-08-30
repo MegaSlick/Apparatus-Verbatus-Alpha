@@ -91,7 +91,12 @@ from .records import (
     utc_stamp,
 )
 from .volume_cost import volume_cost_lines
-from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
+from .volume_s3 import (
+    TRANSFER_CREDENTIAL_ENV,
+    S3VolumeTarget,
+    VolumeSpec,
+    VolumeTransferRefusal,
+)
 
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
@@ -103,7 +108,10 @@ MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 # the comparison fails silently, rehearsing a fixture door under a real
 # submission's name.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-_TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+# Read from the transfer that owns these names rather than spelled again here: a
+# second literal copy would keep this stripper green while a newly added upload
+# credential stayed in a stage's environment.
+_TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
@@ -994,6 +1002,16 @@ class OperatorSurface:
                         "the bytes its name claims"
                     ) from None
             staged.unlink()
+        except OperatorError as error:
+            # `_write_base_armarium_bundle` refuses an incomplete or unsafe run
+            # tree with an already-shaped OperatorError. Without this arm it
+            # travelled past the handler below: no receipt was written and the
+            # staged file was left behind, so `verbatus status` after a failed
+            # export showed no export at all and the only account of it was one
+            # terminal line.
+            staged.unlink(missing_ok=True)
+            self._record_failure("export", "local-copy-failed", str(error.detail or error))
+            raise
         except (OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
             self._record_failure("export", "local-copy-failed", str(error))
@@ -1803,12 +1821,26 @@ class OperatorSurface:
                 _write_bundle_descriptor(
                     bundle, run_descriptor, f"{run_id}/run.json", archive_names
                 )
-                _write_bundle_directory(
+                members = _write_bundle_directory(
                     bundle,
                     armarium_descriptor,
                     f"{run_id}/7_armarium",
                     "7_armarium",
                     archive_names,
+                )
+            if not members:
+                # The same defect through one more door. `7_armarium` was proved
+                # to be a directory, never to hold anything: an empty one wrote
+                # zero members, this function returned normally, and `export`
+                # recorded `"state": "complete"` for a bundle carrying `run.json`
+                # and not one established reading. For a parish run that is every
+                # act in it missing, with a receipt vouching for the absence.
+                raise OperatorError(
+                    ErrorCode.EXPORT_FAILED,
+                    detail=(
+                        "the Armarium evidence bundle cannot be written as complete: "
+                        "7_armarium holds no evidence files"
+                    ),
                 )
             try:
                 os.link(temporary, destination, follow_symlinks=False)
@@ -2010,13 +2042,24 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             lines.append("  Saved upload statement: zero GPU-hours were used.")
         # Local paths are machine details; the digest is the durable manifest identity.
         recorded_sha256 = payload.get("submission_manifest_sha256")
-        if not (
-            isinstance(recorded_sha256, str)
-            and len(recorded_sha256) == 64
-            and all(character in "0123456789abcdef" for character in recorded_sha256)
-        ):
-            raise RecordError("saved upload record does not bind its submission record digest")
-        lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
+        # Only a receipt that claims bytes moved must bind a digest. An upload
+        # refused before any transfer began -- `submission-refused`,
+        # `volume-unavailable` -- never had a sealed record to bind, and demanding
+        # one turned that honest receipt into "UNREADABLE; it was not treated as
+        # success", with `status` then exiting 2. `status` is read-only, is
+        # documented as always safe, and is the verb every failure message sends
+        # the operator to, so it is the one that must keep working after a
+        # failure; breaking it there also teaches them to ignore
+        # STATUS_UNREADABLE. `zero_gpu_hours` above is guarded with `is True` for
+        # exactly the same reason.
+        if payload.get("state") in {"complete", "partial-transfer"}:
+            if not (
+                isinstance(recorded_sha256, str)
+                and len(recorded_sha256) == 64
+                and all(character in "0123456789abcdef" for character in recorded_sha256)
+            ):
+                raise RecordError("saved upload record does not bind its submission record digest")
+            lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
     elif action == "run":
         state = payload.get("state")
         if isinstance(state, str):
@@ -2524,9 +2567,14 @@ def _write_bundle_directory(
     archive_prefix: str,
     source_prefix: str,
     archive_names: dict[str, str],
-) -> None:
-    """Walk one anchored directory using only descriptor-relative opens."""
+) -> int:
+    """Walk one anchored directory using only descriptor-relative opens.
 
+    Returns how many regular-file members this subtree contributed, so a caller
+    can refuse a required member that turned out to hold nothing.
+    """
+
+    written = 0
     before = os.fstat(directory_descriptor)
     try:
         names = sorted(os.listdir(directory_descriptor))
@@ -2547,7 +2595,7 @@ def _write_bundle_directory(
         if stat.S_ISDIR(named.st_mode):
             child = _open_expected_member(directory_descriptor, name, directory=True, label=label)
             try:
-                _write_bundle_directory(
+                written += _write_bundle_directory(
                     bundle,
                     child,
                     f"{archive_prefix}/{name}",
@@ -2560,6 +2608,7 @@ def _write_bundle_directory(
             child = _open_expected_member(directory_descriptor, name, directory=False, label=label)
             try:
                 _write_bundle_descriptor(bundle, child, f"{archive_prefix}/{name}", archive_names)
+                written += 1
             finally:
                 os.close(child)
         else:
@@ -2588,6 +2637,7 @@ def _write_bundle_directory(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence directory changed while copied: {source_prefix}",
         )
+    return written
 
 
 def _repository_commit(workspace: Path) -> str:

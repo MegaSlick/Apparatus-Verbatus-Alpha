@@ -13,6 +13,7 @@ constructor.
 import importlib.util
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -664,3 +665,98 @@ def test_a_primed_reading_without_its_act_attachment_view_may_not_establish_text
             "act_0000000000000001",
             page_id="page_0000000000000001",
         )
+
+
+# --- The attachment-row scope rules, which two stages have to agree on ---------
+
+
+def _attachment_context(attachments: list[dict]):
+    """A context whose only job is to hand back one act-attachment record."""
+    record = {"payload": {"attachments": attachments}}
+    return SimpleNamespace(
+        tree=SimpleNamespace(read_artifact_reference=lambda *args, **kwargs: record)
+    )
+
+
+def _attachment_row(**overrides) -> dict:
+    row = {
+        "chair": "attestator_1",
+        "page_witness": True,
+        "page_ordinal": 2,
+        "attached": False,
+        "testimonium_ref": _READING_REF,
+        "content_health": {},
+        "alignment": None,
+        "span": None,
+    }
+    row.update(overrides)
+    return row
+
+
+_ABSENT = object()
+
+
+def _verify_rows(attachments: list[dict], **view_overrides) -> None:
+    view = {
+        "reference": _READING_REF,
+        "page_witness_count": 1,
+        "comparison_views": {},
+        # Required of the embedded view since sealed-proposal edge deltas
+        # joined it. Empty by default on purpose: the scope-rule tests below
+        # are about the rows, and a fixture missing the field would be refused
+        # for its own shape before reaching them.
+        "edge_deltas": {},
+    }
+    view.update(view_overrides)
+    archetypus._verify_act_attachment_view(
+        _attachment_context(attachments),
+        "act_0000000000000001",
+        "pg_0000000000000001",
+        [{"source_page_id": "pg_0000000000000001"}],
+        {"act_attachment": {key: value for key, value in view.items() if value is not _ABSENT}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("edge_deltas", "case"),
+    [
+        (_ABSENT, "absent"),
+        ([], "a list rather than a mapping"),
+        ("", "an empty string"),
+        (None, "null"),
+    ],
+)
+def test_the_embedded_view_refuses_an_edge_deltas_field_that_is_not_a_mapping(edge_deltas, case):
+    """The field the scope fixtures supply is a contract, not fixture furniture.
+
+    Supplied empty everywhere else, so nothing here would have failed if the
+    field stopped being required, started accepting a non-mapping, or were
+    ignored outright -- and this stage re-derives the Perlectio's page-witness
+    facts from it. `None` and `[]` matter as much as absence: each is a way for
+    "no geometry was measured" to arrive dressed as "no geometry disagreed".
+    """
+    with pytest.raises(SchemaRefusal, match="malformed embedded act-attachment facts"):
+        _verify_rows([_attachment_row()], edge_deltas=edge_deltas)
+
+
+def test_a_page_witness_row_without_a_page_ordinal_is_refused_as_the_recensor_refuses_it():
+    """Two consumers of one act-attachment may not disagree on a row's validity.
+
+    This check gated the ordinal on `is not None`, so a page-witness row that
+    omitted the field was accepted and keyed as `(chair, None)` — while the
+    Recensor's `act_attachment_facts` refuses that exact row. It also meant a
+    chair with one row on page 2 and one row missing the field made two distinct
+    keys, passing the duplicate guard as two contributing pages when nobody could
+    say what the second page was.
+    """
+    with pytest.raises(SchemaRefusal, match="has no integer page ordinal"):
+        _verify_rows([_attachment_row(page_ordinal=None)])
+
+    with pytest.raises(SchemaRefusal, match="has no integer page ordinal"):
+        _verify_rows([_attachment_row(page_ordinal=2), _attachment_row(page_ordinal=None)])
+
+
+def test_an_act_scoped_row_carrying_a_page_ordinal_is_refused_here_too():
+    """The other half of the same scope rule, in the Recensor's own words."""
+    with pytest.raises(SchemaRefusal, match="scope is contradictory"):
+        _verify_rows([_attachment_row(page_witness=False, page_ordinal=2)])

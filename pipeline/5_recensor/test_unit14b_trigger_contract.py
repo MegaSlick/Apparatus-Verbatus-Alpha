@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting
+from common.residual_ink import MINIMUM_INK_PIXELS
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -187,6 +188,12 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box, **forbidden}
+    # The inked half below only records a request while this box clears the
+    # floor, and 25 px clears 24 by one. Stated here so a raised floor fails
+    # naming the gate that moved rather than reporting an ink count.
+    assert box["w"] * box["h"] >= MINIMUM_INK_PIXELS, (
+        "the 5x5 stimulus no longer clears MINIMUM_INK_PIXELS; rebuild the box around the new floor"
+    )
 
     empty_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
     assert recensor.unclaimed_ink_observations(empty_maps, [observation], 1, {}) == []
@@ -218,9 +225,11 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
 def test_ink_below_the_minimum_pixel_floor_still_refuses():
     """A pointer with a trace of ink, short of `MINIMUM_INK_PIXELS`, is not evidence."""
     recensor = _recensor()
-    box = {"x": 0, "y": 0, "w": 20, "h": 1}  # 20 px < MINIMUM_INK_PIXELS (24)
+    # One pixel short of the floor, derived rather than written out: a changed
+    # floor must move this box with it, not silently invert what the test proves.
+    box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
 
 
@@ -258,6 +267,15 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     ]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, cut) == []
+    # These two straddle the floor: 20 px is under it and 30 px is over. The
+    # geometry is written out because whole rows of a 10-wide box read more
+    # plainly than an expression, so the straddle is asserted against the
+    # constant instead -- a changed floor fails here, naming the real cause,
+    # rather than quietly turning one of the two cases into the other.
+    assert 20 < MINIMUM_INK_PIXELS <= 30, (
+        "MINIMUM_INK_PIXELS moved out of the 20/30 px straddle these cut regions "
+        "are built to sit either side of; rebuild the geometry around the new floor"
+    )
     partial = {1: [{"x": 0, "y": 0, "w": 10, "h": 8}]}  # leaves 2 rows = 20 px
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, partial) == []
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
@@ -339,9 +357,21 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
         {"kind": "unrouted-observation"},
         {"kind": "unrouted-observation", "bounds": None},
         {"kind": "unrouted-observation", "bounds": [0, 0, 5, 5]},
+        # The two shapes that clear `isinstance(bounds, dict)` and reach the
+        # arithmetic: a rectangle missing a side, and one whose side is not a
+        # number. Both used to escape as a bare KeyError or TypeError.
+        {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5}},
+        {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5, "h": "5"}},
         "not-even-a-mapping",
     ],
-    ids=["missing-bounds", "null-bounds", "list-bounds", "non-mapping-observation"],
+    ids=[
+        "missing-bounds",
+        "null-bounds",
+        "list-bounds",
+        "partial-bounds",
+        "non-integer-bounds",
+        "non-mapping-observation",
+    ],
 )
 def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(observation):
     """A malformed pointer is a fatal accounting gap, exactly like a missing map row.
@@ -526,5 +556,9 @@ def test_the_mask_argument_has_no_fail_open_default():
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
-    with pytest.raises(TypeError):
+    # Bound to the signature. A bare `TypeError` also matches one raised while
+    # measuring the observation, so a later change that gave the mask a default
+    # and failed in the arithmetic would keep this green and let the over-count
+    # back in unnoticed.
+    with pytest.raises(TypeError, match="unclaimed_ink_observations"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1)

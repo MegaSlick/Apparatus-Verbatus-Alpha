@@ -145,10 +145,8 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
     ),
 )
 def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": [chair]},
-        witness_chairs=("attestator_1",),
-    )
+    """The roster is a list, so only the exact-type rule can refuse it."""
+    context = _scope_context([chair])
 
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
@@ -491,6 +489,10 @@ def test_a_page_never_presented_to_the_configured_chair_is_not_run_not_failed():
     assert join.native_payload == ""
     assert join.outcome == "not-run"
     assert [row["outcome"] for row in join.unjoined_act_attempts] == ["not-run", "not-run"]
+    # The reason an operator reads must not describe requests that were made.
+    reason = attestatores.page_failure_reason(join.unjoined_act_attempts, join.joined_act_attempts)
+    assert "never shown" in reason
+    assert "attempts, none of them carrying a reading" not in reason
 
 
 def test_a_failed_attempt_carrying_text_is_disclosed_rather_than_folded_in():

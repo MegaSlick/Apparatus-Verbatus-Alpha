@@ -128,17 +128,24 @@ def test_the_reader_receives_a_dossier_digest_sealing_the_delivered_fields():
     assert reader.calls[0][0] == delivered
 
 
-def test_every_instrument_arm_reuses_the_same_complete_presentation_not_one_capture():
+def test_the_assembled_presentation_carries_every_capture_not_one():
+    """Renamed to what it checks. It ran one identical assembly four times.
+
+    The loop variable never reached `assemble_reader_input`, so the four
+    iterations made the same single call and the name promised per-arm coverage
+    the body did not provide. The genuine per-arm proof is
+    `test_clustered_logical_passes_make_one_establishing_call_and_no_capture_local_calls`
+    below, which drives the arms through the recording reader.
+    """
     dossier = {"testimonia": [], "prior_draft": {"text": "prior"}}
-    for pass_kind in ("lectio-prior", "lectio-nuda", "primed-without-prior", "perlectio"):
-        delivered, pixels = assemble_reader_input(
-            autopsia=autopsia(),
-            dossier=dossier,
-            read_bytes=READ_BYTES,
-            max_images=6,
-        )
-        assert delivered["cross_capture_autopsia"]["required_capture_sha256s"] == [A, B]
-        assert len(pixels["region_images"]) == 2, pass_kind
+    delivered, pixels = assemble_reader_input(
+        autopsia=autopsia(),
+        dossier=dossier,
+        read_bytes=READ_BYTES,
+        max_images=6,
+    )
+    assert delivered["cross_capture_autopsia"]["required_capture_sha256s"] == [A, B]
+    assert len(pixels["region_images"]) == 2
 
 
 def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_local_calls():
@@ -249,13 +256,59 @@ def test_source_ledger_is_derived_from_manifest_not_proposals():
     assert source_ledger_from_run(
         {"source_manifest": [{"sha256": A}, {"sha256": A}, {"sha256": B}]}
     ) == {A, B}
-    with pytest.raises(SchemaRefusal, match="cluster-member-absent"):
+    # The refusal names the capture that is missing, not merely that one is.
+    # An operator's next act is to fetch a photograph, and a logical act over
+    # several captures does not say which one unless the sentence does.
+    with pytest.raises(SchemaRefusal, match=f"cluster-member-absent.*{B}") as absent:
         build_autopsia_from_run(
             run={"source_manifest": [{"sha256": A}]},
             logical_act_id="pac_fixture",
             partition_ref=REF,
             required_capture_sha256s=[A, B],
             views=[view(A, "a"), view(B, "b")],
+        )
+    # Only the absent one: naming a capture the run did supply would send the
+    # operator after a photograph that is already here.
+    assert A not in str(absent.value)
+
+
+def test_the_preference_screen_walks_a_deep_payload_instead_of_the_interpreter_stack():
+    """An untrusted payload must reach a named refusal, never a RecursionError.
+
+    Both entries to this screen run it before any shape check closes the value:
+    `build_autopsia` screens `views` before `_view` validates a row, and
+    `assemble_reader_input` screens a reader dossier checked only for being a
+    dict. So the walk's input is arbitrary caller data, and a recursive walk
+    over it exhausted the stack at a few thousand levels -- a crash carrying no
+    statement of what was wrong, where the sibling screen in
+    `common.corpus_register` had already been made iterative for this reason.
+    """
+    deep = {"leaf": 1}
+    for _ in range(50_000):
+        deep = {"nested": deep}
+
+    # Clean to the bottom: the screen walks the whole depth, finds no forbidden
+    # field, and hands the row on to the shape check, which is what refuses it.
+    # Raised through the public door, so this pins the screen the callers
+    # actually reach rather than the private helper behind it.
+    with pytest.raises(SchemaRefusal, match="view is not its closed schema"):
+        build_autopsia(
+            logical_act_id="pac_fixture",
+            partition_ref=REF,
+            required_capture_sha256s=[A],
+            views=[deep],
+        )
+
+    # And a forbidden field buried at the bottom is still found and named.
+    buried = {"winner": "capture-a"}
+    for _ in range(50_000):
+        buried = {"nested": buried}
+    with pytest.raises(SchemaRefusal, match="forbidden preference field 'winner'"):
+        build_autopsia(
+            logical_act_id="pac_fixture",
+            partition_ref=REF,
+            required_capture_sha256s=[A],
+            views=[buried],
         )
 
 
@@ -346,7 +399,7 @@ def test_the_final_published_dossier_is_swept_for_late_preference_fields():
         "winner_capture": A,
         "dossier_digest": "0" * 64,
     }
-    with pytest.raises(ContractError, match="order-bearing or trust-bearing field"):
+    with pytest.raises(ContractError, match="order-bearing or trust-bearing dossier field"):
         perlector_run._reseal_dossier(late_preference)
 
 

@@ -151,6 +151,37 @@ def test_churro_xml_refuses_an_output_element_carrying_attributes_or_children():
         validate_churro_xml(b"<output><child>text</child></output>")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        (
+            b"<output>Marie Anne, fille de<!-- scribe note --> Pierre</output>",
+            "Marie Anne, fille de Pierre",
+        ),
+        (b"<output>AAA<!--one-->BBB<!--two-->CCC</output>", "AAABBBCCC"),
+        (b"<output>AAA<?render x?>BBB</output>", "AAABBB"),
+        (b"<output>AAA<![CDATA[BBB]]>CCC</output>", "AAABBBCCC"),
+    ),
+)
+def test_a_comment_inside_the_output_element_does_not_shorten_the_transcription(raw, expected):
+    """The whole reading must survive a node the parser does not keep.
+
+    ElementTree drops comments and processing instructions, and the worry is
+    that `root.text` would then stop at the first one: half an act's text gone
+    while the capture still sealed as parsed, complete and untruncated, with
+    nothing downstream able to see the loss (GOALS 2). It does not happen --
+    the builder accumulates character data across a dropped node, so the text
+    either side is joined -- and this pins that rather than assuming it, on
+    every interpreter the matrix runs.
+
+    It also pins why the obvious hardening is wrong. Retaining comments with
+    `TreeBuilder(insert_comments=True)` would put them in `list(root)`, and the
+    closed-shape check above refuses any `<output>` with children -- turning a
+    correct reading that merely contains a comment into a refusal.
+    """
+    assert validate_churro_xml(raw) == expected
+
+
 def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
     tree = _Tree()
     raw = b"a" * 72
@@ -636,7 +667,9 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
     index = attestatores.AttemptIndex(False, {}, {})
 
     with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
-        attestatores.preflight_appendable_ordinals(context, [], 1, {}, index)
+        attestatores.preflight_appendable_ordinals(
+            context, [], 1, {}, index, resume_incomplete_pass=False
+        )
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():

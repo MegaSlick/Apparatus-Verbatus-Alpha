@@ -75,18 +75,33 @@ def test_the_correspondence_module_contains_no_positional_or_extremal_selection(
     selects nothing among captures, readings, or acts.
     """
     tree = ast.parse(PARTITION_SOURCE.read_text())
+    # Attribute call targets count too. Matching only `ast.Name` left
+    # `random.choice(...)`, `statistics.mode(...)` and `helper.max(...)`
+    # invisible -- three of the plainest ways to pick a winner among captures,
+    # walking past the last automated screen before a chosen reading becomes a
+    # durable corpus mint.
     called = {
-        node.func.id
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
     }
     assert not called & FORBIDDEN_CALLS, sorted(called & FORBIDDEN_CALLS)
+    # And a negative index. `chain[-1]` parses as a unary minus over a constant,
+    # not a constant, so the shape this test's own docstring names as the
+    # example was the one shape it did not collect.
     subscripts = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Subscript)
-        and isinstance(node.slice, ast.Constant)
-        and isinstance(node.slice.value, int)
+        and (
+            (isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, int))
+            or (
+                isinstance(node.slice, ast.UnaryOp)
+                and isinstance(node.slice.op, ast.USub)
+                and isinstance(node.slice.operand, ast.Constant)
+                and isinstance(node.slice.operand.value, int)
+            )
+        )
     ]
     assert subscripts == [], [ast.unparse(node) for node in subscripts]
 
@@ -114,6 +129,18 @@ def test_no_textual_or_scoring_field_is_read_by_the_correspondence_module():
             and isinstance(node.slice.value, str)
         ):
             read.add(node.slice.value)
+        elif isinstance(node, ast.Call):
+            # A field can be read through an argument rather than a subscript:
+            # `component.get("ocr")` and `row.pop("text", None)` put the banned
+            # name where neither the subscript branch nor the name branch looks.
+            # That is precisely the shape this guard exists to stop, because
+            # this module decides durable physical-act identity and a
+            # text-derived match here turns a witness reading into a corpus mint.
+            read.update(
+                argument.value
+                for argument in node.args
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            )
     banned = {
         "confidence",
         "iou",

@@ -15,10 +15,14 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting
+from common.contracts.stages import DESIGNATOR
 from common.cross_capture_autopsia import build_autopsia
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
+# How many recovery-request gates run.py contains. Pinned so a new origin
+# cannot appear without a seat reading it against the ink-evidence rule.
+EXPECTED_RECOVERY_GATES = 1
 
 A = "a" * 64
 B = "b" * 64
@@ -51,7 +55,11 @@ def _region_record(*, region_id, image_path, page_id, ordinal, bounds):
 
 def _occlusion_record(*, page_id, polygon, z_relationship="above-ink"):
     return {
-        "artifact_id": f"occ-{page_id}-{len(polygon)}",
+        # Keyed by the polygon itself, not its point count. Two occluders over
+        # one page with the same number of points collapsed into one entry in
+        # the artifacts dict, so a pooled-occlusion case would silently lose a
+        # polygon and record coverage the geometry never supported.
+        "artifact_id": f"occ-{page_id}-{'-'.join(f'{p["x"]}.{p["y"]}' for p in polygon)}",
         "payload": {
             "page_id": page_id,
             "polygon": polygon,
@@ -64,7 +72,23 @@ def _rectangle(x0, y0, x1, y1):
     return [{"x": x0, "y": y0}, {"x": x1, "y": y0}, {"x": x1, "y": y1}, {"x": x0, "y": y1}]
 
 
+# Which stage actually holds each kind in a run. The survey reads both from the
+# Designator, and a fake that answered every stage would let the survey start
+# asking the Perlector without a single test noticing.
+_STAGE_OF = {"region": DESIGNATOR, "occlusion": DESIGNATOR}
+
+
 class _FakeTree:
+    """A stand-in that answers only the stage and kind it was actually given.
+
+    The permissive version ignored both arguments and resolved on artifact_id
+    alone. That made the whole suite blind to the one regression it exists to
+    catch: had the survey asked the Perlector for regions, or read an occlusion
+    record under kind "region", every test here would still have passed while a
+    real parish run found no expected surface and measured the act against a
+    denominator that does not exist.
+    """
+
     def __init__(self, artifacts):
         self._artifacts = artifacts
 
@@ -73,11 +97,22 @@ class _FakeTree:
             "artifacts": [
                 {"kind": kind, "subject_id": subject_id, "artifact_id": artifact_id}
                 for artifact_id, (kind, subject_id, _record) in self._artifacts.items()
+                if _STAGE_OF[kind] == stage
             ]
         }
 
     def read_artifact(self, stage, kind, artifact_id):
-        return self._artifacts[artifact_id][2]
+        held_kind, _subject, record = self._artifacts[artifact_id]
+        if kind != held_kind:
+            raise AssertionError(
+                f"the survey read {artifact_id!r} as kind {kind!r}; it is a {held_kind!r}"
+            )
+        if stage != _STAGE_OF[held_kind]:
+            raise AssertionError(
+                f"the survey read {artifact_id!r} from stage {stage!r}; it lives in "
+                f"{_STAGE_OF[held_kind]!r}"
+            )
+        return record
 
 
 class _FakeContext:
@@ -411,11 +446,27 @@ def test_an_occluded_row_carries_the_occlusion_records_it_rests_on():
     result = module.act_cross_capture_coverage(context, "act_x", latest_payload)
     (component,) = result["components"]
     (capture,) = component["captures"]
-    assert capture["occlusion_refs"] == ["occ-pg_a-4"]
+    # Taken from the record the fake actually holds, so the assertion pins that
+    # the row carries its occluder's own identity rather than the fake's id
+    # spelling. The row must name the polygon it rests on; which string that
+    # polygon is keyed by here is this file's business, not the contract's.
+    expected_ref = _occlusion_record(page_id="pg_a", polygon=_rectangle(0, 0, 60, 60))[
+        "artifact_id"
+    ]
+    assert capture["occlusion_refs"] == [expected_ref]
 
 
-def test_a_component_cannot_take_one_members_expected_surface_for_the_others():
-    """No member may silently supply another member's denominator."""
+def test_a_component_cannot_take_one_members_expected_surface_for_the_others(monkeypatch):
+    """No member may silently supply another member's denominator.
+
+    The stand-in surface goes on through monkeypatch so pytest owns its
+    removal. Assigning onto the module is safe only while `_recensor()` reloads
+    run.py for every test; the moment anyone makes it a module- or
+    session-scoped fixture to cut the repeated loads, every later test in this
+    file would run against a survey whose expected surface comes from an
+    exhausted two-item iterator, failing with StopIteration rather than
+    reporting anything about coverage.
+    """
     module = _recensor()
     context = _FakeContext(
         {
@@ -460,7 +511,7 @@ def test_a_component_cannot_take_one_members_expected_surface_for_the_others():
         ),
     ]
     surfaces = iter([[[0, 0]], [[0, 0], [1, 0]]])
-    module.expected_surface_cells = lambda *args, **kwargs: next(surfaces)
+    monkeypatch.setattr(module, "expected_surface_cells", lambda *args, **kwargs: next(surfaces))
     with pytest.raises(FatalAccounting, match="two different expected surfaces"):
         module.act_cross_capture_coverage(
             context, "act_a", _autopsia_dossier(logical_act_id="pac_shared", views=views)
@@ -487,11 +538,35 @@ def test_the_recovery_gate_consults_no_cross_capture_fact():
         )
     ]
     assert gates, "the recovery-request gate was not found; this guard scans nothing"
-    innermost = min(gates, key=lambda node: len(list(ast.walk(node))))
-    names = {child.id for child in ast.walk(innermost.test) if isinstance(child, ast.Name)}
-    assert not {name for name in names if "cross_capture" in name or "occlu" in name}, (
-        "union geometry is back in the recovery gate"
+    # Screen every gate, not the innermost one. run.py carries one today, and
+    # the count is pinned so a second cannot arrive unscreened: reducing the set
+    # to one node by size let the assertion pass while another origin funded a
+    # bounded recrop from union geometry, spending a recovery round because some
+    # other capture happened to see the surface with no Unit 14B ink evidence
+    # behind it. That waste has been recorded in this repository once already.
+    assert len(gates) == EXPECTED_RECOVERY_GATES, (
+        f"run.py now has {len(gates)} recovery-request gates, not "
+        f"{EXPECTED_RECOVERY_GATES}; screen the new one here before raising this"
     )
+    for gate in gates:
+        # Bare names are not the only way in. `ast.Name` misses an attribute
+        # read like `coverage.cross_capture_state` and misses a dict key like
+        # `result["cross_capture_coverage"]` -- and the subscript idiom is used
+        # inside this very gate, whose eval environment below supplies `budget`
+        # as a dict. A regression reaching union geometry that way would have
+        # passed the screen.
+        names = set()
+        for child in ast.walk(gate.test):
+            if isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                names.add(child.value)
+        assert not {name for name in names if "cross_capture" in name or "occlu" in name}, (
+            f"union geometry is back in the recovery gate at line {gate.lineno}"
+        )
+    innermost = min(gates, key=lambda node: len(list(ast.walk(node))))
     # Satisfying every permitted conjunct must admit the live gate.
     admitted = eval(  # noqa: S307 -- the compiled input is this repository's own gate.
         compile(ast.Expression(innermost.test), str(RECENSOR), "eval"),
@@ -642,11 +717,106 @@ def test_dossier_and_autopsia_cannot_name_different_logical_acts():
 
 
 def test_the_coverage_and_witness_floor_functions_have_real_production_callers():
-    """A tested contract with no production caller does not prove the pipeline."""
-    source = RECENSOR.read_text(encoding="utf-8")
+    """A tested contract with no production caller does not prove the pipeline.
+
+    Counted as raw text, the import statement alone was one occurrence and any
+    mention in a nearby comment was the second, so the assertion passed with no
+    call site in the file at all. The failure that permitted is the one this
+    test is named for: `build_cross_capture_coverage` stops being invoked during
+    a real run, every Recensor review records the instrument as absent rather
+    than measured, and an act occluded in one capture and readable in another is
+    never reported as recoverable -- while the rest of this suite stays green,
+    because it calls the function directly instead of through run.py.
+    """
+    tree = ast.parse(RECENSOR.read_text(encoding="utf-8"))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
     for name in (
         "build_cross_capture_coverage",
         "same_chair_witness_floor",
         "capture_specific_recovery",
     ):
-        assert source.count(name) >= 2, f"{name} has no production caller in run.py"
+        assert name in called, f"{name} has no production call site in run.py"
+
+
+def test_a_view_spanning_two_pages_is_unmeasured_not_measured_on_a_merged_grid():
+    """A continuation act's verdict may not come from a rectangle no page has.
+
+    One capture may render two pages: `logical_reading.act_autopsia` groups
+    every touched page by capture, and its own suite proves a single view with
+    `page_ids == ["pg_1", "pg_2"]`. The survey used to take one bounding box
+    over both pages' proposal geometry and pool both pages' occlusion polygons
+    against it, so an occlusion on page two was classified into cells whose
+    coordinates belong to page one -- and that verdict is read by
+    `cross_capture_review_causes`, which can hold an act with a stated reason
+    drawn from a measurement of a surface no camera saw. Continuation acts are
+    ordinary in these registers.
+
+    The honest record is that the instrument did not measure this view, which
+    is the shape the unresolved state already carries.
+    """
+    module = _recensor()
+    bounds = {"x": 0, "y": 0, "w": 20, "h": 20}
+    view = _view(
+        view_id="view_1",
+        physical_page_id="ppg_local_pg_a",
+        source_sha256=A,
+        page_id="pg_a",
+        local_act_id="act_x",
+    )
+    view["page_ids"] = ["pg_a", "pg_b"]
+    context = _FakeContext(
+        {
+            "region_1": (
+                "region",
+                "act_x",
+                _region_record(
+                    region_id="region_1",
+                    image_path="fixture/act_x.png",
+                    page_id="pg_a",
+                    ordinal=1,
+                    bounds=bounds,
+                ),
+            ),
+            # Both pages are genuinely surveyed, so this is not the
+            # absent-survey path: page one carries a proven below-ink polygon
+            # that occludes nothing, and page two a real occlusion. Pooled onto
+            # one grid, page two's polygon would have been reported as covering
+            # page one's cells and the act called occluded-everywhere.
+            "occ_a": (
+                "occlusion",
+                "occ_a",
+                _occlusion_record(
+                    page_id="pg_a", polygon=_rectangle(0, 0, 2, 2), z_relationship="below-ink"
+                ),
+            ),
+            "occ_b": (
+                "occlusion",
+                "occ_b",
+                _occlusion_record(page_id="pg_b", polygon=_rectangle(0, 0, 40, 40)),
+            ),
+        }
+    )
+    latest_payload = _autopsia_dossier(logical_act_id="act_x", views=[view])
+    result = module.act_cross_capture_coverage(context, "act_x", latest_payload)
+
+    (component,) = result["components"]
+    (capture,) = component["captures"]
+    assert capture["visibility_state"] == "unresolved"
+    assert capture["finding_codes"] == [module.SURVEY_SPANS_TWO_PAGES]
+    # Unmeasured means unmeasured: no cell may be claimed either way.
+    assert capture["visible_cells"] == []
+    assert capture["occluded_cells"] == []
+    # And it is an absent instrument, not a measured shortfall, so it does not
+    # become an occluded-everywhere hold on evidence that was never taken.
+    assert set(capture["finding_codes"]) <= module.INSTRUMENT_ABSENT_CODES
+    # Pinned to the honest state, not merely away from the wrong one. An
+    # inequality here would also admit "full", which is the worse outcome: the
+    # act would be recorded as completely covered, no review raised, and the
+    # occluded half of a continuation act never recovered.
+    (component_row,) = result["components"]
+    assert component_row["union_state"] == "unresolved"
+    assert result["act_state"] == "unresolved"

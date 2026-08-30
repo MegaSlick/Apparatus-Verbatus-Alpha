@@ -17,6 +17,7 @@ built or that a mount behaved — the stub is not a daemon and does not pretend 
 one. What still needs a real engine is named in `operations/autoclave/README.md`.
 """
 
+import io
 import json
 import os
 import re
@@ -28,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from operations.autoclave.fingerprint import INPUTS as FINGERPRINT_INPUTS
+from operations.autoclave.safe_file import copy_bounded, open_regular
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
@@ -39,6 +41,30 @@ FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
 # `fingerprint.py` can run in a throwaway repository; keeping a second list here is what
 # `test_the_declared_inputs_cover_every_baked_file` exists to make unnecessary.
 IMAGE_INPUTS = FINGERPRINT_INPUTS
+
+
+class _ChangesOnFirstRead:
+    """A source whose bytes change between `copy_bounded`'s fstat and its read.
+
+    `copy_bounded` measures the file through the descriptor and then reads
+    through the same object, so this stands in for the agent that owns the
+    source for the whole of that window. Only `fileno` and `read` are used, and
+    `fileno` is the real one, so the measurement is the file's own.
+    """
+
+    def __init__(self, handle, change):
+        self._handle = handle
+        self._change = change
+        self._changed = False
+
+    def fileno(self):
+        return self._handle.fileno()
+
+    def read(self, size):
+        if not self._changed:
+            self._changed = True
+            self._change()
+        return self._handle.read(size)
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -1355,8 +1381,10 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         assert held.is_dir()
     finally:
         release.touch()
-        first.wait(timeout=30)
-    assert first.returncode == 0, first.stderr.read()
+        # `communicate`, not `wait`: both of this child's streams are pipes, and
+        # waiting without draining them deadlocks the suite if either buffer fills.
+        _held_stdout, held_stderr = first.communicate(timeout=30)
+    assert first.returncode == 0, held_stderr
     assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
@@ -1421,8 +1449,10 @@ def test_an_invalid_dispatch_names_its_argument_even_while_the_task_is_locked(
         assert (tmp_path / "workbench" / "autoclave" / "task-x").is_dir()
     finally:
         release.touch()
-        first.wait(timeout=30)
-    assert first.returncode == 0, first.stderr.read()
+        # `communicate`, not `wait`: both of this child's streams are pipes, and
+        # waiting without draining them deadlocks the suite if either buffer fills.
+        _held_stdout, held_stderr = first.communicate(timeout=30)
+    assert first.returncode == 0, held_stderr
     assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
@@ -2434,6 +2464,79 @@ class TestTheUntrustedDrawer:
         assert str(source) in result.stderr
         assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
+    def test_an_unreadable_external_brief_is_not_reported_as_a_drawer_problem(self, tmp_path):
+        """A fault on the session's own file must not send the operator to the drawer.
+
+        The external open sat inside the guard whose handler rewrites every
+        OSError as "cannot safely open <source> beneath <drawer>". A standing
+        brief with the wrong permissions, or one that vanished between the
+        shell's `[ -f ]` test and this open, therefore reported that the file was
+        unsafely inside the chamber's own output drawer, and the launcher added
+        its line about an agent-controlled symlink. The refusal is loud either
+        way; it named the wrong file.
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        source = tmp_path / "standing-brief.md"
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert str(source) in result.stderr
+        assert "beneath" not in result.stderr
+        assert str(drawer) not in result.stderr
+
+    def test_an_external_fifo_source_is_refused_rather_than_waiting_for_a_writer(self, tmp_path):
+        """Outside the drawer is still bounded, and still only regular files.
+
+        The external open was a plain `open(source, "rb")`, which dropped both
+        guards the drawer path has. A FIFO at that path waited for a writer
+        forever: `dispatch` printed nothing, never returned, and held the task
+        lifecycle lock the whole time, so no other launcher could touch that task
+        either. And for any non-regular source `st_size` is 0, which both the
+        byte ceiling and `copy_bounded` read -- so an oversized input was
+        reported as "input changed size while being read".
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        source = tmp_path / "standing-brief.md"
+        os.mkfifo(source)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "not a regular file" in result.stderr
+
     def test_an_outside_alias_to_the_drawer_does_not_make_agent_bytes_trusted(self, tmp_path):
         """Containment follows directory identity, including aliases and APFS case variants."""
 
@@ -2543,7 +2646,50 @@ class TestTheUntrustedDrawer:
         assert read.stdout == b""
         assert write.returncode != 0
         assert not destination.exists()
-        assert "8-byte limit" in read.stderr.decode() + write.stderr
+        # Each stream separately: joining them let the read path's message
+        # satisfy the assertion on its own, so the write path could stop naming
+        # the limit -- losing the operator-facing reason for a refused
+        # publication -- without this test failing.
+        assert "8-byte limit" in read.stderr.decode()
+        assert "8-byte limit" in write.stderr
+
+    def test_a_source_that_grows_after_its_size_was_measured_is_refused(self, tmp_path):
+        """The up-front size check is not the only guard, and it is not enough.
+
+        `copy_bounded` measures the opened file once and then reads it, and a
+        chamber agent owns the source for the whole of that window. Only the
+        test above exercised the measurement, so the branch that catches a file
+        swelling past the limit afterwards could have been deleted with the
+        suite still green.
+
+        The change lands between the measurement and the first block, which is
+        the window an agent has and the only place this branch can be reached
+        from -- growing the file any earlier is just the measured-size refusal
+        again, under a second name.
+        """
+
+        source = tmp_path / "source"
+        source.write_bytes(b"1234")
+        with open_regular(source, os.O_RDONLY) as reading:
+            changing = _ChangesOnFirstRead(reading, lambda: source.write_bytes(b"1234567890AB"))
+            with pytest.raises(OSError, match="grew beyond the 8-byte limit"):
+                copy_bounded(changing, io.BytesIO(), 8)
+
+    def test_a_source_that_shrinks_after_its_size_was_measured_is_refused(self, tmp_path):
+        """The other half: fewer bytes than were measured is also a changed file.
+
+        This one stays inside the limit throughout, so neither the measured-size
+        refusal nor the grew-past-the-limit branch above would catch it. A
+        publication that silently copied a truncated brief would otherwise look
+        like an ordinary success.
+        """
+
+        source = tmp_path / "source"
+        source.write_bytes(b"12345678")
+        with open_regular(source, os.O_RDONLY) as reading:
+            changing = _ChangesOnFirstRead(reading, lambda: os.truncate(source, 4))
+            with pytest.raises(OSError, match="changed size while being read"):
+                copy_bounded(changing, io.BytesIO(), 8)
 
     def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
         repository = tmp_path / "repository"
@@ -2839,7 +2985,8 @@ class TestMakingAChamber:
             assert "rmdir" in second.stderr
         finally:
             release.touch()
-            first.wait(timeout=30)
+            # Both streams are pipes; draining them is what makes this wait safe.
+            first.communicate(timeout=30)
 
     def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
         """Staged, unstaged, deleted and untracked, and nothing that is ignored.

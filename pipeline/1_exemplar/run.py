@@ -50,7 +50,10 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
 from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
-from common.exemplar_boundary import _verify_triage_derivative  # noqa: E402
+from common.exemplar_boundary import (  # noqa: E402
+    is_triage_derivative_contract,
+    verify_triage_derivative,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -570,7 +573,7 @@ def _verify_admitted_blob(
             raise ContractError(
                 "a rendered page's transform page index disagrees with run.json's submitted row"
             )
-        is_derivative = _is_triage_derivative(rendered_from["render_contract"])
+        is_derivative = is_triage_derivative_contract(rendered_from["render_contract"])
         if is_derivative:
             parent_ref, parent, parent_bytes = _verify_derivative_admission(
                 payload, source, rendered_from["render_contract"], tree
@@ -627,16 +630,8 @@ def _verify_admitted_blob(
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
     if is_derivative:
-        _verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
+        verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
-
-
-def _is_triage_derivative(contract: Any) -> bool:
-    return (
-        isinstance(contract, dict)
-        and isinstance(contract.get("derivative_page"), dict)
-        and contract["derivative_page"].get("kind") == "sealed-derivative-page-v1"
-    )
 
 
 def _verify_derivative_admission(

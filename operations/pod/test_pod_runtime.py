@@ -6,6 +6,7 @@ without the paired red path would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import fcntl
 import inspect
 import itertools
 import json
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import unittest.mock
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -45,6 +47,7 @@ from .launch import (
     LaunchState,
     PodRuntime,
     _bind_report_path_to_launch,
+    _spend_refusal_state,
 )
 from .lease import LeaseStore, PodLease
 from .models import (
@@ -1283,7 +1286,7 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -1919,6 +1922,110 @@ def test_an_oversized_spend_alert_stamp_cannot_silence_the_low_balance_page(
     assert result.preview.assessment.alert_notifications == ("Phone notification: sent.",)
 
 
+def test_a_failed_debounce_write_is_recorded_beside_the_delivered_warning(
+    tmp_path: Path,
+) -> None:
+    """A sent warning whose stamp did not persist says so on the receipt.
+
+    Losing the stamp is advisory -- it can cause one duplicate page, never a
+    blocked action -- but a receipt reading only ``sent`` leaves that duplicate
+    with no recorded cause, which is the shape GOVERNANCE 2 refuses.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+
+    def refuse_write(path, payload):
+        raise PermissionError("the stamp directory is read-only")
+
+    with unittest.mock.patch.object(launch_module, "atomic_write", refuse_write):
+        result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    notifications = result.preview.assessment.alert_notifications
+    assert "Phone notification: sent." in notifications
+    assert any("Debounce state: NOT RECORDED" in line for line in notifications)
+    assert any("read-only" in line for line in notifications)
+
+
+def test_a_lease_that_vanishes_between_listing_and_reading_refuses_the_paid_gate(
+    tmp_path: Path,
+) -> None:
+    """A liability seen a moment ago and now gone is unknown, not zero.
+
+    ``glob`` accounted for the file; ``LeaseStore.load`` then answered ``None``
+    because it no longer exists.  Treating that as "nothing to reserve" lets the
+    next create authorise a pod without counting a lease that may still be
+    billing.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = runtime(provider, clock, leases)
+    # The listing names a lease the read can no longer find: exactly the state a
+    # file removed between `glob` and `LeaseStore.load` leaves behind.
+    vanished = leases / ("d" * 32 + ".json")
+    real_glob = Path.glob
+
+    def glob_reporting_a_removed_lease(self, pattern):
+        return iter([*real_glob(self, pattern), vanished])
+
+    with unittest.mock.patch.object(Path, "glob", glob_reporting_a_removed_lease):
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "vanished" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_spend_gate_lock_another_process_holds_refuses_rather_than_waiting(
+    tmp_path: Path,
+) -> None:
+    """An unbounded wait on the money path is a defect, so the gate gives up by name.
+
+    A holder that never finishes -- a provider call hung inside another process's
+    spend gate -- used to leave this create blocked in ``flock`` forever, printing
+    nothing at all instead of a refusal an operator can act on.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = PreviewingRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=leases,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: "a" * 32,
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+        notifier=lambda message: NotifyOutcome(False, False, "test silent"),
+        lock_sleeper=lambda seconds: None,
+        lock_wait_seconds=0.05,
+    )
+    held = leases.parent / f".{leases.name}.spend-gate.lock"
+    with held.open("a+b") as blocker:
+        fcntl.flock(blocker.fileno(), fcntl.LOCK_EX)
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "spend-reservation" in result.detail
+    assert "still holds this lock" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
 def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: Path) -> None:
     """Unknown remaining liability is a named refusal, never an escaping OSError.
 
@@ -1929,6 +2036,11 @@ def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: 
     Failing closed under its own name is the whole point of the reserved-
     liability read.
     """
+
+    if os.geteuid() == 0:
+        # CAP_DAC_OVERRIDE walks straight through the 0o600 below, so the
+        # unreadable directory this test depends on cannot be staged as root.
+        pytest.skip("root bypasses the directory mode this refusal is staged with")
 
     clock = Clock()
     provider = fake(clock)
@@ -1943,10 +2055,14 @@ def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: 
         leases.chmod(0o700)
 
     assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
-    # The spend surface bounds refusal reasons at 160 characters, so a long
-    # tmp-path lease name can truncate the trailing "could not be read" phrase;
-    # the lease path itself surviving in the detail proves the same cause.
-    assert "could not be read" in result.detail or "lease" in result.detail
+    # One arm, and it is the cause. This used to accept `"lease" in detail` as
+    # well, because a long tmp path truncated the phrase away at 160 characters
+    # -- but the word `lease` appears in almost every liability refusal this
+    # gate produces, so that arm passed even when the unreadable-lease cause had
+    # been replaced by an unrelated one. `_reserved_liability` names the cause
+    # before the path now, so the phrase survives truncation and can be asserted
+    # on its own.
+    assert "could not be read" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
@@ -4217,6 +4333,37 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
         journal.load_or_create()
 
 
+def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
+    tmp_path: Path,
+) -> None:
+    """A journal is not blamed for a change this code made to the step list.
+
+    Inserting ``MODEL_STORE`` before ``CHAIR_CACHE`` changed the valid completion
+    prefix. Under the old schema name a perfectly honest v1 journal was rejected
+    as "duplicated, reordered, or skips a step", which reads as tampering. The
+    schema bump makes it what it is: a journal this code no longer understands,
+    to be preserved and replaced.
+    """
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    path = tmp_path / "bootstrap.json"
+    journal = BootstrapJournal(path, BootstrapPlan("f" * 40, lockfile), now=lambda: START)
+    record = journal.load_or_create()
+    # Exactly what a v1 pod wrote after finishing everything through the chair
+    # cache: the step order that existed before the model store was inserted.
+    record["schema"] = "pod-bootstrap.v1"
+    record["completed"] = ["repository", "uv-environment", "transfer", "chair-cache"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        journal.load_or_create()
+
+    assert "schema is absent or unsupported" in failure.value.detail
+    assert "reordered" not in failure.value.detail
+    assert "Preserve it for review" in failure.value.remediation
+
+
 def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> None:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -4304,12 +4451,19 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
     assert actions.checkout_commit(commit) == {"commit": commit}
     assert observed
     assert all(argv[0] == "/usr/bin/git" for argv, _ in observed)
+    # The whole environment, spelled out: the point of this test is that the
+    # child sees exactly what this repository chose and nothing inherited, so an
+    # entry added to `BOOTSTRAP_ENVIRONMENT` must be named here deliberately
+    # rather than admitted by a subset check. `UV_CACHE_DIR` is here because uv
+    # otherwise infers its cache from XDG_CACHE_HOME or HOME, neither of which
+    # this environment supplies.
     assert all(
         environment
         == {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
+            "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
         }
         for _, environment in observed
     )
@@ -4930,7 +5084,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v2"',
+        "schema": '"pod-spend.v3"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -4954,12 +5108,108 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         load_spend_policy(path)
 
 
+def test_a_reworded_refusal_reason_cannot_reclassify_a_money_safety_refusal() -> None:
+    """The operator-facing state is decided by recorded cause, not by prose.
+
+    `hard_floor_triggered` and `balance_unobservable_triggered` used to match the
+    text of `reasons`, and `_spend_refusal_state` turns them into the state an
+    operator reads. Reflowing any of those strings -- a typo fix, a rewrap --
+    made both properties False and reported a balance-reserve refusal as a price
+    ceiling, sending the operator to inspect a price sheet with nothing wrong in
+    it. No prose assertion could catch that, because the assertions read the same
+    prose. So the reasons are rewritten here to nonsense and the classification
+    must be unchanged.
+    """
+
+    from .models import PodEstimate
+    from .spend import SpendRefusalCause, assess_spend
+
+    clock = Clock()
+    estimate = PodEstimate(POD_HOURLY, VOLUME_HOURLY, "fixture price sheet", clock.now())
+    observation = AccountBalanceObservation(
+        available_usd=Decimal("50.00"), observed_at=clock.now(), source="fixture"
+    )
+    floored = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=observation,
+    )
+
+    assert not floored.allowed
+    assert floored.refusal_causes == frozenset({SpendRefusalCause.HARD_FLOOR})
+    assert _spend_refusal_state(floored) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    reworded = replace(floored, reasons=("some future editor reflowed this line",))
+
+    assert reworded.hard_floor_triggered
+    assert _spend_refusal_state(reworded) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    unobservable = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=None,
+        balance_unavailable_detail="the fixture source is switched off",
+    )
+
+    assert unobservable.refusal_causes == frozenset({SpendRefusalCause.BALANCE_UNOBSERVABLE})
+    assert (
+        _spend_refusal_state(replace(unobservable, reasons=("reworded",)))
+        is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    )
+
+
+def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The schema identifier separates an operator's mistake from a change in this code.
+
+    ``account_balance_alert_usd`` became required. A file that was a complete
+    configured v2 policy is now an incomplete v3 one, and under the unchanged
+    schema name it failed as "missing a required ceiling" -- an accusation
+    against configuration nobody had touched.
+    """
+
+    from .spend import load_spend_policy
+
+    complete_v2 = {
+        "schema": '"pod-spend.v2"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+    }
+    path = tmp_path / "spend.toml"
+    path.write_text(
+        "\n".join(f"{key} = {value}" for key, value in complete_v2.items()) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpendRefusal) as refusal:
+        load_spend_policy(path)
+
+    detail = str(refusal.value)
+    assert "retired" in detail
+    assert "account_balance_alert_usd" in detail
+    assert "pod-spend.v3" in detail
+    assert "missing a required ceiling" not in detail
+
+
 def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
     from .spend import load_spend_policy
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v2"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 
@@ -5415,7 +5665,7 @@ def _drive_cli(
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',

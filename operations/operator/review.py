@@ -24,6 +24,75 @@ MAX_REVIEW_ITEMS_BYTES = 16 * 1024 * 1024
 MAX_REVIEW_ITEMS = 50_000
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
+# The review queue was bounded and the images beside it were not. Every sealed
+# page and every act crop is still read whole to verify its digest, and the
+# projection verifies all of them in one pass, so a parish-sized run met no
+# limit, only the memory of the machine. The evidence would be intact on disk
+# and unreadable on the one surface a person reads.
+#
+# This is a bound, not the eventual answer: a console for real parish volumes
+# should verify one image at a time as the renderer fetches it, which is a
+# change to what the child receives rather than an audit repair. The number is
+# the largest that still passes through this pipe with room for the JSON copy
+# on both sides, so it refuses only runs the one-pass verification design could
+# not have served anyway — and it refuses them by name instead of by
+# exhaustion (GOVERNANCE 2).
+MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
+
+
+class _ImageBudget:
+    """One running allowance over every image the projection embeds."""
+
+    __slots__ = ("_limit", "_spent")
+
+    def __init__(self, limit: int = MAX_PROJECTED_IMAGE_BYTES) -> None:
+        self._limit = limit
+        self._spent = 0
+
+    def spend(self, count: int, what: str) -> None:
+        self._spent += count
+        if self._spent > self._limit:
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"this run's page and crop images pass {self._limit} bytes at {what}, "
+                    "which is more than the console can project in one read-only view; the "
+                    "run tree is intact and unchanged, and a narrower selection can be "
+                    "reviewed while this limit stands"
+                ),
+            )
+
+
+def _budgeted_image_bytes(
+    tree: RunTree, relative_path: str, budget: _ImageBudget, what: str
+) -> bytes:
+    """Charge an image against the budget before it is anywhere near memory.
+
+    `RunTree.read_bytes` loads the whole file and only then hands its length to
+    `spend`, so a page larger than the allowance was fully resident at the exact
+    moment the limit existed to refuse it -- on a parish-sized image that is the
+    console dying rather than refusing by name (GOVERNANCE 2). The size on disk
+    is charged first and the read is then bounded by what was charged, so a file
+    that grew between the two spends nothing it was not allowed.
+    """
+
+    path = tree.resolve(relative_path)
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"{what} could not be measured: {error}"
+        ) from error
+    budget.spend(size, what)
+    with path.open("rb") as handle:
+        data = handle.read(size + 1)
+    if len(data) != size:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"{what} changed size while the console was reading it",
+        )
+    return data
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewProjection:
@@ -107,9 +176,13 @@ class ReadOnlyRun:
                     }
                 )
             payload, export_ref = _armarium_payload(tree, stage_records)
-            pages = tuple(_image_row(tree, row, export_ref) for row in payload["pages"])
+            # One allowance across pages and crops together: the projection
+            # verifies them all in one pass, so bounding either alone would
+            # bound nothing.
+            budget = _ImageBudget()
+            pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
             acts = tuple(
-                _act_row(tree, row, export_ref)
+                _act_row(tree, row, export_ref, budget)
                 for row in (*payload["delivered"], *payload["non_delivered"])
             )
             return ReviewProjection(
@@ -210,6 +283,7 @@ def _verified_export_blob_digest(
     expected_digest: Any,
     description: str,
     export_ref: dict[str, str],
+    budget: _ImageBudget,
 ) -> str:
     """A fresh digest must not repair a contradictory exported path or digest."""
 
@@ -232,7 +306,7 @@ def _verified_export_blob_digest(
                 f"{expected_path}"
             ),
         )
-    data = tree.read_bytes(path)
+    data = _budgeted_image_bytes(tree, path, budget, description)
     actual_digest = digest_bytes(data)
     if actual_digest != expected_digest:
         raise OperatorError(
@@ -245,7 +319,13 @@ def _verified_export_blob_digest(
     return actual_digest
 
 
-def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
+def _image_row(
+    tree: RunTree,
+    row: Any,
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
+) -> dict[str, Any]:
+    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -272,6 +352,7 @@ def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str,
         expected_digest=row.get("image_sha256"),
         description=f"page {row.get('ordinal')!r}",
         export_ref=export_ref,
+        budget=budget,
     )
     return {
         **projected,
@@ -280,7 +361,13 @@ def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str,
     }
 
 
-def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
+def _act_row(
+    tree: RunTree,
+    row: Any,
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
+) -> dict[str, Any]:
+    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -289,19 +376,19 @@ def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, A
                 "not an object"
             ),
         )
-    source_regions = row.get("source_regions", [])
+    # No `[]` default. An act whose export row omits `source_regions` would
+    # then reach the console as an act with an empty crop list, and the
+    # operator could not tell "this act records no crop" from "the crop list
+    # went missing" — they would be approving text they never saw against the
+    # ink (GOVERNANCE 2, GOALS 5). Absent is refused exactly like malformed.
+    source_regions = row.get("source_regions")
     if not isinstance(source_regions, list):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
                 f"the Armarium export record {export_ref['relative_path']} act "
-                f"{row.get('act_id')!r} source_regions value is not a list"
+                f"{row.get('act_id')!r} source_regions value is missing or not a list"
             ),
-        )
-    regions = row.get("source_regions", [])
-    if not isinstance(regions, list):
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act has no crop list"
         )
     crops = []
     for region in source_regions:
@@ -320,6 +407,7 @@ def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, A
             expected_digest=region.get("image_sha256"),
             description=(f"act {row.get('act_id')!r} source region {region.get('region_id')!r}"),
             export_ref=export_ref,
+            budget=budget,
         )
         crops.append(
             {
@@ -565,7 +653,22 @@ def _review_items(
                         "review bundle is only ever written stored"
                     ),
                 )
-            if member.is_dir() or member.file_size > MAX_REVIEW_ITEMS_BYTES:
+            # Two faults, two sentences. Joined, a directory entry answered with
+            # "exceeds the operator review limit" -- `file_size` is 0 for one --
+            # and sent the operator looking for an oversized queue that does not
+            # exist. The branch is in fact unreachable through the member filter
+            # above, since `is_dir()` needs a trailing separator this name cannot
+            # have; it stays as a defensive check, but a defensive check that
+            # names the wrong fault is worse than none.
+            if member.is_dir():  # pragma: no cover - unconstructible; see the test by this name
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        "the Armarium bundle names a directory at review-items.jsonl, so it "
+                        "carries no review queue to read"
+                    ),
+                )
+            if member.file_size > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
                     detail=(
@@ -575,6 +678,12 @@ def _review_items(
                 )
             with archive.open(member) as source:
                 review_bytes = source.read(MAX_REVIEW_ITEMS_BYTES + 1)
+            # Kept, and unreachable while the check above holds. `zipfile`
+            # bounds a member read by the `file_size` the central directory
+            # declares, so a header that lies small cannot decompress past it —
+            # measured, not assumed, and what a falsified header actually
+            # produces is a CRC failure caught below. This stays as the bound
+            # that does not depend on the archive library's own accounting.
             if len(review_bytes) > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,

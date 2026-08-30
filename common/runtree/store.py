@@ -230,6 +230,22 @@ class RunTree:
                 "every source page must declare an integer ordinal: a run cannot "
                 "account for pages it cannot count"
             )
+        # And a page number, not merely an integer. Every producer in this tree
+        # counts from one -- the Door's expansion increments before it assigns,
+        # and the fixture declarations follow it -- so a zero or negative ordinal
+        # is a manifest nothing here can legitimately have written. Sealed
+        # unchecked it would enter the corpus frame membership and, through it,
+        # gold's re-derivation of the same frame, giving the run a page numbering
+        # that no other part of the system agrees with. Refused at the one place
+        # a manifest enters a run, beside the checks above, rather than defended
+        # wherever an ordinal is later read.
+        non_positive = sorted({ordinal for ordinal in ordinals if ordinal < 1})
+        if non_positive:
+            raise SchemaRefusal(
+                f"source pages declare ordinal(s) {non_positive}; a source page ordinal "
+                "is its position in the submission and is counted from one, so a run "
+                "cannot say which page a value below it names"
+            )
         repeated = sorted({ordinal for ordinal in ordinals if ordinals.count(ordinal) > 1})
         if repeated:
             raise SchemaRefusal(
@@ -783,6 +799,14 @@ class RunTree:
         what the tree holds. That is why a manifest is never evidence on its own:
         if it disagrees with the artifacts, the artifacts are right and the
         manifest was stale.
+
+        ``verify_inputs=False`` still applies the envelope, run, and path checks,
+        but not ``_verify_artifact_inputs``. An artifact whose upstream blob has
+        since changed is then listed and reads as present. That option is for a
+        caller whose own boundary owns lineage -- one already verifying the
+        chain, or one deliberately reading a tree it is about to refuse -- and
+        never for speed. A caller that wants a manifest it can trust about
+        lineage leaves it alone.
         """
         # A manifest is a read route too. In particular, an empty directory must
         # not make a missing run authority look like an empty, trustworthy run.
