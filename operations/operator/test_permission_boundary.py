@@ -2295,6 +2295,7 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
+@requires_host_boundary
 def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_success(
     tmp_path, monkeypatch
 ):

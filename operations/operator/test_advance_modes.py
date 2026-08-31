@@ -18,6 +18,7 @@ from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundar
 from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli, review
+from .conftest import requires_host_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -229,6 +230,7 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
     assert "designator: seal" in rendered
 
 
+@requires_host_boundary
 def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -256,6 +258,7 @@ def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
     assert "Advance record:" in rendered
 
 
+@requires_host_boundary
 def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -360,6 +363,7 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
     assert after == before
 
 
+@requires_host_boundary
 def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -420,6 +424,7 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
     assert "auto mode" in (refusal.value.detail or "").lower()
 
 
+@requires_host_boundary
 def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -448,6 +453,7 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     assert "Advance record:" in rendered
 
 
+@requires_host_boundary
 def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -608,6 +614,7 @@ def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidenc
     assert "designator: no stored completion seal" not in capsys.readouterr().out
 
 
+@requires_host_boundary
 def test_the_advance_presentation_never_phrases_a_recommendation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -715,6 +722,7 @@ def test_a_range_given_to_a_rangeless_mode_is_refused_not_ignored(mode: str, exp
         )
 
 
+@requires_host_boundary
 def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
