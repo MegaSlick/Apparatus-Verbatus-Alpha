@@ -36,18 +36,32 @@ def test_strict_sync_propagates_a_directory_fsync_failure(
 
 
 def test_exclusive_write_refuses_a_second_create_and_keeps_the_first_bytes(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The create *is* the exclusion: two holders of one grant cannot both proceed."""
 
+    modes: list[int] = []
+    real_fchmod = durable.os.fchmod
+
+    def observe_fchmod(descriptor: int, mode: int) -> None:
+        modes.append(mode)
+        real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(durable.os, "fchmod", observe_fchmod)
     target = tmp_path / "claims" / "grant.json"
     durable.exclusive_write(target, b'{"grant":"one"}')
+    assert modes == [0o600], "this module must set the money record's mode, not inherit it"
 
     with pytest.raises(FileExistsError):
         durable.exclusive_write(target, b'{"grant":"two"}')
 
     assert target.read_bytes() == b'{"grant":"one"}'
-    assert target.stat().st_mode & 0o077 == 0, "a money record must not be world-readable"
+    # Exact mode, and the call that sets it. `& 0o077 == 0` passed with
+    # `os.fchmod` deleted, because `tempfile.mkstemp` already creates at 0600 --
+    # so the assertion measured the standard library rather than this module.
+    # The mode is the property that matters and is pinned exactly; the observer
+    # below pins the line that establishes it rather than inherits it.
+    assert target.stat().st_mode & 0o777 == 0o600, "a money record must be owner-only"
 
 
 def test_exclusive_write_leaves_no_half_written_file_behind(
@@ -69,6 +83,12 @@ def test_exclusive_write_leaves_no_half_written_file_behind(
     monkeypatch.undo()
 
     assert not target.exists()
+    # The absence above is true from the environment -- the injected failure
+    # fires before `os.link`, so no target was ever created and this assertion
+    # held with the `finally` unlink deleted. What the name promises is that
+    # nothing half-written is left behind, and the leftover a failed write
+    # actually strands is the temporary, so that is what is asserted.
+    assert list(target.parent.iterdir()) == [], "a failed write stranded its temporary"
     durable.exclusive_write(target, b'{"grant":"one"}')
     assert target.read_bytes() == b'{"grant":"one"}'
 

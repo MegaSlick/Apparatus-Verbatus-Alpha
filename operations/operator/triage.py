@@ -365,6 +365,27 @@ def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
         or not isinstance(persisted.get("mode_declaration"), dict)
     ):
         raise TriageRefusal("triage refusal queue-invalid: queue is not a closed review queue")
+    # A cluster-candidate is indexed for `evidence["instrument_config_sha256"]`
+    # and `both_digests` by both `accept_candidate` and `draft_confirmation`.
+    # "Is a dict" was the only requirement, so a candidate missing either key
+    # left a public seam raising a bare KeyError -- a traceback where this
+    # module's whole contract is a named TriageRefusal. Checking the shape here
+    # covers both call sites at once rather than teaching each one the same
+    # lesson separately.
+    for item in persisted["items"]:
+        if item.get("kind") != "cluster-candidate":
+            continue
+        evidence = item.get("evidence")
+        if (
+            not isinstance(evidence, dict)
+            or not is_sha256(evidence.get("instrument_config_sha256"))
+            or not isinstance(evidence.get("both_digests"), list)
+            or not isinstance(item.get("both_digests"), list)
+        ):
+            raise TriageRefusal(
+                "triage refusal queue-item-invalid: a cluster candidate needs evidence carrying "
+                "an instrument-config digest and both frame digests"
+            )
     _check_mode_declaration(persisted["mode_declaration"])
     return data, persisted
 

@@ -500,6 +500,16 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
     unpresented = payload.get("unpresented_regions")
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     if not attempted:
+        # Ahead of the image-evidence refusal, which names none of this: a
+        # stripped record whose retained response survives passes that rule and
+        # still holds the bytes the chair answered with.
+        if payload.get("raw_response_ref") is not None:
+            raise SchemaRefusal(
+                "a non-attempted Testimonium retains a provider response. The record would say "
+                "the chair was not served while naming the bytes it answered with, outside its "
+                "own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained reference"
+            )
         if (
             payload.get("regions") != []
             or presented != {}
@@ -618,6 +628,16 @@ def validate_page_testimonium_record(
             "digest-bound attachments"
         )
     if not attempted:
+        # Same order and same reason as the act-scoped seam above: the retained
+        # response is checked first because the image-evidence refusal below
+        # does not mention it, and a stripped record keeps it.
+        if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
+            raise SchemaRefusal(
+                "a non-attempted page Testimonium retains a provider response. The record would "
+                "say the chair was not served while naming the bytes it answered with, outside "
+                "its own input set. Record the attempted outcome that produced the response, or "
+                "remove the retained capture"
+            )
         if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
             raise SchemaRefusal(
                 "a non-attempted page Testimonium carries image evidence. The record would say "
@@ -659,15 +679,25 @@ def validate_page_testimonium_record(
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
+        # Every retained response the record derived from, in the payload's own
+        # order: the partition's responses, then a native capture. Each is
+        # bound beside the presented pixels so an ordinary artifact read
+        # re-hashes it, rather than trusting a nested reference nobody opens.
+        retained = list(payload.get("raw_response_refs", []))
         capture = payload.get("native_capture")
         if capture is not None:
-            # A native capture binds its retained raw response beside the
-            # presented pixels; both and nothing else are the record's inputs.
-            expected_inputs = expected_inputs + [capture["raw_response_ref"]]
+            retained.append(capture["raw_response_ref"])
+        # Sorted the way the envelope stores inputs, exactly as the act-scoped
+        # seam above does. Comparing against the payload's own order passes only
+        # while the retained paths happen to sort after the presented image.
+        expected_inputs = sorted(
+            expected_inputs + retained,
+            key=lambda item: (item["relative_path"], item["sha256"]),
+        )
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "a page Testimonium does not bind exactly its presented image"
-                + (" and retained raw response" if capture is not None else "")
+                + (" and every retained raw response" if retained else "")
                 + ". The consumer cannot prove which immutable pixels produced the page "
                 "report. Restore the digest-bound inputs and remove unrelated ones"
             )

@@ -68,6 +68,17 @@ observation stays retained on every act's review payload for a human to weigh,
 and the page's own residual-ink flag and the Armarium's `unclaimed-edge-ink`
 hold remain the ink-side accounts of the same pixels.
 
+**Known limit, named rather than hidden:** the grant is scoped by `page_of`, which
+reads each act's *primary* `page_ordinal` -- the same field the writer records, so
+reader and writer agree and the one-grant bound holds. The consequence is that
+`unclaimed_ink_observations` is only ever evaluated against an act's primary
+page: a continuation-only page, carried by an act whose primary page is earlier
+in the run, is never the page any act's own pointer check names. That ink does
+not disappear -- the page's own residual-ink flag and the Armarium's
+`unclaimed-edge-ink` hold still speak for it -- but a pointer that clears
+`MINIMUM_INK_PIXELS` on a continuation-only page funds no recrop and holds no
+act, because no act calls that page its own.
+
 n-of-m agreement, IoU/similarity, delta magnitude, per-chair weight, and any two-chair
 disagreement are forbidden triggers -- see
 `pipeline/5_recensor/test_unit14b_trigger_contract.py`, which drives the live

@@ -166,7 +166,16 @@ def _forge_attempt(tree, first, act_id, chair, *, sealed_ordinal, payload_ordina
     deliberately disagree, and return the forged record."""
     forged = copy.deepcopy(first)
     forged["payload"]["attempt_ordinal"] = payload_ordinal
-    forged["payload"]["payload"] = "a reading nobody sealed under this ordinal"
+    forged_text = "a reading nobody sealed under this ordinal"
+    forged["payload"]["payload"] = forged_text
+    # The observed span travels with the text it addresses.
+    # `validate_testimonium_regions` reaches `validate_observed` with the
+    # changed payload, so a span left addressing the original could refuse this
+    # record for its geometry before `latest_attempt` ever compared the sealed
+    # attempt identity this helper exists to forge.
+    for observation in forged["payload"].get("observed", []):
+        if isinstance(observation.get("span"), dict):
+            observation["span"] = {"start": 0, "end": len(forged_text)}
     forged["attempt_id"] = attempt_id(act_id, f"read:{chair}", sealed_ordinal)
     forged["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, forged["attempt_id"])
     forged["self_hash"] = self_hash(forged)
