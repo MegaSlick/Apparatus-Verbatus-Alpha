@@ -562,3 +562,65 @@ def test_the_mask_argument_has_no_fail_open_default():
     # back in unnoticed.
     with pytest.raises(TypeError, match="unclaimed_ink_observations"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1)
+
+
+# The capture identity the Unit 19C gate is asked about. `run.json`'s
+# source-manifest row is not it: `RunTree.create` validates only ordinals, real
+# ingress may declare no digest at all (`SourceEntry.declared_sha256` is
+# `str | None`), and a page rendered out of a container shares that row's digest
+# with every other page of the same container. The sealed Exemplar page's own
+# `source_sha256` is the identity the physical-act partition and the
+# cross-capture autopsia both use, and `verify_sealed_page_pixels` has already
+# proved it verifies (CodeRabbit, PR #78).
+_DIGEST = "a" * 64
+
+
+def _sealed_page(digest):
+    return {"payload": {"ordinal": 1, "source_sha256": digest}}
+
+
+def test_the_capture_digest_map_is_the_sealed_pages_own_verified_digest():
+    recensor = _recensor()
+    assert recensor.capture_digest_by_page({1: _sealed_page(_DIGEST)}) == {1: _DIGEST}
+
+
+@pytest.mark.parametrize("digest", [None, "", "A" * 64, "abc", 64 * "a" + "a"])
+def test_a_page_with_no_lowercase_capture_digest_is_a_named_accounting_refusal(digest):
+    """Never a `KeyError` and never a refusal naming the caller's request: a
+    digest this stage cannot state is a failure of its own evidence."""
+    recensor = _recensor()
+    with pytest.raises(FatalAccounting, match="page 1 carries no lowercase capture digest"):
+        recensor.capture_digest_by_page({1: _sealed_page(digest)})
+
+
+def test_a_page_outside_the_capture_digest_map_refuses_by_name_before_the_gate():
+    recensor = _recensor()
+    digests = recensor.capture_digest_by_page({1: _sealed_page(_DIGEST)})
+    assert recensor.capture_digest_for(digests, 1, "act-1") == _DIGEST
+    with pytest.raises(FatalAccounting, match="act act-1's recovery request names source page 2"):
+        recensor.capture_digest_for(digests, 2, "act-1")
+
+
+def test_the_capture_specific_gate_is_not_asked_about_the_submitted_manifest_row():
+    """Read off the live call, not a duplicate of it here.
+
+    `_source_rows(context.run)[...]["sha256"]` raised a bare `KeyError` on a row
+    that declared no digest, handed `capture_specific_recovery` a `None` it
+    refused as "lacks logical-act/capture identity" -- a guard failing for a
+    reason that is not the fault -- and, for container-rendered pages, named a
+    capture other than the one the observation was measured on.
+    """
+    calls = [
+        node
+        for node in ast.walk(_tree())
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "capture_specific_recovery"
+    ]
+    assert len(calls) == 1, "the Recensor no longer has one capture-specific gate call"
+    argument = next(
+        keyword.value for keyword in calls[0].keywords if keyword.arg == "source_sha256"
+    )
+    source = ast.unparse(argument)
+    assert "capture_digest_for" in source, source
+    assert "_source_rows" not in source, source

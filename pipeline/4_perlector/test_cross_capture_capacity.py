@@ -60,6 +60,13 @@ def _perlectiones(root):
     ]
 
 
+def _reviews(root):
+    return [
+        json.loads(path.read_text())
+        for path in sorted((root / "r" / "5_recensor" / "artifacts" / "review").iterdir())
+    ]
+
+
 def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(over_capacity_run):
     result, root = over_capacity_run
     # Exit 2 is fatal; a capacity hold is a run outcome rather than a crash.
@@ -95,3 +102,46 @@ def test_no_reader_pass_is_published_for_an_act_that_never_fit(over_capacity_run
     stage = root / "r" / "4_perlector" / "artifacts"
     assert not (stage / "lectio-prior").exists()
     assert not (stage / "lectio-nuda").exists()
+
+
+def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_capacity_run):
+    """The downstream half of the capacity hold, asserted here because it rests
+    on this module's one run rather than on a second fixture pass.
+
+    A review of this path (CodeRabbit, PR #78) read the Recensor's recovery gate
+    — which admits only a declared recovery act or an ink-confirmed unclaimed
+    observation — and concluded that an act held over capacity therefore stays
+    unread *silently*. It does not. `not-run` is a non-COMPLETED reading class,
+    so the act falls through the corroboration gate (nothing here is a positive
+    claim of absence) into the ordinary hold, its review names the outcome, and
+    the run's aggregate is partial. The right route is exactly that hold and not
+    bounded recovery: recovery buys coverage of ink nobody has read, and a
+    presentation that does not fit one request is not answered by another crop
+    of the same act — it is answered by a ceiling a human sets.
+
+    What the act must never do is disappear behind a successful status, so this
+    pins the three facts that make it visible: the review outcome and its stated
+    reason, the reachability of the capacity sentence from the review's own
+    `perlectio_ref`, and a recovery pool that was never spent on a hold recovery
+    cannot lift.
+    """
+    result, root = over_capacity_run
+    # 3 is `EXIT_HELD` at the orchestrator: partial, never complete.
+    assert result.returncode == 3, result.stderr
+    reviews = _reviews(root)
+    assert len(reviews) == len(_perlectiones(root))
+    for review in reviews:
+        assert review["outcome"] == "held-for-review"
+        assert "'not-run'" in review["payload"]["reason"]
+        # No presentation was ever delivered, so there is no visibility survey
+        # to report -- `None` is "no survey exists", the same fact a
+        # Designator-held act's review records, not a survey that came back
+        # clean.
+        assert review["payload"]["cross_capture_coverage"] is None
+        assert review["payload"]["audit_unresolved"] is None
+        reading = json.loads(
+            (root / "r" / review["payload"]["perlectio_ref"]["relative_path"]).read_text()
+        )
+        assert reading["outcome"] == "not-run"
+        assert reading["payload"]["reason"].startswith(OVER_CAPACITY)
+    assert not (root / "r" / "5_recensor" / "artifacts" / "recovery-request").exists()
