@@ -277,8 +277,10 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
     # `resolve_proposal` is a lookup, not an inference: acts 1-3 (single-
     # capture, page P) and Q's act (single-capture, the facing page) have no
     # declared correspondence, so asking it about them names a finding rather
-    # than guessing one. Whether a single-capture act needs resolution is a
-    # caller policy; this lookup cannot silently infer that policy.
+    # than guessing one. Unit 18 declares this shape; deciding *whether* a
+    # single-capture act needs resolving at all -- so it is never asked in the
+    # first place, and "single-capture" never reads as "unresolved" -- is the
+    # caller-side policy the physical-act partition builder owns.
     for solo_act in (*acts_a[:3], act_q1):
         assert resolve_proposal(register, solo_act)["outcome"] == "finding"
 
@@ -597,6 +599,28 @@ def test_append_records_creates_and_extends_one_valid_register(tmp_path):
     assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
 
 
+def test_append_records_refuses_a_symlinked_lock_path(tmp_path):
+    """A predictable lock name is safe only if opening it never follows a symlink.
+
+    Anything able to plant `.register.json.lock` before the first writer arrives
+    would otherwise redirect every future writer's exclusion lock onto a file of
+    its choosing -- defeating the serialization `append_records` exists to
+    provide, and doing so with no trace beyond the symlink itself.
+    """
+    path = tmp_path / "register.json"
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"untouched")
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.symlink_to(target)
+
+    with pytest.raises(SchemaRefusal, match="lock could not be opened without following"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert target.read_bytes() == b"untouched"
+    assert lock_path.is_symlink()
+    assert not path.exists()
+
+
 def test_a_stale_writer_cannot_overwrite_a_concurrent_append(tmp_path):
     path = tmp_path / "register.json"
     current = append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
@@ -749,6 +773,33 @@ def test_register_hardlink_is_refused_as_an_aliased_mutable_head(tmp_path):
     with pytest.raises(SchemaRefusal, match="unaliased regular file"):
         append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
     assert target.read_bytes() == empty_register()
+
+
+def test_a_directory_fsync_failure_reports_a_complete_but_not_proven_durable_successor(
+    tmp_path, monkeypatch
+):
+    """A crash window after rename is not misreported as an untouched register."""
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+    real_fsync = corpus_register.os.fsync
+    calls = 0
+
+    def fail_second_fsync(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated crash before directory durability")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(corpus_register.os, "fsync", fail_second_fsync)
+    with pytest.raises(ContractError, match="was replaced but its directory entry is not proven"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    # Rename is atomic: even in the uncertain-durability window, a live process
+    # sees the complete successor rather than a torn JSON document.
+    validate_register_bytes(path.read_bytes())
+    assert json.loads(path.read_bytes())["records"] == [_declaration()]
+    assert list(tmp_path.glob(".register.json.tmp-*")) == []
 
 
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
@@ -998,6 +1049,93 @@ def test_a_fresh_act_may_reappend_the_members_of_a_retracted_link():
         }
     )
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
+
+
+def test_a_correspondence_declared_twice_without_a_retraction_is_refused():
+    """A second identical declaration records nothing new and is not evidence."""
+    duplicate = _correspondence(CAPTURE_PAGE, CAPTURE_ACT, CAPTURE_BOUNDS)
+    with pytest.raises(SchemaRefusal, match="declaring it twice records nothing new"):
+        validate_register_bytes(_register(members=["a" * 64], extra=[duplicate]))
+
+
+def test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected():
+    """A retraction made in error must not be a corpus-lifetime fact.
+
+    Membership already works this way: reasserting withdrawn members is a new
+    operator act with its own appending run. A correspondence that could not be
+    reasserted at all would leave a wrongly corrected act with only one route
+    back to its physical act -- minting a second one for it, which is the
+    duplication the whole correspondence step exists to prevent.
+    """
+    act = CAPTURE_ACT
+    declaration = _correspondence(CAPTURE_PAGE, act, CAPTURE_BOUNDS)
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "a person confirmed two frames as one page and was wrong",
+        "appending_run": "triage-2",
+    }
+    withdrawn = _register(members=["a" * 64], extra=[withdrawal])
+    assert resolve_proposal(withdrawn, act) == {
+        "outcome": "finding",
+        "code": "retracted-physical-act",
+        "act_id": act,
+    }
+    reasserted = {**declaration, "appending_run": "triage-3"}
+    restored = _register(members=["a" * 64], extra=[withdrawal, reasserted])
+    resolution = resolve_proposal(restored, act)
+    assert resolution["outcome"] == "resolved"
+    assert resolution["physical_act_id"] == ACT
+    assert json.loads(restored)["records"][-3:] == [declaration, withdrawal, reasserted]
+    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+        validate_register_bytes(
+            _register(
+                members=["a" * 64],
+                extra=[withdrawal, {**withdrawal, "appending_run": "triage-4"}],
+            )
+        )
+
+
+def test_a_reasserted_correspondence_is_retractable_again(tmp_path):
+    """The lifecycle closes: declare, withdraw, reassert, withdraw again."""
+    act = CAPTURE_ACT
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "wrong capture",
+        "appending_run": "triage-2",
+    }
+    reasserted = {
+        **_correspondence(CAPTURE_PAGE, act, CAPTURE_BOUNDS),
+        "appending_run": "triage-3",
+    }
+    again = {**withdrawal, "reason": "wrong a second time", "appending_run": "triage-4"}
+    register = _register(members=["a" * 64], extra=[withdrawal, reasserted, again])
+    assert resolve_proposal(register, act)["code"] == "retracted-physical-act"
+    assert len(json.loads(register)["records"]) == 7
+
+
+def test_replaying_a_withdrawn_correspondence_verbatim_is_refused():
+    """Named for what it measures. The refusal here is the immutable-record one.
+
+    It was called "must be a new operator run", but the identity this replay
+    collides with is the declaration's, held in `seen` from the first
+    declaration -- so the refusal fires whether or not the run qualification
+    exists. The run qualification is proved by
+    `test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected`,
+    which needs the suffix for its reassertion to be accepted at all.
+    """
+    act = CAPTURE_ACT
+    declaration = _correspondence(CAPTURE_PAGE, act, CAPTURE_BOUNDS)
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "wrong capture",
+        "appending_run": "triage-2",
+    }
+    replayed = {**declaration, "evidence": ["operator:looked-again"]}
+    with pytest.raises(SchemaRefusal, match="repeats immutable record"):
+        validate_register_bytes(_register(members=["a" * 64], extra=[withdrawal, replayed]))
 
 
 def test_a_cleanup_only_failure_says_the_register_was_already_published(tmp_path, monkeypatch):

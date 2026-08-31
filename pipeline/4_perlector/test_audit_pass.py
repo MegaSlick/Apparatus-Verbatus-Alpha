@@ -74,7 +74,6 @@ def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_fl
         "act_key": "a1",
         "attempt_ordinal": 1,
         "semi_final_text": "alpha beta",
-        "page_id": "page-1",
         "page_ids": ["page-1"],
         "round_cap": 1,
         "policy": policy,
@@ -844,8 +843,14 @@ def test_omitting_an_intermediate_sibling_can_invent_an_adjacency_flag():
     assert "date-sequence" in {flag["class"] for flag in shortened["a3"]}
 
 
-def test_audit_page_set_keeps_the_act_primary_first_when_continuation_ordinal_is_lower():
-    """Source ordinal orders pages, not an act's primary-first reading basis."""
+def test_audit_page_ids_is_the_canonical_set_regardless_of_traversal_order():
+    """The page denominator is a sorted set; no traversal order survives it.
+
+    Ruling recorded once for the pair of retired primary-first tests: unit
+    19B's canonical page set replaces the primary-first ordering (the scalar
+    page_id left the closed field sets with it), and duplicate and
+    conflicting-ordinal protections stand on their own checks.
+    """
     perlector = _perlector()
     bases = [
         {"source_page_ordinal": 2, "source_page_id": "primary-page"},
@@ -853,7 +858,7 @@ def test_audit_page_set_keeps_the_act_primary_first_when_continuation_ordinal_is
         {"source_page_ordinal": 2, "source_page_id": "primary-page"},
     ]
 
-    assert perlector.audit_page_ids(bases) == ["primary-page", "earlier-continuation"]
+    assert perlector.audit_page_ids(bases) == ["earlier-continuation", "primary-page"]
 
 
 def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
@@ -1014,7 +1019,6 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
         "act_key": "a1",
         "attempt_ordinal": 1,
         "semi_final_text": "x",
-        "page_id": "p1",
         "page_ids": ["p1"],
         "round_cap": 1,
         "policy": policy,
@@ -1364,7 +1368,6 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
         subject_id=final["subject_id"],
     )
     drifted_finding = copy.deepcopy(finding)
-    drifted_finding["payload"]["page_id"] = "pg_drifted"
     drifted_finding["payload"]["page_ids"] = ["pg_drifted"]
     audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
 
@@ -1404,8 +1407,8 @@ def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_pat
     )
     forged_draft = copy.deepcopy(draft)
     forged_finding = copy.deepcopy(finding)
-    primary_page = forged_draft["payload"]["page_id"]
     assert len(forged_draft["payload"]["page_ids"]) == 2
+    primary_page = forged_draft["payload"]["page_ids"][0]
     forged_draft["payload"]["page_ids"] = [primary_page]
     forged_finding["payload"]["page_ids"] = [primary_page]
     forged_final = copy.deepcopy(final)
@@ -1420,21 +1423,24 @@ def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_pat
         audit.validate_chain(ForgedTree(), forged_final, final["subject_id"])
 
 
-def test_shared_chain_keeps_primary_first_when_a_continuation_page_ordinal_is_lower(tmp_path):
-    """The independent audit verifier must use sealed region order too."""
-    result = _run(tmp_path / "runs")
+def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root)
     assert result.returncode == 0, result.stderr
-    tree = RunTree(tmp_path / "runs", "r")
+    tree = RunTree(root, "r")
     final = next(
         record
         for record in _records(tree, "perlectio")
-        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) == 2
+        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) > 1
     )
-    reversed_ordinals = copy.deepcopy(final)
-    primary, continuation = reversed_ordinals["payload"]["basis"]["regions"][:2]
-    primary["source_page_ordinal"] = 2
-    continuation["source_page_ordinal"] = 1
-
-    # The primary-first audit record remains valid. Sorting these pages by
-    # source ordinal would reverse them and falsely reject the sealed chain.
-    audit.validate_chain(tree, reversed_ordinals, final["subject_id"])
+    draft = tree.read_artifact_reference(
+        final["payload"]["audit"]["draft_ref"],
+        stage=PERLECTOR,
+        kind="audit-draft",
+        subject_id=final["subject_id"],
+    )["payload"]
+    assert len(draft["page_ids"]) > 1
+    reordered = copy.deepcopy(draft)
+    reordered["page_ids"].reverse()
+    with pytest.raises(SchemaRefusal, match="canonical page set"):
+        audit.validate_draft(reordered)

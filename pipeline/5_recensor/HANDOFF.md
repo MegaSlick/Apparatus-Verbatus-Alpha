@@ -167,6 +167,36 @@ An accepted review is not a new reading and does not select among witnesses. It
 only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.
 
+## Cross-capture visibility: `payload["cross_capture_coverage"]`
+
+Surveyed from the exact Perlectio the review assesses, never from whatever
+presentation a later pass could rebuild. `None` is a fact and not an omission:
+this act's current reading delivered no registered capture presentation at all.
+Two shapes reach it — a Designator-held act, which was never shown capture
+pixels, and a reading published without one, of which `not-run` over the sealed
+image ceiling (`cluster-presentation-over-capacity`) is the live case. Neither
+is lost: the act takes `held-for-review` on its own reading outcome, the run's
+aggregate is partial, and the capacity sentence itself is one hop away through
+`perlectio_ref`. **Recovery is not the route for it.** A bounded recrop buys
+coverage of ink nobody read; a presentation that does not fit one reader request
+is answered by a ceiling a human sets, not by another crop of the same act.
+
+Where a presentation does exist, each capture row carries a measured
+`visibility_state` or a named absence code —
+`act-visibility-survey-absent`, `cross-capture-registration-absent`,
+`act-visibility-survey-spans-two-pages`. An absent instrument is recorded and
+routed like `False` (`review_route_from_findings`): absence is not a measured
+shortfall, and holding an act on an instrument that never ran would report a
+measurement nobody took.
+
+**The occlusion instrument has no producer today.** The survey reads
+Designator `kind="occlusion"` artifacts; no stage publishes that kind (see the
+Designator handoff's closing section), so every capture row on every current run
+records `act-visibility-survey-absent` and no visibility measurement exists
+anywhere in a run. The consumer obligation that follows: this field may be read
+as "measured and visible" only when a row carries a visibility state, never
+because the field is present.
+
 ## Blank confirmation: `confirmed-blank`, the other terminal outcome for a non-completed reading
 
 ARCHITECTURE and spec 09 name it: "a zero-output unit is diagnosed, then either

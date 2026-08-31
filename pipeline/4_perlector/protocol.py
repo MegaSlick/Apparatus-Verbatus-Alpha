@@ -31,10 +31,12 @@ PASS_B_FRAGMENT: Final = (
     "This is a prior reading. It may be correct, incomplete, or wrong. Independently reread "
     "the image, preserve what the ink supports, and change only what the image justifies."
 )
-_FIELDS: Final = frozenset({"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"})
+_FIELDS: Final = frozenset(
+    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment", "max_images"}
+)
 
 
-def load(path: str | Path) -> tuple[dict[str, str], str]:
+def load(path: str | Path) -> tuple[dict[str, str | int], str]:
     """Read the exact policy bytes a Perlector pass will use."""
     try:
         raw = Path(path).read_bytes()
@@ -43,8 +45,19 @@ def load(path: str | Path) -> tuple[dict[str, str], str]:
         raise ContractError(
             f"the Perlector protocol declaration at {path} could not be read"
         ) from error
-    if set(record) != _FIELDS or not all(isinstance(record[key], str) for key in _FIELDS):
-        raise ContractError("the Perlector protocol declaration is not its closed string schema")
+    if set(record) != _FIELDS or not all(
+        isinstance(record[key], str) for key in _FIELDS - {"max_images"}
+    ):
+        raise ContractError("the Perlector protocol declaration is not its closed schema")
+    if (
+        not isinstance(record["max_images"], int)
+        or isinstance(record["max_images"], bool)
+        or record["max_images"] <= 0
+    ):
+        raise ContractError(
+            "the Perlector protocol declaration's max_images is not a positive integer, "
+            f"got {record['max_images']!r}"
+        )
     if record["selection_rule"] != SELECTION_RULE:
         raise ContractError("the Perlector protocol declaration names an unknown selection rule")
     if record["page_shared_prefix_policy"] != PAGE_SHARED_PREFIX_POLICY:
