@@ -19,6 +19,7 @@ from . import console, notify_bridge
 from .advance import sealed_boundary, trigger_advance
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
+from .ingest import ingest_in_custody
 from .review import ReadOnlyRun
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
@@ -182,6 +183,7 @@ def build_parser() -> PlainParser:
     upload.add_argument(
         "--source", type=Path, required=True, help="folder containing the submitted files"
     )
+
     reuse = upload.add_mutually_exclusive_group(required=True)
     reuse.add_argument(
         "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
@@ -202,6 +204,37 @@ def build_parser() -> PlainParser:
             "GPU-hours. Credentials are read from RUNPOD_S3_ACCESS_KEY and "
             "RUNPOD_S3_SECRET_KEY in your environment, never from a file here"
         ),
+    )
+
+    ingest = verbs.add_parser(
+        "ingest",
+        help="prepare one folder for the Door: ledger, data gate, triage evidence, and confirmation",
+    )
+    ingest.add_argument(
+        "--source", type=Path, required=True, help="folder containing submitted masters"
+    )
+    ingest.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="existing empty approved folder for the ready-to-submit records",
+    )
+    ingest.add_argument(
+        "--policy",
+        type=Path,
+        help="reviewed data-handling policy (defaults to config/data_handling_policy.json)",
+    )
+    ingest.add_argument("--corpus-id", required=True, help="non-empty corpus identity for triage")
+    ingest.add_argument(
+        "--mode",
+        choices=("manual", "semi", "auto"),
+        default="auto",
+        help="declared triage mode; all current modes remain routed to review",
+    )
+    ingest.add_argument(
+        "--confirmation-file",
+        type=Path,
+        help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
     )
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
@@ -258,6 +291,33 @@ def build_parser() -> PlainParser:
     backup.add_argument(
         "--mac-directory", type=Path, required=True, help="local synced backup directory"
     )
+    triage = verbs.add_parser(
+        "triage", help="declare a batch mode and walk its offline review queue"
+    )
+    triage.add_argument(
+        "--manifest", type=Path, required=True, help="producer decision manifest JSON"
+    )
+    triage.add_argument(
+        "--evidence", type=Path, required=True, help="candidate evidence JSON {records}"
+    )
+    triage.add_argument("--proxy-paths", type=Path, required=True, help="digest-to-proxy-path JSON")
+    triage.add_argument("--mode", required=True, choices=("manual", "semi", "auto"))
+    triage.add_argument("--batch-id", required=True)
+    triage.add_argument("--operator", required=True)
+    triage.add_argument("--mode-record", type=Path, required=True)
+    triage.add_argument("--queue-state", type=Path, help="append-only decision journal")
+    triage_decision = triage.add_mutually_exclusive_group()
+    triage_decision.add_argument(
+        "--decline", metavar="ITEM_SHA256", help="record a visible decline"
+    )
+    triage_decision.add_argument(
+        "--accept", metavar="ITEM_SHA256", help="accept this cluster candidate"
+    )
+    triage.add_argument(
+        "--draft", type=Path, help="canonical confirmation draft shown to the operator"
+    )
+    triage.add_argument("--confirmation-out", type=Path, help="producer confirmation-file target")
+    triage.add_argument("--preview-sha256", help="digest of the draft shown before writing")
     return parser
 
 
@@ -322,6 +382,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     policy_path=args.policy,
                     volume=volume,
                 )
+        elif args.verb == "ingest":
+            ingest_in_custody(
+                source=args.source,
+                output_dir=args.output_dir,
+                policy_path=args.policy,
+                corpus_id=args.corpus_id,
+                mode=args.mode,
+                confirmation_file=args.confirmation_file,
+                workspace=workspace,
+                printer=_print,
+            )
         elif args.verb == "run":
             surface.run(
                 run_id=args.run_id,
@@ -351,6 +422,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.verb == "backup":
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
+        elif args.verb == "triage":
+            _triage_queue(args, workspace)
         # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(
@@ -498,6 +571,101 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     )
 
 
+def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
+    """Render paths and evidence; the console never opens a master or chooses a link."""
+    from . import triage
+
+    try:
+        # Completeness first, before anything durable. `write_mode_declaration`
+        # refuses to rewrite a batch's declared mode once it exists, so an
+        # incomplete `--accept` that wrote the record and *then* refused left the
+        # mode for that batch claimed by a command that did nothing — and an
+        # operator who corrects the invocation to a different `--mode` is then
+        # refused by their own abandoned attempt.
+        if args.decline is not None and args.queue_state is None:
+            raise triage.TriageRefusal(
+                "triage refusal queue-state-required: decline needs --queue-state"
+            )
+        # A decline carrying acceptance arguments. The guard below catches the
+        # companions supplied with *no* decision word; this catches them supplied
+        # with the *wrong* one. --draft, --confirmation-out and --preview-sha256
+        # belong to --accept alone, and the decline path ignored all three in
+        # silence while journalling the decline and exiting 0. A decided row is
+        # never rewritten, so the acceptance the operator was plainly assembling
+        # -- they had produced a draft and its preview digest -- became
+        # permanently unreachable for that item, and the console had called it
+        # success.
+        if args.decline is not None and any(
+            (args.draft, args.confirmation_out, args.preview_sha256)
+        ):
+            raise triage.TriageRefusal(
+                "triage refusal decline-with-acceptance-arguments: --draft, "
+                "--confirmation-out and --preview-sha256 belong to --accept; a decline "
+                "would ignore them and decide this row for good"
+            )
+        # The reverse direction. The checks above refuse a decision missing its
+        # companions; without this one, the companions supplied *without* a
+        # decision word printed the queue and exited 0, so an operator who meant
+        # to accept was told the command succeeded while nothing was journalled
+        # -- and the batch's mode was claimed by that non-decision on the way.
+        # `--queue-state` is deliberately absent from this list: reading the
+        # journal alongside the rendered queue is a legitimate display run.
+        if (
+            args.accept is None
+            and args.decline is None
+            and any((args.draft, args.confirmation_out, args.preview_sha256))
+        ):
+            raise triage.TriageRefusal(
+                "triage refusal decision-word-required: --draft, --confirmation-out and "
+                "--preview-sha256 belong to an --accept or a --decline, and none was given"
+            )
+        if args.accept is not None:
+            if args.queue_state is None or args.draft is None or args.confirmation_out is None:
+                raise triage.TriageRefusal(
+                    "triage refusal acceptance-incomplete: accept needs --queue-state, --draft, and --confirmation-out"
+                )
+            if args.preview_sha256 is None:
+                raise triage.TriageRefusal(
+                    "triage refusal preview-confirmation-required: accept needs the shown preview digest"
+                )
+        declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
+        # The queue loads before the declaration is persisted, for the same
+        # reason the flag checks run before both: `load_queue` refuses an
+        # unreadable or non-canonical manifest, evidence or proxy map, and a
+        # mode record written ahead of it claimed the batch for a command that
+        # then refused. `declare_mode` above only builds and validates the
+        # record; nothing durable happens until the batch is known to load.
+        queue = triage.load_queue(
+            args.manifest,
+            args.evidence,
+            args.proxy_paths,
+            mode=args.mode,
+            batch_id=args.batch_id,
+            operator=args.operator,
+            triage_modes_path=workspace / "config" / "triage_modes.toml",
+        )
+        triage.write_mode_declaration(args.mode_record, declaration)
+        if args.decline is not None:
+            triage.append_decision(
+                args.queue_state, queue, item_digest=args.decline, decision="decline"
+            )
+        if args.accept is not None:
+            draft = triage.load_confirmation_draft(args.draft)
+            # Acceptance spans two durable files; this transaction API preserves
+            # journal-first ordering and resumes a missing confirmation on replay.
+            triage.accept_candidate(
+                args.queue_state,
+                queue,
+                item_digest=args.accept,
+                draft=draft,
+                confirmation_path=args.confirmation_out,
+                preview_sha256=args.preview_sha256,
+            )
+        _print(json.dumps(queue, sort_keys=True))
+    except triage.TriageRefusal as error:
+        raise OperatorError(ErrorCode.TRIAGE_REFUSED, detail=str(error)) from error
+
+
 def _advance_with_confirmation(
     run_root: Path,
     run_id: str,
@@ -639,7 +807,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: launch, boot, upload, run, export, close, status, review, advance, or backup."
+        "Choose one word: ingest, triage, launch, boot, upload, run, export, close, status, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -686,6 +854,91 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         return ["upload", "--source", source, "--manifest-out", manifest_out]
+    if verb == "ingest":
+        source = _ask("Folder containing the submitted master files")
+        output_dir = _ask("Existing empty approved folder for the ready-to-submit records")
+        policy = _ask("Reviewed data-handling policy (leave blank for the project default)")
+        corpus_id = _ask("Corpus ID")
+        # The prompt names the three legal words. Without them a typo reaches
+        # argparse's `choices`, and the double-click window answers a person's
+        # reasonable guess with "invalid choice" instead of the list they needed.
+        mode = _ask("Triage mode — manual, semi, or auto", default="auto")
+        confirmation = _ask(
+            "Canonical cluster confirmation file (leave blank when confirming no cluster)"
+        )
+        if not source or not output_dir or not corpus_id:
+            _print(
+                "Ingest needs a submitted folder, an empty approved output folder, and a corpus ID. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = [
+            "ingest",
+            "--source",
+            source,
+            "--output-dir",
+            output_dir,
+            "--corpus-id",
+            corpus_id,
+            "--mode",
+            mode,
+        ]
+        if confirmation:
+            arguments.extend(("--confirmation-file", confirmation))
+        if policy:
+            arguments.extend(("--policy", policy))
+        return arguments
+    if verb == "triage":
+        manifest = _ask("Producer decision manifest JSON")
+        evidence = _ask("Candidate evidence JSON")
+        proxy_paths = _ask("Digest-to-proxy-path JSON")
+        # The prompt names the three legal words for the same reason ingest's
+        # does: argparse `choices` answers a guess with "invalid choice".
+        #
+        # No default. This route is display-only for *decisions*, but every
+        # triage invocation still writes the batch's mode declaration, and that
+        # record is durable and is never rewritten. Defaulting to `semi` meant
+        # someone who chose `triage` merely to look at the queue permanently
+        # claimed that batch's mode with a word they had never chosen, and a
+        # later `--mode manual` for the same batch was refused by their own
+        # glance. The verb route requires `--mode`; asking for it here is the
+        # same requirement in the same words.
+        mode = _ask("Triage mode — manual, semi, or auto")
+        batch_id = _ask("Batch ID")
+        operator = _ask("Operator name for the mode record")
+        mode_record = _ask("Path where the mode declaration should be recorded")
+        if not all((manifest, evidence, proxy_paths, mode, batch_id, operator, mode_record)):
+            _print(
+                "Triage needs the manifest, evidence, proxy paths, mode, batch ID, operator, "
+                "and mode-record path. One was left blank, so nothing changed."
+            )
+            return []
+        # Display only, deliberately. This route shows the queue and records no
+        # decision. Acceptance is pinned to `--preview-sha256`, the digest of the
+        # draft the operator was actually shown, and a blind prompt chain cannot
+        # honestly produce that — it would be asking someone to confirm a digest
+        # they have not seen, which is the one thing that confirmation exists to
+        # prevent. Decline is withheld with it rather than offering half a
+        # decision surface where a queue item can be dismissed before its
+        # evidence is on screen. Both are recorded at the command line, where the
+        # digests are visible and checkable.
+        return [
+            "triage",
+            "--manifest",
+            manifest,
+            "--evidence",
+            evidence,
+            "--proxy-paths",
+            proxy_paths,
+            "--mode",
+            mode,
+            "--batch-id",
+            batch_id,
+            "--operator",
+            operator,
+            "--mode-record",
+            mode_record,
+        ]
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

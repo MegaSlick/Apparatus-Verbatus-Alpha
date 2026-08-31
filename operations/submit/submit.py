@@ -46,10 +46,11 @@ verifier; it makes observable claims only.
 import argparse
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Final, NoReturn
+from typing import Any, Final, Literal, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -250,10 +251,10 @@ def _write_refusal_report(path: Path, records: list[dict[str, str]]) -> Path:
     report = build_refusal_report(records)
     data = canonical_bytes(report)
     try:
-        _atomic_create(path, data)
+        atomic_create(path, data)
     except ExistingRecordRefusal:
         fallback = _content_addressed_report_path(path, report["self_hash"])
-        _atomic_create(fallback, data)
+        atomic_create(fallback, data)
         return fallback
     return path
 
@@ -263,7 +264,7 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
     return path.with_name(f"{path.stem}.{report_hash}{path.suffix}")
 
 
-def _atomic_create(target: Path, data: bytes) -> bool:
+def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
     GOVERNANCE 4: evidence is never overwritten. `os.replace` clobbered
@@ -277,6 +278,14 @@ def _atomic_create(target: Path, data: bytes) -> bool:
     this record sits upstream of any run tree and had no such protection. Identical
     bytes are a true no-op, so a byte-identical resubmission stays idempotent.
     Returns True when the file was created, False when an identical one was reused.
+
+    Public because `operations/operator/ingest_worker.py` depends on exactly this
+    three-way behaviour — created, reused-identical, or `ExistingRecordRefusal` —
+    and reads the False as its own refusal, since an entry appearing inside a
+    folder it just checked was empty is a concurrent change rather than a retry.
+    It reached that through the private name, which left this function looking
+    free to change its return convention when it is not. Renaming it is the whole
+    of that change; the behaviour is untouched.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -304,9 +313,19 @@ def _atomic_create(target: Path, data: bytes) -> bool:
         try:
             os.link(temporary, target)
         except FileExistsError:
-            if _read_or_none(target) == data:
+            state = _existing_record_state(target, data)
+            if state == "matches":
                 completed = True
                 return False
+            if state == "unknown":
+                raise ExistingRecordRefusal(
+                    "something already exists at that path and could not be read as a regular "
+                    "file, so it cannot be shown to seal these bytes. Evidence is never "
+                    "overwritten (GOVERNANCE 4): it was not touched. This is not a report that "
+                    "the submission changed — a symlink, a directory, or an unreadable entry "
+                    "there is a different problem, and it needs looking at rather than a new "
+                    "manifest path"
+                ) from None
             raise ExistingRecordRefusal(
                 "a sealed submission record already exists at that path and seals different "
                 "content. Evidence is never overwritten (GOVERNANCE 4): the existing "
@@ -338,11 +357,51 @@ def _atomic_create(target: Path, data: bytes) -> bool:
                 ) from error
 
 
-def _read_or_none(path: Path) -> bytes | None:
+def _existing_record_state(path: Path, expected: bytes) -> Literal["matches", "differs", "unknown"]:
+    """Compare one held regular-file descriptor without following a redirect.
+
+    Three outcomes, not two. "Could not be compared" is a different fact from
+    "seals different content", and only one of them is about the submission. A
+    symlink caught by `O_NOFOLLOW`, a directory, an unreadable entry, or a
+    platform with no `O_NOFOLLOW` at all all landed in the same `False` as a
+    genuine content difference, and the caller then told the operator that the
+    existing record sealed something else — sending whoever read it to hunt for
+    a difference in content when what was actually sitting at that path was a
+    planted link. Both still refuse and neither ever writes; they are told
+    apart so the refusal names the problem the operator actually has.
+
+    **POSIX only, and deliberately so.** Without `O_NOFOLLOW` there is no way to
+    compare the entry at that path without risking following a redirect to
+    somewhere else, so this reports "unknown" and the caller refuses. On such a
+    platform a byte-identical resubmission stops being idempotent and is refused
+    instead of reused. That is the correct trade and not a gap to close: the
+    alternative is a comparison that can be pointed at another file, which is
+    the exact attack `atomic_create` exists to refuse. This repository is POSIX
+    only regardless — `operations/operator/custody.py` has an OS boundary for
+    Linux and macOS alone and refuses to open the console anywhere else — so no
+    supported platform reaches this branch.
+    """
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        return "unknown"
+    descriptor: int | None = None
     try:
-        return path.read_bytes()
+        descriptor = os.open(path, os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0))
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            return "unknown"
+        # A successful stat of a regular file is a real comparison: a different
+        # length is a content difference, not a failure to look.
+        if details.st_size != len(expected):
+            return "differs"
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return "matches" if handle.read(len(expected) + 1) == expected else "differs"
     except OSError:
-        return None
+        return "unknown"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _is_sha256(value: Any) -> bool:
@@ -381,12 +440,12 @@ def submit(
             refusal_report_out, roots, "private refusal report"
         )
     )
-    if resolved_manifest.is_relative_to(resolved_source):
+    if gate.same_or_inside(resolved_source, resolved_manifest):
         raise SubmitRefusal(
             "the submission manifest cannot be written inside the submitted folder; "
             "otherwise the next inventory includes its own prior output and cannot be idempotent"
         )
-    if report_target.is_relative_to(resolved_source):
+    if gate.same_or_inside(resolved_source, report_target):
         raise SubmitRefusal(
             "the private refusal report cannot be written inside the submitted folder; "
             "otherwise a retry inventories the tool-produced report as a submitted source"
@@ -413,7 +472,7 @@ def submit(
         ) from error
     manifest = build_manifest(entries)
     data = canonical_bytes(manifest)
-    _atomic_create(resolved_manifest, data)
+    atomic_create(resolved_manifest, data)
     log("submission sealed", files=len(entries), digest=digest_bytes(data))
     return manifest
 

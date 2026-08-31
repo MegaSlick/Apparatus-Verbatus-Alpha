@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import tracemalloc
@@ -1431,6 +1433,59 @@ def test_console_parser_never_prints_a_raw_traceback(capsys: pytest.CaptureFixtu
     assert "What it means:" in captured
     assert "Next step:" in captured
     assert "Traceback" not in captured
+
+
+def test_every_declared_verb_with_a_required_flag_has_an_interactive_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reflect over the parser's own verbs rather than hand-listing one at a time.
+
+    A hand-picked check of, say, only `ingest` would still pass the day a new verb
+    is added to `build_parser()` with a required flag and no matching branch in
+    `_interactive_arguments`: the trailing fallthrough there returns the bare verb
+    name, and argparse then refuses for "missing required argument" — a person at
+    the double-click window gets no prompt for the fact it needed, only a cryptic
+    parse failure. Walking the parser's declared subcommands and their `required`
+    flags means a future verb is covered automatically, not by remembering to add
+    another hand-written case here.
+    """
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    assert subparsers_action.choices, "the parser declared no verbs to enumerate"
+
+    for verb, subparser in subparsers_action.choices.items():
+        required_flags = sorted(
+            option
+            for action in subparser._actions
+            for option in action.option_strings
+            if action.required
+        )
+        # A required mutually exclusive group is the same hazard by another
+        # spelling: argparse refuses "one of the arguments ... is required" and
+        # the person at the double-click window gets the same cryptic parse
+        # failure. `upload` declares one today over --sealed-manifest and
+        # --manifest-out, and `action.required` is False on both of its members,
+        # so walking actions alone would never see it.
+        required_groups = [
+            sorted(option for action in group._group_actions for option in action.option_strings)
+            for group in subparser._mutually_exclusive_groups
+            if group.required
+        ]
+        answers = iter([verb, *(f"placeholder-{index}" for index in range(20))])
+        monkeypatch.setattr("builtins.input", lambda _prompt, answers=answers: next(answers))
+        arguments = cli._interactive_arguments()
+        missing = [flag for flag in required_flags if flag not in arguments]
+        assert not missing, (
+            f"verb {verb!r} declares required flag(s) {missing} that the double-click "
+            "interactive route never asks for or supplies"
+        )
+        for options in required_groups:
+            assert any(option in arguments for option in options), (
+                f"verb {verb!r} declares a required choice between {options} that the "
+                "double-click interactive route never asks for or supplies"
+            )
 
 
 def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
@@ -3545,3 +3600,44 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
     saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]
     assert saved["preview"]["spend"]["pod_hourly_usd"] == "0.77"
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
+
+
+def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> None:
+    """The word table is the operator's map; a verb missing from it is invisible.
+
+    `triage` shipped with a subcommand, an interactive prompt entry and no row
+    here, so the console offered a word its own manual did not contain — and the
+    "N words" heading counted the table rather than the parser, which meant the
+    number read as confirmation while being wrong. Reconciling the two lists is
+    the same guard `common/chairs` puts between `models.toml` and the
+    materialization inventory: two places name one set, so a test holds them
+    together instead of a reviewer noticing.
+    """
+    readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^\| `([a-z]+)` \|", readme, flags=re.MULTILINE))
+    subparsers_action = next(
+        action
+        for action in cli.build_parser()._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    declared = set(subparsers_action.choices)
+
+    assert documented == declared, (
+        f"the operator README's word table and the parser disagree: "
+        f"undocumented verbs {sorted(declared - documented)}, "
+        f"documented non-verbs {sorted(documented - declared)}"
+    )
+
+    counted = len(declared)
+    spelled = {
+        11: ("eleven", "Ten"),
+        12: ("twelve", "Eleven"),
+        13: ("thirteen", "Twelve"),
+    }
+    assert counted in spelled, (
+        f"{counted} verbs: extend this test's number words so the heading stays checkable"
+    )
+    total, doers = spelled[counted]
+    # The heading counts every word; the sentence counts every word but `status`.
+    assert f"## The {total} words" in readme
+    assert f"\n{doers} things this tool can do," in readme

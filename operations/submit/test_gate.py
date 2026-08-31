@@ -150,3 +150,72 @@ def test_a_symlink_cannot_walk_material_into_an_approved_root(tmp_path, policy):
     roots = gate.approved_storage_roots(dict(policy, storage_roots=[str(approved)]))
     with pytest.raises(gate.GateRefusal, match="symlink"):
         gate.require_approved_storage_location(approved / "link", roots, "folder")
+
+
+def test_an_intermediate_symlink_below_the_approved_root_is_also_refused(tmp_path, policy):
+    approved = tmp_path / "approved"
+    actual = approved / "actual"
+    (actual / "batch").mkdir(parents=True)
+    (approved / "redirect").symlink_to(actual, target_is_directory=True)
+    roots = gate.approved_storage_roots(dict(policy, storage_roots=[str(approved)]))
+
+    with pytest.raises(gate.GateRefusal, match="crosses a symlink"):
+        gate.require_approved_storage_location(approved / "redirect" / "batch", roots, "folder")
+
+
+def test_an_unapproved_location_is_named_as_unapproved_not_as_a_redirect(tmp_path, policy):
+    """A refusal must name the problem the operator actually has.
+
+    The redirect walk stops when it meets an approved root. A location under no
+    approved root therefore walked to the filesystem root and reported the first
+    ordinary platform alias it met -- `/tmp` is a symlink on macOS -- as
+    "crosses a symlink; an approved storage root cannot be entered by redirect".
+    The material was refused either way, so nothing was written anywhere it
+    should not be; the cost was that the operator was sent to hunt for a planted
+    redirect when the true fact was that the folder is not approved at all.
+
+    The alias is built here rather than borrowed from the platform, so the case
+    holds on a runner whose `/tmp` is a real directory.
+    """
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    roots = gate.approved_storage_roots(dict(policy, storage_roots=[str(approved)]))
+
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "batch").mkdir(parents=True)
+    alias = tmp_path / "platform-alias"
+    alias.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(gate.GateRefusal) as refusal:
+        gate.require_approved_storage_location(alias / "batch", roots, "submitted folder")
+
+    assert "outside every approved storage root" in str(refusal.value)
+    assert "crosses a symlink" not in str(refusal.value)
+
+
+def test_containment_is_judged_by_filesystem_identity_not_spelling(tmp_path):
+    """Case variants must remain contained when text comparison disagrees."""
+    source = tmp_path / "masters"
+    source.mkdir()
+    sibling = tmp_path / "ready"
+    sibling.mkdir()
+    assert gate.same_or_inside(source, source)
+    assert gate.same_or_inside(source, source / "inside")
+    assert not gate.same_or_inside(source, sibling)
+    assert not gate.same_or_inside(source, sibling / "not-yet-written.json")
+    assert not gate.same_or_inside(tmp_path / "never-made", source)
+    variant = tmp_path / "Masters"
+    if variant.is_dir():  # Only case-insensitive filesystems make these names identical.
+        assert gate.same_or_inside(source, variant / "ready")
+        assert not (variant / "ready").is_relative_to(source)
+
+    # The identity case that runs everywhere. Every assertion above this line
+    # also holds for a plain `is_relative_to` implementation, and the block just
+    # above is skipped on a case-sensitive filesystem, so on the Linux CI legs
+    # nothing here could fail if `same_or_inside` regressed to comparing
+    # spellings. A symlinked alias is the same directory under a different name
+    # on every platform, which is precisely the distinction being claimed.
+    alias = tmp_path / "alias"
+    alias.symlink_to(source, target_is_directory=True)
+    assert gate.same_or_inside(source, alias / "inside")
+    assert not (alias / "inside").is_relative_to(source)

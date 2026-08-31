@@ -432,6 +432,102 @@ def test_resubmitting_identical_content_to_one_path_is_still_a_true_no_op(submis
     assert submission["manifest_out"].exists()
 
 
+def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
+    """An EEXIST comparison must identify the directory entry without following it."""
+    target = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    data = b"identical sealed bytes"
+    referent.write_bytes(data)
+    target.symlink_to(referent)
+    planted_destination = os.readlink(target)
+
+    with pytest.raises(submit.ExistingRecordRefusal, match="Evidence is never overwritten"):
+        submit.atomic_create(target, data)
+
+    assert target.is_symlink()
+    # Still a link, still to the same place. Checking only `is_symlink` would
+    # pass a defect that re-pointed the planted link at something else, which is
+    # the very manipulation this test exists to pin.
+    assert os.readlink(target) == planted_destination
+    assert referent.read_bytes() == data
+
+
+def test_a_planted_link_to_different_bytes_is_never_written_through(tmp_path):
+    """The identical-referent case cannot see a write-through; this one can.
+
+    When the referent already holds the same bytes, a defect that followed the
+    link and wrote would leave it byte-identical and undetectable. Giving the
+    referent different content makes the write visible. This is not hypothetical
+    for this function: `atomic_create` exists because `os.replace` used to
+    clobber unconditionally, and `os.replace` onto a symlink writes through it.
+    """
+    target = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    original = b"a wholly different sealed record"
+    referent.write_bytes(original)
+    target.symlink_to(referent)
+
+    with pytest.raises(submit.ExistingRecordRefusal):
+        submit.atomic_create(target, b"identical sealed bytes")
+
+    assert target.is_symlink()
+    assert os.readlink(target) == str(referent)
+    assert referent.read_bytes() == original
+
+
+def test_an_uncomparable_target_is_not_reported_as_a_changed_submission(tmp_path):
+    """The two refusals must stay distinguishable, or the message misdirects.
+
+    A planted symlink and a genuinely different sealed record both refuse and
+    neither is overwritten, but they are different problems and only one of them
+    is about the submission. When both produced "seals different content", the
+    operator was sent to diff a manifest that was never the issue.
+    """
+    linked = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    data = b"identical sealed bytes"
+    referent.write_bytes(data)
+    linked.symlink_to(referent)
+
+    with pytest.raises(submit.ExistingRecordRefusal) as uncomparable:
+        submit.atomic_create(linked, data)
+
+    directory = tmp_path / "a-directory.json"
+    directory.mkdir()
+    with pytest.raises(submit.ExistingRecordRefusal) as also_uncomparable:
+        submit.atomic_create(directory, data)
+
+    changed = tmp_path / "changed.json"
+    changed.write_bytes(b"a genuinely different sealed record")
+    with pytest.raises(submit.ExistingRecordRefusal) as differs:
+        submit.atomic_create(changed, data)
+
+    for caught in (uncomparable, also_uncomparable):
+        assert "could not be read as a regular file" in str(caught.value)
+        assert "seals different content" not in str(caught.value)
+    assert "seals different content" in str(differs.value)
+    assert "could not be read as a regular file" not in str(differs.value)
+    # Whichever refusal fired, GOVERNANCE 4 holds and nothing was written.
+    assert os.readlink(linked) == str(referent)
+    assert directory.is_dir() and not any(directory.iterdir())
+    assert changed.read_bytes() == b"a genuinely different sealed record"
+
+
+def test_a_same_length_difference_is_a_difference_not_a_failure_to_compare(tmp_path):
+    """A readable regular file of equal size was really compared; say so.
+
+    The existing bytes share every byte but the last, so a comparison that read
+    only a prefix would call this a match. Filling the file with a repeated byte
+    would differ at offset zero instead, and let such a defect through.
+    """
+    data = b"identical sealed bytes"
+    target = tmp_path / "sealed.json"
+    target.write_bytes(data[:-1] + b"X")
+
+    with pytest.raises(submit.ExistingRecordRefusal, match="seals different content"):
+        submit.atomic_create(target, data)
+
+
 # --- The walk is bounded in every direction an attacker shapes -------------------
 
 
@@ -578,7 +674,7 @@ def test_a_successful_manifest_with_an_unremoved_temp_is_not_reported_complete(
     monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
 
     with pytest.raises(submit.SubmitRefusal, match="temporary file could not be removed"):
-        submit._atomic_create(target, b"synthetic manifest")
+        submit.atomic_create(target, b"synthetic manifest")
     assert target.read_bytes() == b"synthetic manifest"
 
 
