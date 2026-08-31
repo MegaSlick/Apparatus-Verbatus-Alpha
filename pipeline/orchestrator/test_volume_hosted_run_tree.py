@@ -412,6 +412,17 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # exclusion path is measured on every run instead of occasionally.
     planted = volume / "r" / ".run.json.tmp-interruptedpublication"
     planted.write_bytes(b"an interrupted publication, mid-write when the driver died")
+
+    # A name shaped exactly like a publication temporary, `.<target>.tmp-<unique>`,
+    # is not enough: the target it names must also resolve inside
+    # `RunTree.inventory_scope()`, or the exclusion could carry off a file the
+    # backup owed a person. `_is_publication_temporary_name` below tests the shape
+    # alone and would wrongly accept this one, so the scope check is what has to
+    # catch it.
+    out_of_scope_target = "not-a-managed-run-tree-path"
+    assert out_of_scope_target not in RunTree(volume, "r").inventory_scope()
+    unmanaged = volume / "r" / f".{out_of_scope_target}.tmp-outsidescope"
+    unmanaged.write_bytes(b"a temp-shaped name for a path this store never manages")
     crashed = snapshot(volume)
 
     mac = tmp_path / "Mac Backup"
@@ -435,6 +446,10 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     assert all(_is_publication_temporary_name(name) for name in excluded), sorted(excluded)
     published = {f"{run}/{row['relative_path']}" for row in manifest["files"]}
     assert published == set(crashed) - excluded
+    assert f"{run}/{unmanaged.name}" not in excluded, (
+        "a temp-shaped name whose target lies outside inventory_scope() was excluded anyway"
+    )
+    assert f"{run}/{unmanaged.name}" in published
     # Distinct run-tree paths may share verified bytes, so copied plus reused --
     # not copied alone -- is what must account for every published member. pr/08
     # additionally asserted `reused == 0` ("nothing was in the object store
@@ -463,6 +478,10 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # macOS while it said otherwise, because where a SIGKILL lands is the scheduler's
     # decision and the surviving `.tmp-` name carries a fresh random suffix.
     planted.unlink()
+    # The scope probe above has made its point; carrying its published file into
+    # the resumed run is not part of what this test measures from here.
+    unmanaged.unlink()
+    (restored_root / "r" / unmanaged.name).unlink()
     source_residue_path = _plant_publication_temporary(volume)
 
     restored_run = _run(restored_root, "r", "review")

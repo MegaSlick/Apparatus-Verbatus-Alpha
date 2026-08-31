@@ -235,7 +235,20 @@ def _refuse_redirect_below_root(
     root_identities = {_identity(root) for root in approved_roots}
     if None in root_identities:
         raise GateRefusal("an approved storage root could not be identified")
-    for position, candidate in enumerate((location, *location.parents)):
+    candidates = (location, *location.parents)
+    # Only walk for redirects when an approved root is actually on this path.
+    # The walk stops at a root, so a location under no root ran to `/` and
+    # reported the first ordinary platform alias it met -- `/tmp` on macOS is a
+    # symlink -- as "crosses a symlink; an approved storage root cannot be
+    # entered by redirect". The material was still refused, but the operator was
+    # sent to hunt for a planted redirect when the true fact was that the
+    # location is not approved at all. That is the caller's refusal to make, and
+    # it names the real problem. This is also what the docstring above already
+    # claims: an alias *above* the trusted root is not an operator-controlled
+    # redirect, and where there is no root on the path, every alias is above it.
+    if not any(_identity(candidate) in root_identities for candidate in candidates):
+        return
+    for position, candidate in enumerate(candidates):
         if position > 0 and _identity(candidate) in root_identities:
             return
         if candidate.is_symlink():

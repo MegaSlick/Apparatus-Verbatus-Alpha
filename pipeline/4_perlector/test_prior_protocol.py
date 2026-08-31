@@ -806,9 +806,13 @@ def test_the_shipped_declaration_carries_the_pinned_neutral_form():
 
 @pytest.mark.parametrize("capacity", [0, -1, True, "32"])
 def test_a_protocol_without_a_positive_integer_image_capacity_is_refused(tmp_path, capacity):
+    """Distinct from the closed-schema refusal below: a missing field, and a
+    bad max_images value, are different faults and must read as different
+    faults -- a guard must be able to fail for the reason it names."""
     path = _write_protocol(tmp_path, max_images=capacity)
-    with pytest.raises(ContractError, match="closed schema"):
+    with pytest.raises(ContractError, match="max_images is not a positive integer") as excinfo:
         protocol.load(path)
+    assert repr(capacity) in str(excinfo.value)
 
 
 def test_a_blank_pass_b_fragment_is_refused(tmp_path):

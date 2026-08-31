@@ -54,6 +54,7 @@ from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
     EXIT_HELD,
     _decode_environment,
@@ -862,8 +863,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # their retained blob digests, and the config digest bound into every artifact;
 # counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
 # from independent canonical-id `r` runs after the correction.
-# run's digest. That candidate changed no stage behavior, artifact kind, count,
-# or exit code; its canonical measurements were 84/0 and 109/3.
+# Superseded, and kept because this log is append-only: the `coverage-recovery`
+# entry higher up added fixture bytes alone and so moved every run's digest.
+# That candidate changed no stage behavior, artifact kind, count, or exit code;
+# its canonical measurements were 84/0 and 109/3, and the entries below have
+# since replaced both.
 # DAI adds a content-addressed adapter crop, making canonical happy/review
 # counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
 # consults LANCZOS there. Both digests were reproduced twice in independent
@@ -1170,6 +1174,39 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r".
 #
+# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# retained response it derived from in its envelope `inputs`, not only a Churro
+# `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
+# so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
+# re-hashed, although the same envelope already bound the Churro capture that
+# way; the Recensor applies its existing capture rule to them too. Reference
+# fields only -- each page record that names retained responses gains them as
+# inputs. No new blob or artifact file, but the EXISTING page-record artifacts'
+# bytes change (their inputs list grows), which is exactly why both digests
+# below moved. No exit-code change: counts hold at 90/0 and
+# 113/3, and both digests below reproduced twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers at canonical run id "r".
+#
+# Re-pinned at this merge (pr/09's landed tip onto the Ink Map tree): the entry
+# above was measured on pr/09's own tree, where the Ink Map does not exist, so
+# its 90/113 are that tree's counts and not this one's. The two changes are
+# independent and both apply here -- the Ink Map's five artifacts per tree, and
+# the page records whose `inputs` now bind every retained response they derived
+# from -- so the counts are the Ink Map's 95/118 while the digests move again
+# for the inputs binding. Neither side's literals could be carried across: both
+# were measured on a tree missing the other's change. Exits hold at 0 and 3, and
+# both digests below were measured twice in independent temporary roots through
+# this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
+# canonical run id "r".
+# Re-pin at the second pr/11 cascade: both sides of this merge had moved these
+# literals, so neither was adopted. pr/12's ink-confirmation gate still holds
+# review at 106 files and pr/11's later work moves draft bytes without adding or
+# removing an artifact, so happy stays 95/0 and review 106/3, and both digests
+# were re-measured on the merged tree, twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest` at
+# canonical run id "r".
+#
 # Reading this log: it is chronological and append-only, and every entry states
 # the counts and the fixture shape as they stood when that entry was written.
 # Only the last entry describes the tree now; an earlier entry naming a
@@ -1194,6 +1231,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # adds -- the same +1 the review side shows, 106 -> 107. So the two files
 # between 98 and 96 were removed by the incoming ink gate, not lost here, and
 # every entry above naming 97 or 98 is superseded rather than contradicted.
+#
+# Cascade re-pin (pr/12's final tip aa2b6d4124 merged into pr/13, after pr/12's
+# GitHub review loops): the counts held at 96/107 — pr/12's review-round edits
+# added and removed no snapshot files — but both digests moved, because those
+# edits changed sealed bytes. Re-measured on this merged tree, twice, in two
+# independent temporary roots through this module's own `orchestrate` and
+# `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
+# exited 3, and both roots agreed exactly.
 # Unit 2 re-pin: see the happy entry above. `decoding.toml` changes this
 # run's sealed `config_digest`, not its artifact count or exit: review remains
 # 106 files / exit 3. Measured twice in independent roots, rid "r", through
@@ -1214,10 +1259,19 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # were re-measured here on the merged tree, twice in independent temporary roots
 # through this module's own `orchestrate` and `semantic_snapshot_digest` at
 # canonical run id "r".
+#
+# Cascade re-pin (pr/13's final tip b444ecce20 merged into pr/14, after pr/13's
+# three GitHub review rounds): counts hold at 96/107 — neither side's review
+# edits added or removed a snapshot file — and both digests move again, because
+# this branch's `decoding.toml` seal and pr/13's sealed-byte edits each change
+# the trees the other side measured. Re-measured on this merged tree, twice, in
+# two independent temporary roots through this module's own `orchestrate` and
+# `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
+# exited 3, and both roots agreed exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "45d4867acf50f5d5c5f95a84c54f25ec82a6a8e494ad5e6f04148a5e6e8f6f67"
-REVIEW_RUN_TREE_DIGEST = "3042fa73619e648b32f38b0008509b3e04137cfa2f16a95207b0a6c0e87c43f3"
+HAPPY_RUN_TREE_DIGEST = "0db78cb02752dba8eb2cb205913ccfd6af71cbe35b689e3d57c400538754f4b2"
+REVIEW_RUN_TREE_DIGEST = "b5e2a1757bbd3915a09c607855f7c1a1958d49e9da81de1f4d2a78fb16d3976d"
 
 
 def orchestrate(
@@ -1414,7 +1468,12 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         scenario="happy",
         fixture_root=ROOT / "proof",
         models_config=ROOT / "config" / "models.toml",
-        serving_recipes_config=ROOT / "config" / "serving_recipes.toml",
+        # The constant, not a second spelling of the path. This stand-in feeds
+        # mocked subprocess tests, so a catalogue that moved with only
+        # `DEFAULT_SERVING_RECIPES_CONFIG_PATH` updated would leave them passing
+        # while handing every stage a path that is not there. The neighbouring
+        # literals predate this branch and are left as they are.
+        serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",

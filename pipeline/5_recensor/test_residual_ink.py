@@ -361,5 +361,30 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     assert remeasured["flagged"] == initial["flagged"]
 
 
+def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
+    """The floor that gives a hairline page a band of 1 must not also double it.
+
+    `band = max(1, width // 2)` overrides the natural `width // 2 == 0` cap for
+    `width == 1`, so the left edge interval `(0, band)` and the right edge
+    interval `(width - band, width)` become the identical `(0, 1)` on every
+    middle row -- each middle-row pixel then priced twice into
+    `outside_ink_pixels` while `total_ink_pixels` counts it once, a page-space
+    account `page_edge_ink` never produces. Only a middle row proves it: rows
+    inside the band already take the single full-width interval either way.
+    """
+    width, height = 1, 100
+    rows = canvas(width, height)
+    for y in range(40, 53):
+        paint(rows, 0, y, width, 1)
+    image = encode_grayscale_png(width, height, rows)
+
+    initial = page_edge_ink(image)
+    remeasured = edge_ink_from_runs(ink_runs(image), [])
+
+    assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13
+    assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"] == 13
+    assert remeasured["flagged"] == initial["flagged"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

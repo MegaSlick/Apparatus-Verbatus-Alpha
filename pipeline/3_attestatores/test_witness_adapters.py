@@ -247,6 +247,24 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
     assert context.tree.blobs == {}
 
 
+@pytest.mark.parametrize("payload", [{"source_sha256": "0" * 64, "ordinal": 1}, "not an object"])
+def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
+    """A sealed page with no path to read is a held attempt, not a KeyError.
+
+    The stage's own `_verified_page_bytes` already names this failure; a bare
+    `KeyError` out of the adapter boundary would reach the operator as an
+    unclassified traceback, and the attempt would not be held with a reason
+    (GOVERNANCE 2).
+    """
+    context = _DaiContext(_dai_page(20, 10))
+    context.tree.read_artifact = lambda *_args: {"payload": payload}
+    adapters = _load_local_adapters()
+
+    with pytest.raises(SchemaRefusal, match="no image path to crop"):
+        adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
+    assert context.tree.blobs == {}
+
+
 def test_the_registry_binds_the_native_intake_contract_seams():
     """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()

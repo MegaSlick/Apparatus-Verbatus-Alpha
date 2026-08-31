@@ -677,6 +677,26 @@ def test_malformed_sealed_occlusion_facts_are_named_accounting_refusals(
         module.act_cross_capture_coverage(context, "act_x", latest_payload)
 
 
+@pytest.mark.parametrize("page_id", [None, "", 7])
+def test_an_occlusion_record_with_no_valid_page_id_is_a_named_refusal_not_a_drop(page_id):
+    """A record that cannot be filed under any page must not read as a page
+    that was never surveyed -- that silently routes an unclaimed occluder into
+    "no shortfall". `occlusion_records_by_page` must refuse by name instead.
+    """
+    module = _recensor()
+    context = _FakeContext(
+        {
+            "occ_1": (
+                "occlusion",
+                "occ_1",
+                _occlusion_record(page_id=page_id, polygon=_rectangle(0, 0, 40, 40)),
+            ),
+        }
+    )
+    with pytest.raises(FatalAccounting, match="no valid page_id"):
+        module.occlusion_records_by_page(context)
+
+
 def test_an_act_absent_from_its_own_readings_autopsia_refuses():
     module = _recensor()
     context = _FakeContext({})
