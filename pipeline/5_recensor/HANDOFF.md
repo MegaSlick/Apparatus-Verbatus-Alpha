@@ -6,6 +6,84 @@ identity, self-hash, and digest-checked parents. The stage first validates every
 act's witness denominator, so a duplicate or unsealed witness record is refused
 before it writes a review for an earlier act.
 
+## Unit 14B denominators and edge evidence
+
+Three denominators are deliberately separate: **attachment** is a per-chair
+geometric fact, **page** is Unit 9's sealed page-space ink map, and **coverage**
+is the proposal-seal expected-act set plus the configured-chair floor. They are
+never unioned or subtracted from one another. The Recensor reads the map; it
+does not decode a page to make a second ink measure.
+
+A chair box that overlaps a cut region but lies wholly inside it is a finding
+only, whatever its inward delta or spread, and however many chairs report it.
+Unit 10C's own `unclaimed_observations` (a native/derived box with zero
+overlap with any proposal on that page) is a stronger fact but still only a
+*pointer*: it becomes a bounded fallback-recrop request only when all three
+facts hold: (1) the box reaches outside every region currently cut on its page;
+(2) Unit 9's ink map has at least `MINIMUM_INK_PIXELS` **in that outside part**;
+and (3) the existing act pool, kind allowance, and `RULED_ABSOLUTE_CAP` of 3
+allow it.
+
+Conditions (1) and (2) are one subtraction, not two tests. Unit 10C retains an
+observation as unclaimed against the *proposal* set alone, so a pointer may sit
+inside a recovery crop already cut for a neighbouring act on the same page and
+still be retained; `unclaimed_ink_observations` therefore measures the ink map
+inside the box **minus the live mask** (`regions_by_source_page`: proposal and
+recovery together, consult §4.3), and the same subtraction is what enforces
+"extends outside every cut region". Counting the whole box would let ink the
+Designator has already cut buy a fresh expanded recrop of it, out of the one
+bounded pool a genuinely missed region draws on.
+
+**One observation funds one request, page-wide** (consult base question 11,
+resolved as a change). The observation is page-scoped by construction --
+`unrouted_observations` measures against every sealed proposal on the presented
+page, deliberately, because scoping it to one act would produce eleven false
+findings per box on a page of twelve acts. The request it funds is act-scoped
+and draws on ONE act's single, unrecoverable chance to widen its crop. Left
+ungoverned, every act on the page evaluated the same pointer and spent its own
+pool on it. `observation_funded_pages` counts the already-recorded requests by
+their recorded `origin` field, from the tree rather than from a per-run
+variable, so the bound survives the Recensor pass that follows a recrop; the
+act that spends the grant is the first eligible one in the proposal seal's own
+order, a choice made by the Designator's sealed act order and budget state
+alone and containing no quantity any witness reported.
+
+The bound is a refusal invariant, not a lossy set conversion: two recorded
+`coverage-observation` requests on one page are fatal accounting. During the
+live pass, a later act that sees the same still-confirmed pointer publishes no
+second request and is explicitly `held-for-review` with the spent-grant reason;
+it cannot fall through to `accepted`. A scenario-declared recrop remains an
+independent structural route and takes causal precedence when both facts are
+present, so it neither masquerades as nor consumes the page's observation
+grant.
+
+**Known limit, named rather than hidden:** the request carries no geometry. The
+Designator answers a fallback recrop with the act's own *declared* recovery
+rectangle (`pipeline/2_designator/run.py::recovery_pass`), so the pointer's
+bounds never reach it and the recrop is a bounded attempt at coverage, not a
+claim to have covered that ink. Making the ink choose the act -- a request that
+carries the pointer's bounds, and a Designator that expands to them -- is
+Designator recovery geometry, outside this unit's seam. Until then the
+observation stays retained on every act's review payload for a human to weigh,
+and the page's own residual-ink flag and the Armarium's `unclaimed-edge-ink`
+hold remain the ink-side accounts of the same pixels.
+
+**Known limit, named rather than hidden:** the grant is scoped by `page_of`, which
+reads each act's *primary* `page_ordinal` -- the same field the writer records, so
+reader and writer agree and the one-grant bound holds. The consequence is that
+`unclaimed_ink_observations` is only ever evaluated against an act's primary
+page: a continuation-only page, carried by an act whose primary page is earlier
+in the run, is never the page any act's own pointer check names. That ink does
+not disappear -- the page's own residual-ink flag and the Armarium's
+`unclaimed-edge-ink` hold still speak for it -- but a pointer that clears
+`MINIMUM_INK_PIXELS` on a continuation-only page funds no recrop and holds no
+act, because no act calls that page its own.
+
+n-of-m agreement, IoU/similarity, delta magnitude, per-chair weight, and any two-chair
+disagreement are forbidden triggers -- see
+`pipeline/5_recensor/test_unit14b_trigger_contract.py`, which drives the live
+`wants_recovery` expression itself rather than a duplicate predicate.
+
 ## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and

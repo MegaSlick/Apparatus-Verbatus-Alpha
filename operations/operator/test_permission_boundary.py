@@ -149,6 +149,40 @@ def test_external_trigger_refuses_an_unsealed_boundary_before_creating_its_write
     assert not (tree.root / "receipts").exists()
 
 
+def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(tmp_path):
+    """Isolate the digest comparison from the seal verification beside it.
+
+    `test_advance_modes.py`'s reseal test accepts either refusal message,
+    because forging a census both moves the digest and breaks verification. So
+    the digest comparison could be deleted and that test would stay green on
+    the verification branch alone. Here the sealed boundary is untouched and
+    still verifies; only the supplied digest is wrong, so this refusal can come
+    from nothing else.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    current = _boundary_digest(run_root, run_id)
+    wrong = "c" * 64
+    assert wrong != current
+
+    with pytest.raises(OperatorError) as refusal:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed a boundary and named the wrong digest",
+            workspace=ROOT,
+            expected_digest=wrong,
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "changed after it was shown for confirmation" in (refusal.value.detail or "")
+    # The boundary was never disturbed, so it still verifies afterwards.
+    assert advance.sealed_boundary(tree, "armarium")[1] == current
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
+
+
 def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(tmp_path):
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
@@ -212,6 +246,7 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    _, observed_digest = advance.sealed_boundary(tree, "armarium")
 
     # A spy that delegates, not a stub: the record below is still written by
     # the real confined worker through the real boundary. Searching
@@ -234,7 +269,11 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
-        expected_digest=_boundary_digest(run_root, run_id),
+        # The digest observed before the spy was installed, which is what this
+        # test's name claims the advance binds. Re-reading it here instead bound
+        # a digest taken after the worker ran, so the observation above proved
+        # nothing.
+        expected_digest=observed_digest,
     )
 
     after = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -474,6 +513,37 @@ def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launc
     } == receipts_before
 
 
+def test_write_approval_record_has_exactly_one_direct_production_spelling() -> None:
+    """One direct spelling: only `advance.record_advance` names this writer.
+
+    `RunTree.write_approval_record` is the generic append-only writer several
+    approval subjects share (Lectio nuda sampling, the Perlector's prior-draft
+    instrument, and this unit's stage-boundary advance). A second production
+    spelling would be a second, unaudited route to minting one of those durable
+    records. This spelling-level guard does not claim to prove the absence of
+    dynamic dispatch; the authority-shape tests below separately constrain the
+    imports and actions available to operator modules. Test files legitimately
+    construct approval records directly to set up fixtures and are excluded.
+    """
+    root = Path(__file__).resolve().parents[2]
+    definition = root / "common" / "runtree" / "store.py"
+    call_sites = set()
+    # Tracked files only: a bare rglob also sweeps stray local checkouts
+    # (nested git worktrees under .claude/worktrees/), which are not
+    # production call sites and made this scan fail on machines that have them.
+    tracked = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    for path in sorted(root / name for name in tracked):
+        if path.name.startswith("test_") or path == definition:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "write_approval_record(" in line:
+                call_sites.add(str(path.relative_to(root)))
+                break
+    assert call_sites == {"operations/operator/advance.py"}
+
+
 def test_console_process_cannot_import_writers_or_keep_provider_credentials():
     """Measure what importing the console actually loads, not what its text says.
 
@@ -665,12 +735,18 @@ def test_the_console_classifies_every_way_its_input_pipe_can_fail(monkeypatch, c
 
 
 def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp_path, monkeypatch):
-    """`sealed_boundary` converts contract failures and passes `OSError` through.
+    """A seal this console cannot read is a refusal it can name, not a crash.
 
     Caught only for `ApprovalRefusal`, a seal artefact that could not be read
     fell to the CLI's catch-all and told the operator to photograph an
     unexpected error and find a maintainer -- when the answer is that this
     boundary cannot be advanced because its own evidence could not be read.
+
+    pr/08 drove this through `sealed_boundary`, which was what the confirmation
+    path called then. pr/12 replaced that call with `boundary_summary`, so the
+    stand-in is patched at the function this console actually invokes; patching
+    the old name would have monkeypatched an attribute `cli` no longer has and
+    proved nothing about the path it names.
     """
 
     run_root, run_id = _make_run(tmp_path)
@@ -678,7 +754,7 @@ def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp
     def _unreadable(*_arguments, **_keywords):
         raise OSError(errno.EIO, "Input/output error")
 
-    monkeypatch.setattr(cli, "sealed_boundary", _unreadable)
+    monkeypatch.setattr(cli, "boundary_summary", _unreadable)
 
     with pytest.raises(OperatorError) as excinfo:
         cli._advance_with_confirmation(
@@ -1697,13 +1773,14 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     bytes are safely on disk.
     """
     run_root, run_id = _make_run(tmp_path)
+    digest = _boundary_digest(run_root, run_id)
     first = advance.trigger_advance(
         run_root,
         run_id,
         "armarium",
         reason="first reviewer signed off",
         workspace=ROOT,
-        expected_digest=_boundary_digest(run_root, run_id),
+        expected_digest=digest,
     )
     second = advance.trigger_advance(
         run_root,
@@ -1711,7 +1788,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
         "armarium",
         reason="second reviewer signed off independently",
         workspace=ROOT,
-        expected_digest=_boundary_digest(run_root, run_id),
+        expected_digest=digest,
     )
     assert first.relative_path != second.relative_path
 
@@ -2216,6 +2293,56 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
 
     assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
+
+
+@requires_host_boundary
+def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_success(
+    tmp_path, monkeypatch
+):
+    """A newly stale immutable record is a refusal with a recovery location."""
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    reviewed_digest = _boundary_digest(run_root, run_id)
+    original_run_confined = advance.run_confined
+
+    def reseal_after_worker(*args, **kwargs):
+        result = original_run_confined(*args, **kwargs)
+        seal, _digest = advance.sealed_boundary(tree, "armarium")
+        record = tree.read_artifact("armarium", "stage-seal", seal["artifact_id"])
+        record["payload"] = {
+            **record["payload"],
+            "census": [*record["payload"]["census"], {"kind": "post-append-change", "count": 1}],
+        }
+        record["self_hash"] = self_hash(record)
+        tree.resolve(tree.artifact_path("armarium", "stage-seal", seal["artifact_id"])).write_bytes(
+            canonical_bytes(record)
+        )
+        return result
+
+    monkeypatch.setattr(advance, "run_confined", reseal_after_worker)
+
+    with pytest.raises(OperatorError) as refusal:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed the pre-append boundary",
+            workspace=ROOT,
+            expected_digest=reviewed_digest,
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "wrote checked decision record receipts/sha256/" in (refusal.value.detail or "")
+    projected = review.ReadOnlyRun(run_root, run_id).projection().advance_records
+    stale = [
+        row for row in projected if row["reason"] == "operator reviewed the pre-append boundary"
+    ]
+    assert len(stale) == 1
+    assert stale[0]["boundary_current"] is False
+
+
+# --- The trigger: a hostile run tree can lie to a person, never to evidence. -----------
 
 
 def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tmp_path):

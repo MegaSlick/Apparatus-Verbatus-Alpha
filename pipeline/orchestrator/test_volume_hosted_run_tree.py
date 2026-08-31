@@ -402,35 +402,52 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # exclusion path is measured on every run instead of occasionally.
     planted = volume / "r" / ".run.json.tmp-interruptedpublication"
     planted.write_bytes(b"an interrupted publication, mid-write when the driver died")
+
+    # A name shaped exactly like a publication temporary, `.<target>.tmp-<unique>`,
+    # is not enough: the target it names must also resolve inside
+    # `RunTree.inventory_scope()`, or the exclusion could carry off a file the
+    # backup owed a person. `_is_publication_temporary_name` below tests the shape
+    # alone and would wrongly accept this one, so the scope check is what has to
+    # catch it.
+    out_of_scope_target = "not-a-managed-run-tree-path"
+    assert out_of_scope_target not in RunTree(volume, "r").inventory_scope()
+    unmanaged = volume / "r" / f".{out_of_scope_target}.tmp-outsidescope"
+    unmanaged.write_bytes(b"a temp-shaped name for a path this store never manages")
     crashed = snapshot(volume)
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
-    # Two facts, asserted separately, and the published list rather than a count.
-    # `copied` counts files written as new objects and `reused` counts digests
-    # the store already held, so two identical files anywhere in the run tree
-    # make `copied` smaller than the crashed set with the backup behaving
-    # correctly -- and the joined assertion would then fail without saying which
-    # half broke, leaving a reader unable to tell a lost file from de-duplication.
-    published = _snapshot_manifest(mac, report.snapshot_sha256)
-    # A tree killed mid-write can hold a `.<target>.tmp-*` publication temporary,
-    # which the backup excludes by design and records by name so the exclusion
-    # cannot be silent. Comparing against the raw crashed set therefore fails
-    # whenever the SIGKILL happens to land mid-write -- as did the
-    # `copied == len(crashed)` count this replaced, for the same reason. The
-    # exclusions are subtracted from the expectation rather than ignored, and
-    # each one must really have been in the crashed tree, so an exclusion can
+
+    # pr/08's residue-exclusion form, read through this branch's own helpers.
+    # `snapshot` hashes every file it finds; the backup deliberately leaves out
+    # `.<target>.tmp-*` publication temporaries, which a SIGKILL mid-publish can
+    # leave behind, so comparing the two directly makes a correct backup of an
+    # interrupted tree fail. The exclusions are subtracted from the expectation
+    # rather than ignored, each one has to have really been in the crashed tree,
+    # and each has to look like a publication temporary -- so an exclusion can
     # never stand in for a file the backup lost.
-    excluded = {f"r/{name}" for name in published["excluded_publication_temporaries"]}
-    assert f"r/{planted.name}" in excluded, "the planted temporary was carried, not excluded"
+    manifest = _snapshot_manifest(mac, report.snapshot_sha256)
+    # Manifest paths are relative to the run directory; `snapshot` keys are
+    # relative to the runs root, so they carry the run id as their first segment.
+    run = manifest["run_id"]
+    excluded = {f"{run}/{name}" for name in manifest["excluded_publication_temporaries"]}
+    assert f"{run}/{planted.name}" in excluded, "the planted temporary was carried, not excluded"
     assert excluded <= set(crashed), "the snapshot excluded something the tree never held"
-    # `snapshot` keys are relative to the run root's parent; a backup inventory
-    # names members relative to the run tree itself.
-    assert {f"r/{row['relative_path']}" for row in published["files"]} == set(crashed) - excluded
-    # Distinct run-tree paths may share verified bytes, so copied plus reused —
-    # not copied alone — must account for every published member; on this
-    # branch's content the store legitimately deduplicates across paths.
-    assert report.copied + report.reused == len(published["files"])
+    assert all(_is_publication_temporary_name(name) for name in excluded), sorted(excluded)
+    published = {f"{run}/{row['relative_path']}" for row in manifest["files"]}
+    assert published == set(crashed) - excluded
+    assert f"{run}/{unmanaged.name}" not in excluded, (
+        "a temp-shaped name whose target lies outside inventory_scope() was excluded anyway"
+    )
+    assert f"{run}/{unmanaged.name}" in published
+    # Distinct run-tree paths may share verified bytes, so copied plus reused --
+    # not copied alone -- is what must account for every published member. pr/08
+    # additionally asserted `reused == 0` ("nothing was in the object store
+    # before this backup"); measured on this branch's tree that is false --
+    # copied 81, reused 2, of 83 published members -- because this content holds
+    # two distinct paths with identical verified bytes. Keeping that assertion
+    # through the merge would have turned a correct backup into a red test.
+    assert report.copied + report.reused == len(manifest["files"])
 
     restored_root = tmp_path / "restored-from-mac"
     _restore(mac, report.snapshot_sha256, restored_root)
@@ -451,6 +468,10 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     # macOS while it said otherwise, because where a SIGKILL lands is the scheduler's
     # decision and the surviving `.tmp-` name carries a fresh random suffix.
     planted.unlink()
+    # The scope probe above has made its point; carrying its published file into
+    # the resumed run is not part of what this test measures from here.
+    unmanaged.unlink()
+    (restored_root / "r" / unmanaged.name).unlink()
     source_residue_path = _plant_publication_temporary(volume)
 
     restored_run = _run(restored_root, "r", "review")

@@ -653,6 +653,7 @@ def run_aggregate(
     unaddressed_chairs: Sequence[str] | None = None,
     act_pages: Mapping[str, Sequence[int]] | None = None,
     act_text_status: Mapping[str, str] | None = None,
+    edge_hold_pages: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -693,6 +694,11 @@ def run_aggregate(
     to be ordinary rather than exceptional. A non-`established` status therefore
     contributes its own named reason, exactly as an under-witnessed act or a refused
     page does.
+
+    `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
+    ink. A held page therefore keeps the aggregate partial even when every act
+    cut from that page was delivered; otherwise the aggregate and terminal
+    ledger would report different statuses for one export.
 
     A delivered act with no status supplied is named too, rather than assumed whole:
     that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
@@ -742,10 +748,40 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
-    for chair in sorted(unaddressed_chairs or ()):
+    # Counted as a set, for the same reason the edge holds below are. The
+    # in-process producer walks `models.chairs`, so its roles are unique, but the
+    # clean-machine verifier rebuilds this list out of the retained aggregate
+    # basis and checks only that it is a list of non-empty strings. A repeated
+    # entry there would report one unaddressed chair as two in the reasons a
+    # person reads. The ink-map rows on that same path are refused for a
+    # repeated ordinal; this list had no such guard at either site.
+    for chair in sorted(set(unaddressed_chairs or ())):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "
             "resolved it and no artifact records it"
+        )
+
+    # Reconciled against the census like every other denominator here, and for
+    # the same reason: a hold naming a page the run never counted would print a
+    # partial reason about a page that does not exist. Not reachable from
+    # today's Armarium callers, which validate ink-map ordinals against the
+    # sealed census first, but the rule belongs in the module that owns the
+    # denominator rather than in each caller that happens to observe it.
+    unknown_holds = sorted(set(edge_hold_pages or ()) - set(page_census or {}))
+    if unknown_holds:
+        raise FatalAccounting(
+            f"an edge hold names page(s) {unknown_holds}, which the run's page census does not "
+            "account for; edge holds and the page census must describe the same page denominator"
+        )
+
+    # A page-scoped hold: the ink at its edge belongs to no act yet, so the page
+    # cannot reconcile even when every act cut from it was delivered. Counted as
+    # a set: a repeated ordinal is one held page, and listing it twice would
+    # report one page as two in the reasons a person reads.
+    for ordinal in sorted(set(edge_hold_pages or ())):
+        reasons.append(
+            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+            "Designator crop on the page claims, so its coverage is not reconciled"
         )
 
     for act in sorted(act_categories):

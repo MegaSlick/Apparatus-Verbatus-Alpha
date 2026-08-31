@@ -91,22 +91,21 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "recovery-request"
     ]
-    # Declared and unclaimed-geometry routes must both name the one implemented
-    # coverage operation explicitly.
-    assert len(requests) == 2
-    assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
+    # Review retains only the scenario-declared a1 request. Consult §4.5 (see
+    # `test_unit14b_trigger_contract.py`): attestator_3's unclaimed native page
+    # observation is a pointer, not itself the evidence, and Unit 9's ink map
+    # records zero ink under it, so it confirms nothing and a2 goes straight
+    # to held-for-review instead of spending a second recrop.
+    assert len(requests) == 1
+    assert {request["payload"]["act_key"] for request in requests} == {"a1"}
     assert {request["payload"]["recovery_kind"] for request in requests} == {FALLBACK_RECROP}
     by_act_request = {request["payload"]["act_key"]: request for request in requests}
     assert "the crop may be incomplete" in by_act_request["a1"]["payload"]["reason"]
+    # The unconfirmed witness pointer is not a cause: zero measured ink under
+    # it means it funds nothing and may not appear as a reason either.
     assert (
         "a page witness reported ink outside every sealed proposal"
-        in by_act_request["a1"]["payload"]["reason"]
-    )
-    # a2's route is the unclaimed-geometry one alone. Asserting only that the
-    # declared-crop phrase is absent is satisfied by an empty reason or an
-    # unrelated one, so the cause it must actually name is asserted positively.
-    assert by_act_request["a2"]["payload"]["reason"] == (
-        "a page witness reported ink outside every sealed proposal; an expanded recrop is requested"
+        not in by_act_request["a1"]["payload"]["reason"]
     )
 
     reviews = [
@@ -114,10 +113,25 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "review" and entry["outcome"] == "recovery-requested"
     ]
-    assert len(reviews) == 2
+    assert len(reviews) == 1
     by_act = {review["payload"]["act_key"]: review for review in reviews}
     assert by_act["a1"]["payload"]["continuation"]["is_continuation"] is False
-    assert by_act["a2"]["payload"]["continuation"]["is_continuation"] is True
+
+    # The other half of the claim above, and the half nothing checked: a2 is
+    # still accounted for and is HELD, not quietly absent. Counting only the
+    # recovery-requested reviews, an a2 that vanished entirely -- no request and
+    # no review -- left both counts above at 1 and this test green. GOALS 1: a
+    # missed act is worse than a poorly read one, so the act that was refused a
+    # recrop must be named as refused.
+    every_review = [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
+    ]
+    a2_outcomes = {
+        review["outcome"] for review in every_review if review["payload"]["act_key"] == "a2"
+    }
+    assert a2_outcomes == {"held-for-review"}, a2_outcomes
 
 
 # --- recovery_state: an isolated tree, so a malformed kind is the only thing

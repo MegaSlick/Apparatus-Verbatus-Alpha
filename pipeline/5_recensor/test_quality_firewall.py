@@ -210,8 +210,29 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     ]
     assert len(assignments) == 1
     sources = _names(assignments[0].value)
-    assert "content_coverage" in sources, "the Unit 10C coverage finding must reach the gate"
-    assert sources <= {"act_key", "bool", "content_coverage", "scenario", "used_total"}, (
+    # Consult §4.5: an unclaimed observation is a coverage *pointer*, confirmed
+    # against Unit 9's own ink map before it may reach the gate.
+    # `outside_ink_requests` is that confirmed fact -- still coverage evidence,
+    # never a reading's quality -- and is what the expression names now that
+    # the raw `content_coverage` dict no longer reaches it directly.
+    assert "outside_ink_requests" in sources, (
+        "the ink-confirmed Unit 10C coverage finding must reach the gate"
+    )
+    # `act` and `funded_pages` join the set for consult base question 11's
+    # page-wide bound (one unclaimed observation funds one recovery request on
+    # its page). Both are coverage-and-budget facts: `act` supplies only the
+    # act's own sealed `page_ordinal`, and `funded_pages` is a count of recovery
+    # requests already recorded in the tree by origin. Neither carries anything
+    # a reading said, and neither carries anything a witness reported.
+    assert sources <= {
+        "act",
+        "act_key",
+        "bool",
+        "funded_pages",
+        "outside_ink_requests",
+        "scenario",
+        "used_total",
+    }, (
         f"wants_recovery is derived from {sorted(sources)}; recovery is requested on coverage "
         "evidence, never on what a reading said"
     )

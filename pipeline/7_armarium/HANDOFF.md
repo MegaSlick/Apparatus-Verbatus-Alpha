@@ -105,16 +105,34 @@ projection configuration. The bundle may contain these plainly specified formats
   `semantic_annotations`/`semantic_annotation_status`, and `text_status`/
   `transcription_annotations` join the row — a consumer keying on the schema id
   must never read a v1 shape out of a v2 row. `sources.json` is
-  `armarium-sources.v2` for the same reason: its act-outcome rows now REQUIRE
-  `text_status` under exact-field-set validation, and the manifest is
-  `armarium-export-manifest.v2` for its renamed-apart annotation claims.
+  `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
+  rows began to REQUIRE `text_status` under exact-field-set validation, and at
+  v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
+  reader's question at all. The manifest is `armarium-export-manifest.v3`: v2
+  renamed the annotation claims apart, and v3 adds the required `ink_map`
+  claim to the closed claim set.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
 - `sources.json` — cited source-page/frame rows with filename and digest, plus
-  text-free per-act citation/outcome records and the non-text accounting basis.
+  text-free per-act citation/outcome records, the non-text accounting basis, and
+  one `ink_map_pages` row per sealed page: what Unit 9's pre-proposal map found,
+  and what this stage re-measured its retained runs to once the Designator's
+  verified crops were known (`remeasured: null` for a page the map never
+  flagged, because writing zeros would record a measurement nobody took).
+  The `unclaimed-edge-ink` held set is DERIVED from those counts by the ink
+  map's own gate, on both sides — never carried beside them as a boolean, and
+  never read back out of the manifest claim it produced. `sources.json` itself
+  therefore differs between a held and a released page — it carries the counts
+  the hold is derived from — and so does the manifest claim derived from them;
+  `test_armarium_export.py`'s
+  `test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine` asserts
+  exactly that difference. The hold changes no established text: it is a
+  coverage finding about a page, not a reading. Before those counts entered the
+  source graph a manifest built with the hold dropped verified clean, which is
+  the hole that derivation closed.
   The clean verifier uses these to require every selected projection to retain
   the exact delivered provenance, every continuation region, and every held or
   refused reason; it does not treat a merely nonempty replacement as equivalent.

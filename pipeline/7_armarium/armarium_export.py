@@ -65,6 +65,7 @@ from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
+from common.residual_ink import coverage_flag
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -78,7 +79,9 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # beside the new measured `claims.transcription_annotations` — a rename under
 # one id is the versioning miss the act-row bump below refuses, so the
 # manifest's id moves with its claims.
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v2"
+# v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
+# closed shape without an explicit schema boundary.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
 # apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
@@ -118,7 +121,9 @@ _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v2"
 _SQLITE_USER_VERSION: Final = 2
 # v2: every act-outcome row now REQUIRES `text_status` (exact-field-set
 # checked), so a v1 sources file and a v2 reader are mutually unreadable.
-SOURCES_SCHEMA: Final = "armarium-sources.v2"
+# v3 adds required `ink_map_pages`, which lets a verifier derive the hold from
+# source evidence instead of trusting the manifest claim it is checking.
+SOURCES_SCHEMA: Final = "armarium-sources.v3"
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 CANONICAL_TEXT_FIELD: Final = "canonical_clean_text"
 CANONICAL_TEXT_ENCODING: Final = "utf-8"
@@ -238,6 +243,9 @@ class ArmariumProjection:
     # materially different from a sealed, empty inventory: the former must not
     # be exported as a reassuring count of zero.
     salvage_items: tuple[dict[str, Any], ...] | None = None
+    # One row per sealed page retains the initial map outcome and any later
+    # re-measurement. The held set is derived, never stored beside this evidence.
+    ink_map_pages: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -334,6 +342,9 @@ def build_armarium_bundle(
             "witness_chairs": list(projection.witness_chairs),
             "witness_floor": projection.witness_floor,
             "salvage_regions": _salvage_regions(projection.salvage_items),
+            # Source evidence must travel with the claim so a clean-machine
+            # verifier can derive the page-level hold independently.
+            "ink_map_pages": list(projection.ink_map_pages),
         }
     )
 
@@ -686,6 +697,7 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "uncertainty",
         "display",
         "salvage",
+        "ink_map",
     }
 )
 _CLAIM_SUBFIELDS: Final = {
@@ -702,6 +714,7 @@ _CLAIM_SUBFIELDS: Final = {
         }
     ),
     "page_census": frozenset({"denominator", "counted", "status"}),
+    "ink_map": frozenset({"denominator", "held_pages"}),
     "pixels": frozenset({"embedded", "resolution_claim"}),
     "display": frozenset(
         {
@@ -866,6 +879,116 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     return {act_id: record[0] for act_id, record in baseline.items()}
 
 
+INK_MAP_DENOMINATOR: Final = "Unit 9 ink-map sealed pages"
+_INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasured"})
+_INK_MAP_REMEASURE_FIELDS: Final = frozenset(
+    {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels"}
+)
+_UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
+_INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK})
+
+
+def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
+    """Close the ink-map source rows before anything derives a hold from them.
+
+    A `mapped` page carries `remeasured: None`, not a zeroed measurement: this
+    stage re-measures only the pages Unit 9 actually flagged, and writing zeros
+    for the rest would put a measurement nobody took into the record
+    (GOVERNANCE 10). The absence is recorded as absence.
+    """
+    if not isinstance(rows, list | tuple):
+        raise SchemaRefusal(
+            f"{subject} does not carry its ink-map page rows as a list. Its page-level edge "
+            "holds cannot be derived or checked. Rebuild the export from an Armarium v3 source "
+            "graph."
+        )
+    ordinals: set[int] = set()
+    validated: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != _INK_MAP_ROW_FIELDS:
+            raise SchemaRefusal(
+                f"{subject} has an ink-map row that is not its closed shape. The verifier cannot "
+                "tell which page measurement the row states. Rebuild the export from an intact "
+                "Armarium v3 source graph."
+            )
+        ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise SchemaRefusal(
+                f"{subject} has an ink-map row without an integer page ordinal. The verifier "
+                "cannot bind its measurement to a sealed page. Rebuild the export from the "
+                "sealed page inventory."
+            )
+        if ordinal in ordinals:
+            raise SchemaRefusal(
+                f"{subject} repeats ink-map page ordinal {ordinal}. Continuing would select one "
+                "of two page findings by row order. Rebuild the export from the sealed page "
+                "inventory."
+            )
+        ordinals.add(ordinal)
+        if outcome not in _INK_MAP_OUTCOMES:
+            raise SchemaRefusal(
+                f"{subject} has an unknown ink-map page outcome. The verifier cannot determine "
+                "whether that page is held or released. Rebuild the export with this Armarium "
+                "version before using it."
+            )
+        if outcome == _UNCLAIMED_EDGE_INK:
+            if not isinstance(remeasured, dict) or set(remeasured) != _INK_MAP_REMEASURE_FIELDS:
+                raise SchemaRefusal(
+                    f"{subject} has a flagged ink-map page with no re-measurement to resolve it. "
+                    "The page's terminal hold cannot be derived from an absent measurement. "
+                    "Rebuild the export from the retained Ink Map and Designator evidence."
+                )
+            if any(
+                not isinstance(remeasured[field], int)
+                or isinstance(remeasured[field], bool)
+                or remeasured[field] < 0
+                for field in sorted(_INK_MAP_REMEASURE_FIELDS)
+            ):
+                raise SchemaRefusal(
+                    f"{subject} has an invalid ink-map re-measurement. The shared coverage "
+                    "gate cannot evaluate those counts. Rebuild the export from the retained Ink "
+                    "Map evidence."
+                )
+            if remeasured["outside_ink_pixels"] > remeasured["total_ink_pixels"]:
+                raise SchemaRefusal(
+                    f"{subject} re-measures more outside ink than the page carries at all. The "
+                    "counts are internally impossible and cannot decide a page hold. Rebuild the "
+                    "export from the retained Ink Map evidence."
+                )
+        elif remeasured is not None:
+            raise SchemaRefusal(
+                f"{subject} re-measures an ink-map page its own map never flagged. That records a "
+                "measurement the stage did not need or claim to take. Rebuild the export without "
+                "inventing a re-measurement for a mapped page."
+            )
+        validated.append(row)
+    return validated
+
+
+def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
+    return tuple(
+        sorted(
+            row["ordinal"]
+            for row in rows
+            if row["initial_outcome"] == _UNCLAIMED_EDGE_INK
+            and coverage_flag(
+                row["remeasured"]["total_ink_pixels"], row["remeasured"]["outside_ink_pixels"]
+            )[1]
+        )
+    )
+
+
+def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
+    """The held set, recomputed from the recorded counts by the shared gate.
+
+    The held state is not stored: using the measurement predicate prevents a
+    row's counts from disagreeing with a separate asserted boolean.
+    """
+    return _edge_hold_pages_from_validated_rows(
+        _validate_ink_map_pages(rows, "an ink-map hold derivation")
+    )
+
+
 def _validate_projection(projection: ArmariumProjection) -> None:
     if not isinstance(projection.fixture_id, str) or not projection.fixture_id:
         raise SchemaRefusal("an Armarium projection has no fixture identifier")
@@ -884,6 +1007,19 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.aggregate_basis,
         projection.acts,
     )
+    ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
+    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    sealed = {
+        page["ordinal"]
+        for page in projection.pages
+        if isinstance(page, dict) and page.get("outcome") == "sealed"
+    }
+    if {row["ordinal"] for row in ink_map_rows} != sealed:
+        raise SchemaRefusal(
+            "an Armarium projection's ink-map denominator is not exactly its sealed page census. "
+            "At least one sealed page finding would be lost or one unsealed page would be counted. "
+            "Rebuild the projection from the reconciled stage inventories."
+        )
     for source in projection.source_manifest:
         if not isinstance(source, dict):
             raise SchemaRefusal("an Armarium projection source-manifest row is not an object")
@@ -972,6 +1108,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         {act["act_key"]: act["category"] for act in projection.acts},
         projection.pages,
         projection.aggregate_basis,
+        edge_hold_pages,
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
@@ -1091,6 +1228,7 @@ def _aggregate_from_basis(
     categories: dict[str, str],
     pages: tuple[dict[str, Any], ...] | list[dict[str, Any]],
     basis: Any,
+    edge_hold_pages: tuple[int, ...] = (),
 ) -> dict[str, Any]:
     """Recompute an Armarium aggregate from its retained, non-text inputs."""
     if not isinstance(basis, dict) or set(basis) != {
@@ -1130,6 +1268,7 @@ def _aggregate_from_basis(
             unaddressed_chairs=chairs,
             act_pages=act_pages,
             act_text_status=act_text_status,
+            edge_hold_pages=edge_hold_pages,
         )
     # `KeyError`/`TypeError` as well as the refusals: `run_aggregate` reaches inside a
     # coverage record for `by_class['completed']` and `floor`, which nothing above
@@ -2371,7 +2510,9 @@ def _jsonl_literals(path) -> dict[str, tuple]:
     return records
 
 
-def _page_ledger_category(ordinal: int, act_categories: list[str]) -> tuple[str, str | None]:
+def _page_ledger_category(
+    ordinal: int, act_categories: list[str], *, edge_hold: bool = False
+) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
     Every rule here errs toward `held-for-review`, the category that means a human
@@ -2384,6 +2525,11 @@ def _page_ledger_category(ordinal: int, act_categories: list[str]) -> tuple[str,
     this stage *prove* a page blank on its own, with no acts to inherit the
     category from, is open (HANDOFF.md).
     """
+    if edge_hold:
+        return (
+            ArmariumCategory.HELD_FOR_REVIEW.value,
+            f"unclaimed-edge-ink: page {ordinal} carries unreleased ink-map evidence",
+        )
     if not act_categories:
         return ArmariumCategory.HELD_FOR_REVIEW.value, SILENT_PAGE_REASON.format(ordinal=ordinal)
     distinct = sorted(set(act_categories))
@@ -2404,6 +2550,7 @@ def _terminal_ledger(
     pages: list[dict[str, Any]],
     act_pages: dict[str, Any],
     aggregate: dict[str, Any],
+    edge_hold_pages: tuple[int, ...] = (),
 ) -> dict[str, Any]:
     """The honesty ledger: one closed category for every unit the run accounted for.
 
@@ -2456,7 +2603,9 @@ def _terminal_ledger(
     for page in sorted(pages, key=lambda row: row["ordinal"]):
         ordinal = page["ordinal"]
         if page.get("outcome") == "sealed":
-            category, reason = _page_ledger_category(ordinal, acts_on_page.get(ordinal, []))
+            category, reason = _page_ledger_category(
+                ordinal, acts_on_page.get(ordinal, []), edge_hold=ordinal in edge_hold_pages
+            )
             page_units.append(
                 {
                     "unit_type": "page",
@@ -2573,6 +2722,7 @@ def _export_manifest(
             "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
     )
+    edge_hold_pages = edge_hold_pages_from_rows(list(projection.ink_map_pages))
     ledger = _terminal_ledger(
         _act_outcomes(projection.acts),
         list(projection.pages),
@@ -2580,6 +2730,7 @@ def _export_manifest(
         if isinstance(projection.aggregate_basis, dict)
         else None,
         projection.aggregate,
+        edge_hold_pages,
     )
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
@@ -2610,6 +2761,10 @@ def _export_manifest(
             "status": ledger["status"],
             "partial_reasons": ledger["unresolved_reasons"],
             "terminal_ledger": ledger,
+            "ink_map": {
+                "denominator": INK_MAP_DENOMINATOR,
+                "held_pages": list(edge_hold_pages),
+            },
             "act_partition": {
                 "denominator": _ACT_PARTITION_DENOMINATOR,
                 "expected_count": projection.expected_acts,
@@ -2715,6 +2870,7 @@ def _load_sources(root) -> dict[str, Any]:
         "act_citations",
         "act_outcomes",
         "aggregate_basis",
+        "ink_map_pages",
         "witness_chairs",
         "witness_floor",
         "salvage_regions",
@@ -2739,6 +2895,9 @@ def _load_sources(root) -> dict[str, Any]:
         record.get("witness_floor"),
         record.get("salvage_regions"),
     )
+    ink_map_pages = _validate_ink_map_pages(
+        record.get("ink_map_pages"), "the package sources citation"
+    )
     if (
         not isinstance(pages, list)
         or not isinstance(regions, list)
@@ -2754,6 +2913,7 @@ def _load_sources(root) -> dict[str, Any]:
         "act_citations": act_citations,
         "act_outcomes": act_outcomes,
         "aggregate_basis": aggregate_basis,
+        "ink_map_pages": ink_map_pages,
         "witness_chairs": witness_chairs,
         "witness_floor": witness_floor,
         "salvage_regions": salvage_regions,
@@ -2968,6 +3128,36 @@ def _verify_honest_status_claims(
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
+    # Derive the page-level incomplete cause from source rows, never from the
+    # manifest claim being verified; otherwise a false claim verifies itself.
+    ink_map_rows = _validate_ink_map_pages(
+        sources.get("ink_map_pages"), "the package sources citation"
+    )
+    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    sealed_ordinals = {
+        page["ordinal"]
+        for page in sources["pages"]
+        if isinstance(page, dict) and page.get("outcome") == "sealed"
+    }
+    if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
+        raise SchemaRefusal(
+            "the package's ink-map denominator is not exactly its own sealed page census. At "
+            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
+            "Discard this extraction and rebuild the package from the intact run tree."
+        )
+    ink_map_claim = claims.get("ink_map")
+    if (
+        not isinstance(ink_map_claim, dict)
+        or set(ink_map_claim) != {"denominator", "held_pages"}
+        or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
+        or ink_map_claim["held_pages"] != list(derived_edge_holds)
+    ):
+        raise SchemaRefusal(
+            "the exported ink-map hold claim does not match the pages its own re-measured "
+            "evidence still flags. The manifest and source graph disagree about which pages need "
+            "review. Discard this extraction and rebuild the package from the intact run tree."
+        )
+    must_be_partial = must_be_partial or bool(derived_edge_holds)
     # The third way a run can be incomplete, and the one a category-only reading
     # could never see: an act that reached `delivered` carrying a reading its own
     # Perlector recorded a gap in. The full recomputation below covers it too;
@@ -3008,6 +3198,7 @@ def _verify_honest_status_claims(
         {act_keys[act_id]: category for act_id, category in categories.items()},
         sources["pages"],
         sources["aggregate_basis"],
+        derived_edge_holds,
     )
     if canonical_text(aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("the exported aggregate does not match its measured accounting basis")
@@ -3019,6 +3210,7 @@ def _verify_honest_status_claims(
         if isinstance(sources["aggregate_basis"], dict)
         else None,
         aggregate,
+        derived_edge_holds,
     )
     if canonical_text(claims.get("terminal_ledger")) != canonical_text(expected_ledger):
         raise SchemaRefusal("the exported terminal ledger does not match its measured accounting")

@@ -220,9 +220,11 @@ def test_each_unattached_fault_is_refused_by_the_field_that_caused_it(monkeypatc
         "page_ordinal": None,
         "testimonium_ref": {},
         "attached": False,
-        # Required of every attachment since the retained-native seam, and
-        # supplied here so the closed-shape check passes and each row reaches
-        # the per-field refusal this test is about. An unattached view may not
+        # Required of every attachment since `comparable` joined
+        # `ATTACHMENT_FIELDS` at the retained-native seam. Without it the
+        # closed-shape check refuses this row first, and each case below proved
+        # that refusal instead of the per-field one it names. `False` is the
+        # consistent value beside `attached: False`: an unattached view may not
         # be comparable, which is a rule of its own tested elsewhere.
         "comparable": False,
         "attachment_basis": "unattached",

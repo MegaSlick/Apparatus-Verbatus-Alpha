@@ -28,6 +28,8 @@ from residual_ink import (  # noqa: E402
 )
 
 from common.imaging import encode_grayscale_png  # noqa: E402
+from common.residual_ink import edge_ink_from_runs, ink_runs, page_edge_ink  # noqa: E402
+from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
 
 BACKGROUND = 230
 INK = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND - 10  # comfortably past the contrast floor
@@ -309,6 +311,79 @@ def test_page_residual_ink_decodes_before_measuring():
 def test_page_residual_ink_refuses_undecodable_bytes():
     with pytest.raises(ValueError):
         page_residual_ink(b"not a page", covered=[])
+
+
+def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
+    """The map's early edge observation is not a hold after the crop re-measure.
+
+    The fixture is intentionally small enough that its 64-pixel edge band sees
+    its acts.  The relevant truth is not that early observation, but whether
+    every observed edge pixel lies in the later, recorded Designator crops.
+    """
+    for page in PAGES:
+        image = page_bytes(page["ordinal"])
+        initial = page_edge_ink(image)
+        released = edge_ink_from_runs(ink_runs(image), [act["bounds"] for act in page["acts"]])
+
+        assert initial["flagged"] is True
+        assert released["total_ink_pixels"] == initial["total_ink_pixels"]
+        assert released["outside_ink_pixels"] == 0
+        assert released["flagged"] is False
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(1, 40), (40, 1), (1, 1)],
+    ids=["one-pixel-wide", "one-pixel-high", "single-pixel"],
+)
+def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, height):
+    """One instrument, not two that disagree about what an edge is.
+
+    `page_edge_ink` floors its band at 1 so the smallest legal image still has
+    an edge. `edge_ink_from_runs` dropped that floor and computed 0, skipping
+    the perimeter measurement entirely. The Ink Map then flagged such a page
+    and the Armarium re-measured it clean, and
+    `pipeline/7_armarium/run.py::ink_map_page_rows` refuses that disagreement
+    with FatalAccounting -- so a single one-pixel-thin page blocked the whole
+    export while naming the wrong problem.
+    """
+    rows = canvas(width, height)
+    paint(rows, 0, 0, width, height)
+    image = encode_grayscale_png(width, height, rows)
+
+    initial = page_edge_ink(image)
+    remeasured = edge_ink_from_runs(ink_runs(image), [])
+
+    assert remeasured["edge_band_pixels"] == initial["edge_band_pixels"] >= 1
+    # Same band, same uncovered page, so the same perimeter ink is seen and the
+    # two detectors reach the same outcome.
+    assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"]
+    assert remeasured["flagged"] == initial["flagged"]
+
+
+def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
+    """The floor that gives a hairline page a band of 1 must not also double it.
+
+    `band = max(1, width // 2)` overrides the natural `width // 2 == 0` cap for
+    `width == 1`, so the left edge interval `(0, band)` and the right edge
+    interval `(width - band, width)` become the identical `(0, 1)` on every
+    middle row -- each middle-row pixel then priced twice into
+    `outside_ink_pixels` while `total_ink_pixels` counts it once, a page-space
+    account `page_edge_ink` never produces. Only a middle row proves it: rows
+    inside the band already take the single full-width interval either way.
+    """
+    width, height = 1, 100
+    rows = canvas(width, height)
+    for y in range(40, 53):
+        paint(rows, 0, y, width, 1)
+    image = encode_grayscale_png(width, height, rows)
+
+    initial = page_edge_ink(image)
+    remeasured = edge_ink_from_runs(ink_runs(image), [])
+
+    assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13
+    assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"] == 13
+    assert remeasured["flagged"] == initial["flagged"]
 
 
 if __name__ == "__main__":

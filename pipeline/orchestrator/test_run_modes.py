@@ -102,9 +102,39 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
         for entry in tree.build_manifest("designator")["artifacts"]
         if entry["kind"] == "stage-seal"
     ]
-    # Even unassigned page geometry must produce an explicitly sequenced,
-    # sealed recovery round.
-    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2, 3]
+    # `review` spends only its declared a1 recovery. The scenario's marginal
+    # page-1 witness box (x 0..10 / y 200..240) sits over zero ink -- measured
+    # directly against `proof.synthetic_pages.page_bytes(1)` via
+    # `common.residual_ink.ink_runs`, the same control
+    # `test_coverage_recovery_origin.py` proves at the unit level -- so consult
+    # §4.5's ink-confirmation conjunct (`unclaimed_ink_observations`, read
+    # through `outside_ink_requests`) correctly refuses it a second recovery
+    # round; a2 goes straight to held-for-review instead
+    # (`pipeline/orchestrator/test_orchestrator_acceptance.py`'s "Unit 14B
+    # Sonnet audit" REVIEW_RUN_TREE_DIGEST re-pin measures the same tree).
+    # Spending an unconfirmed witness pointer here would be exactly the
+    # picker GOVERNANCE 3 forbids.
+    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
+    # The ordinals prove a second Designator pass happened, not whose it was:
+    # if the recovery moved from a1 to a2 they would still read [1, 2]. Name
+    # the act, which is the fact the comment above is actually about.
+    requests = [
+        tree.read_artifact("recensor", "recovery-request", entry["artifact_id"])
+        for entry in tree.build_manifest("recensor")["artifacts"]
+        if entry["kind"] == "recovery-request"
+    ]
+    assert [request["payload"]["act_key"] for request in requests] == ["a1"]
+    # And what a2 became, not only what it did not ask for. `refused` is also a
+    # non-delivered category that keeps this run at exit 3, so the absence of a
+    # request does not by itself establish the held-for-review the comment above
+    # claims -- nor that a2 survived the run at all (GOALS 1).
+    export_entry = next(
+        entry for entry in tree.build_manifest("armarium")["artifacts"] if entry["kind"] == "export"
+    )
+    export = tree.read_artifact("armarium", "export", export_entry["artifact_id"])["payload"]
+    assert [row["category"] for row in export["non_delivered"] if row["act_key"] == "a2"] == [
+        "held-for-review"
+    ]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):

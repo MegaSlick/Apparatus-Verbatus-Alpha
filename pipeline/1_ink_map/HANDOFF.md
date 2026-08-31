@@ -12,6 +12,18 @@ changes, and a page's ink evidence lands against the wrong act. The stage refuse
 the whole census rather than publish a record it cannot bind to exactly one
 submitted source.
 
+`payload["edge_findings"]` retains this stage's lossless page-space ink runs so
+the Armarium can re-measure the same pixels rather than decode the page again
+under a possibly different measurement. **Its size on a real page is PROPOSED,
+NOT YET MEASURED.** What is measured is the fixture: page 1 of
+`proof.synthetic_pages` is 200x260, carries 2,880 runs, and serializes to about
+21.8 KiB of JSON. That figure says nothing about a 300-DPI register page, whose
+larger raster and denser handwriting move both terms, and this stage's shard is
+described elsewhere in units of a thousand pages. Extrapolating from the fixture
+would be exactly the unmeasured claim GOVERNANCE 10 forbids, so the shard disk
+budget stays an open question against real material and is named here rather
+than assumed away.
+
 `payload["edge"]` is the bounded `unclaimed-edge-ink` detector: it measures only
 the 64-pixel page perimeter using that same implementation. A flagged record is
 unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for an
@@ -35,17 +47,21 @@ informative on its own. The field this record exists to carry forward is
 derives from. The alarm on this record is the *outcome* —
 `unclaimed-edge-ink` — which is measured against a real central rectangle.
 
-**A flagged edge record does not make the run `partial` yet, by design.**
-`run_aggregate` (`common/contracts/outcomes.py`) reconciles act categories, the
-page census, witness coverage and text status; it does not read ink-map
-records, so a page whose perimeter carries unclaimed ink still lets a run whose
-acts all reconcile report `complete`. That is the deferral this unit chose, not
-an oversight: `unclaimed-edge-ink` classifies UNRESOLVED at this boundary and
-terminates nothing, and Unit 14's own definition of done is the one that
-requires the hold be *visible in the Armarium aggregate*. Until Unit 14 lands,
-the evidence lives in the record and this paragraph, which is what GOVERNANCE 2
-asks of it — but no run may be described as having accounted for edge ink on
-the strength of a `complete` status alone.
+**A flagged edge record does not by itself make the run `partial`, but an
+unreleased one now does.** `unclaimed-edge-ink` still classifies UNRESOLVED at
+*this* boundary and terminates nothing here: this stage measures before any
+proposal exists, so it cannot know whether an act claims that ink. What decides
+the run is the Armarium's re-measure against the Designator's verified crops —
+see the Unit 14B ledger below. `run_aggregate`
+(`common/contracts/outcomes.py`) takes `edge_hold_pages` and appends a named
+partial reason for every page whose edge ink no crop released, so a run
+carrying one cannot report `complete`. A page whose ink the crops did claim is
+released and adds no reason.
+
+This paragraph previously recorded the opposite, as the deferral this unit had
+chosen while Unit 14 was outstanding. Unit 14B has landed; the sentence is kept
+here corrected rather than deleted because this file is the stage interface and
+a consumer who built against the old contract needs to see that it moved.
 
 ## The fixture is a degenerate case for the edge detector
 
@@ -62,3 +78,24 @@ the fixture geometry does not leave a quiet perimeter for it to be quiet about.
 better would be tuning the instrument to the specimen, which is what
 GOVERNANCE 10's second paragraph forbids. Selectivity is measured on real
 material or not claimed.
+
+## Unit 14B reconciliation ledger — release is by the same ink, not by exemption
+
+The fixture's apparent degeneracy was measured against the actual declared
+crop rectangles before changing it. On page 1 (200x260), the 64-pixel initial
+edge band contains 8,328 of 11,520 ink pixels (72.2917%); the two declared act
+crops leave 0 outside pixels. On page 2, it contains 3,384 of 3,840 pixels
+(88.125%); its declared continuation crop likewise leaves 0. Thus the ink is
+genuinely *claimed*; the semantic defect was treating a pre-proposal finding
+as unreleased after the Designator had supplied coverage, not a specimen with
+unclaimed edge ink.
+
+Unit 14B therefore retains the fixture and leaves `EDGE_BAND_PIXELS` and
+`MINIMUM_INK_PIXELS` unchanged. Armarium re-measures the Ink Map's retained,
+lossless page-space runs against verified final Designator crop bounds. A clear
+re-measure releases the page; a flagged re-measure holds it. The
+`structure-failure` scenario is the positive: it cuts no page regions, so its
+real fixture ink remains unclaimed, is held for review, appears in
+`partial_reasons`, and refuses a complete export. This distinguishes a
+pre-proposal signal from a genuine unresolved coverage finding without
+weakening either.

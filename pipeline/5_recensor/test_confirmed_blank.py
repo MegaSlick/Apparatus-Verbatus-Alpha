@@ -17,6 +17,7 @@ nothing; the witnesses only corroborate or contradict that finding, and a single
 dissenting witness holds the act for a human rather than being outvoted.
 """
 
+import ast
 import importlib.util
 import subprocess
 import sys
@@ -154,6 +155,83 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert measurement["attached_spans"]
     assert measurement["uncovered_non_whitespace"] == {"ranges": [], "count": 0}
     assert content_coverage["shortfall"] is False
+
+
+def _decision_chain_causes() -> list[str]:
+    """The cause variables the Recensor's act-outcome chain decides on, in order."""
+    module = ast.parse((ROOT / "pipeline" / "5_recensor" / "run.py").read_text(encoding="utf-8"))
+    main = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    for node in ast.walk(main):
+        if not isinstance(node, ast.If):
+            continue
+        chain, cursor = [], node
+        while isinstance(cursor, ast.If):
+            chain.append(cursor)
+            cursor = (
+                cursor.orelse[0]
+                if len(cursor.orelse) == 1 and isinstance(cursor.orelse[0], ast.If)
+                else None
+            )
+        names = [
+            sorted({n.id for n in ast.walk(branch.test) if isinstance(n, ast.Name)})
+            for branch in chain
+        ]
+        if any("observation_hold" in group for group in names) and len(chain) > 3:
+            return [", ".join(group) for group in names]
+    raise AssertionError("the act-outcome decision chain was not found in the Recensor's main()")
+
+
+def test_the_blank_seal_consults_every_page_level_cause_the_chain_would_hold_on():
+    """`confirmed-blank` is COMPLETED-class and terminal, so it must outrank nothing.
+
+    The corroboration gate's own comment states the rule: a hold cause that
+    appears only in the chain below is a cause this seal silently overrides. The
+    rule was stated for three causes and then a fourth, `observation_hold`, was
+    added to the chain without being added to the gate -- so an act whose page
+    still carried ink Unit 9 measured outside every cut could be sealed complete,
+    provided the page's one recovery grant was already spent and the witnesses
+    corroborated the Perlector's absence. That is the missed act GOALS 1 puts
+    above every other failure, reached through a terminal COMPLETED outcome.
+
+    The chain order is asserted too, and deliberately: this is the second time a
+    cause has been added below the gate without reaching it. A fifth cause fails
+    here, naming the gate it has to be reasoned about, instead of silently
+    inheriting the same defect.
+
+    `wants_recovery` is the one chain cause the gate does not consult, and that
+    is not an oversight this test should paper over: it is a request the stage
+    can still publish, not evidence it has already measured and cannot act on.
+    """
+    causes = _decision_chain_causes()
+    assert causes == [
+        "OutcomeClass, reading_class",
+        "isinstance, latest_payload, str",
+        "continuation_shortfall",
+        "flagged_pages",
+        "findings_route",
+        "observation_hold",
+        "wants_recovery",
+    ], causes
+
+    source = (ROOT / "pipeline" / "5_recensor" / "run.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+    gate = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.BoolOp)
+        and "no-readable-text" in ast.unparse(node)
+        and "corroborat" not in ast.unparse(node)
+    )
+    consulted = {node.id for node in ast.walk(gate) if isinstance(node, ast.Name)}
+    for cause in ("continuation_shortfall", "flagged_pages", "findings_route", "observation_hold"):
+        assert cause in consulted, (
+            f"the blank-seal corroboration gate does not consult {cause}, so a terminal "
+            "confirmed-blank can be sealed over evidence the chain below would have held on"
+        )
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):

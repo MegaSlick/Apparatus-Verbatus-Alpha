@@ -378,6 +378,71 @@ def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
         )
 
 
+def test_an_edge_hold_forces_partial_and_names_the_page_once():
+    """GOVERNANCE 2 at page scope, and a held page counted as one page.
+
+    A page whose edge ink no Designator crop claimed keeps the run partial even
+    when every act cut from it was delivered, because no act can own that ink
+    yet. The ordinals are counted as a set: a repeated ordinal is still one held
+    page, and naming it twice would report one page as two to the person reading
+    the reasons.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        edge_hold_pages=[1, 1],
+    )
+    assert aggregate["status"] == "partial"
+    assert [reason for reason in aggregate["reasons"] if "unclaimed-edge-ink" in reason] == [
+        "page 1 carries unreleased unclaimed-edge-ink: ink at its edge that no Designator "
+        "crop on the page claims, so its coverage is not reconciled"
+    ]
+
+
+def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
+    """The chair list is a set of roles, like the edge holds beside it.
+
+    `common/stage.py::unaddressed_chairs` walks `models.chairs`, so in-process
+    its roles are unique. The clean-machine verifier rebuilds this list out of
+    the retained aggregate basis and validates only that it is a list of
+    non-empty strings, so a repeated entry reaches here and would report one
+    unaddressed chair as two. The ink-map rows on that same verifier path are
+    refused outright for a repeated ordinal; this list had no guard at either
+    site while the edge holds it sits beside had two.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        unaddressed_chairs=["attestator_9", "attestator_9"],
+    )
+    assert aggregate["status"] == "partial"
+    assert [reason for reason in aggregate["reasons"] if "attestator_9" in reason] == [
+        "chair attestator_9 is configured and no stage addresses that role, so nothing "
+        "resolved it and no artifact records it"
+    ]
+
+
+def test_an_edge_hold_naming_a_page_the_run_never_counted_is_fatal():
+    """The hold list shares the page denominator, like every other input here.
+
+    A hold over a page outside the census would print a partial reason about a
+    page that does not exist. Witness coverage and text status are already
+    refused on the same ground; this closes the one input that was not.
+    """
+    with pytest.raises(FatalAccounting, match="page census does not account for"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+            edge_hold_pages=[7],
+        )
+
+
 def test_an_act_marked_out_on_a_page_the_exemplar_never_sealed_is_fatal():
     """An act cannot exist over pixels that were refused; that is not a partial run,
     it is a record contradicting itself."""

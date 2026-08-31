@@ -19,7 +19,7 @@ from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
 from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
-from common.residual_ink import page_edge_ink, page_residual_ink  # noqa: E402
+from common.residual_ink import ink_runs, page_edge_ink, page_residual_ink  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -158,6 +158,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # Empty coverage is intentional: this is the pre-proposal denominator.
             ink_map = page_residual_ink(image_bytes, covered=[])
             edge = page_edge_ink(image_bytes)
+            # Retain lossless runs so later coverage decisions cannot
+            # re-measure the page under a different pixel predicate. Decoded
+            # inside this refusal boundary: it is this module's third decode of
+            # the same digest-verified bytes, and an undecodable page must be
+            # the named census failure, never a bare traceback mid-publish.
+            edge_findings = ink_runs(image_bytes)
         except ValueError as error:
             # `measured_page_bytes` proves these bytes match the digest the
             # Exemplar sealed; it proves nothing about whether this module's own
@@ -182,6 +188,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "page_ordinal": ordinal,
                 "ink": artifact_finding(ink_map),
                 "edge": artifact_finding(edge),
+                "edge_findings": edge_findings,
             },
         )
     context.seal_boundary()
