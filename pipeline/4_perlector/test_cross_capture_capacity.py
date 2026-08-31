@@ -67,6 +67,17 @@ def _reviews(root):
     ]
 
 
+def _expected_act_count(root):
+    """The Designator's own denominator, independent of anything the Perlector
+    or Recensor later publish -- so a fault that drops the same act from both
+    downstream collections still shows up here.
+    """
+    (seal_path,) = sorted((root / "r" / "2_designator" / "artifacts" / "proposal-seal").iterdir())
+    payload = json.loads(seal_path.read_text())["payload"]
+    assert payload["count"] == len(payload["expected_acts"])
+    return payload["count"]
+
+
 def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(over_capacity_run):
     result, root = over_capacity_run
     # Exit 2 is fatal; a capacity hold is a run outcome rather than a crash.
@@ -128,8 +139,16 @@ def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_
     result, root = over_capacity_run
     # 3 is `EXIT_HELD` at the orchestrator: partial, never complete.
     assert result.returncode == 3, result.stderr
+    expected_count = _expected_act_count(root)
     reviews = _reviews(root)
-    assert len(reviews) == len(_perlectiones(root))
+    perlectiones = _perlectiones(root)
+    # Each output collection is checked against the Designator's independent
+    # denominator first, and only then against each other -- so a fault that
+    # dropped the same act from both `perlectio` and `review` cannot pass by
+    # having the two agree with one another instead of with the input.
+    assert len(perlectiones) == expected_count
+    assert len(reviews) == expected_count
+    assert len(reviews) == len(perlectiones)
     for review in reviews:
         assert review["outcome"] == "held-for-review"
         assert "'not-run'" in review["payload"]["reason"]

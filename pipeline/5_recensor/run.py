@@ -308,8 +308,10 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
     Only the reading moves. Each record's payload is still opened here exactly
     as it was on the first survey, and the polygon and `z_relationship` checks
     stay in the survey below, where they fire for the page actually being
-    surveyed and name it. A record whose `page_id` is not a string is dropped
-    for the reason it always was: no view's page identity could ever equal it.
+    surveyed and name it. A record with no string `page_id` cannot be filed
+    under any page, so it cannot be silently absorbed as "no survey for this
+    page" either -- a page that is never surveyed and a page whose survey was
+    unreadable must not read alike, so this refuses instead of dropping.
     """
     records: dict[str, list[dict]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -318,8 +320,12 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
         record = context.tree.read_artifact(DESIGNATOR, "occlusion", entry["artifact_id"])
         payload = _payload(record, f"Designator occlusion {record['artifact_id']}")
         page = payload.get("page_id")
-        if not isinstance(page, str):
-            continue
+        if not isinstance(page, str) or not page:
+            raise FatalAccounting(
+                f"Designator occlusion {record['artifact_id']} has no valid page_id "
+                f"({page!r}); the Recensor refuses to file occlusion evidence under "
+                "no page rather than let it read as a page never surveyed"
+            )
         records.setdefault(page, []).append(
             {"artifact_id": record["artifact_id"], "payload": payload}
         )
