@@ -241,16 +241,23 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     # it. Remove the ink-map artifacts that bound the lost page and re-witness
     # that boundary, so the Designator reaches the census reconciliation this
     # test exists for instead of an upstream dangling-input refusal.
-    import json as _json
-
+    removed = 0
     for entry in list(tree.build_manifest(INK_MAP, verify_inputs=False)["artifacts"]):
         artifact_file = tree.resolve(entry["relative_path"])
-        record = _json.loads(artifact_file.read_bytes())
+        record = json.loads(artifact_file.read_bytes())
         if any(
             reference["relative_path"] == page["relative_path"]
             for reference in record.get("inputs", [])
         ):
             artifact_file.unlink()
+            removed += 1
+    # Named, so a changed input shape says so. The loop matches ink-map inputs
+    # by the page artifact's `relative_path`; were the Ink Map to bind the page
+    # blob instead, it would delete nothing, the Designator would refuse at the
+    # earlier dangling-input check, and this test would fail against its census
+    # assertion below -- sending the reader to the census branch rather than to
+    # the input shape that actually moved.
+    assert removed == 1, "no ink-map record bound the lost page by its artifact path"
     tree.write_manifest(INK_MAP)
     rewitness_boundary(tree, INK_MAP)
     before = snapshot(tree.root)

@@ -422,7 +422,6 @@ STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_
 # Derive page-response bodies from the same act declarations to prevent drift.
 _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
 # `config/models.toml` remains the authority for page scope; tests reconcile it.
-_PAGE_CHAIRS = ("attestator_1", "attestator_3")
 
 
 def churro_xml(text: str) -> str:
