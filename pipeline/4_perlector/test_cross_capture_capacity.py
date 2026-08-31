@@ -67,15 +67,18 @@ def _reviews(root):
     ]
 
 
-def _expected_act_count(root):
-    """The Designator's own denominator, independent of anything the Perlector
-    or Recensor later publish -- so a fault that drops the same act from both
-    downstream collections still shows up here.
+def _expected_act_ids(root):
+    """The Designator's own act identities, independent of anything the
+    Perlector or Recensor later publish -- so a fault that drops the same act
+    from both downstream collections still shows up here, and identities
+    rather than a count so a duplicate cannot stand in for a missing act.
     """
     (seal_path,) = sorted((root / "r" / "2_designator" / "artifacts" / "proposal-seal").iterdir())
     payload = json.loads(seal_path.read_text())["payload"]
     assert payload["count"] == len(payload["expected_acts"])
-    return payload["count"]
+    ids = sorted(item["act_id"] for item in payload["expected_acts"])
+    assert len(set(ids)) == len(ids)
+    return ids
 
 
 def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(over_capacity_run):
@@ -139,16 +142,16 @@ def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_
     result, root = over_capacity_run
     # 3 is `EXIT_HELD` at the orchestrator: partial, never complete.
     assert result.returncode == 3, result.stderr
-    expected_count = _expected_act_count(root)
+    expected_ids = _expected_act_ids(root)
     reviews = _reviews(root)
     perlectiones = _perlectiones(root)
     # Each output collection is checked against the Designator's independent
-    # denominator first, and only then against each other -- so a fault that
-    # dropped the same act from both `perlectio` and `review` cannot pass by
-    # having the two agree with one another instead of with the input.
-    assert len(perlectiones) == expected_count
-    assert len(reviews) == expected_count
-    assert len(reviews) == len(perlectiones)
+    # identities first, and only then against each other -- so neither a fault
+    # that dropped the same act from both `perlectio` and `review`, nor a
+    # duplicate record standing in for a missing act, can pass by having the
+    # two collections agree with one another instead of with the input.
+    assert sorted(record["subject_id"] for record in perlectiones) == expected_ids
+    assert sorted(review["subject_id"] for review in reviews) == expected_ids
     for review in reviews:
         assert review["outcome"] == "held-for-review"
         assert "'not-run'" in review["payload"]["reason"]
@@ -161,6 +164,10 @@ def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_
         reading = json.loads(
             (root / "r" / review["payload"]["perlectio_ref"]["relative_path"]).read_text()
         )
+        # The review's reading is the review's own act, not merely some not-run
+        # record -- a substituted reference would otherwise satisfy every
+        # assertion below.
+        assert reading["subject_id"] == review["subject_id"]
         assert reading["outcome"] == "not-run"
         assert reading["payload"]["reason"].startswith(OVER_CAPACITY)
     assert not (root / "r" / "5_recensor" / "artifacts" / "recovery-request").exists()
