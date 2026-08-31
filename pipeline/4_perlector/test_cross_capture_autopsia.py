@@ -231,7 +231,11 @@ def test_capture_drop_or_preference_field_is_refused():
         autopsia([view(A, "a")])
     bad = view(A, "a")
     bad["selected_view"] = True
-    with pytest.raises(SchemaRefusal, match="preference|closed schema"):
+    # Pinned to the preference screen's own message, not the closed-schema
+    # refusal `_view` would also raise on this row (it also has an unknown
+    # field): a test that accepts either passes even if the preference screen
+    # is deleted and only the shape check remains.
+    with pytest.raises(SchemaRefusal, match=r"forbidden preference field 'selected_view'"):
         autopsia([bad, view(B, "b")])
 
 
