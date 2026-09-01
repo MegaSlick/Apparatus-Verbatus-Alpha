@@ -89,7 +89,8 @@ def import_in_custody(
         )
     printer(
         "Recorded ScanTailor geometry document: "
-        f"{strip_control_bytes(str(result['document_path']))} ({result['document_sha256']}).\n"
+        f"{strip_control_bytes(str(output_dir / result['document_name']))} "
+        f"({result['document_sha256']}).\n"
         "It is a digest-bound record of the project geometry, not a selected or applied result."
     )
 
@@ -144,7 +145,7 @@ def _summary(
         "project_sha256",
         "image_count",
         "geometry_count",
-        "document_path",
+        "document_name",
         "document_sha256",
     }
     error_code = (
@@ -159,9 +160,8 @@ def _summary(
         or not _positive_int(value.get("image_count"))
         or not _positive_int(value.get("geometry_count"))
         or value["geometry_count"] > value["image_count"]
-        or not isinstance(value.get("document_path"), str)
-        or Path(value["document_path"])
-        != output_dir / f"scantailor-geometry-{value['document_sha256']}.json"
+        or not isinstance(value.get("document_name"), str)
+        or value["document_name"] != f"scantailor-geometry-{value['document_sha256']}.json"
     ):
         raise OperatorError(error_code, detail="the confined importer returned an invalid summary")
     if expected_project_sha256 is not None and value["project_sha256"] != expected_project_sha256:

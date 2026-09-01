@@ -1280,11 +1280,11 @@ def test_validation_and_consumption_share_one_lock_in_the_claim_window(tmp_path:
             outcome = pod_runtime._claim_challenge(
                 "create",
                 create_request.name,
-                create_request.hard_deadline,
-                create_request.reviewed_digest(),
-                preview.challenge or "",
-                preview.confirmation_phrase,
-                preview.confirmation_phrase,
+                hard_deadline=create_request.hard_deadline,
+                request_digest=create_request.reviewed_digest(),
+                challenge=preview.challenge or "",
+                expected=preview.confirmation_phrase,
+                typed=preview.confirmation_phrase,
             )
         except Exception as error:  # a KeyError here is the double-spend itself
             outcome = error

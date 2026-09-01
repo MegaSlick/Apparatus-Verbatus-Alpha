@@ -204,7 +204,7 @@ def test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point(
     }
     code, committed = _invoke_main(monkeypatch, capsys, commit_request)
     assert code == 0 and committed["status"] == "committed"
-    document = Path(committed["summary"]["document_path"])
+    document = output / committed["summary"]["document_name"]
     data = document.read_bytes()
     assert scantailor_worker.canonical_bytes(json.loads(data)) + b"\n" == data
     code, recommitted = _invoke_main(monkeypatch, capsys, commit_request)
@@ -228,7 +228,7 @@ def test_commit_refuses_when_an_existing_document_does_not_match_its_own_digest(
         "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, preview_request)
-    document_path = Path(preview["summary"]["document_path"])
+    document_path = output / preview["summary"]["document_name"]
     document_path.write_bytes(b'{"tampered":true}')
     commit_request = {
         **preview_request,
@@ -429,7 +429,7 @@ def test_an_existing_document_that_is_not_a_regular_file_refuses_rather_than_blo
         "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, preview_request)
-    os.mkfifo(Path(preview["summary"]["document_path"]))
+    os.mkfifo(output / preview["summary"]["document_name"])
     commit_request = {
         **preview_request,
         "operation": "commit",
@@ -535,7 +535,7 @@ def test_parent_refuses_a_commit_summary_that_cannot_name_the_written_document(
             "project_sha256": "a" * 64,
             "image_count": 1,
             "geometry_count": 1,
-            "document_path": str(tmp_path / "not-the-content-addressed-name.json"),
+            "document_name": "not-the-content-addressed-name.json",
             "document_sha256": "b" * 64,
         },
         "output_identity": {"device": 1, "inode": 1},
@@ -642,7 +642,7 @@ def test_an_output_folder_swapped_after_its_check_is_not_the_one_written_to(
 
     assert code == 0 and response["status"] == "committed"
     approved = tmp_path / "moved-aside"
-    written = Path(response["summary"]["document_path"]).name
+    written = response["summary"]["document_name"]
     # The substitute holds the approved folder's name and none of its contents.
     assert (approved / written).is_file()
     assert not list(output.iterdir())
@@ -669,8 +669,13 @@ def test_the_geometry_document_is_published_through_the_pinned_descriptor(tmp_pa
         for node in ast.walk(main)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
+    attributes = {
+        node.func.attr
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
     assert "_publish" in called
-    assert not called & {"exclusive_write", "atomic_write", "write_bytes"}
+    assert not (called | attributes) & {"exclusive_write", "atomic_write", "write_bytes"}
     imported = {
         alias.name
         for node in ast.walk(tree)
@@ -721,14 +726,14 @@ def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text:
     encoded = scantailor_worker.canonical_bytes(document) + b"\n"
     digest = hashlib.sha256(encoded).hexdigest()
     output_dir = Path(request["output_dir"])
-    path = output_dir / f"scantailor-geometry-{digest}.json"
+    document_name = f"scantailor-geometry-{digest}.json"
     if request["operation"] == "commit":
-        path.write_bytes(encoded)
+        (output_dir / document_name).write_bytes(encoded)
     summary = {
         "project_sha256": document["project_sha256"],
         "image_count": document["source_image_count"],
         "geometry_count": 1,
-        "document_path": str(path),
+        "document_name": document_name,
         "document_sha256": digest,
     }
     output_status = output_dir.stat()

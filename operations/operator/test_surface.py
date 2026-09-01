@@ -2621,6 +2621,47 @@ def test_a_held_run_raises_run_held_not_run_failed(
     assert "could not reach" not in failure.value.render()
 
 
+def test_a_malformed_reasons_field_is_named_unreadable_not_silently_dropped(
+    tmp_path: Path,
+) -> None:
+    """A non-list `reasons` must not vanish into "no reason recorded".
+
+    The guard against a string-as-reasons or mapping-as-reasons value is
+    correct: only a list may feed the hold-reason lines. But replacing a
+    malformed value with `[]` and saying nothing throws away the operator's
+    only clue that the Armarium record held something it could not read.
+    """
+
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "held", "reasons": "not a list"},
+        "pages": [],
+        "expected_acts": 0,
+    }
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="held-run")
+
+    assert failure.value.code is ErrorCode.RUN_HELD
+    assert any(line.startswith("Hold reason: UNREADABLE.") for line in messages)
+    assert any("hold reasons were not a list and were not read" in line for line in messages)
+    assert len(notifications) == 1
+    assert notifications[0][0] == "decision"
+    assert "hold reasons were not a list and were not read" in notifications[0][1]
+    assert "no reason recorded" not in notifications[0][1]
+
+
 def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
     tmp_path: Path,
 ) -> None:
