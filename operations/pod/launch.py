@@ -1189,15 +1189,12 @@ class PodRuntime:
                 deadline_seconds=min(ALERT_STATE_LOCK_WAIT_SECONDS, self.lock_wait_seconds),
                 sleep=self.lock_sleeper,
             )
-            try:
-                yield
-            finally:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    # The with-block close releases the POSIX lock; an unlock
-                    # failure must not replace the alert path's own outcome.
-                    pass
+            # No explicit LOCK_UN: closing the last descriptor on this open file
+            # description releases the flock, and the `with` above closes it on
+            # every path out. The unlock that stood here could only fail, and
+            # its handler discarded that failure unrecorded — a swallowed error
+            # in exchange for nothing. Found by CodeRabbit.
+            yield
 
     def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
         """Read only a closed state shape; corrupt evidence reverts to sending."""

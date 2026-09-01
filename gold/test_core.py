@@ -206,6 +206,33 @@ def test_same_page_bytes_at_two_ordinals_are_ranked_as_distinct_pages(tmp_path):
         validate_corpus([*selected, *custody, misplaced], path)
 
 
+@pytest.mark.parametrize("ordinal", [0, -1])
+def test_load_run_frame_refuses_a_non_positive_source_page_ordinal(tmp_path, ordinal):
+    """A self-hashed run.json can assert any ordinal; RunTree.create refuses one
+    below 1, and load_run_frame must refuse the same forged record rather than
+    accept a page number no pipeline shard could ever own."""
+    pages = [{"ordinal": ordinal, "sha256": _sha("a"), "width": 100, "height": 200}]
+    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
+    page_digest = digest_bytes(canonical_bytes(source))
+    frame = {
+        "page_digest": page_digest,
+        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+        "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
+    }
+    record = {
+        "schema": "skeleton.v1",
+        "run_id": "gold-non-positive-ordinal",
+        "source_manifest": pages,
+        "corpus_frame_membership": frame,
+    }
+    record["self_hash"] = self_hash(record)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal, match="ordinal.*counted from one"):
+        load_run_frame(path)
+
+
 def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
     path, frame, pages = run_file(tmp_path)
     record = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]

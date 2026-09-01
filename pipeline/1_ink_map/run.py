@@ -113,9 +113,16 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
 def artifact_finding(finding: dict) -> dict:
     """Make the shared measure's ratio canonical without changing its measure."""
     recorded = dict(finding)
-    fraction = recorded.pop("fraction_outside")
+    # Defaulted rather than indexed: a measure that stops emitting the key at
+    # all is a worse contract break than one emitting a string, and it was the
+    # one getting the worse report -- a bare KeyError where the string got a
+    # named refusal. Both arrive here as the same statement now.
+    fraction = recorded.pop("fraction_outside", None)
     if not isinstance(fraction, float):
-        raise FatalAccounting("residual-ink measure returned a non-float fraction")
+        raise FatalAccounting(
+            "residual-ink measure returned no float `fraction_outside`; the ink map "
+            "cannot record a ratio it was not given"
+        )
     recorded["fraction_outside_per_million"] = int(round(fraction * 1_000_000))
     return recorded
 
@@ -168,8 +175,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # this stage refuses.
             raise FatalAccounting(
                 f"the ink map cannot measure sealed Exemplar page {ordinal}: its own "
-                f"digest-verified pixels do not decode ({error}); no ink-map record "
-                "was written"
+                f"digest-verified pixels do not decode ({error}); no boundary was "
+                "sealed, and the records already published for earlier pages of this "
+                "run are an incomplete map"
             ) from error
         context.publish(
             kind="ink-map",

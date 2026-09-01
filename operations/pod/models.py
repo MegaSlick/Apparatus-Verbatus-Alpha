@@ -219,11 +219,19 @@ class PodCreateRequest:
         default; an unsupported value refuses instead of using an unstable repr.
         """
 
-        return digest_bytes(
-            canonical_bytes(
-                {entry.name: _digestable(getattr(self, entry.name)) for entry in fields(self)}
-            )
-        )
+        digestable = {entry.name: _digestable(getattr(self, entry.name)) for entry in fields(self)}
+        try:
+            encoded = canonical_bytes(digestable)
+        except TypeError as error:
+            # `canonical_bytes` refuses a value with no canonical form — a lone
+            # surrogate from JSON metadata has no UTF-8 encoding — by raising
+            # TypeError. `_digestable` above refuses with ValueError, and the
+            # preview gates catch only that, so the same class of unreviewable
+            # request escaped one way as a named refusal and the other way as a
+            # traceback on the paid path. One refusal type for both.
+            # Found by CodeRabbit.
+            raise ValueError(f"pod request field has no reviewed digest form: {error}") from error
+        return digest_bytes(encoded)
 
 
 def _digestable(value: object) -> object:

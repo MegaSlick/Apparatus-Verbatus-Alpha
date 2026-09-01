@@ -573,7 +573,14 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    coverage = witness_coverage(outcomes, 3, attachments={chair: True for chair in outcomes})
+    # Stated in full: a `genuinely-empty` reading whose attachment is a
+    # zero-length aligned span both attached and compared, and the boolean
+    # shorthand says nothing about comparability.
+    coverage = witness_coverage(
+        outcomes,
+        3,
+        attachments={chair: {"attached": True, "comparable": True} for chair in outcomes},
+    )
 
     assert coverage["under_witnessed"] is False
     assert coverage["by_outcome"] == {"genuinely-empty": 3}
@@ -586,7 +593,13 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
     contradicted = dict(outcomes, attestator_2="read")
     assert (
         RECENSOR_RUN.blank_corroboration(
-            witness_coverage(contradicted, 3, attachments={c: True for c in contradicted}),
+            witness_coverage(
+                contradicted,
+                3,
+                attachments={
+                    chair: {"attached": True, "comparable": True} for chair in contradicted
+                },
+            ),
             contradicted,
             {},
             _proved(contradicted),
@@ -614,7 +627,11 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    coverage = witness_coverage(outcomes, 3, attachments={c: True for c in outcomes})
+    coverage = witness_coverage(
+        outcomes,
+        3,
+        attachments={chair: {"attached": True, "comparable": True} for chair in outcomes},
+    )
 
     def _fact(anchor_basis: str) -> dict:
         # The full shape `act_attachment_facts` emits, not only the key the

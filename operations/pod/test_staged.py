@@ -905,19 +905,20 @@ def test_a_close_record_write_failure_leaves_unknown_not_zero(
     assert intent["close_state"] == intent["cost_state"] == "unknown"
 
 
-def test_a_stub_adoption_creates_no_second_pod_and_closes_against_the_original_grant(
+def test_a_restarted_lifecycle_closes_a_recovered_pod_against_its_original_grant(
     tmp_path: Path,
 ) -> None:
-    """What is real here is the close; the confirmation gate is a stub, not this layer's.
+    """A pod recovered after a crash settles against the grant that booted it.
 
-    Named for what it proves. The `adopt` closure below decides its own refusal,
-    so the two assertions around it check that closure's `if` and no production
-    code -- this layer has no adoption path at all (see `staged.py`'s module
-    docstring), and a test claiming to cover a fresh-confirmation gate would stay
-    green after that gate was deleted, while an operator adopted a billing pod on
-    a spent grant. What this test does exercise is real and worth keeping: a
-    restarted lifecycle closes the adopted pod id against the original stage
-    grant, settles it, and writes exactly one cost record.
+    The adoption itself is a stub: this layer has no adoption path (see
+    `staged.py`'s module docstring), so the closure below only produces the
+    record a real `PodRuntime.adopt` would return. Asserting on that closure's
+    own refusal proved nothing -- no change to production code could fail it --
+    and the test's old name read as coverage of a confirmation gate, which would
+    have stayed green after such a gate was added and broken. What is real is
+    below: a restarted lifecycle closes the recovered pod id against the
+    original stage grant, verifies it, and writes exactly one cost record, while
+    no second pod is created.
     """
 
     clock, provider, _, before_crash = lifecycle(tmp_path)
@@ -938,10 +939,6 @@ def test_a_stub_adoption_creates_no_second_pod_and_closes_against_the_original_g
             LaunchState.ADOPTED_GUARDED, record=provider.adopt(active.record.pod_id)
         )
 
-    refused = adopt("separate confirmed stage grant")
-    assert refused.state is LaunchState.REFUSED_CONFIRMATION
-    assert not any(verb == "adopt" for verb, _subject in provider.calls)
-
     adopted = adopt("fresh confirmed adoption")
     assert adopted.record is not None and adopted.record.pod_id == active.record.pod_id
     assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls
@@ -956,4 +953,13 @@ def test_a_stub_adoption_creates_no_second_pod_and_closes_against_the_original_g
 
     assert settled.pod_id == active.record.pod_id
     assert settled.close.verified
-    assert len(cost_records(tmp_path, "stage-pod-cost.v1")) == 1
+    closes = cost_records(tmp_path, "stage-pod-cost.v1")
+    assert len(closes) == 1
+    # The record itself must settle against the ORIGINAL grant — a close that
+    # persisted a different authorisation reference, collection, or stage would
+    # have kept this test green while billing the wrong ledger line.
+    assert closes[0]["collection_id"] == "parish-17"
+    assert closes[0]["stage"] == "attestatores"
+    assert closes[0]["authorization_ref"] == "grant-witnesses"
+    # And recovery through close must create no second pod.
+    assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls

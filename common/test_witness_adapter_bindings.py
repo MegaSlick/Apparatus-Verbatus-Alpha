@@ -220,12 +220,22 @@ def test_the_live_roster_pins_one_adapter_per_chair():
     """
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
-    assert models.chairs["attestator_1"].witness_adapter == "chandra.v1"
-    assert models.chairs["attestator_1"].witness_scope == "page"
-    assert models.chairs["attestator_2"].witness_adapter == "dai.v1"
-    assert models.chairs["attestator_2"].witness_scope == "act"
-    assert models.chairs["attestator_3"].witness_adapter == "churro.v1"
-    assert models.chairs["attestator_3"].witness_scope == "page"
+    # The whole configured map, not three named chairs: naming only the chairs
+    # it expects, this test would stay green while `models.toml` added a fourth
+    # witness chair, and the sentence above about a one-to-one partition would
+    # quietly stop being true of the live roster.
+    # `getattr`, because an absent chair carries neither field at all: it must
+    # be skipped, not raise, and it can never hold a binding to miss.
+    assert {
+        name: (chair.witness_adapter, chair.witness_scope)
+        for name, chair in models.chairs.items()
+        if getattr(chair, "witness_adapter", None) is not None
+        or getattr(chair, "witness_scope", None) is not None
+    } == {
+        "attestator_1": ("chandra.v1", "page"),
+        "attestator_2": ("dai.v1", "act"),
+        "attestator_3": ("churro.v1", "page"),
+    }
 
 
 def test_two_chairs_may_share_one_adapter_at_different_scopes():

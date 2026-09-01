@@ -798,3 +798,24 @@ page to calibrate against. Before the pod leg: either move them into a
 schema, or express them as fractions of page dimensions rather than absolute
 pixels — the padding entry is the model for how. Named here rather than left
 uncalibrated and unremarked. Found in review, 2026-08-10.
+
+**This stage builds occlusion geometry and publishes none of it.**
+`geometry_layer.occlusion_envelope` derives an occlusion envelope, and
+`run.py` seals no `kind="occlusion"` artifact — no stage in the pipeline does.
+The Recensor's cross-capture visibility survey reads exactly that kind
+(`pipeline/5_recensor/run.py::occlusion_records_by_page`), so on every run today
+every capture row records `act-visibility-survey-absent` and **no run has
+measured whether an act's surface was visible in the captures that show it.**
+
+The absence is named rather than silent, which is the difference that matters
+for a consumer: the code is on every capture row, and the Recensor deliberately
+routes an absent instrument like a clean one rather than holding an act on an
+instrument that never ran — absence is not a measured shortfall, and inventing
+one would be a metric that was not measured passing as one. What a consumer may
+not do is read a present `cross_capture_coverage` field as evidence that
+visibility was checked.
+
+Closing it is stage integration, not a Recensor change: it needs a producer here
+and a settled contract for what an occlusion record seals (page identity,
+polygon in that page's own coordinate space, and the `z_relationship` the
+Recensor already refuses to infer). Named in review of PR #78, 2026-08-31.

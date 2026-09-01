@@ -475,14 +475,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.verb == "scantailor":
             from .scantailor import import_in_custody, instruction
 
-            _print(instruction(args.project, workspace=workspace))
             if args.geometry_out is not None:
+                _print(
+                    "Importing the ScanTailor project as it is saved right now. "
+                    "If you have not yet saved its page-split geometry, stop and do that first."
+                )
                 import_in_custody(
                     project=args.project,
                     output_dir=args.geometry_out,
                     workspace=workspace,
                     printer=_print,
                 )
+            else:
+                _print(instruction(args.project, workspace=workspace))
         # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(
@@ -644,6 +649,39 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
         if args.decline is not None and args.queue_state is None:
             raise triage.TriageRefusal(
                 "triage refusal queue-state-required: decline needs --queue-state"
+            )
+        # A decline carrying acceptance arguments. The guard below catches the
+        # companions supplied with *no* decision word; this catches them supplied
+        # with the *wrong* one. --draft, --confirmation-out and --preview-sha256
+        # belong to --accept alone, and the decline path ignored all three in
+        # silence while journalling the decline and exiting 0. A decided row is
+        # never rewritten, so the acceptance the operator was plainly assembling
+        # -- they had produced a draft and its preview digest -- became
+        # permanently unreachable for that item, and the console had called it
+        # success.
+        if args.decline is not None and any(
+            (args.draft, args.confirmation_out, args.preview_sha256)
+        ):
+            raise triage.TriageRefusal(
+                "triage refusal decline-with-acceptance-arguments: --draft, "
+                "--confirmation-out and --preview-sha256 belong to --accept; a decline "
+                "would ignore them and decide this row for good"
+            )
+        # The reverse direction. The checks above refuse a decision missing its
+        # companions; without this one, the companions supplied *without* a
+        # decision word printed the queue and exited 0, so an operator who meant
+        # to accept was told the command succeeded while nothing was journalled
+        # -- and the batch's mode was claimed by that non-decision on the way.
+        # `--queue-state` is deliberately absent from this list: reading the
+        # journal alongside the rendered queue is a legitimate display run.
+        if (
+            args.accept is None
+            and args.decline is None
+            and any((args.draft, args.confirmation_out, args.preview_sha256))
+        ):
+            raise triage.TriageRefusal(
+                "triage refusal decision-word-required: --draft, --confirmation-out and "
+                "--preview-sha256 belong to an --accept or a --decline, and none was given"
             )
         if args.accept is not None:
             if args.queue_state is None or args.draft is None or args.confirmation_out is None:
@@ -991,13 +1029,22 @@ def _interactive_arguments() -> list[str]:
         proxy_paths = _ask("Digest-to-proxy-path JSON")
         # The prompt names the three legal words for the same reason ingest's
         # does: argparse `choices` answers a guess with "invalid choice".
-        mode = _ask("Triage mode — manual, semi, or auto", default="semi")
+        #
+        # No default. This route is display-only for *decisions*, but every
+        # triage invocation still writes the batch's mode declaration, and that
+        # record is durable and is never rewritten. Defaulting to `semi` meant
+        # someone who chose `triage` merely to look at the queue permanently
+        # claimed that batch's mode with a word they had never chosen, and a
+        # later `--mode manual` for the same batch was refused by their own
+        # glance. The verb route requires `--mode`; asking for it here is the
+        # same requirement in the same words.
+        mode = _ask("Triage mode — manual, semi, or auto")
         batch_id = _ask("Batch ID")
         operator = _ask("Operator name for the mode record")
         mode_record = _ask("Path where the mode declaration should be recorded")
-        if not all((manifest, evidence, proxy_paths, batch_id, operator, mode_record)):
+        if not all((manifest, evidence, proxy_paths, mode, batch_id, operator, mode_record)):
             _print(
-                "Triage needs the manifest, evidence, proxy paths, batch ID, operator, "
+                "Triage needs the manifest, evidence, proxy paths, mode, batch ID, operator, "
                 "and mode-record path. One was left blank, so nothing changed."
             )
             return []

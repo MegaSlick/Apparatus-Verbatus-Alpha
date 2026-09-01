@@ -267,6 +267,7 @@ def test_every_declared_response_geometry_reaches_the_act_it_is_declared_for(
 ):
     """A page response must overlap the sealed act it claims to report."""
     acts = declared_acts(skeleton)
+    checked = 0
     for table, row in response_rows(skeleton):
         raw = row.get("raw_response")
         if raw is None or row["act_key"] not in acts:
@@ -282,6 +283,12 @@ def test_every_declared_response_geometry_reaches_the_act_it_is_declared_for(
             f"{table} row {row!r} derives {[item['bounds'] for item in observed]}, none of which "
             f"overlaps act {row['act_key']}'s own crop {crop}"
         )
+        checked += 1
+    # The counter its siblings already carry. Both `continue` branches above are
+    # ordinary, so a fixture edit that left no row with both a `raw_response`
+    # and a declared act would have retired this wall in silence -- and the rule
+    # it holds is the one keeping a witness reading attached to the act it read.
+    assert checked, "no declared response geometry was checked; this guard would pass vacuously"
 
 
 def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skeleton):
@@ -425,7 +432,9 @@ def test_a_completed_empty_row_retains_a_response_wherever_its_base_row_does(ske
     region. Minted regions are excluded because they must remain under-witnessed.
     """
     retaining = base_rows_that_retain_a_response(skeleton)
+    assert retaining, "no base row retains a response; this guard would pass vacuously"
     minted = set(minted_fallback_act_keys(skeleton))
+    checked = 0
     for row in skeleton.get("witness_empty", []):
         if row["act_key"] in minted:
             continue
@@ -435,3 +444,10 @@ def test_a_completed_empty_row_retains_a_response_wherever_its_base_row_does(ske
             f"witness_empty row {row!r} reports an empty reading of a marked-out act for a chair "
             "whose base row retains a native response, with no response to attach it through"
         )
+        checked += 1
+    # Both skips above can empty this loop while the declaration still contains
+    # the rows the rule is about: drop `raw_response` from the base testimony and
+    # every row is skipped, and the rule -- a chair reporting a blank over a
+    # marked-out act must carry the geometry proving it examined that crop --
+    # would stop being enforced with nothing turning red.
+    assert checked, "no marked-out empty row was compared; this guard would pass vacuously"

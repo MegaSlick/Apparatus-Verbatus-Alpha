@@ -139,8 +139,10 @@ cannot see:
   another one on top of it: tell Tyrel, and check the provider's own console.
 - **Two windows at once.** Only one window may be part-way through a paid launch. The
   second is told so straight away rather than left waiting, and it spent nothing: the
-  challenge remains unspent. After the first machine has a verified close, preview again
-  so the price and request are current.
+  challenge remains unspent. Wait for the first window to finish, then run `verbatus
+  status` to see whether it created a machine. If it did, a verified close is required
+  before you preview again. If it did not — the first launch simply refused or failed —
+  nothing needs closing; preview again so the price and request are current.
 
 ## `spend show`: inspect the reviewed guard
 

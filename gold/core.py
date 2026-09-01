@@ -247,6 +247,11 @@ def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any
             not isinstance(ordinal, int) or isinstance(ordinal, bool),
             "source page ordinal is not an integer",
         )
+        _refuse(
+            isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal < 1,
+            "source page ordinal is not a page number: a page is counted from one, "
+            "so a run cannot say which page a value below it names",
+        )
         _sha(page_sha, "source page sha256")
         source.append({"ordinal": ordinal, "sha256": page_sha})
     source.sort(key=lambda page: page["ordinal"])

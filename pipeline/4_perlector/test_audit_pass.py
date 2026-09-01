@@ -150,6 +150,40 @@ def test_the_flag_location_basis_names_only_the_chairs_that_departed():
     ]
 
 
+def test_two_witnesses_departing_at_the_same_span_both_appear_in_the_basis():
+    """Dissent evidence is never reduced to its first witness.
+
+    Two chairs can compute the identical departure span independently; the
+    basis has to name both, not the one that happened to be read first. A
+    producer that kept only the first matching witness per span would still
+    satisfy every other test in this module -- each of those hands the
+    function a single qualifying witness -- so this is the one case that
+    proves a second, equally-located dissent is retained rather than dropped.
+    """
+    perlector = _perlector()
+    dossier = _dossier(
+        ("attestator_1", "the reading", "own-report"),
+        ("attestator_2", "a departure", "own-report"),
+        ("attestator_3", "a departure", "page-slice"),
+    )
+    span = audit.text_change_span("the reading", "a departure")
+    flags = [{"class": "testimony-diff", "location": {"start": span[0], "end": span[1]}}]
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == [
+        {
+            "class": "testimony-diff",
+            "chair": "attestator_2",
+            "derivation": "own-report",
+            "location": {"start": span[0], "end": span[1]},
+        },
+        {
+            "class": "testimony-diff",
+            "chair": "attestator_3",
+            "derivation": "page-slice",
+            "location": {"start": span[0], "end": span[1]},
+        },
+    ]
+
+
 def test_a_page_slice_derivation_is_named_as_the_double_derivation_it_is():
     """§4.6: a page-slice diff is recorded with its derivation, never bare."""
     perlector = _perlector()

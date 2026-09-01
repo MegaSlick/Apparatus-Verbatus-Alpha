@@ -88,7 +88,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _bounded_bytes(path: Path, subject: str) -> bytes:
+def bounded_bytes(path: str | Path, subject: str, *, dir_fd: int | None = None) -> bytes:
     """Read a whole record, or refuse a file too large to be one of ours.
 
     Opened the same way `sha256_file` above opens one, and for the reason its
@@ -99,9 +99,15 @@ def _bounded_bytes(path: Path, subject: str) -> bytes:
 
     That protection was written once and applied to one of the two readers. This
     is the other one. Found by CodeRabbit.
+
+    ``dir_fd`` resolves ``path`` as a single entry name relative to an already
+    open directory rather than by walking the name again. The store's
+    enumeration passes the descriptor it validated, so the guarantees above are
+    the same ones and the directory they apply to cannot be swapped underneath
+    them.
     """
 
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=dir_fd)
     with os.fdopen(descriptor, "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise OSError(errno.EINVAL, "a record needs a regular file", str(path))
@@ -172,58 +178,75 @@ class ReceiptStore:
         if not resolved.is_relative_to(resolved_root):
             raise RecordError("operator receipt path is outside the receipt directory")
         try:
-            data = _bounded_bytes(resolved, "operator receipt")
-            record = json.loads(data.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            data = bounded_bytes(resolved, "operator receipt")
+        except OSError as error:
             raise RecordError(f"operator receipt cannot be read: {resolved.name}") from error
+        return _validated(resolved.name, data)
+
+    def _read_at(self, directory: int, name: str) -> dict[str, Any]:
+        """Read one receipt as an entry of the directory already open as ``directory``.
+
+        The same reader as `read`, minus the part that resolves a name a second
+        time: containment is established by the descriptor rather than argued
+        about afterwards, so there is no window in which the directory the
+        entry belongs to can become a different directory.
+        """
+
         try:
-            # The shared serializer refuses what it cannot hash stably (a float,
-            # a non-string key). A saved file can contain one; that has to arrive
-            # as this module's RecordError, because `status` reports an unreadable
-            # record beside the intact ones only for RecordError.
-            canonical = canonical_bytes(record)
-        except TypeError as error:
-            raise RecordError(f"operator receipt is not canonical: {resolved.name}") from error
-        if canonical != data:
-            raise RecordError(f"operator receipt is not canonical: {resolved.name}")
-        if not isinstance(record, dict) or set(record) != {
-            "schema",
-            "kind",
-            "recorded_at",
-            "payload",
-        }:
-            raise RecordError(f"operator receipt has an invalid shape: {resolved.name}")
-        if (
-            record["schema"] != SCHEMA
-            or not isinstance(record["kind"], str)
-            or not isinstance(record["recorded_at"], str)
-            or not isinstance(record["payload"], dict)
-        ):
-            raise RecordError(f"operator receipt has invalid fields: {resolved.name}")
+            data = bounded_bytes(name, "operator receipt", dir_fd=directory)
+        except OSError as error:
+            raise RecordError(f"operator receipt cannot be read: {name}") from error
+        return _validated(name, data)
+
+    @contextmanager
+    def _bound_receipts(self) -> Iterator[int | None]:
+        """Open the receipt directory once and hold it open for the whole read.
+
+        Checking `self.receipts` and then globbing and opening through the same
+        name asks the filesystem to resolve it three times. A local process that
+        replaces the directory with a link between the check and the glob gets
+        its own files read as this store's history, or hides the real ones. The
+        descriptor is the directory — not a name that resolved to it once — so
+        every entry below is enumerated and opened relative to the object that
+        passed the check. Found by CodeRabbit.
+
+        ``None`` means there is nothing recorded yet, which stays an empty
+        history rather than a failure. Every other refusal to open it — a link
+        live or dangling, a plain file, a permission — is the unsafe location
+        the caller must hear about instead.
+        """
+
         try:
-            recorded_at = datetime.fromisoformat(record["recorded_at"].replace("Z", "+00:00"))
-            if utc_stamp(recorded_at) != record["recorded_at"]:
-                raise RecordError("operator receipt time is not canonical UTC")
-        except (ValueError, RecordError) as error:
-            raise RecordError(f"operator receipt has an invalid time: {resolved.name}") from error
-        digest = hashlib.sha256(data).hexdigest()
-        if resolved.name != f"{record['kind']}-{digest}.json":
-            raise RecordError(
-                f"operator receipt kind or digest does not match its filename: {resolved.name}"
-            )
-        return record
+            descriptor = os.open(self.receipts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except FileNotFoundError as error:
+            # A dangling link answers `O_NOFOLLOW` with ELOOP or ENOTDIR rather
+            # than ENOENT, so this branch is the truly absent directory. The
+            # lstat confirms that, and refuses anything that is merely
+            # unresolvable — the "no observations recorded" report this whole
+            # method exists to stop being told in place of a warning.
+            try:
+                os.lstat(self.receipts)
+            except OSError:
+                yield None
+                return
+            raise RecordError("operator receipt directory is not a safe directory") from error
+        except OSError as error:
+            raise RecordError("operator receipt directory is not a safe directory") from error
+        try:
+            yield descriptor
+        finally:
+            os.close(descriptor)
 
     def list(self) -> list[tuple[Path, dict[str, Any]]]:
         """Read existing receipts only; absent storage is an empty, not a created, state."""
 
-        if not self.receipts.exists():
-            return []
-        if not self.receipts.is_dir() or self.receipts.is_symlink():
-            raise RecordError("operator receipt directory is not a safe directory")
-        loaded: list[tuple[Path, dict[str, Any]]] = []
-        for candidate in sorted(self.receipts.glob("*.json")):
-            loaded.append((candidate, self.read(candidate)))
-        return loaded
+        with self._bound_receipts() as directory:
+            if directory is None:
+                return []
+            return [
+                (self.receipts / name, self._read_at(directory, name))
+                for name in _entries(directory, "")
+            ]
 
     def records_of_kind(self, kind: str) -> list[tuple[Path, dict[str, Any]]]:
         return [(path, record) for path, record in self.list() if record["kind"] == kind]
@@ -234,36 +257,106 @@ class ReceiptStore:
         """Read one kind while naming its failures beside the records that survive.
 
         The filename prefix avoids unrelated failures, but hyphenated kinds can
-        make the glob overmatch; only the validated record's exact kind decides.
+        make the prefix overmatch; only the validated record's exact kind decides.
         """
 
-        if not self.receipts.exists():
-            return [], []
-        if not self.receipts.is_dir() or self.receipts.is_symlink():
-            raise RecordError("operator receipt directory is not a safe directory")
         loaded: list[tuple[Path, dict[str, Any]]] = []
         unreadable: list[str] = []
-        for candidate in sorted(self.receipts.glob(f"{kind}-*.json")):
-            if candidate.is_symlink():
-                # `read` validates the *resolved* name against the bytes it
-                # hashed, so a link may carry any name at all: one named for a
-                # digest it does not hold passes, and a caller that reads the
-                # digest out of the name it was handed then publishes a digest
-                # nothing verified — beside a second, duplicate copy of the same
-                # record, since the link and its target are both globbed. A
-                # receipt is a file this store created, not a name pointing at one.
-                unreadable.append(
-                    f"{candidate.name}: it is a link rather than a receipt this store wrote"
-                )
-                continue
-            try:
-                record = self.read(candidate)
-            except RecordError as error:
-                unreadable.append(f"{candidate.name}: {error}")
-                continue
-            if record["kind"] == kind:
-                loaded.append((candidate, record))
+        with self._bound_receipts() as directory:
+            if directory is None:
+                return [], []
+            for name in _entries(directory, f"{kind}-"):
+                try:
+                    linked = stat.S_ISLNK(
+                        os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
+                    )
+                except OSError:
+                    # The entry was listed and is now gone or unstattable. It is
+                    # not silently dropped: rule 7 wants the gap named.
+                    unreadable.append(f"{name}: it could not be examined")
+                    continue
+                if linked:
+                    # `read` validates the *resolved* name against the bytes it
+                    # hashed, so a link may carry any name at all: one named for a
+                    # digest it does not hold passes, and a caller that reads the
+                    # digest out of the name it was handed then publishes a digest
+                    # nothing verified — beside a second, duplicate copy of the same
+                    # record, since the link and its target are both listed. A
+                    # receipt is a file this store created, not a name pointing at one.
+                    unreadable.append(
+                        f"{name}: it is a link rather than a receipt this store wrote"
+                    )
+                    continue
+                try:
+                    record = self._read_at(directory, name)
+                except RecordError as error:
+                    unreadable.append(f"{name}: {error}")
+                    continue
+                if record["kind"] == kind:
+                    loaded.append((self.receipts / name, record))
         return loaded, unreadable
+
+
+def _entries(directory: int, prefix: str) -> list[str]:
+    """The receipt filenames of an open directory, in the order the readers used.
+
+    `Path.glob` skipped a leading-dot name and sorted what it returned; both are
+    kept, because a dot name here is one of `_sealed_temporary`'s partial files
+    and the callers' output order is asserted by their tests.
+    """
+
+    try:
+        names = os.listdir(directory)
+    except OSError as error:
+        raise RecordError("operator receipt directory could not be read") from error
+    return sorted(
+        name
+        for name in names
+        if not name.startswith(".") and name.startswith(prefix) and name.endswith(".json")
+    )
+
+
+def _validated(name: str, data: bytes) -> dict[str, Any]:
+    """Every check a receipt's bytes must pass, wherever the descriptor came from."""
+
+    try:
+        record = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecordError(f"operator receipt cannot be read: {name}") from error
+    try:
+        # The shared serializer refuses what it cannot hash stably (a float,
+        # a non-string key). A saved file can contain one; that has to arrive
+        # as this module's RecordError, because `status` reports an unreadable
+        # record beside the intact ones only for RecordError.
+        canonical = canonical_bytes(record)
+    except TypeError as error:
+        raise RecordError(f"operator receipt is not canonical: {name}") from error
+    if canonical != data:
+        raise RecordError(f"operator receipt is not canonical: {name}")
+    if not isinstance(record, dict) or set(record) != {
+        "schema",
+        "kind",
+        "recorded_at",
+        "payload",
+    }:
+        raise RecordError(f"operator receipt has an invalid shape: {name}")
+    if (
+        record["schema"] != SCHEMA
+        or not isinstance(record["kind"], str)
+        or not isinstance(record["recorded_at"], str)
+        or not isinstance(record["payload"], dict)
+    ):
+        raise RecordError(f"operator receipt has invalid fields: {name}")
+    try:
+        recorded_at = datetime.fromisoformat(record["recorded_at"].replace("Z", "+00:00"))
+        if utc_stamp(recorded_at) != record["recorded_at"]:
+            raise RecordError("operator receipt time is not canonical UTC")
+    except (ValueError, RecordError) as error:
+        raise RecordError(f"operator receipt has an invalid time: {name}") from error
+    digest = hashlib.sha256(data).hexdigest()
+    if name != f"{record['kind']}-{digest}.json":
+        raise RecordError(f"operator receipt kind or digest does not match its filename: {name}")
+    return record
 
 
 class DescriptorStore:
@@ -318,7 +411,7 @@ class DescriptorStore:
         if not self.path.exists():
             return None
         try:
-            raw = json.loads(_bounded_bytes(self.path, "operator descriptor").decode("utf-8"))
+            raw = json.loads(bounded_bytes(self.path, "operator descriptor").decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError("operator descriptor cannot be read") from error
         if not isinstance(raw, dict):
@@ -422,7 +515,7 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
                 ) from error
         except FileExistsError:
             try:
-                existing = _bounded_bytes(target, "existing operator receipt")
+                existing = bounded_bytes(target, "existing operator receipt")
             except OSError as error:
                 raise RecordError("existing operator receipt cannot be read") from error
             if existing != payload:

@@ -369,6 +369,17 @@ def _existing_record_state(path: Path, expected: bytes) -> Literal["matches", "d
     a difference in content when what was actually sitting at that path was a
     planted link. Both still refuse and neither ever writes; they are told
     apart so the refusal names the problem the operator actually has.
+
+    **POSIX only, and deliberately so.** Without `O_NOFOLLOW` there is no way to
+    compare the entry at that path without risking following a redirect to
+    somewhere else, so this reports "unknown" and the caller refuses. On such a
+    platform a byte-identical resubmission stops being idempotent and is refused
+    instead of reused. That is the correct trade and not a gap to close: the
+    alternative is a comparison that can be pointed at another file, which is
+    the exact attack `atomic_create` exists to refuse. This repository is POSIX
+    only regardless — `operations/operator/custody.py` has an OS boundary for
+    Linux and macOS alone and refuses to open the console anywhere else — so no
+    supported platform reaches this branch.
     """
 
     no_follow = getattr(os, "O_NOFOLLOW", None)

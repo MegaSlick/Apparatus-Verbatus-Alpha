@@ -1515,7 +1515,12 @@ def preflight_appendable_ordinals(
                         f"{ordinal}; a resume cannot choose one"
                     )
                 record = existing[0]
-                validate_tallied_testimonium(context, record, act, {act["act_id"]: regions})
+                # Seeded only when non-empty: `validate_tallied_testimonium`
+                # re-derives a missing entry and names the absent proposal crop,
+                # and an empty list would suppress that named refusal.
+                validate_tallied_testimonium(
+                    context, record, act, {act["act_id"]: regions} if regions else {}
+                )
                 attempt = _attempt_from_retained_testimonium(context.tree, record)
                 sealed_pairs.add(pair)
             else:
@@ -3076,8 +3081,15 @@ def publish_page_testimonia_and_attachments(
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
+                # Every retained response this record derived from is an input,
+                # not only the Churro capture: `RunTree.read_artifact` re-reads
+                # `inputs` and nothing else, so a reference that lives only in
+                # the payload is a blob no ordinary consumer re-hashes. The
+                # order is the payload's own -- presented image, then the
+                # partition's responses in partition order, then the capture.
                 inputs=(
                     inputs
+                    + page_response_refs
                     + ([native_capture["raw_response_ref"]] if native_capture is not None else [])
                 ),
                 payload=payload,

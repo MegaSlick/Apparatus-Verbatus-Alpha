@@ -18,9 +18,15 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
-from operations.pod.durable import exclusive_write
 
-_REQUEST = {"operation", "project", "output_dir", "expected_project_sha256"}
+_REQUEST = {
+    "operation",
+    "project",
+    "output_dir",
+    "expected_project_sha256",
+    "expected_output_device",
+    "expected_output_inode",
+}
 
 # Real projects remain well below this bound even at thousands of pages; an
 # unbounded read would let corrupt input exhaust memory before shape validation.
@@ -219,8 +225,9 @@ def _physical_page_key(source_path: str, file_image: int) -> tuple[str, int]:
     alone would let two `<file>` rows that differ only in case each carry a
     saved geometry, which the parser would treat as two physical pages instead
     of the one the refusal above exists to catch -- a picker rebuilt by
-    accident. Folded only for this identity check; the record itself keeps the
-    exact spelling the project file used.
+    accident. Folded only for this identity check; the record's own
+    ``source_path`` is the resolved target with symlinks followed, not the
+    project file's own ``<directory>``/``<file>`` spelling.
     """
     key = source_path.casefold() if sys.platform == "darwin" else source_path
     return (key, file_image)
@@ -237,7 +244,71 @@ def _removed_half(value: str | None) -> str | None:
         raise _refuse("image removed-half marker is neither L nor R") from error
 
 
-def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
+def _open_output_dir(output_dir: Path) -> int:
+    """Open the operator-approved output folder once, and keep it as the folder.
+
+    A name is not an object. Checking `output_dir` and then writing through the
+    same spelling asks the filesystem to resolve it twice, and a local process
+    that swaps the folder for a link in between gets the document delivered
+    somewhere the operator never approved -- `run_confined` re-checks identity
+    only after the child has exited, so it cannot take that write back. The
+    descriptor opened here is the folder that passes the identity check and the
+    folder the document is created in, with nothing in between that resolves a
+    name again. Found by CodeRabbit.
+    """
+
+    try:
+        return os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise _refuse(
+            "output folder does not exist, is not a directory, or is a symbolic link; "
+            "the console writes only into a real folder that already exists"
+        ) from error
+
+
+def _publish(directory: int, name: str, payload: bytes) -> None:
+    """Create ``name`` in the pinned folder, durably, or refuse because it exists.
+
+    This is `operations/pod/durable.exclusive_write`'s contract, expressed
+    against an open directory rather than a path: the bytes land in a temporary
+    entry that is fsynced before it is published, the publication is a hard link
+    so no reader ever sees a partial document, `O_EXCL` is the exclusion, and the
+    directory entry is fsynced before the caller may say the document was
+    written. What it does not do is re-open the parent by name.
+    """
+
+    temporary = f".scantailor-geometry.{os.getpid()}.{os.urandom(8).hex()}"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        except FileExistsError:
+            # The name is published, but *this* call has proved nothing about
+            # its directory entry, and the caller's idempotence comparison is
+            # about to report the document as written. `exclusive_write` syncs
+            # on exactly this path for exactly that reason.
+            os.fsync(directory)
+            raise
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+    os.fsync(directory)
+
+
+def _bounded_bytes(
+    path: str | Path, what: str, *, follow: bool = True, dir_fd: int | None = None
+) -> bytes:
     """Bound untrusted reads and refuse non-regular files without blocking.
 
     `O_NONBLOCK` keeps a planted FIFO from hanging the confined child before it can
@@ -245,10 +316,14 @@ def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
     Existing-document comparisons also use `O_NOFOLLOW` so an idempotence check
     cannot escape the write allowance through a symlink; operator-selected project
     paths may legitimately be symlinks and have no earlier link check to race.
+
+    ``dir_fd`` reads ``path`` as one entry of an already open directory, so the
+    existing-document comparison looks at the folder the identity check passed
+    rather than at whatever the folder's name resolves to by then.
     """
     flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow else os.O_NOFOLLOW)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = os.open(path, flags, dir_fd=dir_fd)
     except OSError as error:
         raise _refuse(f"{what} could not be opened: {error}") from error
     with os.fdopen(descriptor, "rb") as handle:
@@ -292,34 +367,70 @@ def main() -> int:
             request["expected_project_sha256"]
         ):
             raise _refuse("expected project digest is invalid")
+        for name in ("expected_output_device", "expected_output_inode"):
+            identity_part = request[name]
+            if identity_part is not None and (
+                not isinstance(identity_part, int)
+                or isinstance(identity_part, bool)
+                or identity_part < 0
+            ):
+                raise _refuse(f"{name} must be a non-negative integer or null")
+        if request["operation"] == "commit" and (
+            request["expected_output_device"] is None or request["expected_output_inode"] is None
+        ):
+            raise _refuse("a commit request must carry the previewed output folder's identity")
         project = Path(request["project"])
         output_dir = Path(request["output_dir"])
         # Preview must refuse an unusable folder before promising a pinned commit;
-        # repeating the check on commit catches replacement between launches.
-        if output_dir.is_symlink() or not output_dir.is_dir():
-            raise _refuse(
-                "output folder does not exist, is not a directory, or is a symbolic link; "
-                "the console writes only into a real folder that already exists"
-            )
-        document = parse(_bounded_bytes(project, "project file"), project)
-        if (
-            request["operation"] == "commit"
-            and request["expected_project_sha256"] != document["project_sha256"]
-        ):
-            raise _refuse("project changed after the preview; nothing was written")
-        encoded = _persisted(document)
-        document_digest = digest_bytes(encoded)
-        path = output_dir / f"scantailor-geometry-{document_digest}.json"
-        if request["operation"] == "commit":
-            try:
-                # A committed reply requires a durable directory entry and must
-                # never recreate the operator-approved parent folder.
-                exclusive_write(path, encoded, strict=True, create_parent=False)
-            except FileExistsError as error:
-                if _bounded_bytes(path, "existing geometry document", follow=False) != encoded:
-                    raise _refuse(
-                        "an existing geometry document does not match its digest"
-                    ) from error
+        # repeating the check on commit catches replacement between launches. The
+        # open is the check: a missing folder, a plain file and a symbolic link
+        # all fail it, and what survives is a descriptor rather than a name that
+        # was true once.
+        output_fd = _open_output_dir(output_dir)
+        try:
+            # The commit repeats only the path spelling unless this identity is also
+            # pinned: if the approved folder is replaced by another directory between
+            # the two launches, the path spelling alone cannot tell the two apart, and
+            # a document would land in a folder the operator never saw approved. The
+            # identity is read from the held descriptor, so it describes the folder
+            # the document is written into and not a namesake of it.
+            output_status = os.fstat(output_fd)
+            output_identity = (output_status.st_dev, output_status.st_ino)
+            if request["operation"] == "commit" and output_identity != (
+                request["expected_output_device"],
+                request["expected_output_inode"],
+            ):
+                raise _refuse(
+                    "the output folder changed after the preview was shown; nothing was written"
+                )
+            document = parse(_bounded_bytes(project, "project file"), project)
+            if (
+                request["operation"] == "commit"
+                and request["expected_project_sha256"] != document["project_sha256"]
+            ):
+                raise _refuse("project changed after the preview; nothing was written")
+            encoded = _persisted(document)
+            document_digest = digest_bytes(encoded)
+            document_name = f"scantailor-geometry-{document_digest}.json"
+            path = output_dir / document_name
+            if request["operation"] == "commit":
+                try:
+                    # A committed reply requires a durable directory entry and must
+                    # never recreate the operator-approved parent folder.
+                    _publish(output_fd, document_name, encoded)
+                except FileExistsError as error:
+                    existing = _bounded_bytes(
+                        document_name,
+                        "existing geometry document",
+                        follow=False,
+                        dir_fd=output_fd,
+                    )
+                    if existing != encoded:
+                        raise _refuse(
+                            "an existing geometry document does not match its digest"
+                        ) from error
+        finally:
+            os.close(output_fd)
         summary = {
             "project_sha256": document["project_sha256"],
             "image_count": document["source_image_count"],
@@ -332,6 +443,10 @@ def main() -> int:
                 {
                     "status": "committed" if request["operation"] == "commit" else "preview",
                     "summary": summary,
+                    "output_identity": {
+                        "device": output_identity[0],
+                        "inode": output_identity[1],
+                    },
                 }
             )
         )

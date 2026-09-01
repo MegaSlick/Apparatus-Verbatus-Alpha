@@ -68,6 +68,17 @@ observation stays retained on every act's review payload for a human to weigh,
 and the page's own residual-ink flag and the Armarium's `unclaimed-edge-ink`
 hold remain the ink-side accounts of the same pixels.
 
+**Known limit, named rather than hidden:** the grant is scoped by `page_of`, which
+reads each act's *primary* `page_ordinal` -- the same field the writer records, so
+reader and writer agree and the one-grant bound holds. The consequence is that
+`unclaimed_ink_observations` is only ever evaluated against an act's primary
+page: a continuation-only page, carried by an act whose primary page is earlier
+in the run, is never the page any act's own pointer check names. That ink does
+not disappear -- the page's own residual-ink flag and the Armarium's
+`unclaimed-edge-ink` hold still speak for it -- but a pointer that clears
+`MINIMUM_INK_PIXELS` on a continuation-only page funds no recrop and holds no
+act, because no act calls that page its own.
+
 n-of-m agreement, IoU/similarity, delta magnitude, per-chair weight, and any two-chair
 disagreement are forbidden triggers -- see
 `pipeline/5_recensor/test_unit14b_trigger_contract.py`, which drives the live
@@ -155,6 +166,36 @@ their hold evidence.
 An accepted review is not a new reading and does not select among witnesses. It
 only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.
+
+## Cross-capture visibility: `payload["cross_capture_coverage"]`
+
+Surveyed from the exact Perlectio the review assesses, never from whatever
+presentation a later pass could rebuild. `None` is a fact and not an omission:
+this act's current reading delivered no registered capture presentation at all.
+Two shapes reach it — a Designator-held act, which was never shown capture
+pixels, and a reading published without one, of which `not-run` over the sealed
+image ceiling (`cluster-presentation-over-capacity`) is the live case. Neither
+is lost: the act takes `held-for-review` on its own reading outcome, the run's
+aggregate is partial, and the capacity sentence itself is one hop away through
+`perlectio_ref`. **Recovery is not the route for it.** A bounded recrop buys
+coverage of ink nobody read; a presentation that does not fit one reader request
+is answered by a ceiling a human sets, not by another crop of the same act.
+
+Where a presentation does exist, each capture row carries a measured
+`visibility_state` or a named absence code —
+`act-visibility-survey-absent`, `cross-capture-registration-absent`,
+`act-visibility-survey-spans-two-pages`. An absent instrument is recorded and
+routed like `False` (`review_route_from_findings`): absence is not a measured
+shortfall, and holding an act on an instrument that never ran would report a
+measurement nobody took.
+
+**The occlusion instrument has no producer today.** The survey reads
+Designator `kind="occlusion"` artifacts; no stage publishes that kind (see the
+Designator handoff's closing section), so every capture row on every current run
+records `act-visibility-survey-absent` and no visibility measurement exists
+anywhere in a run. The consumer obligation that follows: this field may be read
+as "measured and visible" only when a row carries a visibility state, never
+because the field is present.
 
 ## Blank confirmation: `confirmed-blank`, the other terminal outcome for a non-completed reading
 

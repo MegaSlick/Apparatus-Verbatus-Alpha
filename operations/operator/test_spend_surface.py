@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,14 +238,14 @@ def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None
     }
     assert project_imports == {
         ("operations.pod.spend", "MAX_BALANCE_OBSERVATION_AGE_SECONDS"),
-        ("operations.pod.spend", "load_spend_policy"),
+        ("operations.pod.spend", "load_spend_policy_bytes"),
         # The operator package's own read-only pieces, spelled relatively.
         ("errors", "ErrorCode"),
         ("errors", "OperatorError"),
         ("errors", "strip_control_bytes"),
         ("records", "ReceiptStore"),
         ("records", "RecordError"),
-        ("records", "sha256_file"),
+        ("records", "bounded_bytes"),
     }
     imported = {
         alias.name
@@ -658,3 +659,50 @@ def test_a_confirmed_paid_action_that_saved_no_preview_at_all_is_still_named(
 
     assert f"{receipt.name}: its saved preview carries no readable spend ceilings" in rendered
     assert "Recorded balance observations: none" in rendered
+
+
+def test_the_shown_digest_is_the_digest_of_the_bytes_the_ceilings_came_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One read, one byte sequence, for both the digest and the values.
+
+    The surface used to hash the file, parse it in a second read, and hash it
+    once more to confirm. A policy widened between the first hash and the parse
+    and restored before the confirming hash passed all three steps, and the
+    screen showed the widened ceilings under the original file's digest. The
+    reader here changes its answer on every call: a surface that still read
+    more than once would print a digest of bytes it did not parse.
+    """
+
+    source = _policy(tmp_path / "spend.toml")
+    original = source.read_bytes()
+    widened = original.replace(b'max_hourly_usd = "1.00"', b'max_hourly_usd = "999.00"')
+    assert widened != original
+    served: list[bytes] = []
+
+    def one_shot(path: Path, subject: str) -> bytes:
+        assert Path(path) == source
+        assert subject
+        served.append(widened if served else original)
+        return served[-1]
+
+    monkeypatch.setattr(spend_module, "bounded_bytes", one_shot)
+    lines = SpendSurface(ReceiptStore(tmp_path / "state"), NOW).show(source)
+
+    assert len(served) == 1, "the policy was read more than once"
+    digest = hashlib.sha256(original).hexdigest()
+    assert any("$1.00" in line and digest in line for line in lines)
+    assert not any("999.00" in line for line in lines)
+
+
+def test_a_policy_that_is_not_utf_8_refuses_by_name(tmp_path: Path) -> None:
+    """The byte-oriented loader owns the decode that `tomllib.load` used to do."""
+
+    source = tmp_path / "spend.toml"
+    source.write_bytes(b'schema = "pod-spend.v3"\nstate = "\xff\xfe"\n')
+
+    with pytest.raises(OperatorError) as excinfo:
+        SpendSurface(ReceiptStore(tmp_path / "state"), NOW).show(source)
+
+    assert excinfo.value.code == ErrorCode.SPEND_POLICY_UNREADABLE
+    assert "cannot read spend policy" in (excinfo.value.detail or "")

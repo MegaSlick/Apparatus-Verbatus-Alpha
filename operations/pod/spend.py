@@ -340,8 +340,25 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
     source = Path(path)
     try:
         with source.open("rb") as handle:
-            raw = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+            data = handle.read()
+    except OSError as error:
+        raise SpendRefusal(f"cannot read spend policy {source}: {error}") from error
+    return load_spend_policy_bytes(data, source=source)
+
+
+def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> SpendPolicy:
+    """Parse a closed TOML policy from bytes the caller already holds.
+
+    A caller that publishes a digest beside the ceilings must hash and parse the
+    *same* bytes. Reading the file once to hash it and again to parse it lets a
+    policy that changed between the two reads — and was restored before the
+    confirming hash — show one file's limits under another file's digest.
+    Found by CodeRabbit.
+    """
+
+    try:
+        raw = tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise SpendRefusal(f"cannot read spend policy {source}: {error}") from error
     if not isinstance(raw, dict):
         raise SpendRefusal("spend policy root must be a TOML table")

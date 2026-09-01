@@ -46,9 +46,12 @@ def import_in_custody(
         "project": str(project),
         "output_dir": str(output_dir),
         "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     preview = _call(request, "preview", writable=None, workspace=workspace)
     summary = _summary(preview, operation="preview", output_dir=output_dir)
+    preview_output_identity = _output_identity(preview, operation="preview")
     printer(
         "ScanTailor geometry preview — no document has been written.\n"
         f"Project: {strip_control_bytes(str(project))}\n"
@@ -59,7 +62,12 @@ def import_in_custody(
         "the import refuses and nothing is written."
     )
     committed = _call(
-        {**request, "expected_project_sha256": summary["project_sha256"]},
+        {
+            **request,
+            "expected_project_sha256": summary["project_sha256"],
+            "expected_output_device": preview_output_identity[0],
+            "expected_output_inode": preview_output_identity[1],
+        },
         "commit",
         writable=output_dir.resolve(),
         workspace=workspace,
@@ -70,6 +78,15 @@ def import_in_custody(
         output_dir=output_dir,
         expected_project_sha256=summary["project_sha256"],
     )
+    if _output_identity(committed, operation="commit") != preview_output_identity:
+        # Belt-and-braces: the confined worker checks this pin itself before
+        # answering "committed"; re-check rather than trust that internal
+        # refusal blindly, the same way every other field of the response is
+        # re-validated instead of taken on faith.
+        raise OperatorError(
+            ErrorCode.SCANTAILOR_UNRESOLVED,
+            detail="the confined importer reported a different output folder identity",
+        )
     printer(
         "Recorded ScanTailor geometry document: "
         f"{strip_control_bytes(str(result['document_path']))} ({result['document_sha256']}).\n"
@@ -134,7 +151,7 @@ def _summary(
         ErrorCode.SCANTAILOR_REFUSED if operation == "preview" else ErrorCode.SCANTAILOR_UNRESOLVED
     )
     if (
-        set(response) != {"status", "summary"}
+        set(response) != {"status", "summary", "output_identity"}
         or not isinstance(value, dict)
         or set(value) != required
         or not is_sha256(value.get("project_sha256"))
@@ -157,6 +174,23 @@ def _summary(
             detail="the confined importer committed a project digest other than the one it was pinned to",
         )
     return value
+
+
+def _output_identity(response: dict[str, Any], *, operation: str) -> tuple[int, int]:
+    error_code = (
+        ErrorCode.SCANTAILOR_REFUSED if operation == "preview" else ErrorCode.SCANTAILOR_UNRESOLVED
+    )
+    value = response.get("output_identity")
+    if not isinstance(value, dict) or set(value) != {"device", "inode"}:
+        raise OperatorError(
+            error_code, detail="the confined importer returned no output folder identity"
+        )
+    identity = (value["device"], value["inode"])
+    if any(not isinstance(part, int) or isinstance(part, bool) or part < 0 for part in identity):
+        raise OperatorError(
+            error_code, detail="the confined importer returned an invalid output folder identity"
+        )
+    return identity
 
 
 def _absolute_path(path: Path, workspace: Path) -> Path:

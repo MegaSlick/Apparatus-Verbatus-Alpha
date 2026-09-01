@@ -126,6 +126,11 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
         and row["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
         for row in projected.pages
     )
+    # The fixture delivers one act per page. Without this count the `all(...)`
+    # below is vacuously true over an empty tuple, so a projection that dropped
+    # the whole delivered list would still pass the assertion written to catch
+    # exactly that loss.
+    assert len(projected.acts) == 2
     assert all(
         act["crops"]
         and all(
@@ -1663,6 +1668,59 @@ def test_review_refuses_more_review_rows_than_the_console_can_safely_project(tmp
     )
 
 
+def test_a_row_that_is_not_json_names_the_line_it_is_on(tmp_path: Path):
+    """A refusal that names only the bundle cannot be acted on.
+
+    The queue may hold up to `MAX_REVIEW_ITEMS` rows, so "a row is bad" without
+    a position leaves the operator to find it by hand.
+    """
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"first"}\n{ not json\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "line 2" in (excinfo.value.detail or "")
+    assert "not valid JSON" in (excinfo.value.detail or "")
+
+
+def test_a_row_that_is_not_an_object_names_the_line_it_is_on(tmp_path: Path):
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"first"}\n[1, 2]\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "line 2" in (excinfo.value.detail or "")
+    assert "is not an object" in (excinfo.value.detail or "")
+
+
+def test_a_run_with_no_armarium_export_is_told_so_rather_than_counted(tmp_path: Path):
+    """Zero matches is a missing export, not a tally of duplicates.
+
+    A run halted before Armarium has no export to review at all; "appeared 0
+    times" described the arithmetic instead of the condition.
+    """
+
+    tree = RunTree(tmp_path / "runs", "reviewed")
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._armarium_payload(tree, [])
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    detail = excinfo.value.detail or ""
+    assert "no Armarium export record" in detail
+    assert "no completed export" in detail
+    assert "appeared" not in detail
+
+
 def test_review_refuses_ambiguous_duplicate_review_members(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w") as archive:
@@ -2466,6 +2524,7 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
+@requires_host_boundary
 def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_success(
     tmp_path, monkeypatch
 ):
@@ -2935,6 +2994,7 @@ def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(t
         )
 
 
+@requires_host_boundary
 def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
     """Each advance keeps its own verdict; a stale one remains visible."""
     run_root, run_id = _make_run(tmp_path)
