@@ -301,16 +301,10 @@ class LeaseStore:
                 pass
             yield
         finally:
-            try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except ImportError:  # pragma: no cover - production pod and tests are POSIX
-                pass
-            except OSError:
-                # handle.close() below releases the POSIX lock; an unlock
-                # failure must not replace the store operation's own outcome.
-                pass
+            # No explicit LOCK_UN: closing the last descriptor on this open file
+            # description releases the flock, on every path out. The unlock that
+            # stood here could only fail, and its handler discarded that failure
+            # unrecorded — a swallowed error in exchange for nothing.
             handle.close()
 
     def create(self, lease: PodLease) -> PodLease:

@@ -945,8 +945,17 @@ class OperatorSurface:
         # `reasons` is external data: only a list may feed decision output, or a
         # string would become one hold reason per character and a mapping its keys.
         reasons = aggregate.get("reasons")
-        reasons = reasons if isinstance(reasons, list) else []
+        if isinstance(reasons, list):
+            malformed: str | None = None
+        else:
+            malformed = (
+                "the Armarium record's hold reasons were not a list and were not read; "
+                "the run is still held"
+            )
+            reasons = []
         self.present("Run is held. It was not called complete.")
+        if malformed is not None:
+            self.present(f"Hold reason: UNREADABLE. {malformed}")
         for reason in reasons:
             self.present(f"Hold reason: {reason}")
         # A hold is the pipeline asking a person to decide: the `decision`

@@ -2818,7 +2818,9 @@ def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
     """
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
-    decoy = tmp_path / "decoy-receipts"
+    # Inside the run tree: `RunTree.resolve` then accepts the target, so the
+    # explicit symlink refusal is the only thing that can reject it.
+    decoy = tree.root / "decoy-receipts"
     decoy.mkdir()
     (tree.root / "receipts").mkdir(exist_ok=True)
     existing = tree.root / "receipts" / "sha256"
@@ -2830,6 +2832,8 @@ def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
         review.ReadOnlyRun(run_root, run_id).projection()
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
     assert "receipts/sha256" in excinfo.value.detail
+    # The refusal must be the link check, not the containment check.
+    assert "is a link" in excinfo.value.detail
 
 
 @requires_host_boundary

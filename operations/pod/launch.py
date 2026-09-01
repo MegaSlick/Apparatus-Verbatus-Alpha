@@ -473,11 +473,11 @@ class PodRuntime:
                 claimed = self._claim_challenge(
                     "create",
                     request.name,
-                    request.hard_deadline,
-                    request.reviewed_digest(),
-                    preview_result.preview.challenge or "",
-                    preview_result.preview.confirmation_phrase,
-                    confirmation,
+                    hard_deadline=request.hard_deadline,
+                    request_digest=request.reviewed_digest(),
+                    challenge=preview_result.preview.challenge or "",
+                    expected=preview_result.preview.confirmation_phrase,
+                    typed=confirmation,
                 )
             except SpendRefusal as error:
                 return LaunchResult(
@@ -746,11 +746,11 @@ class PodRuntime:
                 claimed = self._claim_challenge(
                     "adopt",
                     preview_result.record.pod_id,
-                    expected.hard_deadline,
-                    expected.reviewed_digest(),
-                    preview_result.preview.challenge or "",
-                    preview_result.preview.confirmation_phrase,
-                    confirmation,
+                    hard_deadline=expected.hard_deadline,
+                    request_digest=expected.reviewed_digest(),
+                    challenge=preview_result.preview.challenge or "",
+                    expected=preview_result.preview.confirmation_phrase,
+                    typed=confirmation,
                 )
             except SpendRefusal as error:
                 return LaunchResult(
@@ -1345,6 +1345,7 @@ class PodRuntime:
         self,
         action: str,
         subject: str,
+        *,
         hard_deadline: datetime,
         request_digest: str,
         challenge: str,

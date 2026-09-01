@@ -53,6 +53,8 @@ class SpendSurface:
                 ),
             )
 
+        # Narrowing, not a check: `SpendPolicy.__post_init__` raises `SpendRefusal`
+        # on a configured policy missing any ceiling, and a `raise` survives `-O`.
         assert policy.max_hourly_usd is not None
         assert policy.max_estimated_metered_cost_usd is not None
         assert policy.account_balance_floor_usd is not None
