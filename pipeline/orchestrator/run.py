@@ -191,7 +191,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         "--models-config",
         str(args.models_config),
         "--decoding-config",
-        str(getattr(args, "decoding_config", DEFAULT_DECODING_CONFIG_PATH)),
+        str(args.decoding_config),
         "--serving-recipes-config",
         str(args.serving_recipes_config),
         "--pdf-render-config",

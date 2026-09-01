@@ -5272,6 +5272,9 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     # Everything that survived is byte-identical: resume reused it rather than
     # redoing it. And the finished tree is identical to the uninterrupted one.
     for path, digest in survivors.items():
+        # Membership first, or a deleted survivor reports as a bare KeyError
+        # that reads like a broken test rather than a page that left the run.
+        assert path in resumed, f"resume deleted surviving evidence at {path}"
         assert resumed[path] == digest, f"{path} was rewritten on resume"
     # Byte-identity alone cannot tell reuse from an identical rewrite, which is
     # the whole claim in this test's name. Every publication mints a new inode,
@@ -5281,6 +5284,7 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
         if not is_immutable_evidence(path):
             continue
         checked += 1
+        assert path in resumed_identities, f"resume deleted surviving evidence at {path}"
         assert resumed_identities[path] == identity, (
             f"{path} kept its bytes but was republished on resume"
         )

@@ -1515,7 +1515,12 @@ def preflight_appendable_ordinals(
                         f"{ordinal}; a resume cannot choose one"
                     )
                 record = existing[0]
-                validate_tallied_testimonium(context, record, act, {act["act_id"]: regions})
+                # Seeded only when non-empty: `validate_tallied_testimonium`
+                # re-derives a missing entry and names the absent proposal crop,
+                # and an empty list would suppress that named refusal.
+                validate_tallied_testimonium(
+                    context, record, act, {act["act_id"]: regions} if regions else {}
+                )
                 attempt = _attempt_from_retained_testimonium(context.tree, record)
                 sealed_pairs.add(pair)
             else:
