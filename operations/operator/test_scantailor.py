@@ -548,7 +548,13 @@ def test_parent_refuses_a_commit_summary_that_cannot_name_the_written_document(
 def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    from operations.pod import durable
+    """The write refuses rather than rebuilding a folder the operator approved.
+
+    The publication now happens against a descriptor the worker already holds,
+    so this drives the vanishing through that helper instead of through
+    `exclusive_write`: an open descriptor for a removed directory still cannot
+    gain a new entry, and no `mkdir` stands behind the write to hide it.
+    """
 
     project = tmp_path / "scan.ScanTailor"
     project.write_bytes(PROJECT)
@@ -563,13 +569,13 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
         "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, request)
-    real_exclusive_write = durable.exclusive_write
+    real_publish = scantailor_worker._publish
 
-    def vanish_then_write(path, payload, **kwargs):
+    def vanish_then_write(directory, name, payload):
         output.rmdir()
-        return real_exclusive_write(path, payload, **kwargs)
+        return real_publish(directory, name, payload)
 
-    monkeypatch.setattr(scantailor_worker, "exclusive_write", vanish_then_write)
+    monkeypatch.setattr(scantailor_worker, "_publish", vanish_then_write)
     code, response = _invoke_main(
         monkeypatch,
         capsys,
@@ -583,6 +589,109 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
     )
     assert code == 2 and response["status"] == "refusal"
     assert not output.exists()
+
+
+def test_an_output_folder_swapped_after_its_check_is_not_the_one_written_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """The approved folder and the written folder must be one object, not one name.
+
+    The identity check proved something about `output_dir` and the publication
+    then resolved that name again. A local process that moves the approved
+    folder aside in between had the geometry document delivered into its own
+    folder instead, and `run_confined` re-checks identity only after the child
+    has exited, so nothing could take that write back. The swap here is driven
+    at exactly that seam: the descriptor is already open, the name is not.
+    """
+
+    project = tmp_path / "scan.ScanTailor"
+    project.write_bytes(PROJECT)
+    output = tmp_path / "geometry"
+    output.mkdir()
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    request = {
+        "operation": "preview",
+        "project": str(project),
+        "output_dir": str(output),
+        "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
+    }
+    _, preview = _invoke_main(monkeypatch, capsys, request)
+    real_open = scantailor_worker._open_output_dir
+
+    def open_then_swap(path: Path) -> int:
+        descriptor = real_open(path)
+        output.rename(tmp_path / "moved-aside")
+        decoy.rename(output)
+        return descriptor
+
+    monkeypatch.setattr(scantailor_worker, "_open_output_dir", open_then_swap)
+    code, response = _invoke_main(
+        monkeypatch,
+        capsys,
+        {
+            **request,
+            "operation": "commit",
+            "expected_project_sha256": preview["summary"]["project_sha256"],
+            "expected_output_device": preview["output_identity"]["device"],
+            "expected_output_inode": preview["output_identity"]["inode"],
+        },
+    )
+
+    assert code == 0 and response["status"] == "committed"
+    approved = tmp_path / "moved-aside"
+    written = Path(response["summary"]["document_path"]).name
+    # The substitute holds the approved folder's name and none of its contents.
+    assert (approved / written).is_file()
+    assert not list(output.iterdir())
+    assert json.loads((approved / written).read_bytes())["schema"] == "scantailor-geometry.v1"
+
+
+def test_the_geometry_document_is_published_through_the_pinned_descriptor(tmp_path: Path) -> None:
+    """Bind the publication call shape, not only the behavior it happens to have.
+
+    A later edit that reaches for `exclusive_write`, `Path.write_bytes` or an
+    `os.open` without a `dir_fd` reintroduces the name resolution this fix
+    removed while every behavioral test above still passes, because the swap
+    they drive is not the one such an edit reopens. The AST pin fails instead.
+    """
+    import ast
+
+    source = Path(scantailor_worker.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    main = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_publish" in called
+    assert not called & {"exclusive_write", "atomic_write", "write_bytes"}
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert "exclusive_write" not in imported
+
+    publish = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_publish"
+    )
+    pinned = [
+        node
+        for node in ast.walk(publish)
+        if isinstance(node, ast.Call)
+        and any(keyword.arg in {"dir_fd", "dst_dir_fd"} for keyword in node.keywords)
+    ]
+    # The create and the link both name the directory by descriptor.
+    assert len(pinned) >= 2
 
 
 def test_documented_word_count_matches_the_scantailor_extended_table() -> None:

@@ -7,6 +7,7 @@ import fcntl
 import os
 import threading
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -333,3 +334,78 @@ def test_an_absent_receipt_directory_is_still_an_empty_history(tmp_path: Path) -
 
     assert store.list() == []
     assert store.readable_records_of_kind("balance-observation") == ([], [])
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(lambda store: store.list(), id="list"),
+        pytest.param(
+            lambda store: store.readable_records_of_kind("balance-observation")[0],
+            id="readable_records_of_kind",
+        ),
+    ],
+)
+def test_a_receipt_directory_swapped_after_its_check_is_not_the_one_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    read: Callable[[records.ReceiptStore], list[tuple[Path, dict[str, object]]]],
+) -> None:
+    """The checked directory and the read directory must be one object, not one name.
+
+    Validating `self.receipts` and then globbing and opening through the same
+    spelling resolved it again each time. A local process that moves the real
+    receipts aside between the check and the read had its own files reported as
+    this store's history, or hid the real ones behind an empty folder — either
+    way the operator was shown money evidence that came from somewhere else.
+    The swap here is driven at exactly that seam.
+    """
+
+    state = tmp_path / "operator-state"
+    store = records.ReceiptStore(state, now=lambda: datetime(2026, 8, 24, tzinfo=records.UTC))
+    real = store.write("balance-observation", {"balance_usd": "60.00"})
+
+    outsider = records.ReceiptStore(tmp_path / "outsider", now=store.now)
+    forged = outsider.write("balance-observation", {"balance_usd": "0.00"})
+
+    entries = records._entries
+
+    def swap_then_return(directory: int, prefix: str) -> list[str]:
+        listed = entries(directory, prefix)
+        (state / "receipts").rename(tmp_path / "moved-aside")
+        outsider.receipts.rename(state / "receipts")
+        return listed
+
+    monkeypatch.setattr(records, "_entries", swap_then_return)
+
+    loaded = read(store)
+
+    assert [path.name for path, _ in loaded] == [real.name]
+    assert [record["payload"] for _, record in loaded] == [{"balance_usd": "60.00"}]
+    # The substitute really is in place, and really would have been read.
+    assert (state / "receipts" / forged.name).exists()
+    assert not (state / "receipts" / real.name).exists()
+
+
+def test_a_receipt_entry_swapped_for_a_link_after_the_listing_is_refused_not_followed(
+    tmp_path: Path,
+) -> None:
+    """An entry is opened no-follow through the bound descriptor, never resolved.
+
+    `readable_records_of_kind` names a link instead of reading it, and `list`
+    refuses one, so neither reader can be handed bytes this store did not write
+    under a filename it did.
+    """
+
+    state = tmp_path / "operator-state"
+    store = records.ReceiptStore(state, now=lambda: datetime(2026, 8, 24, tzinfo=records.UTC))
+    real = store.write("balance-observation", {"balance_usd": "60.00"})
+    impostor = real.with_name(real.name.replace("balance-observation-", "balance-observation-a"))
+    os.symlink(real, impostor)
+
+    loaded, unreadable = store.readable_records_of_kind("balance-observation")
+
+    assert [path.name for path, _ in loaded] == [real.name]
+    assert unreadable == [f"{impostor.name}: it is a link rather than a receipt this store wrote"]
+    with pytest.raises(records.RecordError, match="cannot be read"):
+        store.list()
