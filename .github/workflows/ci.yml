@@ -20,8 +20,11 @@ jobs:
     # 25 fell to pr/03's review rounds (3.13 finished at 24m38s while 3.12
     # and 3.14 were cancelled at 25m on four consecutive runs); 45 fell to
     # pr/07's (3.12 cancelled at 45m while its siblings passed at 37-38m).
-    # 75 buys the rest of the queue's growth outright.
-    timeout-minutes: 75
+    # 75 fell to pr/15's (both legs cancelled at 75m after #79's run had
+    # already reached 1h14m). A cap the healthy suite exceeds enforces
+    # nothing; 110 stands ~45% above the last green legs, so a hang still
+    # cancels while growth through pr/16 fits.
+    timeout-minutes: 110
     strategy:
       matrix:
         # 3.12 is the supported floor and 3.14 the newest supported; 3.13 was
