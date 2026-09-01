@@ -149,12 +149,19 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    # The same three steps the stage's own `_verified_page_bytes` performs, and
+    # they must fail the same way: a sealed record with no image path is a held
+    # attempt with a reason, not a bare KeyError out of the adapter boundary.
+    payload = page.get("payload")
+    image_path = payload.get("image_path") if isinstance(payload, dict) else None
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal("DAI's sealed source page has no image path to crop")
     try:
-        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+        page_bytes = context.tree.read_bytes(image_path)
     except OSError as error:
         raise SchemaRefusal(f"DAI sealed page bytes could not be read: {error}") from error
     actual_page_digest = digest_bytes(page_bytes)
-    if actual_page_digest != page["payload"].get("source_sha256"):
+    if actual_page_digest != payload.get("source_sha256"):
         raise SchemaRefusal(
             "DAI sealed page bytes changed between artifact verification and crop use"
         )

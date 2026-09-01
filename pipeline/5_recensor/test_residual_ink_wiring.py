@@ -328,7 +328,11 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
     ):
         _invoke(root, "r", "happy", program)
 
-    def flags_every_page(context):
+    # `main` now hands the verified sealed-page map down rather than letting
+    # each consumer re-derive it, so the substitute takes it and ignores it:
+    # this test drives the flagged-page wiring, not the pixel verification the
+    # map carries.
+    def flags_every_page(context, unused_sealed_pages=None):
         return {ordinal: {"flagged": True} for ordinal in RUN.regions_by_source_page(context)}
 
     monkeypatch.setattr(RUN, "page_coverage_findings", flags_every_page)

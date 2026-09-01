@@ -261,8 +261,18 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
         # No `band == 0` guard: the floor above makes the band at least 1 for
         # every image the validation admits, and the interval arithmetic below
         # is a no-op at band 0 anyway -- both edge intervals collapse to empty.
+        #
+        # `width <= 2 * band` folds into the same full-width interval as the
+        # top/bottom rows: on a page this narrow the left and right bands
+        # overlap or touch, and treating them as the two separate intervals
+        # `page_edge_ink` never forms would count an overlapping run twice --
+        # inflating `outside_ink_pixels` against `total_ink_pixels` and risking
+        # the very "two detectors disagree" split `ink_map_page_rows` treats as
+        # damaged evidence, over a page rather than a genuine account of it.
         edge_intervals = (
-            [(0, width)] if y < band or y >= height - band else [(0, band), (width - band, width)]
+            [(0, width)]
+            if y < band or y >= height - band or width <= 2 * band
+            else [(0, band), (width - band, width)]
         )
         covered_intervals = sorted(
             (

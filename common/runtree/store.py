@@ -40,6 +40,7 @@ import os
 import stat
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -246,7 +247,8 @@ class RunTree:
                 "is its position in the submission and is counted from one, so a run "
                 "cannot say which page a value below it names"
             )
-        repeated = sorted({ordinal for ordinal in ordinals if ordinals.count(ordinal) > 1})
+        ordinal_counts = Counter(ordinals)
+        repeated = sorted(ordinal for ordinal, count in ordinal_counts.items() if count > 1)
         if repeated:
             raise SchemaRefusal(
                 f"source pages declare ordinal(s) {repeated} more than once; an "

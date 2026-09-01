@@ -570,6 +570,20 @@ def test_page_retained_response_digest_is_lowercase_hex():
         validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
+def test_page_retained_response_digest_shape_is_the_module_wide_one():
+    """An uppercase digest is refused although its path is derived from it.
+
+    The path check alone cannot see this: `relative_path` and `sha256` agree
+    with each other. Only the digest-shape rule refuses it, and this seam and
+    the native-capture seam below must spell that rule the same way, or one of
+    them starts binding a blob identity the other refuses.
+    """
+    digest = "A" * 64
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
 def test_page_retained_response_path_is_derived_from_its_digest():
     reference = {
         "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -671,6 +685,21 @@ def _page_with_churro_capture() -> dict:
                 relative_path="3_attestatores/blobs/sha256/not-the-digest"
             ),
             "content-addressed",
+        ),
+        (
+            # Path and digest agree here, so only the digest-shape rule refuses
+            # it. The retained-response seam above spells the same rule.
+            #
+            # That rule has its own message since the shared reference shape was
+            # given `is_sha256`: this uppercase digest is refused at the shape,
+            # before the path-agreement check whose wording the row above
+            # matches. What is pinned is unchanged -- uppercase is not this
+            # pipeline's lowercase-hex digest -- under the refusal that decides
+            # it.
+            lambda value: value["native_capture"]["raw_response_ref"].update(
+                relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
+            ),
+            "invalid raw-response reference",
         ),
         (
             lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),

@@ -350,7 +350,8 @@ def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
     )
     monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
 
-    assert INK_MAP_RUN.main(registry_factory=None) == 0
+    # The constant, not 0, for the reason line 65 already gives about literals.
+    assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
     assert [record["outcome"] for record in context.published] == ["mapped"]
     assert context.sealed is True
     assert context.finished is True
@@ -391,6 +392,80 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     assert context.published == []
     assert context.sealed is False
     assert context.finished is False
+
+
+def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypatch):
+    """The sibling above fails on page 1, so nothing was published and the old
+    wording happened to be true. Here page 1 decodes and page 2 does not.
+
+    Publication is inside the page loop, so a decode failure part-way through a
+    shard leaves the earlier pages' records on disk. The refusal used to say "no
+    ink-map record was written", which an operator reads as a clean tree and
+    acts on -- retrying or clearing up against a false picture of what is there.
+    The boundary is still unsealed, so nothing downstream proceeds; what was
+    wrong was the sentence, and this pins it against the records that exist.
+    """
+    good, bad = _sealed_page(1), _sealed_page(2)
+    blank = encode_grayscale_png(20, 20, [bytearray([230] * 20) for _ in range(20)])
+
+    context = _PublishingContext()
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "sealed_pages",
+        lambda _context: [
+            (1, good, "1_exemplar/artifacts/page/one.json"),
+            (2, bad, "1_exemplar/artifacts/page/two.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "measured_page_bytes",
+        lambda _tree, ordinal, _page: blank if ordinal == 1 else b"not an image",
+    )
+
+    with pytest.raises(FatalAccounting, match="cannot measure sealed Exemplar page 2") as caught:
+        INK_MAP_RUN.main(registry_factory=None)
+
+    message = str(caught.value)
+    assert "incomplete map" in message
+    assert "no ink-map record was written" not in message, (
+        "the refusal claimed an empty tree while page 1's record was already published"
+    )
+    assert [record["subject_id"] for record in context.published] == [good["subject_id"]]
+    assert context.sealed is False
+    assert context.finished is False
+
+
+def test_a_measure_that_omits_its_fraction_is_refused_by_name_not_by_key_error():
+    """A missing key and a wrong type are the same contract break, reported alike.
+
+    `artifact_finding` used to index `fraction_outside` directly, so a shared
+    measure that stopped emitting it produced a bare `KeyError` with no stage,
+    page, or contract named -- while the same measure emitting a string got a
+    clean refusal. The weaker input got the worse report.
+    """
+    complete = {
+        "background_level": 230,
+        "total_ink_pixels": 10,
+        "outside_ink_pixels": 4,
+        "fraction_outside": 0.4,
+        "flagged": False,
+    }
+    assert INK_MAP_RUN.artifact_finding(complete)["fraction_outside_per_million"] == 400_000
+
+    without_fraction = {key: value for key, value in complete.items() if key != "fraction_outside"}
+    with pytest.raises(FatalAccounting, match="no float `fraction_outside`"):
+        INK_MAP_RUN.artifact_finding(without_fraction)
+    with pytest.raises(FatalAccounting, match="no float `fraction_outside`"):
+        INK_MAP_RUN.artifact_finding({**complete, "fraction_outside": "0.4"})
 
 
 def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():

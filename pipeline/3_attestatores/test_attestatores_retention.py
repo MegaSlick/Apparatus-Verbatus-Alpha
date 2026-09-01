@@ -376,6 +376,68 @@ def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, mo
             assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
+def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_not_an_indexerror(
+    tmp_path, monkeypatch, capsys
+):
+    """A crash mid-pass, then a lost proposal crop before resume, must still
+    name the missing crop rather than die inside the tally.
+
+    The crash leaves one chair's `read` Testimonium sealed with no stored
+    inventory, so the resume revalidates it through
+    `validate_tallied_testimonium`. If that act's own proposal crop is gone by
+    the time the resume runs, the *current* pass cannot verify a region for it
+    either, so preflight seeds an empty cache entry for the act. Seeding that
+    empty list -- rather than seeding nothing -- used to suppress the tally's
+    own re-derivation and its named refusal, and `regions[0]` died with a bare
+    `IndexError` instead.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    real_proposed_regions = attestatores.proposed_regions
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+    (sealed,) = _testimonia(tree)
+    assert sealed["outcome"] == "read", "the crash must follow a configured chair response"
+    crashed_act_id = sealed["subject_id"]
+
+    def lost_crop(context, act_id):
+        if act_id == crashed_act_id:
+            raise attestatores.ContractError(
+                f"act {act_id} has no proposed region for a witness to read"
+            )
+        return real_proposed_regions(context, act_id)
+
+    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
+    monkeypatch.setattr(attestatores, "proposed_regions", lost_crop)
+
+    result = attestatores.main()
+
+    assert result == attestatores.EXIT_HELD
+    assert "has no proposed region for a witness to read" in capsys.readouterr().err
+    assert _testimonia(tree) == [sealed], "the held resume must not touch the sealed record"
+
+
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):

@@ -297,17 +297,22 @@ def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
     # encoder's bound trips first the depth surfaces as a canonicalization
     # refusal; when the parser survives it is refused as a receipt instead.
     # Either way the deep document itself is a named ContractError, never an
-    # escaping crash. Only the two depth-dependent outcomes are accepted: both
+    # escaping crash. Only the depth-dependent outcomes are accepted: both
     # receipts here are named by `digest_bytes` of their own bytes, so a
     # content-address refusal cannot fire, and accepting one would let a
     # regression in digest naming refuse the other receipt first while this deep
     # document was never parsed at all.
+    #
+    # `no approval record names experiment` is excluded for exactly that reason,
+    # and it is the one the approval record above exists to prevent. Accepted
+    # here it undid the setup: a mis-keyed subject or a skipped scan would end
+    # the resolve before the deep document was ever read, and this test would
+    # have called that a pass while proving nothing about a hostile receipt.
     with pytest.raises(
         ContractError,
         match=(
             "cannot be represented as canonical receipt bytes"
             "|is not canonical JSON"
-            "|no approval record names experiment"
             "|is malformed JSON while resolving approval"
         ),
     ):

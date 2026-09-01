@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, attempt_id, derive
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
+MAX_DECODING_CONFIG_BYTES: Final = 64 * 1024
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -21,11 +22,18 @@ def load_decoding_policy(
 ) -> tuple[dict[str, Any], str]:
     """Read the closed policy and the digest of the exact bytes used."""
     try:
-        raw = Path(path).read_bytes()
+        with Path(path).open("rb") as handle:
+            raw = handle.read(MAX_DECODING_CONFIG_BYTES + 1)
     except OSError as error:
         raise ContractError(
             f"decoding configuration at {path} could not be read: {error}.{_LOAD_RECOVERY}"
         ) from error
+    if len(raw) > MAX_DECODING_CONFIG_BYTES:
+        raise ContractError(
+            f"decoding configuration at {path} exceeds the "
+            f"{MAX_DECODING_CONFIG_BYTES}-byte limit; a run policy is bounded "
+            f"metadata, not a corpus payload.{_LOAD_RECOVERY}"
+        )
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
