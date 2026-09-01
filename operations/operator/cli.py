@@ -475,14 +475,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.verb == "scantailor":
             from .scantailor import import_in_custody, instruction
 
-            _print(instruction(args.project, workspace=workspace))
             if args.geometry_out is not None:
+                _print(
+                    "Importing the ScanTailor project as it is saved right now. "
+                    "If you have not yet saved its page-split geometry, stop and do that first."
+                )
                 import_in_custody(
                     project=args.project,
                     output_dir=args.geometry_out,
                     workspace=workspace,
                     printer=_print,
                 )
+            else:
+                _print(instruction(args.project, workspace=workspace))
         # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(

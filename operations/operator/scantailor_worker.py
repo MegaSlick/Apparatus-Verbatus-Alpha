@@ -20,7 +20,14 @@ from typing import Any, Final
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from operations.pod.durable import exclusive_write
 
-_REQUEST = {"operation", "project", "output_dir", "expected_project_sha256"}
+_REQUEST = {
+    "operation",
+    "project",
+    "output_dir",
+    "expected_project_sha256",
+    "expected_output_device",
+    "expected_output_inode",
+}
 
 # Real projects remain well below this bound even at thousands of pages; an
 # unbounded read would let corrupt input exhaust memory before shape validation.
@@ -219,8 +226,9 @@ def _physical_page_key(source_path: str, file_image: int) -> tuple[str, int]:
     alone would let two `<file>` rows that differ only in case each carry a
     saved geometry, which the parser would treat as two physical pages instead
     of the one the refusal above exists to catch -- a picker rebuilt by
-    accident. Folded only for this identity check; the record itself keeps the
-    exact spelling the project file used.
+    accident. Folded only for this identity check; the record's own
+    ``source_path`` is the resolved target with symlinks followed, not the
+    project file's own ``<directory>``/``<file>`` spelling.
     """
     key = source_path.casefold() if sys.platform == "darwin" else source_path
     return (key, file_image)
@@ -292,6 +300,18 @@ def main() -> int:
             request["expected_project_sha256"]
         ):
             raise _refuse("expected project digest is invalid")
+        for name in ("expected_output_device", "expected_output_inode"):
+            identity_part = request[name]
+            if identity_part is not None and (
+                not isinstance(identity_part, int)
+                or isinstance(identity_part, bool)
+                or identity_part < 0
+            ):
+                raise _refuse(f"{name} must be a non-negative integer or null")
+        if request["operation"] == "commit" and (
+            request["expected_output_device"] is None or request["expected_output_inode"] is None
+        ):
+            raise _refuse("a commit request must carry the previewed output folder's identity")
         project = Path(request["project"])
         output_dir = Path(request["output_dir"])
         # Preview must refuse an unusable folder before promising a pinned commit;
@@ -300,6 +320,19 @@ def main() -> int:
             raise _refuse(
                 "output folder does not exist, is not a directory, or is a symbolic link; "
                 "the console writes only into a real folder that already exists"
+            )
+        # The commit repeats only the path spelling unless this identity is also
+        # pinned: if the approved folder is replaced by another directory between
+        # the two launches, the path spelling alone cannot tell the two apart, and
+        # a document would land in a folder the operator never saw approved.
+        output_status = output_dir.stat(follow_symlinks=False)
+        output_identity = (output_status.st_dev, output_status.st_ino)
+        if request["operation"] == "commit" and output_identity != (
+            request["expected_output_device"],
+            request["expected_output_inode"],
+        ):
+            raise _refuse(
+                "the output folder changed after the preview was shown; nothing was written"
             )
         document = parse(_bounded_bytes(project, "project file"), project)
         if (
@@ -332,6 +365,10 @@ def main() -> int:
                 {
                     "status": "committed" if request["operation"] == "commit" else "preview",
                     "summary": summary,
+                    "output_identity": {
+                        "device": output_identity[0],
+                        "inode": output_identity[1],
+                    },
                 }
             )
         )

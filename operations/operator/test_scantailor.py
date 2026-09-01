@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -189,6 +190,8 @@ def test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point(
         "project": str(project),
         "output_dir": str(output),
         "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     code, preview = _invoke_main(monkeypatch, capsys, preview_request)
     assert code == 0 and preview["status"] == "preview"
@@ -196,6 +199,8 @@ def test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point(
         **preview_request,
         "operation": "commit",
         "expected_project_sha256": preview["summary"]["project_sha256"],
+        "expected_output_device": preview["output_identity"]["device"],
+        "expected_output_inode": preview["output_identity"]["inode"],
     }
     code, committed = _invoke_main(monkeypatch, capsys, commit_request)
     assert code == 0 and committed["status"] == "committed"
@@ -219,6 +224,8 @@ def test_commit_refuses_when_an_existing_document_does_not_match_its_own_digest(
         "project": str(project),
         "output_dir": str(output),
         "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, preview_request)
     document_path = Path(preview["summary"]["document_path"])
@@ -227,6 +234,8 @@ def test_commit_refuses_when_an_existing_document_does_not_match_its_own_digest(
         **preview_request,
         "operation": "commit",
         "expected_project_sha256": preview["summary"]["project_sha256"],
+        "expected_output_device": preview["output_identity"]["device"],
+        "expected_output_inode": preview["output_identity"]["inode"],
     }
     code, response = _invoke_main(monkeypatch, capsys, commit_request)
     assert code == 2 and response["status"] == "refusal"
@@ -359,6 +368,8 @@ def test_a_missing_output_folder_refuses_before_the_operator_is_shown_a_pinned_p
             "project": str(project),
             "output_dir": str(tmp_path / "not-there"),
             "expected_project_sha256": None,
+            "expected_output_device": None,
+            "expected_output_inode": None,
         },
     )
     assert code == 2 and response["status"] == "refusal"
@@ -385,6 +396,8 @@ def test_a_symlinked_output_folder_refuses_rather_than_writing_through_it(
             "project": str(project),
             "output_dir": str(tmp_path / "link"),
             "expected_project_sha256": None,
+            "expected_output_device": None,
+            "expected_output_inode": None,
         },
     )
     assert code == 2 and response["status"] == "refusal"
@@ -399,8 +412,9 @@ def test_an_existing_document_that_is_not_a_regular_file_refuses_rather_than_blo
 
     That read is no more trustworthy than the project file's. A `read_bytes` by
     name -- or a blocking open -- on a planted FIFO hangs the confined child
-    having printed nothing, instead of refusing it. This test only terminates
-    because the open does not block.
+    having printed nothing, instead of refusing it. A bounded deadline turns a
+    regression back into that blocking open into a named test failure instead
+    of a suite that never finishes.
     """
     project = tmp_path / "scan.ScanTailor"
     project.write_bytes(PROJECT)
@@ -411,19 +425,31 @@ def test_an_existing_document_that_is_not_a_regular_file_refuses_rather_than_blo
         "project": str(project),
         "output_dir": str(output),
         "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, preview_request)
     os.mkfifo(Path(preview["summary"]["document_path"]))
-    code, response = _invoke_main(
-        monkeypatch,
-        capsys,
-        {
-            **preview_request,
-            "operation": "commit",
-            "expected_project_sha256": preview["summary"]["project_sha256"],
-        },
-    )
-    assert code == 2 and response["status"] == "refusal"
+    commit_request = {
+        **preview_request,
+        "operation": "commit",
+        "expected_project_sha256": preview["summary"]["project_sha256"],
+        "expected_output_device": preview["output_identity"]["device"],
+        "expected_output_inode": preview["output_identity"]["inode"],
+    }
+
+    def _timed_out(_signum: int, _frame: object) -> None:
+        raise AssertionError("the commit blocked on the planted FIFO instead of refusing it")
+
+    previous_handler = signal.signal(signal.SIGALRM, _timed_out)
+    signal.alarm(10)
+    try:
+        code, response = _invoke_main(monkeypatch, capsys, commit_request)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+    assert code == 2
+    assert response["status"] == "refusal"
     assert "existing geometry document" in response["reason"]
 
 
@@ -512,6 +538,7 @@ def test_parent_refuses_a_commit_summary_that_cannot_name_the_written_document(
             "document_path": str(tmp_path / "not-the-content-addressed-name.json"),
             "document_sha256": "b" * 64,
         },
+        "output_identity": {"device": 1, "inode": 1},
     }
     with pytest.raises(OperatorError) as raised:
         scantailor._summary(invalid, operation="commit", output_dir=tmp_path)
@@ -532,6 +559,8 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
         "project": str(project),
         "output_dir": str(output),
         "expected_project_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     _, preview = _invoke_main(monkeypatch, capsys, request)
     real_exclusive_write = durable.exclusive_write
@@ -548,6 +577,8 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
             **request,
             "operation": "commit",
             "expected_project_sha256": preview["summary"]["project_sha256"],
+            "expected_output_device": preview["output_identity"]["device"],
+            "expected_output_inode": preview["output_identity"]["inode"],
         },
     )
     assert code == 2 and response["status"] == "refusal"
@@ -555,11 +586,21 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
 
 
 def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
+    """Bind the README table to the parser, not to a number written into the test.
+
+    A hard-coded count stays green when a verb is added or removed from
+    `build_parser`; deriving the expected set from the parser instead means the
+    README and the tool cannot drift apart unnoticed.
+    """
+    from operations.operator import cli
+
     readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
     words = [line for line in readme.splitlines() if line.startswith("| `")]
     assert "## The fourteen words" in readme
     assert "Twelve things this tool can do" in readme
-    assert len(words) == 14
+    documented = {line.split("`")[1].split()[0] for line in words}
+    (verb_action,) = (action for action in cli.build_parser()._actions if action.dest == "verb")
+    assert documented == set(verb_action.choices)
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
@@ -570,7 +611,8 @@ def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text:
     document = scantailor_worker.parse(project.read_bytes(), project)
     encoded = scantailor_worker.canonical_bytes(document) + b"\n"
     digest = hashlib.sha256(encoded).hexdigest()
-    path = Path(request["output_dir"]) / f"scantailor-geometry-{digest}.json"
+    output_dir = Path(request["output_dir"])
+    path = output_dir / f"scantailor-geometry-{digest}.json"
     if request["operation"] == "commit":
         path.write_bytes(encoded)
     summary = {
@@ -580,6 +622,7 @@ def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text:
         "document_path": str(path),
         "document_sha256": digest,
     }
+    output_status = output_dir.stat()
     return object(), CompletedProcess(
         command,
         0,
@@ -587,6 +630,10 @@ def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text:
             {
                 "status": "committed" if request["operation"] == "commit" else "preview",
                 "summary": summary,
+                "output_identity": {
+                    "device": output_status.st_dev,
+                    "inode": output_status.st_ino,
+                },
             }
         ),
         "",
