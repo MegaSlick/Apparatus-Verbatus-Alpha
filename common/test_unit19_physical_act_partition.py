@@ -1014,6 +1014,74 @@ def test_partition_validator_refuses_a_dropped_required_capture_presentation(tmp
         validate_physical_act_partition(partition)
 
 
+def test_a_mixed_type_capture_list_is_refused_by_name_not_a_sort_typeerror(tmp_path):
+    """`sorted(set(...))` cannot order a str against an int: a resealed payload
+
+    with one non-string entry must become a named `SchemaRefusal`, never a raw
+    `TypeError` out of the validator.
+    """
+    path = _register(tmp_path)
+    _mint(
+        path,
+        PAGE,
+        [
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+    )
+    partition = build_physical_act_partition(
+        register=path.read_bytes(),
+        register_digest=register_digest(path.read_bytes()),
+        proposal_seal_ref=SEAL,
+        local_acts=[
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+        capture_alignments=[
+            _align("pg_" + "1" * 16, SOURCE_A, PAGE, "align:a-b"),
+            _align("pg_" + "2" * 16, SOURCE_B, PAGE, "align:a-b"),
+        ],
+        source_ledger={SOURCE_A, SOURCE_B},
+    )
+    component = partition["logical_acts"][0]["physical_page_components"][0]
+    component["required_capture_sha256s"] = [SOURCE_A, 5]
+    partition["self_hash"] = self_hash(partition)
+    with pytest.raises(SchemaRefusal, match="malformed identity"):
+        validate_physical_act_partition(partition)
+
+
+def test_a_mixed_type_page_id_list_is_refused_by_name_not_a_sort_typeerror(tmp_path):
+    """The same canonical-order check on `page_ids` must refuse by name too."""
+    path = _register(tmp_path)
+    _mint(
+        path,
+        PAGE,
+        [
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+    )
+    partition = build_physical_act_partition(
+        register=path.read_bytes(),
+        register_digest=register_digest(path.read_bytes()),
+        proposal_seal_ref=SEAL,
+        local_acts=[
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+        capture_alignments=[
+            _align("pg_" + "1" * 16, SOURCE_A, PAGE, "align:a-b"),
+            _align("pg_" + "2" * 16, SOURCE_B, PAGE, "align:a-b"),
+        ],
+        source_ledger={SOURCE_A, SOURCE_B},
+    )
+    presentation = partition["logical_acts"][0]["capture_presentations"][0]
+    presentation["page_ids"] = [presentation["page_ids"][0], 5]
+    partition["self_hash"] = self_hash(partition)
+    with pytest.raises(SchemaRefusal, match="capture presentation is malformed"):
+        validate_physical_act_partition(partition)
+
+
 def _partition(register_bytes, local_acts, alignments, ledger, digest=None):
     return build_physical_act_partition(
         register=register_bytes,

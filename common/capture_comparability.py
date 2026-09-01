@@ -39,6 +39,12 @@ _ACTOR_CODES: Final = {
     "identity": ACTOR_IDENTITY_DIFFERS,
     "revision": ACTOR_REVISION_DIFFERS,
 }
+# Fail closed on actor-schema growth: an unread actor fact would let two
+# differently-captured rows compare equal with nothing to name (GOVERNANCE 10).
+assert set(_ACTOR_CODES) == set(ACTOR_FACT_FIELDS), (
+    "capture comparability: _ACTOR_CODES has drifted from ACTOR_FACT_FIELDS; "
+    "every actor fact must have a named difference code or it compares silently equal"
+)
 
 
 def _triage_facts(row: Any, label: str) -> dict[str, Any]:

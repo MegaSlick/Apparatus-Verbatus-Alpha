@@ -375,7 +375,22 @@ def test_an_upstream_finding_cannot_masquerade_as_a_unit20_derived_flag(code):
 
 
 def test_the_condition_vocabulary_still_matches_unit_19s_own_failure_names():
-    """Open pair findings must not let the documented condition names drift."""
+    """Open pair findings must not let the documented condition names drift.
+
+    The expected names are pinned as literals, independent of the
+    implementation constants both sides derive from: a coordinated rename of
+    ``CONDITION_CODES`` and ``_FAILED_CONDITION_CODES`` together would leave
+    the old cross-module equality green while every documented consumer still
+    expects these exact spellings.
+    """
+    documented_condition_codes = {
+        "capture-occlusion-condition-failed",
+        "capture-comparability-condition-failed",
+        "same-ink-condition-failed",
+        "identical-run-configuration-condition-failed",
+        "cross-capture-match-failure",
+    }
+    assert CONDITION_CODES == documented_condition_codes
     assert CONDITION_CODES == set(_FAILED_CONDITION_CODES.values())
 
 

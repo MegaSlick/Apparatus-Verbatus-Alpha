@@ -613,6 +613,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
                 not _is_derived_id(page, "ppg_")
                 or not isinstance(required_captures, list)
                 or not required_captures
+                or not all(isinstance(item, str) for item in required_captures)
                 or required_captures != sorted(set(required_captures))
             ):
                 raise SchemaRefusal(
@@ -660,16 +661,18 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             if (
                 not isinstance(page_ids, list)
                 or not page_ids
+                or not all(isinstance(item, str) for item in page_ids)
                 or page_ids != sorted(set(page_ids))
                 or not all(_is_derived_id(item, "pg_") for item in page_ids)
                 or not isinstance(local_ids, list)
+                or not all(isinstance(item, str) for item in local_ids)
                 or local_ids != sorted(set(local_ids))
                 or not all(_is_derived_id(item, "act_") for item in local_ids)
                 or not isinstance(presentation["alignment_ref"], str)
                 or not presentation["alignment_ref"]
                 or not isinstance(projected, list)
-                or projected != sorted(set(projected))
                 or not all(isinstance(item, str) and item for item in projected)
+                or projected != sorted(set(projected))
             ):
                 raise SchemaRefusal("physical-act partition: capture presentation is malformed")
             pair = (page, source)
@@ -1110,8 +1113,8 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
         if (
             not isinstance(evidence, list)
             or not evidence
-            or evidence != sorted(set(evidence))
             or not all(isinstance(item, str) and item for item in evidence)
+            or evidence != sorted(set(evidence))
         ):
             raise SchemaRefusal(
                 "correspondence proposal: evidence references must be sorted and unique"

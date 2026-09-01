@@ -38,16 +38,7 @@ def test_the_forbidden_vocabularies_are_not_empty_so_the_scan_cannot_pass_vacuou
 @pytest.mark.parametrize("tree", _trees(), ids=[source.name for source in SOURCES])
 def test_the_unit20_modules_name_no_shape_one_preference_word(tree: ast.Module):
     """§7 shape 1: no preference vocabulary anywhere in the Unit 20 surface."""
-    read: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            read.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            read.add(node.attr)
-        elif isinstance(node, ast.arg):
-            read.add(node.arg)
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            read.add(node.value)
+    read = _collect_names(tree)
     # Fragment containment, lower-cased, exactly as the runtime preference
     # screens match: a helper named `preferred_view_for` or a constant
     # "best_capture_sha256" spells the forbidden idea without being a whole
@@ -60,6 +51,50 @@ def test_the_unit20_modules_name_no_shape_one_preference_word(tree: ast.Module):
         if word.lower() in name.lower()
     )
     assert offences == [], offences
+
+
+def _collect_names(tree: ast.Module) -> set[str]:
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            read.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            read.add(node.attr)
+        elif isinstance(node, ast.arg):
+            read.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            read.add(node.name)
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            read.add(node.arg)
+        elif isinstance(node, ast.alias):
+            read.add(node.name)
+            if node.asname is not None:
+                read.add(node.asname)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            read.add(node.value)
+    return read
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "def best_view(rows):\n    return rows",
+        "class best_view:\n    pass",
+        "build(preferred_view=x)",
+        "import module as preferred_view",
+    ],
+    ids=["function-def", "class-def", "keyword-arg", "import-alias"],
+)
+def test_the_static_guard_sees_forbidden_names_at_their_definition_site(snippet: str):
+    """A name that only appears as a def/class/keyword/import site must still
+
+    surface: the four node kinds `ast.Name`, `ast.Attribute`, `ast.arg`, and
+    string `ast.Constant` never see a `def`, `class`, `keyword.arg`, or
+    `alias.name`/`asname`, so a scan that collected only those four could
+    report a clean surface while a forbidden name is defined right there.
+    """
+    names = _collect_names(ast.parse(snippet))
+    assert any("best_view" in name or "preferred_view" in name for name in names), names
 
 
 def _is_integer_literal(value: ast.AST) -> bool:

@@ -311,6 +311,8 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
 
     assert receipt.is_file()
     assert sorted(client.uploads) == ["volume/page-one.bin", "volume/page-two.bin"]
+    assert client.objects["volume/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
+    assert client.objects["volume/page-two.bin"][0] == (source / "page-two.bin").read_bytes()
     assert any("zero GPU-hours" in line for line in messages)
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "complete"

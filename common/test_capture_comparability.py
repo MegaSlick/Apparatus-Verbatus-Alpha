@@ -124,7 +124,18 @@ def test_capture_argument_order_cannot_change_comparability_or_its_named_differe
     )
     auto = _row()
 
-    assert comparability_from_triage(hand, auto) == comparability_from_triage(auto, hand)
+    expected = {
+        "comparably_captured": False,
+        "difference_codes": [
+            "triage-actor-identity-differs",
+            "triage-actor-kind-differs",
+            "triage-actor-revision-differs",
+            "triage-human-override-differs",
+            "triage-mode-differs",
+        ],
+    }
+    assert comparability_from_triage(hand, auto) == expected
+    assert comparability_from_triage(auto, hand) == expected
 
 
 def test_an_absent_triage_fact_is_refused_rather_than_read_as_comparable():
