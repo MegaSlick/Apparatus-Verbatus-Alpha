@@ -40,6 +40,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.fixture_identity import page_identity  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -1106,6 +1107,18 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
         validate_raw_response_ref(payload["raw_response_ref"])
     validate_adapter_metadata(payload)
     validate_retained_response_pairing(payload)
+    # The closed confidence-ordinal set is a writer-side rule
+    # (`_confidence_problem`, applied in `prepared_response` and the Chandra
+    # branch of `resolve_attempt`), and this is the one envelope validator both
+    # of those writers and the tally/resume read-back share. Checking it again
+    # here is what makes it a property of every sealed Testimonium rather than
+    # of however many call sites remember to ask -- and, since Unit 2, this
+    # validator is also the gate a crash resume trusts before carrying a
+    # retained self-report forward into a freshly published record: unchecked
+    # here, a malformed claim that ever reached disk would be revalidated as
+    # fine and republished rather than refused.
+    if problem := _confidence_problem(payload.get("witness_reported")):
+        raise SchemaRefusal(problem)
     return validate_native_witness_geometry(payload)
 
 
@@ -1412,9 +1425,12 @@ def preflight_appendable_ordinals(
     ordinal: int,
     declarations: dict[str, Any],
     index: "AttemptIndex",
+    *,
+    resume_incomplete_pass: bool,
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
     dict[tuple[str, str], "Attempt"],
+    frozenset[tuple[str, str]],
 ]:
     """Refuse a damaged history, or a colliding write, before adding any new
     attempt to this invocation.
@@ -1427,11 +1443,33 @@ def preflight_appendable_ordinals(
     since the two must agree on what this ordinal means. The returned region map
     lets publication use the exact regions preflight already verified instead of
     walking and hashing Designator again.
+
+    **One ordinal for the whole pass, on a resume exactly as on a first run.**
+    Unit 2 asks what a crashed pass does about the pairs it already sealed, and
+    the answer is not a per-pair ordinal map. Three facts forbid one. A
+    page-scoped chair has no act-scoped attempt to repeat at all — `reread_pass`
+    refuses to mint one by name — so moving such a pair to ordinal 2 while the
+    page Testimonium and the act attachment stay at ordinal 1 publishes a
+    `not-run` over a good `read` and drops that chair out of the act's coverage.
+    `require_shared_whole_pass_ordinal` exists precisely because an act's
+    attachment is derived once per pass and cannot describe two ordinals at
+    once. And the Perlector's reading ordinal is a function of the act's crop
+    history, which the Recensor, Archetypus and Armarium each re-derive, so a
+    reading that appears without a recrop is refused downstream by all three.
+
+    So a resumed whole pass repeats its ordinal, but it never asks a chair again
+    for a pair already sealed at that ordinal. The retained Testimonium is
+    validated and supplies the attempt facts used by the derived page and
+    attachment records; only pairs the interrupted pass did not seal reach the
+    chair. This is what makes the resume safe for a real non-deterministic chair:
+    no second answer has to reproduce immutable bytes, and no later ordinal is
+    invented for an act the pass never finished (GOVERNANCE 2, 4).
     """
     # Native declarations must refuse before compatibility records are published.
     validate_declared_churro_page_responses(context, declared_page_witness_chairs(context))
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
+    sealed_pairs: set[tuple[str, str]] = set()
     appending = [
         act
         for act in acts
@@ -1464,18 +1502,40 @@ def preflight_appendable_ordinals(
         for chair in context.witness_chairs:
             require_appendable_ordinal(index.by_pair, act["act_id"], chair, ordinal)
             resolved = context.registry.resolve(chair)
-            attempt = (
-                not_read_attempt(resolved, not_read)
-                if not_read is not None
-                else resolve_attempt(
-                    context,
-                    act,
-                    chair,
-                    resolved,
-                    declarations,
+            pair = (act["act_id"], chair)
+            existing = [
+                record
+                for record in index.by_pair.get(pair, [])
+                if record["payload"]["attempt_ordinal"] == ordinal
+            ]
+            if existing and resume_incomplete_pass:
+                if len(existing) != 1:
+                    raise FatalAccounting(
+                        f"Testimonium for {pair!r} has {len(existing)} records at ordinal "
+                        f"{ordinal}; a resume cannot choose one"
+                    )
+                record = existing[0]
+                # Seeded only when non-empty: `validate_tallied_testimonium`
+                # re-derives a missing entry and names the absent proposal crop,
+                # and an empty list would suppress that named refusal.
+                validate_tallied_testimonium(
+                    context, record, act, {act["act_id"]: regions} if regions else {}
                 )
-            )
-            attempts_by_pair[(act["act_id"], chair)] = attempt
+                attempt = _attempt_from_retained_testimonium(context.tree, record)
+                sealed_pairs.add(pair)
+            else:
+                attempt = (
+                    not_read_attempt(resolved, not_read)
+                    if not_read is not None
+                    else resolve_attempt(
+                        context,
+                        act,
+                        chair,
+                        resolved,
+                        declarations,
+                    )
+                )
+            attempts_by_pair[pair] = attempt
             _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
     # Last, so a genuine witness-attempt disagreement is named for what it is
     # rather than reported as its consequence one derivation downstream: the
@@ -1484,7 +1544,7 @@ def preflight_appendable_ordinals(
     # says which chair and which two outcomes.
     for act in appending:
         require_shared_whole_pass_ordinal(index, act, context.witness_chairs, ordinal)
-    return regions_by_act, attempts_by_pair
+    return regions_by_act, attempts_by_pair, frozenset(sealed_pairs)
 
 
 def validate_tallied_testimonium(
@@ -1758,6 +1818,43 @@ class Attempt(NamedTuple):
     reason: str | None
     raw_response_ref: dict[str, str] | None = None
     observation_payload: Any = None
+
+
+def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
+    """Crash resume must rehydrate retained Chandra bytes for page geometry.
+
+    The act-scoped Testimonium is not republished, but its response still feeds
+    the derived page record. Its blob therefore has to remain present and
+    digest-identical before that Testimonium can stand in for a new chair response.
+    """
+    payload = record["payload"]
+    raw_response_ref = payload.get("raw_response_ref")
+    observation_payload = None
+    if raw_response_ref is not None:
+        validate_raw_response_ref(raw_response_ref)
+        try:
+            observation_payload = tree.read_bytes(raw_response_ref["relative_path"])
+        except OSError as error:
+            raise SchemaRefusal(
+                "a resumed Testimonium's retained raw response could not be read: "
+                f"{raw_response_ref['relative_path']}: {error}"
+            ) from error
+        observed = digest_bytes(observation_payload)
+        if observed != raw_response_ref["sha256"]:
+            raise SchemaRefusal(
+                "a resumed Testimonium's retained raw response digest differs from its "
+                f"reference: expected {raw_response_ref['sha256']}, read {observed}"
+            )
+    return Attempt(
+        outcome=record["outcome"],
+        native_payload=payload["payload"],
+        witness_reported=payload["witness_reported"],
+        format_capabilities=payload["format_capabilities"],
+        health=payload["content_health"],
+        reason=payload.get("reason"),
+        raw_response_ref=raw_response_ref,
+        observation_payload=observation_payload,
+    )
 
 
 def churro_page_capture(context, page_ordinal: int, chair: str) -> dict[str, Any] | None:
@@ -3420,16 +3517,17 @@ def attempt_pass(
     ordinal: int,
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
+    sealed_pairs: frozenset[tuple[str, str]],
 ) -> tuple[int, bool]:
     """Every configured chair's attempt at every expected act, at one ordinal.
 
     Returns how many records were written and whether any proposal crop was
     refused — the second is reported, never swallowed, because an act whose crop
     no chair could be shown is a different fact from an act every chair read. The
-    region and attempt maps are the result of this invocation's
-    no-Testimonium-write preflight. Publication therefore seals the exact attempt
-    whose collision was checked, while publication order and the single write
-    path remain unchanged.
+    region and attempt maps are the result of this invocation's no-write
+    preflight. Publication therefore seals the exact attempt whose collision was
+    checked, while a pair the interrupted invocation already sealed is counted
+    but not published or sent to its chair a second time.
     """
     recorded = 0
     isolated_crop_failure = False
@@ -3442,6 +3540,9 @@ def attempt_pass(
             isolated_crop_failure = True
 
         for chair in context.witness_chairs:
+            if (act["act_id"], chair) in sealed_pairs:
+                recorded += 1
+                continue
             resolved = context.registry.resolve(chair)
             publish_attempt(
                 context,
@@ -3754,6 +3855,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "ignore the act and chair it was given, and report success"
         )
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    # A witness reading is a model decode too.  The adapter currently exposes no
+    # generation knobs in the fixture seam, but this check keeps a future real
+    # adapter from treating the record posture as an unbound side setting.
+    _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     acts = expected_acts(context)
     try:
@@ -3763,20 +3869,32 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
-    # The stored inventory is evidence that attempts existed, and it is evidence
-    # even when none of them is left. Gating the check below on the *walk* finding
-    # something meant that losing part of a folder's Testimonium layer held it —
-    # stored and rebuilt no longer agree — while losing all of it did not: the
-    # first-run path was taken instead, attempt 1 was written for every pair, and
-    # `context.finish()` rewrote the inventory that said otherwise. A reread makes
-    # that loss material rather than merely re-derivable, because the ordinal it
-    # appended does not come back. So the stored manifest's own existence is the
-    # second trigger, and `attempt_tally` then says what it always says about an
-    # inventory that disagrees with the evidence: UNKNOWN, and hold. Re-deriving it
-    # deliberately (`RunTree.write_manifest`) remains the one-step way out, exactly
-    # as it is for a pass interrupted before its manifest was written.
+    # A stored inventory is evidence that attempts existed, and it is evidence even
+    # when none of them is left: gating this check on the *walk* finding something
+    # meant that losing part of a folder's Testimonium layer held it — stored and
+    # rebuilt no longer agree — while losing all of it did not, because the
+    # first-run path was taken instead and `context.finish()` rewrote the inventory
+    # that said otherwise. So the stored manifest's own existence is one trigger,
+    # and a stage seal is the other: a sealed boundary is a completed pass, and its
+    # tally must reconcile whether or not the inventory file survived.
+    #
+    # The walk alone is deliberately NOT a third trigger, and that is Unit 2's
+    # change here. A pass interrupted inside `attempt_pass` leaves immutable
+    # Testimonia, no inventory and no seal — and asking `attempt_tally` to
+    # reconcile against an inventory that was never written held every crash
+    # resume on a missing file, with a manual `RunTree.write_manifest` as the only
+    # way out. There is no stored claim to contradict in that state, so the resume
+    # below repeats the pass at its own ordinal: what is already sealed is reused
+    # byte-for-byte, what the crash never reached is written, and nothing is
+    # overwritten or concealed. A pass that sealed and then lost its inventory
+    # still reconciles, because the seal is still in the rebuilt walk.
     stored_inventory = context.tree.resolve(context.tree.manifest_path(ATTESTATORES)).exists()
-    if index.stage_has_artifacts or stored_inventory:
+    has_stage_seal = any(
+        entry["kind"] == "stage-seal"
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+    )
+    has_prior_boundary = stored_inventory or has_stage_seal
+    if has_prior_boundary:
         # No chair denominator here: this pass is what fills it. See `attempt_tally`.
         prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:
@@ -3806,12 +3924,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
             declarations = declarations_for(context, ordinal)
-            regions_by_act, attempts_by_pair = preflight_appendable_ordinals(
+            regions_by_act, attempts_by_pair, sealed_pairs = preflight_appendable_ordinals(
                 context,
                 acts,
                 ordinal,
                 declarations,
                 index,
+                resume_incomplete_pass=not has_prior_boundary,
             )
         except ContractError as error:
             # An ordinary preflight refusal holds this pass before it writes any
@@ -3827,6 +3946,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             ordinal,
             regions_by_act,
             attempts_by_pair,
+            sealed_pairs,
         )
         publish_page_testimonia_and_attachments(
             context,

@@ -57,6 +57,7 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_DECODING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_PDF_RENDER_CONFIG_PATH,
@@ -189,6 +190,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.fixture_root),
         "--models-config",
         str(args.models_config),
+        "--decoding-config",
+        str(args.decoding_config),
         "--serving-recipes-config",
         str(args.serving_recipes_config),
         "--pdf-render-config",
@@ -310,6 +313,11 @@ def main() -> int:
         "--models-config",
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
+    )
+    parser.add_argument(
+        "--decoding-config",
+        default=str(DEFAULT_DECODING_CONFIG_PATH),
+        help="the sealed decoding posture for record readings and variance experiments",
     )
     # The roster's other half. `--models-config` selects which chairs exist and
     # this selects the vLLM profile each one is served under; both are sealed

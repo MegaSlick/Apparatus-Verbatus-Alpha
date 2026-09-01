@@ -20,6 +20,7 @@ NEW test file only; nothing here modifies `proof/skeleton_fixture.toml`,
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ import pytest
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.fixture_identity import act_identity, page_identity
 from common.runtree.store import RECENSOR_PARTITION_RECEIPT_FILE, RunTree
@@ -1125,7 +1127,7 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     and Recensor must each refuse that one remaining contradiction rather than
     count a superseded read.
     """
-    root = tmp_path / "runs"
+    root = tmp_path / "perlector-runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
     act_a1_id = act_identity(fixture_data, act_by_key(fixture_data, "a1"))
     tree = _through_attestatores(root, "act-scoped-stale", "happy")
@@ -1176,26 +1178,71 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert current["payload"]["content_health"]["characters"] in (None, 0), current["payload"]
     attachment["span"] = {"start": 0, "end": 0}
 
-    # The Perlector reads and seals its boundary once over the *correct* record,
-    # before the forgery. Otherwise its refusal below leaves no Perlector seal at
-    # all and the Recensor stops on the missing boundary instead of on the
-    # contradiction — which is the check this test is named for and the one half
-    # of "each must refuse" that would then be proven nowhere. That first run
-    # retains an input reference to the record's pre-forgery bytes, so its
-    # boundary is re-witnessed below before the Recensor is asked to read.
-    sealing = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
-    assert sealing.returncode == 0, sealing.stderr
     _reseal(tree, attachment_path, attachment_record)
 
     perlector = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
     assert perlector.returncode != 0
     assert "disagrees with that chair's current Testimonium outcome" in perlector.stderr
 
-    # The refused Perlector run wrote nothing, so its earlier seal still names the
-    # attachment's pre-forgery bytes; without this the Recensor stops on that
-    # boundary instead of on the outcome contradiction this test is named for.
-    _rewitness_perlector_boundary(tree)
-    recensor = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py")
+    # A sealed Perlectio retains this attachment as a digest-bound input.  Once
+    # that Perlector pass is complete, changing the same artifact in place is
+    # correctly rejected as a broken immutable input before either downstream
+    # consumer can reinterpret it.  Give the Recensor a later, independently
+    # sealed attachment instead: it remains the current attachment for its
+    # collapse while the Perlector's already-sealed input stays byte-identical.
+    recensor_root = tmp_path / "recensor-runs"
+    recensor_tree = _through_attestatores(recensor_root, "act-scoped-stale", "happy")
+    reread = _reread(
+        recensor_root,
+        "act-scoped-stale",
+        "happy",
+        act_a1_id,
+        RETAINED_ACT_WITNESS_CHAIR,
+    )
+    assert reread.returncode == 0, reread.stderr
+    sealing = invoke_stage(
+        recensor_root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py"
+    )
+    assert sealing.returncode == 0, sealing.stderr
+
+    _, current_attachment = _latest_attachment(recensor_tree, act_a1_id)
+    current_testimonium = max(
+        (
+            record
+            for record in _attestatores_artifacts(recensor_tree)
+            if record.get("kind") == "testimonium"
+            and record.get("subject_id") == act_a1_id
+            and record.get("payload", {}).get("chair") == RETAINED_ACT_WITNESS_CHAIR
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    assert current_testimonium["outcome"] == "failed"
+    forged = copy.deepcopy(current_attachment)
+    forged_row = next(
+        row
+        for row in forged["payload"]["attachments"]
+        if row["chair"] == RETAINED_ACT_WITNESS_CHAIR
+    )
+    assert forged_row["attached"] is False
+    assert forged_row["content_health"] == current_testimonium["payload"]["content_health"]
+    forged_row["attached"] = True
+    forged_row["attachment_basis"] = "presented-region"
+    forged_row["span"] = {"start": 0, "end": 0}
+    ordinal = forged["payload"]["attempt_ordinal"] + 1
+    forged["payload"]["attempt_ordinal"] = ordinal
+    forged["attempt_id"] = attempt_id(act_a1_id, "act-attachment", ordinal)
+    forged["artifact_id"] = artifact_id(
+        ATTESTATORES, "act-attachment", act_a1_id, forged["attempt_id"]
+    )
+    forged["self_hash"] = self_hash(
+        {key: value for key, value in forged.items() if key != "self_hash"}
+    )
+    recensor_tree.publish_artifact(forged)
+    _rebind_stage_seal(recensor_tree, ATTESTATORES)
+
+    recensor = invoke_stage(
+        recensor_root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py"
+    )
     assert recensor.returncode != 0
     assert "disagrees with the current Testimonium outcome" in recensor.stderr
 

@@ -29,6 +29,7 @@ from gold.core import (
     build_sample,
     build_sampling_draw,
     ingest_manual_pick,
+    load_run_frame,
     read_json,
     read_transcription_text,
     sample_stratified,
@@ -203,6 +204,33 @@ def test_same_page_bytes_at_two_ordinals_are_ranked_as_distinct_pages(tmp_path):
     misplaced = bind_instrument(by_ordinal[2], acts[0], _sha("e"), path)
     with pytest.raises(SchemaRefusal, match="contradictory custody.*Verify the act"):
         validate_corpus([*selected, *custody, misplaced], path)
+
+
+@pytest.mark.parametrize("ordinal", [0, -1])
+def test_load_run_frame_refuses_a_non_positive_source_page_ordinal(tmp_path, ordinal):
+    """A self-hashed run.json can assert any ordinal; RunTree.create refuses one
+    below 1, and load_run_frame must refuse the same forged record rather than
+    accept a page number no pipeline shard could ever own."""
+    pages = [{"ordinal": ordinal, "sha256": _sha("a"), "width": 100, "height": 200}]
+    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
+    page_digest = digest_bytes(canonical_bytes(source))
+    frame = {
+        "page_digest": page_digest,
+        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+        "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
+    }
+    record = {
+        "schema": "skeleton.v1",
+        "run_id": "gold-non-positive-ordinal",
+        "source_manifest": pages,
+        "corpus_frame_membership": frame,
+    }
+    record["self_hash"] = self_hash(record)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal, match="ordinal.*counted from one"):
+        load_run_frame(path)
 
 
 def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
@@ -2222,3 +2250,94 @@ def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
     layout["self_hash"] = self_hash(layout)
     with pytest.raises(SchemaRefusal, match="Regenerate.*act, non-act-text.*preserve"):
         validate_layout(layout)
+
+
+def test_the_gold_frame_is_derived_from_the_field_the_run_authority_binds(tmp_path):
+    """Gold must re-derive container membership from the run-bound computed digest."""
+    from common.contracts.canonical import digest_of
+    from common.runtree.store import RunTree
+
+    container = _sha("a")
+
+    def page(index: int) -> dict:
+        return {
+            "relative_path": "register.pdf",
+            "sha256": container,
+            "computed_sha256": digest_of(
+                {"container_sha256": container, "container_page_index": index}
+            ),
+            "ordinal": index + 1,
+        }
+
+    common = dict(
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+    tree = RunTree.create(tmp_path / "runs", "r1", source_manifest=[page(0), page(1)], **common)
+    frame, source = load_run_frame(tmp_path / "runs" / "r1" / "run.json")
+
+    assert frame == tree.read_run()["corpus_frame_membership"]
+    assert [row["sha256"] for row in source] == [
+        page(0)["computed_sha256"],
+        page(1)["computed_sha256"],
+    ]
+
+    single = RunTree.create(tmp_path / "single", "r1", source_manifest=[page(0)], **common)
+    assert single.read_run()["corpus_frame_membership"] != frame
+
+
+def test_two_runs_agreeing_only_on_their_declarations_are_two_frames(tmp_path):
+    """An untrusted shared declaration must not unify different inspected bytes."""
+    from common.runtree.store import RunTree
+
+    common = dict(
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+
+    def frame_of(root: str, computed: str) -> dict:
+        RunTree.create(
+            tmp_path / root,
+            "r1",
+            source_manifest=[
+                {
+                    "relative_path": "page.png",
+                    "sha256": _sha("a"),
+                    "computed_sha256": computed,
+                    "ordinal": 1,
+                }
+            ],
+            **common,
+        )
+        return load_run_frame(tmp_path / root / "r1" / "run.json")[0]
+
+    assert frame_of("shard-one", _sha("b")) != frame_of("shard-two", _sha("d"))
+    # Incidental run identity must not split identical inspected content.
+    assert frame_of("shard-three", _sha("b")) == frame_of("shard-four", _sha("b"))
+
+
+def test_gold_rederivation_honours_an_explicitly_absent_computed_digest(tmp_path):
+    """An unreadable page stores None, which means use its retained declaration."""
+    from common.runtree.store import RunTree
+
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": "unreadable.png",
+                "sha256": _sha("a"),
+                "computed_sha256": None,
+                "ordinal": 1,
+            }
+        ],
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+
+    frame, source = load_run_frame(tmp_path / "runs" / "r1" / "run.json")
+    assert frame == tree.read_run()["corpus_frame_membership"]
+    assert source == [{"ordinal": 1, "sha256": _sha("a")}]

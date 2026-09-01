@@ -22,6 +22,8 @@ from common.contracts.stages import ATTESTATORES, DESIGNATOR
 from common.runtree.store import RunTree
 from common.stage import latest_per_chair
 
+EXPECTED_MANIFEST_CALLS = 7
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -200,6 +202,242 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert attestatores.attempt_tally(tree)["count"] == 12
 
 
+def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, monkeypatch):
+    """A crash mid-pass resumes at the same ordinal, and the run still completes.
+
+    The injected exception comes *after* the normal writer has sealed the first
+    configured chair's Testimonium, so the next process meets a folder holding
+    immutable evidence, no stored inventory and no stage seal. It must repeat
+    the pass at its own ordinal rather than move the pairs it finds to a new
+    one: the sealed record is reused byte-for-byte, every pair ends at ordinal
+    one with no gap, and `latest_attempt` resolves for all of them.
+
+    Unit 2's per-pair resume ordinal was tried here and is what this test now
+    forbids. A page-scoped chair has no act-scoped attempt to repeat -- the
+    targeted reread refuses to mint one by name -- so taking the crashed pair
+    to ordinal 2 while the page Testimonium and the act attachment stayed at
+    ordinal 1 published a `not-run` over that chair's good `read`, dropped it
+    out of the act's witness coverage, and held the whole run at the Recensor.
+    The stage's own tally reported KNOWN throughout, which is why the assertion
+    below is the downstream one as well as the local one.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    writes = 0
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        nonlocal writes
+        real_publish(*args, **kwargs)
+        writes += 1
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+    assert writes == 1
+    first = _testimonia(tree)
+    assert len(first) == 1
+    assert first[0]["outcome"] == "read", "the crash must follow a configured chair response"
+    assert not tree.resolve(tree.manifest_path(ATTESTATORES)).exists()
+    monkeypatch.undo()
+
+    resumed = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+
+    assert resumed.returncode == 0, resumed.stderr
+    records = _testimonia(tree)
+    by_pair: dict[tuple[str, str], list[int]] = {}
+    for record in records:
+        key = (record["subject_id"], record["payload"]["chair"])
+        by_pair.setdefault(key, []).append(record["payload"]["attempt_ordinal"])
+    crashed_pair = (first[0]["subject_id"], first[0]["payload"]["chair"])
+    assert crashed_pair in by_pair
+    # Every pair, including the one the crash caught, at exactly ordinal one.
+    assert all(sorted(ordinals) == [1] for ordinals in by_pair.values()), by_pair
+    # The record the crashed invocation sealed was reused, never rewritten.
+    survivor = next(
+        record
+        for record in records
+        if (record["subject_id"], record["payload"]["chair"]) == crashed_pair
+    )
+    assert survivor == first[0]
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+    # The resumed folder is not merely self-consistent: it still reads as a
+    # complete witness layer to the stages that consume it. A resume that
+    # quietly cost one chair its coverage passed every check above.
+    for program in (
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
+        result = invoke_stage(run_root, "retention", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
+def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, monkeypatch):
+    """A changed second answer cannot collide because the second call never happens."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    real_resolve = attestatores.resolve_attempt
+    calls: dict[tuple[str, str], int] = {}
+
+    def changing_resolve(context, act, chair, resolved, declarations, *, reread=False):
+        key = (act["act_key"], chair)
+        calls[key] = calls.get(key, 0) + 1
+        attempt = real_resolve(
+            context,
+            act,
+            chair,
+            resolved,
+            declarations,
+            reread=reread,
+        )
+        if calls[key] > 1 and isinstance(attempt.native_payload, str):
+            changed = attempt.native_payload + " [different resumed decode]"
+            return attempt._replace(
+                native_payload=changed,
+                health=attestatores.content_health(changed, completed=True),
+            )
+        return attempt
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "resolve_attempt", changing_resolve)
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+
+    (sealed,) = _testimonia(tree)
+    sealed_key = (sealed["payload"]["act_key"], sealed["payload"]["chair"])
+    sealed_bytes = tree.resolve(
+        tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
+    ).read_bytes()
+
+    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
+    assert attestatores.main() == 0
+
+    # Preflight resolved every pair before the injected publication crash. On
+    # resume the unfinished pairs are resolved again and may honestly differ;
+    # the sealed pair alone is recovered from its retained record.
+    assert calls[sealed_key] == 1
+    assert all(count == 2 for key, count in calls.items() if key != sealed_key)
+    assert (
+        tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
+        ).read_bytes()
+        == sealed_bytes
+    )
+
+    # The resumed pairs honestly re-decoded and one text now departs from the
+    # other chairs' retained testimony, so the composed review semantics may
+    # legitimately hold the act rather than deliver it. What this test pins is
+    # the dedup above; downstream, the tree must stay consumable -- complete or
+    # visibly held, never a crash or a silent loss.
+    perlector = invoke_stage(run_root, "retention", "happy", "pipeline/4_perlector/run.py")
+    assert perlector.returncode == 0, f"perlector: {perlector.stderr}"
+    recensor = invoke_stage(run_root, "retention", "happy", "pipeline/5_recensor/run.py")
+    assert recensor.returncode in (0, 3), f"recensor: {recensor.stderr}"
+    if recensor.returncode == 0:
+        for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
+            result = invoke_stage(run_root, "retention", "happy", program)
+            assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
+def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_not_an_indexerror(
+    tmp_path, monkeypatch, capsys
+):
+    """A crash mid-pass, then a lost proposal crop before resume, must still
+    name the missing crop rather than die inside the tally.
+
+    The crash leaves one chair's `read` Testimonium sealed with no stored
+    inventory, so the resume revalidates it through
+    `validate_tallied_testimonium`. If that act's own proposal crop is gone by
+    the time the resume runs, the *current* pass cannot verify a region for it
+    either, so preflight seeds an empty cache entry for the act. Seeding that
+    empty list -- rather than seeding nothing -- used to suppress the tally's
+    own re-derivation and its named refusal, and `regions[0]` died with a bare
+    `IndexError` instead.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    real_proposed_regions = attestatores.proposed_regions
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+    (sealed,) = _testimonia(tree)
+    assert sealed["outcome"] == "read", "the crash must follow a configured chair response"
+    crashed_act_id = sealed["subject_id"]
+
+    def lost_crop(context, act_id):
+        if act_id == crashed_act_id:
+            raise attestatores.ContractError(
+                f"act {act_id} has no proposed region for a witness to read"
+            )
+        return real_proposed_regions(context, act_id)
+
+    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
+    monkeypatch.setattr(attestatores, "proposed_regions", lost_crop)
+
+    result = attestatores.main()
+
+    assert result == attestatores.EXIT_HELD
+    assert "has no proposed region for a witness to read" in capsys.readouterr().err
+    assert _testimonia(tree) == [sealed], "the held resume must not touch the sealed record"
+
+
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):
@@ -257,11 +495,13 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    # Exactly six scans are required: history index, prior-seal deletion check,
-    # the pre-close manifest the tally reconciles, the independent tally, the
-    # post-environment seal inventory, and the final manifest. The tally must run
-    # before the completion seal, while the seal must still bind environment bytes.
-    assert attestatores_manifest_calls == 6
+    # A fixed number of stage-level walks, measured on the composed tree: the
+    # history index, the whole-pass boundary check, the prior-seal deletion
+    # check, the pre-close manifest the tally reconciles, the independent
+    # tally, the post-environment seal inventory, and the final manifest.
+    # The exact count is empirical and pinned so completion evidence cannot
+    # quietly reintroduce a walk per act or chair.
+    assert attestatores_manifest_calls == EXPECTED_MANIFEST_CALLS
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
@@ -1398,6 +1638,159 @@ def test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashi
     assert "self-report could not be retained" in reason
     assert sum(record["outcome"] == "read" for record in records) == 5
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holding_the_pass(
+    tmp_path, monkeypatch
+):
+    """The Chandra branch of `resolve_attempt` is untrusted input too.
+
+    `attestator_1` is the fixture's Chandra chair: its `raw_response` string
+    takes a different path through `resolve_attempt` than every other chair's
+    declared `payload`, and that path used to call `format_capabilities_for`
+    unguarded and never checked `witness_reported` against the closed
+    confidence-ordinal set at all. A malformed declaration there raised
+    `SchemaRefusal` straight out of `resolve_attempt`, past the per-attempt
+    outcome vocabulary this stage otherwise guarantees, and held the *whole*
+    pass -- no Testimonium for any act or chair -- over one witness's bad
+    self-report, exactly the failure this stage's other untrusted-input guards
+    (e.g. `_MAX_NATIVE_DEPTH`) exist to prevent. This mirrors
+    `test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing`
+    for the chair that used to skip both checks entirely.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_testimony_for = attestatores.testimony_for
+
+    def combined_chandra_testimony(context, act_key, chair, ordinal):
+        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
+            return {
+                "payload": "SYNTHETIC ACT ONE alpha beta gamma",
+                "raw_response": (
+                    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
+                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
+                ),
+                "format_capabilities": "not an object",
+                "witness_reported": "\ud800",
+            }
+        return real_testimony_for(context, act_key, chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "testimony_for", combined_chandra_testimony)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    records = _testimonia(tree)
+    assert len(records) == 6
+    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert malformed["outcome"] == "failed"
+    # The native text a real witness sent is still retained as evidence -- only
+    # the untrustworthy self-report is discarded (GOVERNANCE 2, "kept, and
+    # demoted").
+    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
+    assert malformed["payload"]["format_capabilities"] is None
+    assert malformed["payload"]["witness_reported"] is None
+    assert malformed["payload"]["raw_response_ref"] is not None
+    reason = malformed["payload"]["reason"]
+    assert "format capabilities could not be retained" in reason
+    assert "self-report could not be retained" in reason
+    assert sum(record["outcome"] == "read" for record in records) == 5
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_chandra_malformed_confidence_alone_fails_one_attempt_and_keeps_capabilities(
+    tmp_path, monkeypatch
+):
+    """A closed-ordinal violation is refused even with valid format capabilities.
+
+    Distinct from the combined case above: this pins that `_confidence_problem`
+    is actually consulted for the Chandra branch (not merely reached alongside
+    a capabilities failure), and that a clean `format_capabilities` value
+    survives untouched when only the self-report is bad.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_testimony_for = attestatores.testimony_for
+
+    def bad_confidence_only(context, act_key, chair, ordinal):
+        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
+            return {
+                "payload": "SYNTHETIC ACT ONE alpha beta gamma",
+                "raw_response": (
+                    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
+                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
+                ),
+                "witness_reported": {"confidence": "extremely-confident"},
+            }
+        return real_testimony_for(context, act_key, chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "testimony_for", bad_confidence_only)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert malformed["outcome"] == "failed"
+    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
+    assert malformed["payload"]["format_capabilities"] == attestatores.DEFAULT_FORMAT_CAPABILITIES
+    assert malformed["payload"]["witness_reported"] is None
+    assert "self-report could not be retained" in malformed["payload"]["reason"]
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_validate_testimonium_payload_refuses_a_witness_reported_confidence_outside_the_closed_set():
+    """The shared envelope validator is the one both the writer and the crash
+    resume's `validate_tallied_testimonium` call -- so closing this here closes
+    it for both, including a retained record a resumed pass would otherwise
+    revalidate as fine and carry forward into a freshly published record."""
+    base = attestatores.testimonium_payload(
+        chair="attestator_1",
+        act_key="a1",
+        ordinal=1,
+        regions=[],
+        provenance={
+            "chair": "attestator_1",
+            "chair_state": "absent",
+            "absence": {"kind": "roster-omission", "reason": "not configured"},
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            "adapter_revision": "test",
+        },
+        format_capabilities=None,
+        native_payload=None,
+        witness_reported=None,
+        health=attestatores.no_response_health(reason="not-attempted"),
+        outcome="not-run",
+        reason="no attempt was made for this configured chair",
+    )
+    forged = {**base, "witness_reported": {"confidence": "extremely-confident"}}
+    with pytest.raises(SchemaRefusal, match="closed ordinal set"):
+        attestatores.validate_testimonium_payload(forged)
 
 
 def test_witness_metadata_cannot_rewrite_native_content_health():

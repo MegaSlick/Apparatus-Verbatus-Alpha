@@ -207,6 +207,11 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
                 "ordinal": source.ordinal,
+                **(
+                    {"computed_sha256": source.computed_sha256}
+                    if source.computed_sha256 is not None
+                    else {}
+                ),
                 **({"bytes": source.declared_size} if source.declared_size is not None else {}),
                 **(
                     {"ledger_sha256": source.ledger_sha256}
@@ -570,6 +575,56 @@ def test_pdf_cleanup_failure_does_not_mask_a_security_refusal(monkeypatch):
     assert refused.value.__notes__ == ["PDF cleanup also failed: corrupt: native cleanup failed"]
 
 
+def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
+    tmp_path,
+):
+    """Pre-render membership must distinguish pages sharing one container digest."""
+    pdf = two_page_pdf()
+    sources = expand_sources(
+        [{"relative_path": "scan.pdf", "sha256": digest_bytes(pdf), "bytes": len(pdf)}],
+        reader({"scan.pdf": pdf}),
+        POLICY,
+    )
+    assert len(sources) == 2
+    page_zero, page_one = sources
+    assert page_zero.declared_sha256 == page_one.declared_sha256
+    assert page_zero.container_page_index != page_one.container_page_index
+
+    membership_zero = door._membership_sha256(page_zero)
+    membership_one = door._membership_sha256(page_one)
+    assert membership_zero != membership_one
+    assert membership_zero != page_zero.declared_sha256
+    assert membership_one != page_one.declared_sha256
+
+    def source_manifest_for(source):
+        return [
+            {
+                "relative_path": source.declared_path,
+                "sha256": source.declared_sha256,
+                "computed_sha256": door._membership_sha256(source),
+                "ordinal": 1,
+                "bytes": source.declared_size,
+            }
+        ]
+
+    common_kwargs = dict(
+        config_digest="c" * 64,
+        adapter_recipes=RECIPES,
+        witness_chairs=CHAIRS,
+        ingress=synthetic_fixture_ingress_record(),
+    )
+    shard_a = RunTree.create(
+        tmp_path / "shard-a", "r1", source_manifest=source_manifest_for(page_zero), **common_kwargs
+    )
+    shard_b = RunTree.create(
+        tmp_path / "shard-b", "r1", source_manifest=source_manifest_for(page_one), **common_kwargs
+    )
+    assert (
+        shard_a.read_run()["corpus_frame_membership"]
+        != shard_b.read_run()["corpus_frame_membership"]
+    )
+
+
 def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
@@ -758,9 +813,9 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
     digest the door itself computed instead."""
     data, other = png(3, 2), png(4, 2)
     sources = [
-        SourceEntry(1, "undeclared-a.png", None),
-        SourceEntry(2, "undeclared-b.png", None),
-        SourceEntry(3, "distinct.png", None),
+        SourceEntry(1, "undeclared-a.png", None, computed_sha256=digest_bytes(data)),
+        SourceEntry(2, "undeclared-b.png", None, computed_sha256=digest_bytes(data)),
+        SourceEntry(3, "distinct.png", None, computed_sha256=digest_bytes(other)),
     ]
     tree, context = open_door(tmp_path, sources)
     assert (
@@ -1925,13 +1980,17 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
         door.pdf_render.close_document(opened_original)
 
     original_digest_stream = door._source_digest_stream
-    replacements = 0
+    digest_passes = 0
 
     def replace_the_name_the_moment_its_digest_is_taken(handle):
-        nonlocal replacements
+        nonlocal digest_passes
         result = original_digest_stream(handle)
-        os.replace(replacement_path, source / "register.pdf")
-        replacements += 1
+        digest_passes += 1
+        # The first pass binds membership during expansion. The second is the
+        # descriptor PDFium will render during admission; replace the pathname at
+        # that exact point and prove the held descriptor still supplies the pixels.
+        if digest_passes == 2:
+            os.replace(replacement_path, source / "register.pdf")
         return result
 
     monkeypatch.setattr(
@@ -1951,7 +2010,7 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
     )
 
     record = admissions(RunTree(approved / "runs", "one-descriptor-pdf"))[1]
-    assert replacements == 1
+    assert digest_passes == 2
     assert (source / "register.pdf").read_bytes() == replacement
     assert record["outcome"] == "admitted"
     assert record["payload"]["admitted_source_sha256"] == digest_bytes(original)
@@ -4269,3 +4328,189 @@ def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_ge
         )
     assert expanded == []
     assert not (run_root / "pre-repair").exists()
+
+
+def test_a_lying_ledger_cannot_seal_two_different_rasters_into_one_membership(tmp_path):
+    """Membership seals before admission can refuse a false ledger declaration."""
+    first, second = png(6, 4), png(8, 5)
+    assert first != second
+    lie = digest_bytes(b"a digest neither page has")
+
+    def membership_for(data: bytes) -> str | None:
+        (source,) = expand_sources(
+            [{"relative_path": "page.png", "sha256": lie, "bytes": len(data)}],
+            reader({"page.png": data}),
+            POLICY,
+        )
+        assert source.declared_sha256 == lie, "the declaration is retained as evidence"
+        assert source.computed_sha256 == digest_bytes(data)
+        return door._membership_sha256(source)
+
+    assert membership_for(first) != membership_for(second)
+    assert membership_for(first) == digest_bytes(first)
+    # Membership excludes incidental run identity.
+    assert membership_for(first) == membership_for(png(6, 4))
+
+
+def test_a_source_with_no_declaration_still_makes_an_honest_membership_claim(tmp_path):
+    """Admission permits no declaration, so membership must use the inspected digest."""
+    data = png(6, 4)
+    (source,) = expand_sources(
+        [{"relative_path": "undeclared.png", "sha256": None}],
+        reader({"undeclared.png": data}),
+        POLICY,
+    )
+    assert source.declared_sha256 is None
+    assert door._membership_sha256(source) == digest_bytes(data)
+
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": source.declared_path,
+                "sha256": source.declared_sha256,
+                "computed_sha256": door._membership_sha256(source),
+                "ordinal": source.ordinal,
+            }
+        ],
+        config_digest="c" * 64,
+        adapter_recipes=RECIPES,
+        witness_chairs=CHAIRS,
+        ingress=synthetic_fixture_ingress_record(),
+    )
+    assert tree.read_run()["corpus_frame_membership"]["page_digest"]
+
+
+def test_a_source_too_large_to_read_binds_no_digest_it_never_took(tmp_path):
+    """The over-ceiling prefix cannot identify the complete source.
+
+    The page keeps its ordinal and declared digest so admission can refuse it by
+    name without dropping it from the denominator.
+    """
+    declared = digest_bytes(b"whatever the ledger says")
+    (source,) = expand_sources(
+        [{"relative_path": "huge.png", "sha256": declared, "bytes": MAX_SOURCE_BYTES + 1}],
+        reader({"huge.png": png(6, 4)}),
+        POLICY,
+    )
+    assert source.computed_sha256 is None
+    assert door._membership_sha256(source) == declared
+
+
+def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(tmp_path):
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    first = single_gray_page_pdf()
+    second = content_page_pdf(b"", width=144, height=72)
+    (folder / "first.pdf").write_bytes(first)
+    (folder / "second.pdf").write_bytes(second)
+    lie = digest_bytes(b"neither PDF")
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    expanded = []
+    for name in ("first.pdf", "second.pdf"):
+        (source,) = expand_sources(
+            [{"relative_path": name, "sha256": lie, "bytes": (folder / name).stat().st_size}],
+            unexpected_reader,
+            POLICY,
+            open_source=open_source,
+        )
+        expanded.append(source)
+
+    assert [source.computed_sha256 for source in expanded] == [
+        digest_bytes(first),
+        digest_bytes(second),
+    ]
+    assert door._membership_sha256(expanded[0]) != door._membership_sha256(expanded[1])
+
+
+def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(tmp_path):
+    """The Door streams a real PDF twice, and only the second stream can see this.
+
+    The raster case is covered above. A streamed PDF takes a different admission
+    path -- it is never read into one bytes object -- and that path re-streams
+    the file rather than reusing the digest `expand_sources` computed. Without
+    this test that re-stream was not measured anywhere: replacing it with the
+    already-recorded expansion digest left the whole suite green, because a
+    stale digest necessarily equals the seal it was itself sealed from, so the
+    comparison passed on bytes nobody had looked at since. Replacing the file
+    between the two streams is the only thing that separates them.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    sealed = single_gray_page_pdf()
+    (folder / "reel.pdf").write_bytes(sealed)
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    (source,) = expand_sources(
+        [
+            {
+                "relative_path": "reel.pdf",
+                "sha256": digest_bytes(sealed),
+                "bytes": len(sealed),
+            }
+        ],
+        unexpected_reader,
+        POLICY,
+        open_source=open_source,
+    )
+    assert source.computed_sha256 == digest_bytes(sealed)
+    tree, context = open_door(tmp_path, [source])
+
+    # The swap happens after membership is sealed and before admission reads,
+    # and it keeps the byte length exactly. A replacement of a different size is
+    # refused by the size comparison beside the digest, which would let this test
+    # pass over a Door that had stopped re-hashing entirely; same-length bytes
+    # leave the digest as the only thing that can tell the two files apart.
+    replacement = bytearray(sealed)
+    replacement[-20] ^= 0xFF
+    replaced = bytes(replacement)
+    assert len(replaced) == len(sealed)
+    assert digest_bytes(replaced) != digest_bytes(sealed)
+    (folder / "reel.pdf").write_bytes(replaced)
+
+    assert (
+        process_sources(
+            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+        )
+        == 0
+    )
+    context.finish(DOOR)
+
+    refusal = admissions(tree)[1]
+    assert refusal["outcome"] == "refused"
+    assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+    # Named, not merely categorised. Three consecutive guards raise this same
+    # reason code -- the ledger byte count, the sealed membership, and the
+    # declared digest -- so the code alone would not say which one saw the swap.
+    assert "shard membership was sealed" in refusal["payload"]["reason"]
+
+
+def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
+    before, after = png(6, 4), png(8, 5)
+    sealed_digest = digest_bytes(before)
+    source = SourceEntry(
+        1,
+        "page.png",
+        None,
+        computed_sha256=sealed_digest,
+    )
+    tree, context = open_door(tmp_path, [source])
+
+    assert process_sources(context, tree, [source], reader({"page.png": after}), policy=POLICY) == 0
+    context.finish(DOOR)
+
+    refusal = admissions(tree)[1]
+    assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+    assert "shard membership was sealed" in refusal["payload"]["reason"]

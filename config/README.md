@@ -22,6 +22,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
+| `decoding.toml` | temperature-zero record readings and the labelled variance experiment's seed and pass count |
 
 ## R4 toggle register
 
@@ -209,7 +210,7 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 `recovery.toml` travels as `StageContext.recovery_policy`, `formats.toml` as
 `StageContext.armarium_formats`.
 
-Sealed names today: `designator-padding`, `designator-geometry`, `alignment`,
+Sealed names today: `designator-padding`, `designator-geometry`, `alignment`, `decoding`,
 `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`, `pdf-render`,
 `recovery`, `hard-failure`, and — on real ingress only, because the fixture route is
 not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's

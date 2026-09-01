@@ -40,6 +40,7 @@ from common.runtree.store import (
     RECEIPTS_DIR,
     RUN_FILE,
     RunTree,
+    _default_corpus_frame_membership,
 )
 
 PAGE_BYTES = b"synthetic page one"
@@ -294,6 +295,41 @@ def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
             make_run(tmp_path, source_manifest=[{"relative_path": "p.png", **bad}])
 
 
+def test_a_source_page_ordinal_below_one_is_refused(tmp_path):
+    """An ordinal is a page number, and page numbers start at one here.
+
+    The integer check above accepts 0 and -1, which every producer in this tree
+    is incapable of writing: the Door increments before it assigns, and the
+    fixture declarations follow it. Accepting one anyway seals it into the
+    corpus frame membership, which gold re-derives from the same field, so the
+    run would carry a page numbering nothing else in the system shares.
+
+    Each row below is otherwise well formed, so the ordinal is the only thing
+    the refusal can be about, and the message names the offending values rather
+    than only the rule -- an operator holding a hand-built manifest needs to
+    know which row to fix.
+    """
+    for bad_ordinal in (0, -1, -12):
+        with pytest.raises(SchemaRefusal, match="counted from one"):
+            make_run(
+                tmp_path,
+                source_manifest=[
+                    {"relative_path": "p.png", "sha256": "a" * 64, "ordinal": bad_ordinal}
+                ],
+            )
+
+    # A good row beside a bad one is still refused: the check is over the
+    # manifest, not over whichever row happens to be read first.
+    with pytest.raises(SchemaRefusal, match=r"ordinal\(s\) \[0\]"):
+        make_run(
+            tmp_path,
+            source_manifest=[
+                {"relative_path": "p1.png", "sha256": "a" * 64, "ordinal": 1},
+                {"relative_path": "p0.png", "sha256": "b" * 64, "ordinal": 0},
+            ],
+        )
+
+
 def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
     """Invariant #14: the refusals above must not have bought their strictness by
     refusing good input too."""
@@ -303,6 +339,104 @@ def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
     ]
     tree = make_run(tmp_path, source_manifest=fine)
     assert [page["ordinal"] for page in tree.read_run()["source_manifest"]] == [1, 2]
+
+
+def test_door_computed_page_digests_distinguish_shards_with_the_same_ordinals(tmp_path):
+    """Membership is about inspected bytes, not an ordinal-shaped page set."""
+    first = make_run(
+        tmp_path / "first",
+        source_manifest=[
+            {
+                "relative_path": "first.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    second = make_run(
+        tmp_path / "second",
+        source_manifest=[
+            {
+                "relative_path": "second.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "c" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    assert (
+        first.read_run()["corpus_frame_membership"] != second.read_run()["corpus_frame_membership"]
+    )
+
+
+def test_door_computed_page_digests_agree_for_the_same_bytes_at_the_same_ordinal(tmp_path):
+    """Run identity and source path must not salt otherwise identical membership."""
+    first = make_run(
+        tmp_path / "first",
+        run_id="shard-one",
+        source_manifest=[
+            {
+                "relative_path": "first.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    second = make_run(
+        tmp_path / "second",
+        run_id="shard-two",
+        source_manifest=[
+            {
+                "relative_path": "second.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    assert (
+        first.read_run()["corpus_frame_membership"] == second.read_run()["corpus_frame_membership"]
+    )
+
+
+def test_membership_refuses_a_page_with_no_digest_of_any_kind(tmp_path):
+    with pytest.raises(SchemaRefusal, match="inspected or declared sha256"):
+        make_run(tmp_path, source_manifest=[{"relative_path": "page.png", "ordinal": 1}])
+
+
+def test_membership_uses_the_declaration_when_computed_digest_is_explicitly_absent(tmp_path):
+    manifest = [
+        {
+            "relative_path": "unreadable.png",
+            "sha256": "a" * 64,
+            "computed_sha256": None,
+            "ordinal": 1,
+        }
+    ]
+    tree = make_run(tmp_path, source_manifest=manifest)
+    without_optional_field = [
+        {key: value for key, value in manifest[0].items() if key != "computed_sha256"}
+    ]
+    assert tree.read_run()["corpus_frame_membership"] == _default_corpus_frame_membership(
+        without_optional_field
+    )
+
+
+def test_a_caller_cannot_name_a_frame_its_own_pages_do_not_derive(tmp_path):
+    """A caller-supplied membership would bypass derivation from the source pages."""
+    with pytest.raises(TypeError):
+        make_run(
+            tmp_path / "asserted",
+            corpus_frame_membership={
+                "frame_digest": "d" * 64,
+                "page_digest": "e" * 64,
+                "seed": "f" * 64,
+            },
+        )
+    tree = make_run(tmp_path / "derived")
+    assert tree.read_run()["corpus_frame_membership"] == _default_corpus_frame_membership(SOURCE)
 
 
 def test_reusing_a_run_id_with_changed_config_is_refused(tmp_path):

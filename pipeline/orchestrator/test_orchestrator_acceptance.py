@@ -50,6 +50,7 @@ from common.contracts.stages import (
 )
 from common.contracts.uncertainty import from_perlectio
 from common.fixture_identity import page_identity
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
@@ -1035,6 +1036,26 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # absence as `unresolved`; a Designator hold records `None`. The happy tree
 # remains 98 files at exit 0. This digest was reproduced twice from independent
 # canonical run-id `r` trees through `semantic_snapshot_digest`.
+# Unit 2 re-pin: `config/decoding.toml` is sealed into every run's
+# `config_digest`, so both scenario trees legally move without gaining an
+# artifact. Happy remains 97 files and exit 0. The value below was measured
+# twice in independent roots, rid "r", via this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Re-measured unchanged at Unit 2's audit seat, after the whole-pass resume
+# reverted to one shared ordinal and the Perlector's reading ordinal went back
+# to its crop-history derivation. Neither revert touches an orchestrated tree:
+# on a clean run there is no prior attempt for either derivation to diverge
+# over, which is a measurement here and not an inference -- twice more, in two
+# further independent roots at rid "r", through the same two helpers.
+# Unit 8 re-pin: the Door's computed per-page membership digests now bind the
+# inspected source bytes into sealed run authority, rather than permitting two
+# genuinely different page sets that share ordinals to name one membership.  The
+# per-shard cap's explanatory comment is likewise sealed configuration, so its
+# clarified wording also enters `config_digest` and run authority.  These are
+# both intended semantic consequences of Unit 8's named deliverable.  Happy
+# (97 files, exit 0) and review (106 files, exit 3) were each measured twice,
+# in independent temporary roots, at canonical run id "r", through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers.
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -1218,10 +1239,39 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
 # exited 3, and both roots agreed exactly.
+# Unit 2 re-pin: see the happy entry above. `decoding.toml` changes this
+# run's sealed `config_digest`, not its artifact count or exit: review remains
+# 106 files / exit 3. Measured twice in independent roots, rid "r", through
+# this module's own helpers.
+# Re-pinned at this merge (2 onto the composed pr tree): `config/decoding.toml`
+# joins every run's sealed config_digest, moving both digests while adding no
+# artifact -- counts hold at 96/0 and 107/3. Measured twice at two independent
+# run roots through this module's own helpers at canonical run id "r".
+
+# Cascade re-pin (pr/13's tip 41910e592f merged into pr/14): every entry above is
+# in this tree at once. This branch adds `config/decoding.toml` to the sealed
+# `config_digest` and the incoming chain adds its inputs-binding checks, the
+# hold-cause gate and denominator, the iterative preference screens, the
+# merged-grid continuation fix and the coverage anti-picker screen. None of that
+# adds or removes an artifact, so the counts hold at happy 96 / exit 0 and
+# review 107 / exit 3, and neither side's digest literals describe this tree --
+# both were measured before the other's change existed. The two literals below
+# were re-measured here on the merged tree, twice in independent temporary roots
+# through this module's own `orchestrate` and `semantic_snapshot_digest` at
+# canonical run id "r".
+#
+# Cascade re-pin (pr/13's final tip b444ecce20 merged into pr/14, after pr/13's
+# three GitHub review rounds): counts hold at 96/107 — neither side's review
+# edits added or removed a snapshot file — and both digests move again, because
+# this branch's `decoding.toml` seal and pr/13's sealed-byte edits each change
+# the trees the other side measured. Re-measured on this merged tree, twice, in
+# two independent temporary roots through this module's own `orchestrate` and
+# `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
+# exited 3, and both roots agreed exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "69c630be118bcb5ec354c1f7f0c35895152cd31c9cd6a1b7d714774b3897c0a9"
-REVIEW_RUN_TREE_DIGEST = "a3c5331cc993c94de3f68ed946bb330d8aa6f7bdbd153a2ddec3a048a2a76256"
+HAPPY_RUN_TREE_DIGEST = "0db78cb02752dba8eb2cb205913ccfd6af71cbe35b689e3d57c400538754f4b2"
+REVIEW_RUN_TREE_DIGEST = "b5e2a1757bbd3915a09c607855f7c1a1958d49e9da81de1f4d2a78fb16d3976d"
 
 
 def orchestrate(
@@ -1424,6 +1474,10 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         # while handing every stage a path that is not there. The neighbouring
         # literals predate this branch and are left as they are.
         serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+        # `invoke` reads this by name like every sibling flag (the getattr
+        # fallback that once papered over its absence here is gone), so the
+        # stand-in must carry it or it is not the argv surface it mirrors.
+        decoding_config=ROOT / "config" / "decoding.toml",
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
@@ -1894,6 +1948,47 @@ def snapshot(root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def file_identities(root: Path) -> dict[str, tuple[int, int]]:
+    """The device and inode of every file, which is what distinguishes reuse.
+
+    A digest cannot tell a reused artifact from one deleted and rewritten with
+    the same bytes, so a test that only compares digests proves the tree is
+    right and says nothing about the claim in its own name (GOVERNANCE 10).
+    Identity can tell them apart: `RunTree` publishes through a temporary that
+    is then `os.link`-ed or `os.replace`-d into place, so every write lands a
+    *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
+    and the receipt's equal-bytes short circuit) return without touching the
+    file at all. The device is carried beside the inode because inode numbers
+    are only unique within a filesystem.
+    """
+    return {
+        str(path.relative_to(root)): (path.stat().st_dev, path.stat().st_ino)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+DERIVED_INVENTORY_SUFFIXES = (
+    "/manifest.json",
+    "/manifest-door.json",
+    "/index.json",
+    "run-health/recensor-partition-receipt.json",
+)
+
+
+def is_immutable_evidence(path: str) -> bool:
+    """Whether a path is evidence, as against a derived inventory or receipt.
+
+    A resume legitimately rebuilds the inventories and current-state receipts
+    that *name* the evidence -- appending to a tree changes what the manifest
+    lists, so republishing it is the append, not a rewrite. The evidence those
+    inventories name is immutable, and it is the only thing whose identity a
+    resume may not disturb. `test_volume_hosted_run_tree` drew this same line
+    for the same reason; it is named here so both tests draw it identically.
+    """
+    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
 
 
 def _sqlite_logical_digest(data: bytes) -> str:
@@ -5171,16 +5266,114 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     for stage_directory in ("4_perlector", "5_recensor", "6_archetypus", "7_armarium"):
         shutil.rmtree(root / "r" / stage_directory)
     survivors = snapshot(root)
+    survivor_identities = file_identities(root)
     assert len(survivors) < len(complete)
 
     assert orchestrate(root, "r", "happy").returncode == 0
     resumed = snapshot(root)
+    resumed_identities = file_identities(root)
 
     # Everything that survived is byte-identical: resume reused it rather than
     # redoing it. And the finished tree is identical to the uninterrupted one.
     for path, digest in survivors.items():
+        # Membership first, or a deleted survivor reports as a bare KeyError
+        # that reads like a broken test rather than a page that left the run.
+        assert path in resumed, f"resume deleted surviving evidence at {path}"
         assert resumed[path] == digest, f"{path} was rewritten on resume"
+    # Byte-identity alone cannot tell reuse from an identical rewrite, which is
+    # the whole claim in this test's name. Every publication mints a new inode,
+    # so an unchanged one is proof the evidence was never republished.
+    checked = 0
+    for path, identity in survivor_identities.items():
+        if not is_immutable_evidence(path):
+            continue
+        checked += 1
+        assert path in resumed_identities, f"resume deleted surviving evidence at {path}"
+        assert resumed_identities[path] == identity, (
+            f"{path} kept its bytes but was republished on resume"
+        )
+    assert checked, "the identity check ran over no evidence at all"
     assert resumed == complete
+
+
+def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(tmp_path):
+    """Resume must preserve held work, recovery rounds, and incident-based tallying."""
+    policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
+
+    reference_root = tmp_path / "reference"
+    assert orchestrate(reference_root, "r", "review").returncode == 3
+    reference = snapshot(reference_root)
+    reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
+
+    # Every boundary that leaves a partial tree. `armarium` is deliberately not
+    # here: it is the last operation in the sequence, so stopping at it is the
+    # whole run and there is nothing partial left to resume from -- the
+    # `len(survivors) < len(reference)` premise below would be false, and the
+    # case it would test is the rerun invariant, which section 2 already covers.
+    # Everything before it is included, and the ones after the Perlector matter
+    # most: the recovery round and the held-act tally both live there.
+    # The expected exit is part of the case, not a constant. The `review`
+    # scenario holds an act, and the Recensor is what decides that, so a range
+    # ending before it completes cleanly at 0 while one ending at or after it
+    # reports the hold at 3 -- the same status the whole run ends on. Asserting a
+    # flat 0 would have made every later boundary unreachable and is what kept
+    # this loop stopping at the Perlector.
+    for stop_at, partial_exit in (
+        ("door", 0),
+        ("exemplar", 0),
+        (INK_MAP, 0),
+        ("designator", 0),
+        (ATTESTATORES, 0),
+        ("perlector", 0),
+        ("recensor", 3),
+        ("recovery", 3),
+        ("archetypus", 3),
+    ):
+        root = tmp_path / f"stopped-at-{stop_at}"
+        partial = subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATOR),
+                "--fixture",
+                FIXTURE,
+                "--scenario",
+                "review",
+                "--run-id",
+                "r",
+                "--run-root",
+                str(root),
+                "--from",
+                "door",
+                "--to",
+                stop_at,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert partial.returncode == partial_exit, partial.stderr
+        survivors = snapshot(root)
+        survivor_identities = file_identities(root)
+        assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
+        assert len(survivors) < len(reference)
+
+        assert orchestrate(root, "r", "review").returncode == 3
+        resumed = snapshot(root)
+        resumed_identities = file_identities(root)
+        assert resumed == reference, f"resuming after {stop_at} did not land on the same tree"
+        # The tree being right does not mean the resume reused what it found; a
+        # stage that redid its work and wrote the same bytes lands the same tree.
+        # The inode is what separates the two.
+        checked = 0
+        for path, identity in survivor_identities.items():
+            if not is_immutable_evidence(path):
+                continue
+            checked += 1
+            assert resumed_identities[path] == identity, (
+                f"resuming after {stop_at} republished {path} instead of reusing it"
+            )
+        assert checked, f"stopping at {stop_at} left no evidence to check the identity of"
+        assert tally_hard_failures(RunTree(root, "r"), policy) == reference_tally
 
 
 # --- 5. The review scenario preserves the whole history ------------------------

@@ -94,6 +94,7 @@ from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import read_register_file  # noqa: E402
+from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
@@ -138,6 +139,29 @@ class SourceEntry(NamedTuple):
     triage_row: dict[str, Any] | None = None
     triage_part_index: int | None = None
     source_frame_index: int | None = None
+    # Computed during expansion so membership binds inspected bytes before the
+    # run seals. Unreadable and oversized sources retain None and their ordinal.
+    computed_sha256: str | None = None
+
+
+def _membership_sha256(source: SourceEntry) -> str | None:
+    """The digest one page binds into shard membership.
+
+    Membership prefers inspected bytes because ledger declarations remain
+    untrusted until admission, after the run authority seals. Container pages
+    additionally bind their index because they share one whole-file digest and
+    their decoded page digests do not exist yet. Unreadable and oversized
+    sources fall back to their declaration so their ordinals remain visible.
+    """
+    inspected = source.computed_sha256 or source.declared_sha256
+    if inspected is None or source.container_page_index is None:
+        return inspected
+    return digest_of(
+        {
+            "container_sha256": inspected,
+            "container_page_index": source.container_page_index,
+        }
+    )
 
 
 class _Decision(NamedTuple):
@@ -729,7 +753,10 @@ def expand_sources(
             ledger_sha256: str | None = ledger_sha256,
             bound_triage_row: dict[str, Any] | None = triage_row,
             triage_part_index: int | None = None,
+            source_frame_index: int | None = None,
+            computed_sha256: str | None = None,
         ) -> None:
+            """Bind row fields before the next loop iteration can reassign them."""
             nonlocal ordinal
             ordinal += 1
             sources.append(
@@ -743,26 +770,34 @@ def expand_sources(
                     detected_format,
                     bound_triage_row,
                     triage_part_index,
-                    0 if bound_triage_row is not None else None,
+                    source_frame_index
+                    if source_frame_index is not None
+                    else (0 if bound_triage_row is not None else None),
+                    computed_sha256,
                 )
             )
 
         def append_refused_source(
             detected_format: str | None,
             bound_triage_row: dict[str, Any] | None = triage_row,
+            computed_sha256: str | None = None,
         ) -> None:
             """Keep the manifest's declared post-split denominator on early failure."""
             if bound_triage_row is None:
-                append(None, detected_format)
+                append(None, detected_format, computed_sha256=computed_sha256)
                 return
             for part_index in range(len(bound_triage_row["split"]["parts"])):
                 append(
                     part_index,
                     detected_format,
                     triage_part_index=part_index,
+                    source_frame_index=0,
+                    computed_sha256=computed_sha256,
                 )
 
         data: bytes | None = None
+        # None means this pass read no complete source and must not claim it did.
+        computed: str | None = None
         try:
             if open_source is not None:
                 # A real source is classified from the same descriptor-relative
@@ -770,6 +805,20 @@ def expand_sources(
                 # reconstructed from the ledger would have a replacement window.
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
+                    if detected == "pdf":
+                        # Streamed PDFs are not loaded into `data`, but their
+                        # inspected identity must exist before membership seals.
+                        # This is the first of the Door's two streams over a real
+                        # PDF. It binds membership to the bytes actually inspected,
+                        # while `run.json` does not exist yet; `process_sources`
+                        # streams the file again at admission to prove those bytes
+                        # did not move after the seal. Neither pass can be dropped
+                        # in favour of the other, and each has its own test:
+                        # `test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie`
+                        # for this one, and
+                        # `test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed`
+                        # for the second.
+                        computed, _ = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
                 # A caller with no anchored opener supplies bytes directly; there is
@@ -792,6 +841,10 @@ def expand_sources(
         if data is not None and len(data) > MAX_SOURCE_BYTES:
             append_refused_source(detected)
             continue
+        if data is not None:
+            # `read_bytes` returns only a prefix above the ceiling; never bind it
+            # as though it identified the complete source.
+            computed = digest_bytes(data)
         if triage_rows is not None:
             assert triage_row is not None
             if data is None or detected == "pdf":
@@ -808,7 +861,7 @@ def expand_sources(
                 # manifest already declares how many pages this frame contributes.
                 # Retain one refused ordinal per part so the immutable denominator
                 # and configured post-split cap do not undercount a broken frame.
-                append_refused_source(detected)
+                append_refused_source(detected, computed_sha256=computed)
                 continue
             if frame_count != 1:
                 raise ContractError(
@@ -822,6 +875,8 @@ def expand_sources(
                     part_index,
                     detected,
                     triage_part_index=part_index,
+                    source_frame_index=0,
+                    computed_sha256=computed,
                 )
             continue
         try:
@@ -835,19 +890,19 @@ def expand_sources(
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
-                append(None, detected)
+                append(None, detected, computed_sha256=computed)
                 continue
-            append(0, detected)
+            append(0, detected, computed_sha256=computed)
             continue
         # PDF/TIFF are declared page containers even when there is one page. For
         # every other decoder-backed image, a reported multi-frame source is also
         # fanned out. Retaining an animation as one raster would silently drop all
         # but frame zero downstream; one-frame rasters retain their original bytes.
         if route != admission.RENDER_PAGES and page_count == 1:
-            append(None, detected)
+            append(None, detected, computed_sha256=computed)
             continue
         for page_index in range(page_count):
-            append(page_index, detected)
+            append(page_index, detected, computed_sha256=computed)
     if triage_rows is not None and triage_clusters is not None:
         named_clusters = {
             row["re_shoot_cluster_id"]
@@ -1003,8 +1058,14 @@ def process_sources(
     """Admit or refuse every declared source. Returns the count admitted.
 
     `read_bytes` is called once per distinct raster path within this call. A real
-    PDF is different: its digest is streamed once, then PDFium holds one native
-    descriptor-anchored document handle while every fanned page renders from it.
+    PDF is different: its digest is streamed once *here*, then PDFium holds one
+    native descriptor-anchored document handle while every fanned page renders
+    from it. Once here, not once in the Door: `expand_sources` already streamed
+    the same file to bind its shard membership, before `run.json` existed. That
+    is deliberate rather than redundant -- this second stream is the only thing
+    that can see bytes replaced after the seal, and it is what the
+    `computed_sha256` comparison below refuses on. A reader who takes the
+    earlier digest as sufficient and removes this one deletes that refusal.
     This lets a reel be larger than available Python memory without losing its
     page ordinals or filename ledger link, and prevents a pathname replacement
     from separating the digest from the pixels that are sealed.
@@ -1156,6 +1217,19 @@ def process_sources(
                         RefusalReason.DIGEST_MISMATCH,
                         f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
                         "were recorded in its filename ledger",
+                    ),
+                )
+                continue
+
+            if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.reason(
+                        RefusalReason.DIGEST_MISMATCH,
+                        f"computed {actual_digest} at admission, but shard membership was "
+                        f"sealed from {source.computed_sha256} during source expansion",
                     ),
                 )
                 continue
@@ -1790,6 +1864,7 @@ def fixture_submission(args, registry) -> int:
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
         serving_recipes_config_path=args.serving_recipes_config,
+        decoding_config_path=args.decoding_config,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
@@ -1804,6 +1879,10 @@ def fixture_submission(args, registry) -> int:
             {
                 "relative_path": page["path"],
                 "sha256": declared[page["ordinal"]],
+                # The fixture declaration's digest is checked against these
+                # bytes by the Door.  Bind that computed page-set identity
+                # separately so shard membership never collapses to ordinals.
+                "computed_sha256": page["sha256"],
                 "ordinal": page["ordinal"],
             }
             for page in pages
@@ -1981,6 +2060,7 @@ def real_submission(args, registry) -> int:
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
+        decoding_config_path=args.decoding_config,
         draft_fed=args.draft_fed,
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
@@ -2011,6 +2091,8 @@ def real_submission(args, registry) -> int:
             {
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
+                # Membership seals before the ledger declaration is checked.
+                "computed_sha256": _membership_sha256(source),
                 "ordinal": source.ordinal,
                 "bytes": source.declared_size,
                 "ledger_sha256": source.ledger_sha256,
@@ -2164,6 +2246,7 @@ def _real_bindings(
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
+    decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
     draft_fed: bool = True,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -2213,6 +2296,7 @@ def _real_bindings(
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
+    _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
@@ -2296,6 +2380,7 @@ def _real_bindings(
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
+                "decoding_config_sha256": decoding_config_sha256,
                 "models": models.to_record(),
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed
@@ -2338,6 +2423,7 @@ def _real_bindings(
             "designator-geometry": designator_geometry_config_sha256,
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
+            "decoding": decoding_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
             "perlector-audit": perlector_audit_config_sha256,
             "pdf-render": pdf_render_config_sha256,

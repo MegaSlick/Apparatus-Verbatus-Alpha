@@ -1,3 +1,10 @@
 # R0's sealed shard boundary. A shard is a bounded failure/accounting unit, not
 # a selection mechanism: every supplied page remains in its recorded frame.
+#
+# Tyrel's 2026-08-05 hard-failure ruling measures "more than 2 failures within
+# a 1000 page run". A shard is exactly that capped run, so the hard-failure
+# tally is deliberately per shard: each independently sealed run retains its
+# own warning/stop boundary. Cross-shard continuations and clusters are held
+# visibly for Recensor reconciliation; they do not merge run trees or turn the
+# ruled per-run tally into an unbounded corpus-wide counter.
 max_pages_per_shard = 1000
