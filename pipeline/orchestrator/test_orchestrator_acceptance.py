@@ -1474,6 +1474,10 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         # while handing every stage a path that is not there. The neighbouring
         # literals predate this branch and are left as they are.
         serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+        # `invoke` reads this by name like every sibling flag (the getattr
+        # fallback that once papered over its absence here is gone), so the
+        # stand-in must carry it or it is not the argv surface it mirrors.
+        decoding_config=ROOT / "config" / "decoding.toml",
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
