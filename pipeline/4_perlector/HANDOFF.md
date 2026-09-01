@@ -506,9 +506,9 @@ records, and `common/perlector_audit.py::validate_chain` is the single
 cross-record validation the producer and the Recensor both run:
 
 ```text
-kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_id,
-                       round_cap, policy, flags}
-kind="audit-finding"  {act_key, attempt_ordinal, page_id, round_cap, policy,
+kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_ids,
+                       round_cap, policy, flags, flag_location_basis}
+kind="audit-finding"  {act_key, attempt_ordinal, page_ids, round_cap, policy,
                        flags, change_record, uncertain_spans, unresolved}
 payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
                        reproofs, request_digest}
@@ -591,7 +591,7 @@ test that fails if the two ever part again.
   by Recensor's own bounded recovery loop (already never a pick).
 - **No consumer refuses a Perlectio without a `dissent` record.** Perlector's closed
   `_PERLECTIO_FIELDS` requires it only when this stage seals a reading
-  (`pipeline/4_perlector/run.py:1648`, sealed at `:2319` and `:3394`). Archetypus sets
+  (`pipeline/4_perlector/run.py:1678`, sealed at `:2349` and `:3424`). Archetypus sets
   `dissent_ref` to the accepted reading's reference (`pipeline/6_archetypus/run.py:1633`)
   and checks that it equals `perlectio_ref` (`:873-876`); that proves reference
   identity, not the Perlectio payload. `accepted_primed_perlectio` checks the reading kind,
@@ -615,17 +615,17 @@ test that fails if the two ever part again.
   (`pipeline/6_archetypus/run.py:824-861`).
 - **Pass-C can emit an `uncertain_span`, but only under a zero cap.** The predicate is
   `unresolved = bool(flags) and audit_policy["round_cap"] == 0`
-  (`pipeline/4_perlector/run.py:3181`), so spans appear only when the sealed policy allows
+  (`pipeline/4_perlector/run.py:3211`), so spans appear only when the sealed policy allows
   no re-proof round, not after a permitted round is spent. Each non-empty frozen flag
   location then becomes a low-confidence `audit-round-cap-exhausted` span on the finding
-  and Perlectio (`:3327-3333`, sealed at `:3343` and `:3371`). A zero-width flag remains explicit in the
+  and Perlectio (`:3357-3363`, sealed at `:3372` and `:3393`). A zero-width flag remains explicit in the
   frozen flags and `unresolved` state because it cannot become a span; Recensor routes it
-  to review (`pipeline/4_perlector/test_audit_pass.py:1168`). **The committed policy
+  to review (`pipeline/4_perlector/test_audit_pass.py:1202`). **The committed policy
   cannot fire this path:**
   `config/perlector_audit.toml:12` sets `round_cap = 1`, so every reading carries an empty
   `uncertain_spans` list. Only a run sealed with `round_cap = 0` can produce one; the
   focused assertions are in `test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review`
-  (`pipeline/4_perlector/test_audit_pass.py:1136-1167`).
+  (`pipeline/4_perlector/test_audit_pass.py:1170-1199`).
 - **`gaps` and `uncertain_spans` have downstream consumers.** Archetypus validates the
   uncertainty and annotations before deriving `text_status`
   (`pipeline/6_archetypus/run.py:832-839`). Armarium independently re-derives it before

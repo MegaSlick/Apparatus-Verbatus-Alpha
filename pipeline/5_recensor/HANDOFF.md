@@ -167,6 +167,12 @@ An accepted review is not a new reading and does not select among witnesses. It
 only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.
 
+`review_route_from_findings`'s `unreconciled` cause is fed today only by a
+scenario's declared `hold_acts` (`pipeline/5_recensor/run.py:2983`), not by any
+measurement this stage takes; the only cross-act date/numbering/order anomaly
+computation in the tree is Pass C's flag pass (`pipeline/4_perlector`), and its
+verdict reaches this record through `audit_unresolved`, not `unreconciled`.
+
 ## Cross-capture visibility: `payload["cross_capture_coverage"]`
 
 Surveyed from the exact Perlectio the review assesses, never from whatever

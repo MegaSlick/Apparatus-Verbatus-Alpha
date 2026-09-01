@@ -136,10 +136,12 @@ def audit_state(context, reading: dict, act_id: str) -> bool | None:
     that class is held rather than accepted.
 
     `None`, not `False`: this act has no audit at all — the same fact a
-    Designator-held act's review records. `False` means audited and resolved,
-    and claiming it here would tell R8's canonical export that a reading
-    nobody examined came back clean. Routing is unchanged (`elif
-    audit_unresolved:` treats both as falsy); only the record is honest.
+    Designator-held act's review records. `False` means audited, with its
+    sealed re-proof round spent — or nothing to spend it on — not that every
+    flag resolved: one reader call answers every flag at once, and
+    `change_record` carries at most one span, so `False` is not a per-flag
+    resolution claim. Routing is unchanged (`elif audit_unresolved:` treats
+    both as falsy); only the record is honest.
     """
     if reading["outcome"] == "not-run":
         return None
@@ -3351,9 +3353,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # The Pass-C verdict, recorded as data for every act for the
                 # same reason: an act held for an exhausted audit cap must be
                 # separable from every other hold without matching prose, and
-                # an audit that resolved cleanly must be tellable from one
-                # never checked. R8's canonical export reads uncertainty spans
-                # whose review-side "why" lives exactly here.
+                # an audit whose sealed round was spent must be tellable from
+                # one never checked. R8's canonical export reads uncertainty
+                # spans whose review-side "why" lives exactly here.
                 "audit_unresolved": audit_unresolved,
                 "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
