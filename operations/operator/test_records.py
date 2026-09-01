@@ -42,12 +42,12 @@ def test_reading_a_record_from_a_fifo_refuses_instead_of_hanging(tmp_path: Path)
     `status` would hang forever having printed nothing — the failure mode
     `sha256_file`'s own docstring describes and guards against by opening
     non-blocking and refusing anything the open descriptor does not call a
-    regular file. `_bounded_bytes` read the same recorded paths without it.
+    regular file. `bounded_bytes` read the same recorded paths without it.
     Found by CodeRabbit.
     """
     fifo = tmp_path / "not-a-record"
     os.mkfifo(fifo)
-    caught = _within_ten_seconds(lambda: records._bounded_bytes(fifo, "a record"))
+    caught = _within_ten_seconds(lambda: records.bounded_bytes(fifo, "a record"))
     assert isinstance(caught, OSError)
     assert caught.errno == errno.EINVAL
 
@@ -65,7 +65,7 @@ def test_an_ordinary_record_is_still_read_whole(tmp_path: Path):
     """And the refusal was not bought by refusing good input."""
     path = tmp_path / "record.json"
     path.write_bytes(b'{"ok": true}')
-    assert records._bounded_bytes(path, "a record") == b'{"ok": true}'
+    assert records.bounded_bytes(path, "a record") == b'{"ok": true}'
 
 
 def test_a_fifo_in_a_sealed_source_folder_refuses_instead_of_hanging_the_upload(tmp_path: Path):
@@ -292,3 +292,44 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
     # The message and the disk agree: the replace succeeded, only durability
     # of the directory entry is unproven — the descriptor must be present.
     assert target.read_bytes() == b"payload"
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(lambda store: store.list(), id="list"),
+        pytest.param(
+            lambda store: store.readable_records_of_kind("balance-observation"),
+            id="readable_records_of_kind",
+        ),
+    ],
+)
+def test_a_dangling_receipt_directory_link_refuses_rather_than_reading_as_empty(
+    tmp_path: Path, read: Callable[[records.ReceiptStore], object]
+) -> None:
+    """`exists()` follows the link, so a dangling one is not "no receipts yet".
+
+    Both readers asked `exists()` first and returned an empty history, so an
+    unsafe receipt location was reported to the operator as nothing recorded —
+    no saved balance observation, no alert, and no sign that anything was
+    wrong. The link is named before anything asks whether it resolves.
+    """
+
+    state = tmp_path / "operator-state"
+    state.mkdir()
+    (state / "receipts").symlink_to(tmp_path / "nowhere")
+    store = records.ReceiptStore(state)
+
+    assert not (state / "receipts").exists()
+    assert (state / "receipts").is_symlink()
+    with pytest.raises(records.RecordError, match="not a safe directory"):
+        read(store)
+
+
+def test_an_absent_receipt_directory_is_still_an_empty_history(tmp_path: Path) -> None:
+    """The refusal above must not turn "nothing written yet" into a failure."""
+
+    store = records.ReceiptStore(tmp_path / "operator-state")
+
+    assert store.list() == []
+    assert store.readable_records_of_kind("balance-observation") == ([], [])

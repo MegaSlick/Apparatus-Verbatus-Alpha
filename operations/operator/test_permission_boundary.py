@@ -126,6 +126,11 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
         and row["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
         for row in projected.pages
     )
+    # The fixture delivers one act per page. Without this count the `all(...)`
+    # below is vacuously true over an empty tuple, so a projection that dropped
+    # the whole delivered list would still pass the assertion written to catch
+    # exactly that loss.
+    assert len(projected.acts) == 2
     assert all(
         act["crops"]
         and all(
@@ -1661,6 +1666,59 @@ def test_review_refuses_more_review_rows_than_the_console_can_safely_project(tmp
     assert f"more than the operator review limit of {review.MAX_REVIEW_ITEMS} records" in (
         excinfo.value.detail or ""
     )
+
+
+def test_a_row_that_is_not_json_names_the_line_it_is_on(tmp_path: Path):
+    """A refusal that names only the bundle cannot be acted on.
+
+    The queue may hold up to `MAX_REVIEW_ITEMS` rows, so "a row is bad" without
+    a position leaves the operator to find it by hand.
+    """
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"first"}\n{ not json\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "line 2" in (excinfo.value.detail or "")
+    assert "not valid JSON" in (excinfo.value.detail or "")
+
+
+def test_a_row_that_is_not_an_object_names_the_line_it_is_on(tmp_path: Path):
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"first"}\n[1, 2]\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "line 2" in (excinfo.value.detail or "")
+    assert "is not an object" in (excinfo.value.detail or "")
+
+
+def test_a_run_with_no_armarium_export_is_told_so_rather_than_counted(tmp_path: Path):
+    """Zero matches is a missing export, not a tally of duplicates.
+
+    A run halted before Armarium has no export to review at all; "appeared 0
+    times" described the arithmetic instead of the condition.
+    """
+
+    tree = RunTree(tmp_path / "runs", "reviewed")
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._armarium_payload(tree, [])
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    detail = excinfo.value.detail or ""
+    assert "no Armarium export record" in detail
+    assert "no completed export" in detail
+    assert "appeared" not in detail
 
 
 def test_review_refuses_ambiguous_duplicate_review_members(tmp_path: Path):

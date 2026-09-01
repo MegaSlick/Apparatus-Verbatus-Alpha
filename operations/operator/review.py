@@ -257,6 +257,17 @@ def _armarium_payload(
         for row in stage_records
         if row["stage"] == ARMARIUM and row["kind"] == "export" and row["artifact_id"] == export_id
     ]
+    if not matches:
+        # "appeared 0 times" named a count where the condition is a missing
+        # stage: a run halted before Armarium has no export to review at all,
+        # and the operator should be told that rather than a tally.
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"there is no Armarium export record at {expected_path}; this run has no "
+                "completed export, so no review projection can be built from it"
+            ),
+        )
     if len(matches) != 1:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -565,14 +576,20 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
         return {
             "boundary_stage": stage,
             "boundary_current": False,
-            "boundary_note": f"{stage} has no stored stage-seal now, so this advance binds a boundary that is no longer there",
+            "boundary_note": (
+                f"{stage} has no stored stage-seal now, so this advance binds a "
+                "boundary that is no longer there"
+            ),
         }
     current = boundary["seal_digest"]
     if current != record["target_version_hash"]:
         return {
             "boundary_stage": stage,
             "boundary_current": False,
-            "boundary_note": f"{stage}'s seal changed after this advance was recorded; the advance binds an earlier boundary",
+            "boundary_note": (
+                f"{stage}'s seal changed after this advance was recorded; the advance "
+                "binds an earlier boundary"
+            ),
         }
     if not boundary["sealed"]:
         return {
@@ -724,22 +741,40 @@ def _review_items(
                         f"{MAX_REVIEW_ITEMS} records"
                     ),
                 )
-            items = tuple(
-                {
-                    "row": json.loads(line),
-                    "record_ref": export_ref,
-                    "bundle_path": path,
-                    "member": _REVIEW_ITEMS_MEMBER,
-                    "line": number,
-                }
-                for number, line in enumerate(lines, start=1)
-            )
-            if any(not isinstance(item["row"], dict) for item in items):
-                raise OperatorError(
-                    ErrorCode.CONSOLE_TREE_UNREADABLE,
-                    detail="review-items.jsonl contains a row that is not an object",
+            # Parsed row by row rather than in one comprehension: the queue may
+            # hold up to MAX_REVIEW_ITEMS rows, and a refusal that names only
+            # the bundle leaves the operator to find the bad row by hand. The
+            # one-based number each item already carries is now in both
+            # refusals. Found by CodeRabbit.
+            parsed: list[dict[str, Any]] = []
+            for number, line in enumerate(lines, start=1):
+                try:
+                    row = json.loads(line)
+                except ValueError as error:
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            f"review-items.jsonl line {number} in bundle {path} is not "
+                            f"valid JSON: {error}"
+                        ),
+                    ) from error
+                if not isinstance(row, dict):
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            f"review-items.jsonl line {number} in bundle {path} is not an object"
+                        ),
+                    )
+                parsed.append(
+                    {
+                        "row": row,
+                        "record_ref": export_ref,
+                        "bundle_path": path,
+                        "member": _REVIEW_ITEMS_MEMBER,
+                        "line": number,
+                    }
                 )
-            return items
+            return tuple(parsed)
     except OperatorError:
         raise
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:

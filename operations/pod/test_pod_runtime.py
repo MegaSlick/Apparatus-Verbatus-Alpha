@@ -1208,6 +1208,38 @@ def test_a_request_with_no_reviewed_digest_form_refuses_instead_of_raising(
     assert not provider.pods
 
 
+def test_a_metadata_value_with_no_utf_8_form_refuses_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    """The other half of the same gate, and this one is reachable from a file.
+
+    `json.loads` accepts a lone surrogate, and the constructor only asks for a
+    non-blank string, so `{"metadata":{"x":"\\ud800"}}` in a request file built
+    a valid request whose canonical form has no UTF-8 encoding.
+    `canonical_bytes` refuses that with TypeError while the sibling refusal
+    above is a ValueError, so the preview gate caught one and let the other
+    escape the paid path as a traceback. Found by CodeRabbit.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    # Built through the constructor, not planted past it: this request is one a
+    # request file can honestly produce, which is what separates it from the
+    # unreachable ValueError above.
+    create_request = replace(
+        request(clock),
+        metadata=dict(request(clock).metadata) | {"VERBATUS_NOTE": json.loads('"\\ud800"')},
+    )
+
+    result = pod_runtime.preview_create(create_request)
+
+    assert result.state is LaunchState.REFUSED_REQUEST
+    assert "no reviewed digest form" in (result.detail or "")
+    assert "no paid action occurred" in (result.detail or "")
+    assert not provider.pods
+
+
 def test_validation_and_consumption_share_one_lock_in_the_claim_window(tmp_path: Path) -> None:
     """Two callers must never stand inside the claim window together.
 

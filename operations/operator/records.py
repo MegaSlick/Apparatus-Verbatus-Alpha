@@ -88,7 +88,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _bounded_bytes(path: Path, subject: str) -> bytes:
+def bounded_bytes(path: Path, subject: str) -> bytes:
     """Read a whole record, or refuse a file too large to be one of ours.
 
     Opened the same way `sha256_file` above opens one, and for the reason its
@@ -172,7 +172,7 @@ class ReceiptStore:
         if not resolved.is_relative_to(resolved_root):
             raise RecordError("operator receipt path is outside the receipt directory")
         try:
-            data = _bounded_bytes(resolved, "operator receipt")
+            data = bounded_bytes(resolved, "operator receipt")
             record = json.loads(data.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError(f"operator receipt cannot be read: {resolved.name}") from error
@@ -213,13 +213,30 @@ class ReceiptStore:
             )
         return record
 
+    def _receipts_present(self) -> bool:
+        """True when there are receipts to read; a link standing in for them refuses.
+
+        The link is named before anything asks whether it resolves. `exists()`
+        follows the link and is therefore false for a *dangling* one, so asking
+        it first turned an unsafe receipt location into "nothing recorded yet":
+        the reader returned an empty history and the caller was told there were
+        no observations rather than that the directory could not be trusted.
+        Both a live and a dangling link are refused here. Found by CodeRabbit.
+        """
+
+        if self.receipts.is_symlink():
+            raise RecordError("operator receipt directory is not a safe directory")
+        if not self.receipts.exists():
+            return False
+        if not self.receipts.is_dir():
+            raise RecordError("operator receipt directory is not a safe directory")
+        return True
+
     def list(self) -> list[tuple[Path, dict[str, Any]]]:
         """Read existing receipts only; absent storage is an empty, not a created, state."""
 
-        if not self.receipts.exists():
+        if not self._receipts_present():
             return []
-        if not self.receipts.is_dir() or self.receipts.is_symlink():
-            raise RecordError("operator receipt directory is not a safe directory")
         loaded: list[tuple[Path, dict[str, Any]]] = []
         for candidate in sorted(self.receipts.glob("*.json")):
             loaded.append((candidate, self.read(candidate)))
@@ -237,10 +254,8 @@ class ReceiptStore:
         make the glob overmatch; only the validated record's exact kind decides.
         """
 
-        if not self.receipts.exists():
+        if not self._receipts_present():
             return [], []
-        if not self.receipts.is_dir() or self.receipts.is_symlink():
-            raise RecordError("operator receipt directory is not a safe directory")
         loaded: list[tuple[Path, dict[str, Any]]] = []
         unreadable: list[str] = []
         for candidate in sorted(self.receipts.glob(f"{kind}-*.json")):
@@ -318,7 +333,7 @@ class DescriptorStore:
         if not self.path.exists():
             return None
         try:
-            raw = json.loads(_bounded_bytes(self.path, "operator descriptor").decode("utf-8"))
+            raw = json.loads(bounded_bytes(self.path, "operator descriptor").decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError("operator descriptor cannot be read") from error
         if not isinstance(raw, dict):
@@ -422,7 +437,7 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
                 ) from error
         except FileExistsError:
             try:
-                existing = _bounded_bytes(target, "existing operator receipt")
+                existing = bounded_bytes(target, "existing operator receipt")
             except OSError as error:
                 raise RecordError("existing operator receipt cannot be read") from error
             if existing != payload:

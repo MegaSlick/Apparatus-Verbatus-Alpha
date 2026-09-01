@@ -9,14 +9,15 @@ digest of the record that supplied it.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from operations.pod.spend import MAX_BALANCE_OBSERVATION_AGE_SECONDS, load_spend_policy
+from operations.pod.spend import MAX_BALANCE_OBSERVATION_AGE_SECONDS, load_spend_policy_bytes
 
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .records import ReceiptStore, RecordError, sha256_file
+from .records import ReceiptStore, RecordError, bounded_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +32,16 @@ class SpendSurface:
 
         source = Path(policy_path)
         try:
-            policy_digest = sha256_file(source)
-            policy = load_spend_policy(source)
-            if sha256_file(source) != policy_digest:
-                raise ValueError("spend policy changed while it was being read")
+            # One read, one byte sequence: the digest printed beside every
+            # ceiling below is the digest of the very bytes those ceilings were
+            # parsed from. Hashing the file and then parsing it separately left
+            # a window in which a policy could be widened, read, and restored
+            # before the confirming hash, so the screen showed one file's limits
+            # under another file's digest. Re-reading to confirm cannot close
+            # that; not re-reading does. Found by CodeRabbit.
+            policy_bytes = bounded_bytes(source, "the spend policy")
+            policy_digest = hashlib.sha256(policy_bytes).hexdigest()
+            policy = load_spend_policy_bytes(policy_bytes, source=source)
         except Exception as error:
             raise OperatorError(ErrorCode.SPEND_POLICY_UNREADABLE, detail=str(error)) from error
         if not policy.configured:
