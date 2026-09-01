@@ -1248,6 +1248,20 @@ def _validate_logical_act_conservation(
                 f"logical act {act['act_id']} has no page attribution in the aggregate "
                 "basis; its member pages cannot enter the run's page accounting"
             )
+        # Element types before `set(...)`: this basis is a caller's assertion and
+        # is not validated until `_aggregate_from_basis`, which runs after this
+        # check. A number here would raise TypeError out of the dedupe and end
+        # the export unnamed; a string would dedupe into its own characters and
+        # report a page missing that never was. Same shape as the package-side
+        # re-derivation in `_verify_logical_partition_claim`.
+        if not isinstance(attributed, list) or any(
+            not isinstance(ordinal, int) or isinstance(ordinal, bool) for ordinal in attributed
+        ):
+            raise SchemaRefusal(
+                f"logical act {act['act_id']} has a page attribution that is not a list of "
+                "page ordinals; the projection is refused because its member pages cannot be "
+                "counted against a malformed attribution"
+            )
         uncovered = sorted(set(ordinals) - set(attributed))
         if uncovered:
             raise SchemaRefusal(

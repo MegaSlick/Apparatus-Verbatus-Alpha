@@ -218,9 +218,17 @@ def logical_act_projection_entry(
         page_id_value = member["page_id"]
         ordinal = member["page_ordinal"]
         proposal_refs = member["proposal_refs"]
+        source_value = member["source_sha256"]
         if (
             not is_well_formed(act_id_value)
             or not act_id_value.startswith("act_")
+            # Element type before the `set(...)` over `source_sha256` below, as
+            # with the component captures: an unhashable digest would raise
+            # TypeError out of the dedupe and end the whole export run instead
+            # of refusing this one record by name.
+            or not isinstance(source_value, str)
+            or len(source_value) != 64
+            or any(character not in "0123456789abcdef" for character in source_value)
             or not is_well_formed(page_id_value)
             or not page_id_value.startswith("pg_")
             or not isinstance(act_key_value, str)
@@ -238,8 +246,8 @@ def logical_act_projection_entry(
         ):
             raise SchemaRefusal(
                 "logical Armarium projection has malformed member identity, key, ordinal, "
-                "or proposal evidence; the projection is refused because member lineage is "
-                "not canonical"
+                "source capture digest, or proposal evidence; the projection is refused "
+                "because member lineage is not canonical"
             )
         member_ids.append(act_id_value)
         member_keys.append(act_key_value)

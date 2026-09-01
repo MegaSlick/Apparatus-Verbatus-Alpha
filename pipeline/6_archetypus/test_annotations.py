@@ -874,3 +874,125 @@ def test_render_strip_hash_round_trip_reproduces_the_canonical_text_hash():
     # constant is what a sealed record's text_hash would hold for this text,
     # so this is the recomputation a real consumer performs.
     assert digest_of(stripped) == "67173165481aa850b657885cbee282a56bcc4ff006b49aee5e266b94b4eaa035"
+
+
+# --- the clustered constructor seals the same normalised layer as the local one ---
+
+# The closed region schema (`run._REGION_FIELDS`), carried whole into the record.
+_REGION = {
+    "region_id": "rgn_0123456789abcdef",
+    "image_path": "2_designator/blobs/sha256/crop",
+    "image_sha256": "c" * 64,
+    "verified_dimensions": {"w": 1, "h": 1},
+    "source_page_ordinal": 1,
+    "source_page_id": "pg_0123456789abcdef",
+    "transform": {
+        "operation": "crop",
+        "source_page_ordinal": 1,
+        "source_page_id": "pg_0123456789abcdef",
+        "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
+    },
+    "structure_provenance": {"chair": "designator", "revision": "fixture"},
+    "witness_covered": True,
+}
+
+
+def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypatch):
+    """The clustered constructor must normalise before it seals, as the local one does.
+
+    `validate_annotations` NORMALISES: an `illegible` note may legally arrive on
+    the wire without `witness_evidence` (the Perlector's HANDOFF says so), and
+    the validated form always carries it. `validate_logical_record` then
+    requires the stored layer to equal the validated form of itself. So a
+    clustered constructor that stored `payload["annotations"]` raw refused the
+    first joint reading that marked unread ink: the reading was accepted, the
+    ink was read, and the act established nothing at all.
+
+    The two partition/evidence bindings are stubbed out here on purpose. They
+    are proved end to end by the cluster-path suite over a real sealed
+    partition; what this test isolates is the one step between an accepted
+    payload and a sealed layer, which no fixture is needed to reach.
+    """
+    monkeypatch.setattr(
+        archetypus,
+        "_require_the_partition_this_reading_was_made_over",
+        lambda **_kwargs: {"logical_act_id": "pac_0123456789abcdef"},
+    )
+    monkeypatch.setattr(archetypus, "_require_joint_evidence_binding", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        archetypus,
+        "validate_cross_capture_dissent",
+        lambda record: {
+            "logical_act_id": "pac_0123456789abcdef",
+            "perlectio_ref": record["perlectio_ref"],
+        },
+    )
+
+    source = "a" * 64
+    text = "established text"
+    # Wire-legal and un-normalised: no `witness_evidence` key at all.
+    wire_note = {"kind": "illegible", "start": 5, "end": 5}
+    payload = {
+        "text": text,
+        "lectio_kind": "primed-with-prior",
+        "dossier": {"logical_act_id": "pac_0123456789abcdef"},
+        "basis": {"regions": [_REGION]},
+        "provenance": {"chair": "perlector", "revision": "fixture"},
+        "annotations": [wire_note],
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revision": [],
+    }
+    perlectio = {"outcome": "read", "payload": payload}
+    perlectio_ref = {
+        "relative_path": "4_perlector/artifacts/perlectio/joint.json",
+        "sha256": archetypus.digest_of(perlectio),
+    }
+    review = {"outcome": "accepted", "payload": {"perlectio_ref": perlectio_ref}}
+    review_ref = {
+        "relative_path": "5_recensor/artifacts/review/joint.json",
+        "sha256": archetypus.digest_of(review),
+    }
+    dissent = {"perlectio_ref": perlectio_ref}
+    dissent_ref = {
+        "relative_path": "4_perlector/artifacts/dissent/joint.json",
+        "sha256": archetypus.digest_of(dissent),
+    }
+    logical_act = {
+        "logical_act_id": "pac_0123456789abcdef",
+        "physical_page_components": [
+            {"physical_page_id": "ppg_0123456789abcdef", "required_capture_sha256s": [source]}
+        ],
+        "member_local_acts": [
+            {
+                "act_id": "act_0123456789abcdef",
+                "act_key": "member-key",
+                "page_id": "pg_0123456789abcdef",
+                "page_ordinal": 1,
+                "source_sha256": source,
+                "proposal_refs": ["proposal:member"],
+            }
+        ],
+    }
+
+    record = archetypus.establish_logical_record(
+        partition={},
+        logical_act=logical_act,
+        accepted_perlectio=perlectio,
+        accepted_review=review,
+        perlectio_ref=perlectio_ref,
+        recensor_ref=review_ref,
+        cross_capture_dissent=dissent,
+        cross_capture_dissent_ref=dissent_ref,
+    )
+
+    # Sealed in the validated form, never the raw one, and the record is the
+    # partial it says it is rather than an act that quietly failed to exist.
+    assert record["annotations"] == [
+        {"kind": "illegible", "start": 5, "end": 5, "witness_evidence": []}
+    ]
+    assert record["annotations"] != [wire_note]
+    assert record["text_status"] == "partial"
+    # And the sealed layer is exactly what its own re-validation produces, which
+    # is the equality the record schema enforces on every read back.
+    assert archetypus.validate_logical_record(record) == record

@@ -183,11 +183,23 @@ walking skeleton the witnesses' empty reports are declared fixture receipts,
 while the Perlector now observes the delivered pixels before it reports empty.
 
 ```text
-act_key ("page-fallback:<ordinal>"), page_id, page_ordinal, page_bounds
+subject_id = act_bindings(page_id, "page-fallback", page_bounds)
+act_key ("page-fallback:<ordinal>" — a label, never the identity)
+page_id, page_ordinal, page_bounds
 tile_count, tiles = [{bounds, rationale}]
 reason
 provenance (the resolved Designator chair)
 ```
+
+The subject line is not a payload field: it is what the record is keyed to, and
+it is written here because the payload's `act_key` is the one field that looks
+like an identity and is not. `_verify_page_fallback_act_row` recomputes the
+subject from `page_id` and `page_bounds` and *separately* requires `act_key` to
+equal `fallback_page_act_key(page_ordinal)`, so an implementation that derived
+either one from the other refuses there. Before this branch the block carried
+`fallback_ordinal`, the reserved ordinal the identity was then built from;
+removing it with the ordinal identity left the block with no identity ingredient
+at all, which is the gap this line closes.
 
 `grouping.fallback_tiles` computed this grid before, and nothing cut it: the
 tiles were handed to `_match_structural_group` as match candidates only, so the

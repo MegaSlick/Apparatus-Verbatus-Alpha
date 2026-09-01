@@ -1378,7 +1378,21 @@ def establish_logical_record(
         logical_act=logical_act,
     )
     text = payload["text"]
-    annotations = payload.get("annotations", [])
+    # Normalized before it is sealed, as the image-local constructor does: an
+    # `illegible` note may legally arrive without `witness_evidence` (the
+    # Perlector's HANDOFF says so), and `validate_logical_record` compares the
+    # stored layer against the validated form of itself. Storing the raw layer
+    # would refuse the first joint reading that annotates unread ink, and the
+    # act would establish nothing. `witnesses=None` because this constructor is
+    # handed plain dicts and resolves no witness roster, so quotation and
+    # attribution are the two rules it cannot re-check -- the same argument
+    # `common/contracts/annotations.py` makes for every read-back caller.
+    annotations = validate_annotations(
+        payload.get("annotations", []),
+        text,
+        None,
+        f"accepted joint reading of {logical_id} annotations",
+    )
     uncertainty = from_perlectio(payload)
     record = {
         "logical_act_id": logical_id,

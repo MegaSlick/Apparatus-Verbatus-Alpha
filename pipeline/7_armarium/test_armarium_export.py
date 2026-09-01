@@ -3210,3 +3210,76 @@ def test_the_clean_machine_check_refuses_a_member_key_shared_across_logical_acts
         _module._verify_logical_partition_claim(
             manifest_unattributed, categories, act_keys, sources_unattributed
         )
+
+
+def _logical_conservation_projection(attribution) -> ArmariumProjection:
+    """One logical act row, with `act_pages` set to whatever is under test."""
+    entry = {
+        "act_id": "pac_aaaaaaaaaaaaaaaa",
+        "act_key": "logical:pac_aaaaaaaaaaaaaaaa",
+        "category": "delivered",
+        "canonical_clean_text": "one text",
+        "source_regions": [],
+        "reason": None,
+        "logical_membership": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["member-key"],
+            "member_source_page_ordinals": [1],
+            "physical_page_components": [
+                {
+                    "physical_page_id": "ppg_0123456789abcdef",
+                    "required_capture_sha256s": ["a" * 64],
+                }
+            ],
+        },
+    }
+    return ArmariumProjection(
+        fixture_id="armarium-logical-attribution-v1",
+        scenario="adversarial",
+        config_digest="a" * 64,
+        aggregate={},
+        acts=(entry,),
+        pages=(),
+        source_manifest=(),
+        expected_acts=1,
+        witness_chairs=(),
+        witness_floor=0,
+        aggregate_basis={"act_pages": {entry["act_key"]: attribution}},
+        local_proposal_rows=1,
+    )
+
+
+def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_it():
+    """`_validate_logical_act_conservation` runs before the basis is validated.
+
+    `_aggregate_from_basis` is what proves `act_pages` is well formed, and it
+    runs afterwards (`_validate_projection` calls the conservation check first).
+    So this check reads a caller's assertion nothing has shaped yet: a number
+    raises `TypeError` out of `set(...)` and ends the export with no named
+    refusal at all, and a string dedupes into its own characters and reports a
+    member page missing that was never missing -- a guard failing for a reason
+    other than the one it names.
+    """
+    import armarium_export as _module  # noqa: PLC0415
+
+    for attribution in (1, "1", ["1"], [True], [1, None]):
+        with pytest.raises(SchemaRefusal, match="not a list of page ordinals"):
+            _module._validate_logical_act_conservation(
+                _logical_conservation_projection(attribution),
+                {"pac_aaaaaaaaaaaaaaaa"},
+                {"logical:pac_aaaaaaaaaaaaaaaa"},
+            )
+
+    # The well-formed attribution still passes, and a genuinely missing page is
+    # still reported as the missing page it is, not as a malformed attribution.
+    _module._validate_logical_act_conservation(
+        _logical_conservation_projection([1]),
+        {"pac_aaaaaaaaaaaaaaaa"},
+        {"logical:pac_aaaaaaaaaaaaaaaa"},
+    )
+    with pytest.raises(SchemaRefusal, match="page attribution does not name"):
+        _module._validate_logical_act_conservation(
+            _logical_conservation_projection([7]),
+            {"pac_aaaaaaaaaaaaaaaa"},
+            {"logical:pac_aaaaaaaaaaaaaaaa"},
+        )

@@ -283,6 +283,23 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
     assert entry["act_key"] != "member-key"
     assert "act_0123456789abcdef" not in (entry["act_id"], entry["act_key"])
 
+    # Not re-exported as its own row is only half of §5.2; the other half is
+    # retained under the one logical entry. Without these, the test passes for a
+    # `logical_act_projection_entry` that drops `logical_membership` entirely --
+    # which would take the member's local act and its capture attribution out of
+    # the export while this test still reported the projection protected.
+    assert entry["logical_membership"] == {
+        "member_local_act_ids": ["act_0123456789abcdef"],
+        "member_act_keys": ["member-key"],
+        "member_source_page_ordinals": [1],
+        "physical_page_components": [
+            {
+                "physical_page_id": "ppg_0123456789abcdef",
+                "required_capture_sha256s": [source],
+            }
+        ],
+    }
+
     # A forged self-hash or text_hash, or a memberless record, must never
     # reach export as though it were a genuine, sealed logical act.
     for bad in (
@@ -314,3 +331,30 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
         except SchemaRefusal:
             continue
         raise AssertionError(f"a malformed logical record reached export unrefused: {bad}")
+
+    # A forger recomputes the self-hash, so the member's `source_sha256` reaches
+    # the `set(...)` that builds `member_sources` with only its field name
+    # proved. An unhashable value there raised TypeError -- not a refused
+    # record but an ended export, taking every other act in the run with it.
+    # Its two neighbours in the same member row were already checked; this one
+    # was not.
+    for forged_source in ([], {}, 7, "not-a-digest", "g" * 64, "A" * 64):
+        member = {**record["member_local_acts"][0], "source_sha256": forged_source}
+        bad = {**record, "member_local_acts": [member]}
+        # Recomputed on purpose: `verify_self_hash` runs before the member loop,
+        # so with the original hash left in place this would only re-prove the
+        # seal check and never reach the guard under test.
+        bad["self_hash"] = self_hash(bad)
+        try:
+            module.logical_act_projection_entry(
+                bad, category="delivered", source_regions=bad["regions"], witnesses=[]
+            )
+        except SchemaRefusal as refusal:
+            assert "source capture digest" in str(refusal), (
+                f"a member source digest {forged_source!r} was refused for some other "
+                f"reason than its own: {refusal}"
+            )
+            continue
+        raise AssertionError(
+            f"a member carrying source_sha256={forged_source!r} reached export unrefused"
+        )
