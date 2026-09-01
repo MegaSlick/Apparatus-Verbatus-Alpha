@@ -947,11 +947,13 @@ class OperatorSurface:
         reasons = aggregate.get("reasons")
         if isinstance(reasons, list):
             malformed: str | None = None
+            notification_reasons = reasons
         else:
             malformed = (
                 "the Armarium record's hold reasons were not a list and were not read; "
                 "the run is still held"
             )
+            notification_reasons = [malformed]
             reasons = []
         self.present("Run is held. It was not called complete.")
         if malformed is not None:
@@ -960,10 +962,13 @@ class OperatorSurface:
             self.present(f"Hold reason: {reason}")
         # A hold is the pipeline asking a person to decide: the `decision`
         # moment, sent when the hold happens rather than when someone looks.
+        # `notification_reasons` carries the UNREADABLE marker even when the
+        # display loop above was given an empty list, so the phone hears the
+        # same truth the console showed.
         self._notify(
             "decision",
             f"Verbatus run {run_id} is held and needs a decision: "
-            f"{'; '.join(str(reason) for reason in reasons) or 'no reason recorded'}",
+            f"{'; '.join(str(reason) for reason in notification_reasons) or 'no reason recorded'}",
         )
         raise OperatorError(ErrorCode.RUN_HELD, detail=f"Saved run receipt: {receipt}")
 

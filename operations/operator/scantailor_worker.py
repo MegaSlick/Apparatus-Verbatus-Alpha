@@ -412,7 +412,6 @@ def main() -> int:
             encoded = _persisted(document)
             document_digest = digest_bytes(encoded)
             document_name = f"scantailor-geometry-{document_digest}.json"
-            path = output_dir / document_name
             if request["operation"] == "commit":
                 try:
                     # A committed reply requires a durable directory entry and must
@@ -435,7 +434,7 @@ def main() -> int:
             "project_sha256": document["project_sha256"],
             "image_count": document["source_image_count"],
             "geometry_count": len(document["geometry"]),
-            "document_path": str(path),
+            "document_name": document_name,
             "document_sha256": document_digest,
         }
         print(
