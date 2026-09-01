@@ -2994,6 +2994,7 @@ def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(t
         )
 
 
+@requires_host_boundary
 def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
     """Each advance keeps its own verdict; a stale one remains visible."""
     run_root, run_id = _make_run(tmp_path)
