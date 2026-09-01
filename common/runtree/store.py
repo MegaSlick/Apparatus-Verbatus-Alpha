@@ -709,9 +709,25 @@ class RunTree:
     # --- Reading ----------------------------------------------------------------
 
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
+        record, _ = self.read_artifact_snapshot(stage, kind, artifact_id)
+        return record
+
+    def read_artifact_snapshot(
+        self, stage: str, kind: str, artifact_id: str
+    ) -> tuple[dict[str, Any], bytes]:
+        """Read and validate one artifact, retaining the exact bytes decoded.
+
+        Callers that publish a digest beside decoded fields must derive both
+        from one filesystem read.  Returning the bytes from that read prevents
+        a concurrent replacement from pairing one record body with another
+        record's immutable address.
+        """
+
         relative = self.artifact_path(stage, kind, artifact_id)
-        record = validate_envelope(_read_json(self.resolve(relative)))
-        self._verify_artifact_run(record)
+        with _naming(relative):
+            record, artifact_bytes = _read_json_with_bytes(self.resolve(relative))
+            record = validate_envelope(record)
+            self._verify_artifact_run(record)
         if (
             record["stage"] != stage
             or record["kind"] != kind
@@ -723,7 +739,7 @@ class RunTree:
             )
         self._verify_artifact_path(relative, record)
         self._verify_artifact_inputs(record)
-        return record
+        return record, artifact_bytes
 
     def read_artifact_reference(
         self,
@@ -806,10 +822,13 @@ class RunTree:
             for relative_path in members:
                 # One filesystem read supplies both the record that is verified
                 # and its digest. Re-resolving here also closes the replacement
-                # window opened by collecting the complete walk first.
+                # window opened by collecting the complete walk first. The
+                # _naming wrapper attributes a refusal to the exact member that
+                # raised it, for the operator-facing review surface.
                 record, artifact_bytes = self._read_manifest_artifact(relative_path)
-                record = validate_envelope(record)
-                self._verify_artifact_run(record)
+                with _naming(relative_path):
+                    record = validate_envelope(record)
+                    self._verify_artifact_run(record)
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -1587,6 +1606,24 @@ def _write_temporary(target: Path, data: bytes) -> Path:
             temporary.unlink()
         raise
     return temporary
+
+
+@contextmanager
+def _naming(relative_path: str) -> Iterator[None]:
+    """Add the evidence path while preserving the refusal's concrete class.
+
+    Envelope and identity validators see decoded content, not its filename, but
+    the operator-facing repair instruction requires the offending path. Callers
+    may catch a specific `SchemaRefusal` subclass, so wrapping must not widen it.
+    """
+
+    try:
+        yield
+    except SchemaRefusal as error:
+        message = str(error)
+        if message.startswith(f"{relative_path}: "):
+            raise
+        raise type(error)(f"{relative_path}: {message}") from error
 
 
 def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:

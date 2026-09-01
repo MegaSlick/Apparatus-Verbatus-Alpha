@@ -26,15 +26,16 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The twelve words
+## The fourteen words
 
-Eleven things this tool can do, in the order a normal run uses them, plus one you can run
+Twelve things this tool can do, in the order a normal run uses them, plus two you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
+| `scantailor` | Names the separate desktop handoff and records a saved ScanTailor project's geometry by digest. | No. It does not launch ScanTailor or use its output images. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
@@ -45,6 +46,7 @@ any time to check on things.
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+| `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
 
 ## `ingest`: prepare a folder before the Door
 
@@ -94,6 +96,17 @@ the moment you are done. Use `review` to read one run tree without changing anyt
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
 time you are unsure what is happening or costing money.
 
+## The ScanTailor seam
+
+**ScanTailor Advanced is a separate desktop program; Verbatus does not pretend it is built in.**
+Choose `scantailor`, give the saved project XML, and Verbatus tells you exactly which
+project to open and what to do there. After you save it, give a geometry folder that
+already exists to the same screen to import its split geometry — the console writes into a
+folder, it never makes one, and it says so rather than failing at the boundary. The imported
+document is immutable and bound to the exact project-file digest shown before the write. It records geometry only: it does
+not choose a preferred page, apply a crop, or submit ScanTailor's output images. The original
+submitted masters remain the Exemplar.
+
 ## Before anything bills, it asks
 
 `launch` is the only word that starts a bill. Before it rents anything it shows you:
@@ -113,6 +126,39 @@ are Tyrel's to set, and the refusal is the tool working.
 
 It also refuses to start or adopt a second machine while one is still recorded as open.
 Run `close` for that one first.
+
+It refuses in two more cases, both of which mean a machine may be running that this tool
+cannot see:
+
+- **A launch that never came back.** If a launch reached the provider and then lost the
+  answer — the network dropped, the window was closed — no machine record was saved, but
+  the safety lease that was armed just before it is still on file. A machine may be
+  billing. `launch` refuses and names that lease; `status` shows it. The safety timers
+  keep that machine until its booked deadline, which is what they are for. Do not start
+  another one on top of it: tell Tyrel, and check the provider's own console.
+- **Two windows at once.** Only one window may be part-way through a paid launch. The
+  second is told so straight away rather than left waiting, and it spent nothing: the
+  challenge remains unspent. Wait for the first window to finish, then run `verbatus
+  status` to see whether it created a machine. If it did, a verified close is required
+  before you preview again. If it did not — the first launch simply refused or failed —
+  nothing needs closing; preview again so the price and request are current.
+
+## `spend show`: inspect the reviewed guard
+
+Choose **spend** in the double-click window, or run `verbatus spend show`. It shows a
+configured policy's ceilings, hard-stop balance floor, and notification-only alert
+threshold with the policy's SHA-256 digest. It also shows every recorded preview balance,
+its source and present staleness, plus each saved notification delivery outcome with the
+immutable receipt digest that recorded it. Where a receipt saved a different number of
+alerts and delivery outcomes, the screen says the two cannot be paired and shows both
+sides unattributed rather than guessing which outcome belongs to which alert. One receipt
+puts at most 64 saved alert or delivery entries on the screen; anything beyond that is
+counted on a final line against the same receipt digest rather than printed or dropped. A
+name in the receipt folder that is a link rather than a file this tool wrote is named as
+unreadable and lends its name to no digest. It does not
+fetch a fresh balance and it never changes `config/spend.toml`. The deliberately
+unconfigured checked-in policy refuses through the ordinary three-part console message
+rather than inventing values.
 
 ## Shutting down, and what "closed" actually means
 
@@ -151,6 +197,10 @@ this tool and not something you did — save the text and pass it on.
 `status` never starts, spends or changes anything. It reads records this tool already
 saved and repeats them **exactly as recorded** — it does not recalculate anything, so what
 it shows you and what is on file cannot drift apart. Run it whenever you are unsure.
+
+It also lists any **safety lease** with no verified close recorded against it, because that
+is the one place a machine can be billing without a machine record to show you. A lease it
+cannot read is listed as unreadable and never counted as closed.
 
 ## Phone notifications
 

@@ -21,6 +21,8 @@ class ErrorCode(StrEnum):
     INVALID_COMMAND = "invalid-command"
     LIVE_PROVIDER_BLOCKED = "live-provider-blocked"
     SPEND_POLICY_REQUIRED = "spend-policy-required"
+    SPEND_POLICY_UNCONFIGURED = "spend-policy-unconfigured"
+    SPEND_POLICY_UNREADABLE = "spend-policy-unreadable"
     CONFIRMATION_REQUIRED = "confirmation-required"
     CONFIRMATION_RECORD_FAILED = "confirmation-record-failed"
     RECORD_WRITE_FAILED = "record-write-failed"
@@ -29,6 +31,7 @@ class ErrorCode(StrEnum):
     BALANCE_UNOBSERVABLE = "balance-unobservable"
     SAFETY_CHECK_FAILED = "safety-check-failed"
     LAUNCH_UNRESOLVED = "launch-unresolved"
+    LAUNCH_ALREADY_IN_FLIGHT = "launch-already-in-flight"
     ACTIVE_POD_REQUIRES_CLOSE = "active-pod-requires-close"
     ADOPTION_REFUSED = "adoption-refused"
     PAID_ACTION_REFUSED = "paid-action-refused"
@@ -60,6 +63,8 @@ class ErrorCode(StrEnum):
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
+    SCANTAILOR_REFUSED = "scantailor-refused"
+    SCANTAILOR_UNRESOLVED = "scantailor-unresolved"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -97,6 +102,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Launch could not proceed because no reviewed spend limit is configured.",
         "Verbatus sent no new paid provider action.",
         "Set the GPU and spending limits in the reviewed policy, then run `verbatus launch` again; this is safe.",
+    ),
+    ErrorCode.SPEND_POLICY_UNCONFIGURED: ErrorCopy(
+        "The reviewed spend policy is intentionally unconfigured.",
+        "It has no approved ceilings, balance floor, or alert threshold, so Verbatus will not display it as configured.",
+        "Keep this policy unconfigured until Tyrel supplies a reviewed policy; no provider was contacted and nothing was changed.",
+    ),
+    ErrorCode.SPEND_POLICY_UNREADABLE: ErrorCopy(
+        "Verbatus could not read the reviewed spend policy.",
+        "No policy, balance observation, or alert history was presented as current, and no provider was contacted.",
+        "Preserve the saved detail and use a readable reviewed policy file; this command changes nothing.",
     ),
     ErrorCode.CONFIRMATION_REQUIRED: ErrorCopy(
         "The required typed confirmation was not received.",
@@ -137,6 +152,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Launch could not prove that its fixture pod is safely accounted for.",
         "It is not called ready, and a provider request may already have occurred.",
         "Do not launch again. Run `verbatus status`, preserve the saved receipt, and resolve the named close evidence before retrying.",
+    ),
+    ErrorCode.LAUNCH_ALREADY_IN_FLIGHT: ErrorCopy(
+        "Another Verbatus window is already part-way through a paid launch.",
+        "This window sent no paid provider action, because two of them cannot both be trusted to see the other's result.",
+        "Wait for the other window to finish and show its result, read `verbatus status`, then preview launch again; this is safe.",
     ),
     ErrorCode.ACTIVE_POD_REQUIRES_CLOSE: ErrorCopy(
         "A recorded fixture pod is still awaiting a verified close.",
@@ -264,6 +284,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The operator console could not read the view this command handed it.",
         "The run tree was never opened by that process, so nothing about the evidence is in question and nothing was changed.",
         "Run the same `verbatus review` again. If it repeats, keep the saved detail below and report it; do not alter the run tree, which is not what failed.",
+    ),
+    ErrorCode.SCANTAILOR_REFUSED: ErrorCopy(
+        "ScanTailor geometry could not be imported.",
+        "No geometry document was written or applied, and no source image was changed.",
+        "Keep the project file. The saved detail names what was refused: fix it in ScanTailor if it is a project detail, or name an existing folder if it is the geometry folder, then import again; this is safe.",
+    ),
+    ErrorCode.SCANTAILOR_UNRESOLVED: ErrorCopy(
+        "ScanTailor geometry import did not return a checked committed result.",
+        "An immutable geometry document may have been written even though the import was not reported as complete. No geometry was applied and no source image was changed.",
+        "Keep the project and geometry folder. Inspect any content-addressed scantailor-geometry document and the saved detail before retrying; an unchanged retry safely accepts identical bytes.",
     ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",

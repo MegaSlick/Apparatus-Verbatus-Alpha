@@ -28,6 +28,7 @@ from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest_in_custody
 from .review import ReadOnlyRun
+from .spend import SpendSurface
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
@@ -269,6 +270,13 @@ def build_parser() -> PlainParser:
     )
 
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
+    spend = verbs.add_parser(
+        "spend", help="show the reviewed spend floor, saved balance observations, and alert history"
+    )
+    spend.add_argument("view", choices=("show",), help="the read-only spend view")
+    spend.add_argument(
+        "--policy", type=Path, help="reviewed spend policy (defaults to config/spend.toml)"
+    )
     review = verbs.add_parser(
         "review",
         help="open one run tree read-only; it cannot contact a provider or change evidence",
@@ -339,6 +347,18 @@ def build_parser() -> PlainParser:
     )
     triage.add_argument("--confirmation-out", type=Path, help="producer confirmation-file target")
     triage.add_argument("--preview-sha256", help="digest of the draft shown before writing")
+    scantailor = verbs.add_parser(
+        "scantailor",
+        help="name the separate ScanTailor desktop handoff, then import its saved geometry",
+    )
+    scantailor.add_argument(
+        "--project", type=Path, required=True, help="saved ScanTailor Advanced project XML"
+    )
+    scantailor.add_argument(
+        "--geometry-out",
+        type=Path,
+        help="existing folder to receive the immutable imported geometry document",
+    )
     return parser
 
 
@@ -431,6 +451,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.close(prepared_close, confirmation)
         elif args.verb == "status":
             surface.status()
+        elif args.verb == "spend":
+            policy = args.policy or workspace / "config" / "spend.toml"
+            for line in SpendSurface(surface.receipts, surface.now()).show(policy):
+                _print(line)
         elif args.verb == "review":
             _review_in_custody(args.run_root, args.run_id, workspace)
         elif args.verb == "advance":
@@ -448,6 +472,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
+        elif args.verb == "scantailor":
+            from .scantailor import import_in_custody, instruction
+
+            if args.geometry_out is not None:
+                _print(
+                    "Importing the ScanTailor project as it is saved right now. "
+                    "If you have not yet saved its page-split geometry, stop and do that first."
+                )
+                import_in_custody(
+                    project=args.project,
+                    output_dir=args.geometry_out,
+                    workspace=workspace,
+                    printer=_print,
+                )
+            else:
+                _print(instruction(args.project, workspace=workspace))
         # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(
@@ -902,7 +942,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, launch, boot, upload, run, export, close, status, review, advance, or backup."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, export, close, status, spend, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1034,6 +1074,20 @@ def _interactive_arguments() -> list[str]:
             "--mode-record",
             mode_record,
         ]
+    if verb == "scantailor":
+        project = _ask("Saved ScanTailor Advanced project XML")
+        output = _ask(
+            "Existing folder for the imported geometry document (leave blank for instructions only)"
+        )
+        if not project:
+            _print(
+                "ScanTailor needs its saved project file. It was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["scantailor", "--project", project]
+        if output:
+            arguments.extend(("--geometry-out", output))
+        return arguments
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]
@@ -1041,6 +1095,12 @@ def _interactive_arguments() -> list[str]:
         return ["export"]
     if verb == "close":
         return ["close"]
+    if verb == "spend":
+        policy = _ask("Reviewed spending-policy file (leave blank for config/spend.toml)")
+        arguments = ["spend", "show"]
+        if policy:
+            arguments.extend(("--policy", policy))
+        return arguments
     if verb in {"review", "advance", "backup"}:
         run_root = _ask("Folder containing the run tree")
         run_id = _ask("The sealed run ID")

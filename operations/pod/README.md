@@ -134,7 +134,15 @@ check.
   the run, so it is tested against the observed balance net of this action's estimated
   cost to its hard deadline and every active or pending liability in the same durable
   lease root. Create/adopt serialize that assessment until the new lease is recorded, so
-  two concurrent confirmations cannot each spend the same reserve. An unreadable,
+  two concurrent confirmations cannot each spend the same reserve. That same lock carries
+  the single-live-pod invariant: inside it, and before this action arms a lease of its
+  own, create and adopt refuse outright when any lease in the root is short of
+  `closed-verified`, whoever armed it. Two individually affordable launches clear every
+  ceiling and still end with two pods billing behind one record that can only name one of
+  them, which is the harm GOVERNANCE 8 exists to prevent; enforcing it under the lock
+  makes it a fact rather than a race between one process's check and another's write. The
+  refusal is `refused-active-lease`, and it consumes no challenge, so an operator who
+  closes the open pod can confirm the preview they were already shown. An unreadable,
   expired-but-unclosed, or unverified-close lease makes that liability unknowable and
   refuses through the same floor mechanism. The balance is read only at the create and
   adopt gates, never again while a pod is live. Above that hard floor,
@@ -192,10 +200,13 @@ The local command surface is `python -m operations.pod.cli`. It requires explici
 untracked provider and controller-armer factories plus a request file, so this repository
 contains neither a credential, a personal provider default, nor an implicit controller
 process. It prints the previewed current price and ceilings before prompting for the exact
-typed confirmation; EOF is a refusal. Its exit status never reads as "nothing happened"
+typed confirmation; EOF is a refusal. A preview that is itself refused prints its price
+and every reason but withholds the phrase, because a refusal spends no challenge and the
+phrase in that report would still authorize the action if the condition cleared. Its exit status never reads as "nothing happened"
 when something did: 0 is a guarded success, 2 a refusal whose result names no pod, lease,
 or close, 3 a non-green outcome that observed or touched a real pod, wrote a lease, or
-attempted a close — go and look; an interrupt mid-action prints an `interrupted` record
+attempted a close — go and look, which includes a create refused because
+another lease in the root is still open; an interrupt mid-action prints an `interrupted` record
 naming the leases directory before dying. A request must make the provider-neutral timer the
 primary command and include a
 provider-owned timer factory, a structured mandatory bootstrap command, and a durable

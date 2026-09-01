@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import zipfile
@@ -12,12 +11,13 @@ from typing import Any
 
 from common.contracts.approval import validate_approval_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARMARIUM, STAGES
+from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, STAGES
 from common.runtree.store import RunTree
+from common.stage import latest_attempt
 
-from .advance import ADVANCE_SUBJECT_PREFIX, stored_boundary, verify_sealed_boundary
+from .advance import ADVANCE_SUBJECT_PREFIX, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
 
 MAX_REVIEW_ITEMS_BYTES = 16 * 1024 * 1024
@@ -25,19 +25,18 @@ MAX_REVIEW_ITEMS = 50_000
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
 # The review queue was bounded and the images beside it were not. Every sealed
-# page and every act crop is read whole and expanded to a base64 data URL —
-# about a third larger again — and the whole structure is then serialised as
-# JSON across the custody boundary, so a parish-sized run met no limit, only
-# the memory of the machine. The evidence would be intact on disk and
-# unreadable on the one surface a person reads.
+# page and every act crop is still read whole to verify its digest, and the
+# projection verifies all of them in one pass, so a parish-sized run met no
+# limit, only the memory of the machine. The evidence would be intact on disk
+# and unreadable on the one surface a person reads.
 #
 # This is a bound, not the eventual answer: a console for real parish volumes
-# should project a digest and a path and let the renderer fetch one image at a
-# time, which is a change to what the child receives rather than an audit
-# repair. The number is the largest that still passes through this pipe with
-# room for the base64 expansion and the JSON copy on both sides, so it refuses
-# only runs the embedded-image design could not have served anyway — and it
-# refuses them by name instead of by exhaustion (GOVERNANCE 2).
+# should verify one image at a time as the renderer fetches it, which is a
+# change to what the child receives rather than an audit repair. The number is
+# the largest that still passes through this pipe with room for the JSON copy
+# on both sides, so it refuses only runs the one-pass verification design could
+# not have served anyway — and it refuses them by name instead of by
+# exhaustion (GOVERNANCE 2).
 MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
 
 
@@ -56,7 +55,8 @@ class _ImageBudget:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail=(
-                    f"this run's page and crop images pass {self._limit} bytes at {what}, "
+                    f"this run's page and crop images and its export bundle pass "
+                    f"{self._limit} bytes at {what}, "
                     "which is more than the console can project in one read-only view; the "
                     "run tree is intact and unchanged, and a narrower selection can be "
                     "reviewed while this limit stands"
@@ -100,6 +100,7 @@ class ReviewProjection:
     """Only display values and immutable byte references; never a writable tree."""
 
     run_id: str
+    stage_records: tuple[dict[str, Any], ...]
     boundaries: tuple[dict[str, Any], ...]
     pages: tuple[dict[str, Any], ...]
     acts: tuple[dict[str, Any], ...]
@@ -119,13 +120,12 @@ class ReadOnlyRun:
         tree = self._tree
         try:
             boundaries: list[dict[str, Any]] = []
+            stage_records: list[dict[str, Any]] = []
             for stage in STAGES:
                 manifest = tree.build_manifest(stage, verify_inputs=False)
-                seals = [
-                    tree.read_artifact(stage, "stage-seal", row["artifact_id"])
-                    for row in manifest["artifacts"]
-                    if row["kind"] == "stage-seal"
-                ]
+                records = [_record_row(tree, stage, row) for row in manifest["artifacts"]]
+                stage_records.extend(records)
+                seals = [row for row in records if row["kind"] == "stage-seal"]
                 if not seals:
                     boundaries.append(
                         {
@@ -137,7 +137,13 @@ class ReadOnlyRun:
                         }
                     )
                     continue
-                seal, seal_digest = stored_boundary(tree, stage)
+                current = latest_attempt(
+                    [row["record"] for row in seals], f"{stage} stage seal", operation="seal"
+                )
+                seal = next(row for row in seals if row["artifact_id"] == current["artifact_id"])
+                # The tree's protection is kept beside 21F's display rows: the
+                # boundary is "sealed" only when its stored seal still verifies
+                # against the evidence on disk, and the note says why not.
                 try:
                     verify_sealed_boundary(tree, stage)
                 except ContractError as error:
@@ -153,144 +159,288 @@ class ReadOnlyRun:
                         "seal_present": True,
                         "seal_note": seal_note,
                         "seal_artifact_id": seal["artifact_id"],
-                        "seal_digest": seal_digest,
-                        "census": seal["payload"]["census"],
+                        "seal_digest": seal["record_ref"]["sha256"],
+                        "census": seal["record"]["payload"]["census"],
+                        "seal_record_ref": seal["record_ref"],
+                        # Every completion seal remains visible.  `current` describes
+                        # the seal that the boundary presently names; it does not
+                        # suppress an earlier attempt or decide what an operator does.
+                        "seals": tuple(
+                            {
+                                "artifact_id": candidate["artifact_id"],
+                                "census": candidate["record"]["payload"]["census"],
+                                "current": candidate["artifact_id"] == seal["artifact_id"],
+                                "record_ref": candidate["record_ref"],
+                            }
+                            for candidate in seals
+                        ),
                     }
                 )
-            payload = _armarium_payload(tree)
-            # One allowance across pages and crops together: the console holds
-            # them all at once, so bounding either alone would bound nothing.
+            payload, export_ref = _armarium_payload(tree, stage_records)
+            # One allowance across pages and crops together: the projection
+            # verifies them all in one pass, so bounding either alone would
+            # bound nothing.
             budget = _ImageBudget()
-            pages = tuple(_image_row(tree, row, budget) for row in payload.get("pages", []))
+            pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
+            # The two act lists carry different writer contracts: Armarium
+            # attaches `source_regions` to every delivered act and never to a
+            # non-delivered one (pipeline/7_armarium/run.py builds review
+            # entries without it). A delivered act missing its crop list is
+            # therefore a damaged record; a non-delivered act without one is
+            # the record as written.
             acts = tuple(
-                _act_row(tree, row, budget)
-                for row in (*payload.get("delivered", []), *payload.get("non_delivered", []))
+                _act_row(tree, row, export_ref, budget) for row in payload["delivered"]
+            ) + tuple(
+                _act_row(tree, row, export_ref, budget, requires_crops=False)
+                for row in payload["non_delivered"]
             )
             return ReviewProjection(
                 tree.run_id,
+                tuple(stage_records),
                 tuple(boundaries),
                 pages,
                 acts,
-                _review_items(tree, payload),
+                _review_items(tree, payload, export_ref, budget),
                 _advance_records(
                     tree,
                     {row["stage"]: row for row in boundaries if row.get("seal_present")},
                 ),
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
+            # The rendered detail must retain the evidence path from the
+            # underlying refusal; its repair instruction requires a named file.
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=f"the run tree's sealed evidence could not be verified: {error}",
+                detail=(f"run-tree evidence could not be read: {type(error).__name__}: {error}"),
             ) from error
 
 
-def _armarium_payload(tree: RunTree) -> dict[str, Any]:
-    try:
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict[str, Any]:
+    """Bind displayed record fields and their address to one filesystem read.
+
+    Every stage outcome must remain visible; this projection cannot collapse
+    records into a summary or pair fields with a digest from a later read.
+    """
+
+    record, record_bytes = tree.read_artifact_snapshot(
+        stage, manifest_row["kind"], manifest_row["artifact_id"]
+    )
+    record_digest = digest_bytes(record_bytes)
+    if record_digest != manifest_row["sha256"]:
+        raise SchemaRefusal(
+            f"{manifest_row['relative_path']}: changed while the review inventory was being "
+            "read; its record body and immutable address cannot be paired safely"
         )
-        payload = record["payload"]
-    except (KeyError, OSError, TypeError, ValueError) as error:
+    return {
+        "stage": stage,
+        "artifact_id": record["artifact_id"],
+        "kind": record["kind"],
+        "subject_id": record["subject_id"],
+        "outcome": record["outcome"],
+        "record_ref": {
+            "relative_path": manifest_row["relative_path"],
+            "sha256": record_digest,
+        },
+        "record": record,
+    }
+
+
+def _armarium_payload(
+    tree: RunTree, stage_records: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Use the stage-record snapshot; rereading could mix two export versions."""
+
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    expected_path = tree.artifact_path(ARMARIUM, "export", export_id)
+    matches = [
+        row
+        for row in stage_records
+        if row["stage"] == ARMARIUM and row["kind"] == "export" and row["artifact_id"] == export_id
+    ]
+    if not matches:
+        # "appeared 0 times" named a count where the condition is a missing
+        # stage: a run halted before Armarium has no export to review at all,
+        # and the operator should be told that rather than a tally.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail="the Armarium export record could not be read",
-        ) from error
+            detail=(
+                f"there is no Armarium export record at {expected_path}; this run has no "
+                "completed export, so no review projection can be built from it"
+            ),
+        )
+    if len(matches) != 1:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {expected_path} appeared {len(matches)} times; "
+                "review requires exactly one immutable export snapshot"
+            ),
+        )
+    export_row = matches[0]
+    payload = export_row["record"]["payload"]
     if not isinstance(payload, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="the Armarium export payload is not an object"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"the Armarium export record {expected_path} payload is not an object",
         )
     for name in ("pages", "delivered", "non_delivered"):
         if name not in payload or not isinstance(payload[name], list):
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=f"the Armarium export has no {name} list",
+                detail=(
+                    f"the Armarium export record {expected_path} {name} value is missing or "
+                    "not a list"
+                ),
             )
-    return payload
+    return payload, export_row["record_ref"]
 
 
-def _image_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dict[str, Any]:
+def _verified_export_blob_digest(
+    tree: RunTree,
+    *,
+    stage: str,
+    path: Any,
+    expected_digest: Any,
+    description: str,
+    export_ref: dict[str, str],
+    budget: _ImageBudget,
+) -> str:
+    """A fresh digest must not repair a contradictory exported path or digest."""
+
+    export_path = export_ref["relative_path"]
+    if not isinstance(path, str) or not isinstance(expected_digest, str):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} has no immutable "
+                "image path and digest"
+            ),
+        )
+    expected_path = tree.blob_path(stage, expected_digest)
+    if path != expected_path:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} claims digest "
+                f"{expected_digest} but names {path}, not its content-addressed path "
+                f"{expected_path}"
+            ),
+        )
+    data = _budgeted_image_bytes(tree, path, budget, description)
+    actual_digest = digest_bytes(data)
+    if actual_digest != expected_digest:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} names {path} with "
+                f"digest {expected_digest}, but its bytes have digest {actual_digest}"
+            ),
+        )
+    return actual_digest
+
+
+def _image_row(
+    tree: RunTree,
+    row: Any,
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
+) -> dict[str, Any]:
     budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium page is not an object"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} has a page that is "
+                "not an object"
+            ),
         )
     projected = {
         "ordinal": row.get("ordinal"),
         "page_id": row.get("page_id"),
         "outcome": row.get("outcome"),
         "reason": row.get("reason"),
+        "record_ref": export_ref,
     }
     if row.get("outcome") != "sealed":
-        return {**projected, "image_sha256": None, "image_data_url": None}
-    if not isinstance(row.get("image_path"), str) or not isinstance(row.get("image_sha256"), str):
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail=f"sealed page {row.get('ordinal')!r} has no immutable image reference",
-        )
-    data = _budgeted_image_bytes(
-        tree, row["image_path"], budget, f"sealed page {row.get('ordinal')!r}"
+        # An unsealed page stays visible with its reason; only a sealed page
+        # claims an immutable image reference to verify.
+        return {**projected, "image_path": None, "image_sha256": None}
+    image_digest = _verified_export_blob_digest(
+        tree,
+        stage=EXEMPLAR,
+        path=row.get("image_path"),
+        expected_digest=row.get("image_sha256"),
+        description=f"page {row.get('ordinal')!r}",
+        export_ref=export_ref,
+        budget=budget,
     )
-    actual = digest_bytes(data)
-    if actual != row["image_sha256"]:
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail=(
-                f"sealed page {row.get('ordinal')!r} image bytes have digest {actual}, not "
-                f"the recorded digest {row['image_sha256']}"
-            ),
-        )
     return {
         **projected,
-        "image_sha256": actual,
-        "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+        "image_path": row["image_path"],
+        "image_sha256": image_digest,
     }
 
 
-def _act_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dict[str, Any]:
+def _act_row(
+    tree: RunTree,
+    row: Any,
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
+    *,
+    requires_crops: bool = True,
+) -> dict[str, Any]:
     budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} has an act that is "
+                "not an object"
+            ),
         )
-    # No `[]` default. An act whose export row omits `source_regions` would
-    # then reach the console as an act with an empty crop list, and the
-    # operator could not tell "this act records no crop" from "the crop list
-    # went missing" — they would be approving text they never saw against the
-    # ink (GOVERNANCE 2, GOALS 5). Absent is refused exactly like malformed.
-    regions = row.get("source_regions")
-    if not isinstance(regions, list):
+    # No `[]` default for a delivered act. One whose export row omits
+    # `source_regions` would then reach the console as an act with an empty
+    # crop list, and the operator could not tell "this act records no crop"
+    # from "the crop list went missing" — they would be approving text they
+    # never saw against the ink (GOVERNANCE 2, GOALS 5). Absent is refused
+    # exactly like malformed. A non-delivered act is the one shape whose
+    # writer never records the field, so only there absent means absent.
+    source_regions = row.get("source_regions")
+    if source_regions is None and not requires_crops:
+        source_regions = []
+    if not isinstance(source_regions, list):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act has no crop list"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} act "
+                f"{row.get('act_id')!r} source_regions value is missing or not a list"
+            ),
         )
     crops = []
-    for region in regions:
-        if (
-            not isinstance(region, dict)
-            or not isinstance(region.get("image_path"), str)
-            or not isinstance(region.get("image_sha256"), str)
-        ):
-            raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail="an act crop has no immutable image reference",
-            )
-        data = _budgeted_image_bytes(
-            tree, region["image_path"], budget, f"act crop {region.get('region_id')!r}"
-        )
-        actual = digest_bytes(data)
-        if actual != region["image_sha256"]:
+    for region in source_regions:
+        if not isinstance(region, dict):
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail=(
-                    f"act crop {region.get('region_id')!r} bytes have digest {actual}, not "
-                    f"the recorded digest {region['image_sha256']}"
+                    f"the Armarium export record {export_ref['relative_path']} act "
+                    f"{row.get('act_id')!r} has a source region that is not an object"
                 ),
             )
+        image_digest = _verified_export_blob_digest(
+            tree,
+            stage=DESIGNATOR,
+            path=region.get("image_path"),
+            expected_digest=region.get("image_sha256"),
+            description=(f"act {row.get('act_id')!r} source region {region.get('region_id')!r}"),
+            export_ref=export_ref,
+            budget=budget,
+        )
         crops.append(
             {
                 "ordinal": region.get("source_page_ordinal"),
                 "region_id": region.get("region_id"),
-                "image_sha256": actual,
-                "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+                "image_path": region["image_path"],
+                "image_sha256": image_digest,
             }
         )
     return {
@@ -299,6 +449,8 @@ def _act_row(tree: RunTree, row: Any, budget: _ImageBudget | None = None) -> dic
         "category": row.get("category"),
         "reason": row.get("reason"),
         "crops": crops,
+        "row": row,
+        "record_ref": export_ref,
     }
 
 
@@ -319,10 +471,30 @@ def _advance_records(
     record that declares it and then fails full validation is a governance
     fact — a tampered or hand-written approval — and is refused loudly rather
     than skipped, matching every other read this projection performs.
+
+    ``receipts/sha256`` itself is walked directly rather than through a
+    ``build_manifest``-style inventory, because a receipt is not a stage
+    artifact. That means it does not inherit the manifest walk's own refusal
+    of a symlinked producer directory (``RunTree._inventory_directory``), so
+    the same containment has to be asserted here: a symlink standing in for
+    this directory could point anywhere content-addressed self-consistency
+    can be satisfied by an attacker who names their own file, which a
+    directory *outside* `inventory_scope()` always can. Refused by identity,
+    not followed and trusted.
     """
 
+    receipts_relative = "receipts/sha256"
+    if (tree.root / receipts_relative).is_symlink():
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"{receipts_relative} is a link, not the directory this store wrote; an "
+                "advance record is read from the store's own receipts directory, never an "
+                "alias"
+            ),
+        )
     receipts_parent = tree.root / "receipts"
-    receipts_dir = receipts_parent / "sha256"
+    receipts_dir = tree.resolve(receipts_relative)
     if not receipts_dir.exists():
         return ()
     if (
@@ -431,41 +603,69 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
     return {"boundary_stage": stage, "boundary_current": True, "boundary_note": None}
 
 
-def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any], ...] | None:
-    # "Armarium recorded no bundle" and "Armarium recorded a bundle this
-    # module could not follow" are different facts and may not share an
-    # answer. Returning None for both showed the operator an empty review
-    # queue — no acts needing their attention — at the exact moment the list
-    # of acts the pipeline could not settle had gone unreadable (GOVERNANCE 2).
+def _review_items(
+    tree: RunTree,
+    payload: dict[str, Any],
+    export_ref: dict[str, str],
+    budget: _ImageBudget | None = None,
+) -> tuple[dict[str, Any], ...] | None:
+    budget = _ImageBudget() if budget is None else budget
     bundle = payload.get("bundle")
-    if bundle is None:
-        return None
     if not isinstance(bundle, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail="the Armarium export bundle is not an object",
+            detail=f"the Armarium export record {export_ref['relative_path']} has no bundle",
         )
     reference = bundle.get("reference")
-    path = reference.get("relative_path") if isinstance(reference, dict) else None
-    if not isinstance(path, str):
+    if not isinstance(reference, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail="the Armarium export bundle names no immutable reference",
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle has no "
+                "immutable reference"
+            ),
+        )
+    path = reference.get("relative_path")
+    expected_digest = reference.get("sha256")
+    exported_digest = bundle.get("sha256")
+    if (
+        not isinstance(path, str)
+        or not isinstance(expected_digest, str)
+        or exported_digest != expected_digest
+    ):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle reference "
+                "has no single digest"
+            ),
+        )
+    expected_path = tree.blob_path(ARMARIUM, expected_digest)
+    if path != expected_path:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle claims digest "
+                f"{expected_digest} but names {path}, not its content-addressed path "
+                f"{expected_path}"
+            ),
         )
     try:
-        data = tree.read_bytes(path)
-        expected = reference.get("sha256")
-        declared = bundle.get("sha256")
-        actual = digest_bytes(data)
-        if not isinstance(expected, str) or declared != expected or actual != expected:
+        # The same shape the image allowance exists for: the bundle zip is read
+        # whole to verify its digest, in the same projection pass that already
+        # holds every page and crop, so it spends from the same allowance and an
+        # oversized run refuses by name instead of by exhaustion (GOVERNANCE 2).
+        bundle_bytes = _budgeted_image_bytes(tree, path, budget, "the Armarium export bundle")
+        actual_digest = digest_bytes(bundle_bytes)
+        if actual_digest != expected_digest:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail=(
-                    f"the Armarium bundle at {path} has digest {actual}, not its sealed "
-                    f"reference {expected!r}"
+                    f"the Armarium export record {export_ref['relative_path']} bundle {path} "
+                    f"claims digest {expected_digest}, but its bytes have digest {actual_digest}"
                 ),
             )
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
             members = [
                 member for member in archive.infolist() if member.filename == _REVIEW_ITEMS_MEMBER
             ]
@@ -477,6 +677,22 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                     detail="the Armarium bundle contains more than one review-items.jsonl",
                 )
             member = members[0]
+            if member.compress_type != zipfile.ZIP_STORED:
+                # `build_armarium_bundle` writes every member stored, never
+                # compressed (armarium_export.py), for exactly this reason: a
+                # stored member's extracted size is bounded by its own physical
+                # bytes, while a compressed one can decompress far past them.
+                # `verify_export_bundle` already refuses this for the sealed
+                # package; the review surface reads the same bundle format and
+                # must refuse it here too, before decompressing anything.
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        f"the Armarium export record {export_ref['relative_path']} bundle "
+                        f"{path} member review-items.jsonl is compressed, not stored; a "
+                        "review bundle is only ever written stored"
+                    ),
+                )
             # Two faults, two sentences. Joined, a directory entry answered with
             # "exceeds the operator review limit" -- `file_size` is 0 for one --
             # and sent the operator looking for an oversized queue that does not
@@ -525,16 +741,47 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                         f"{MAX_REVIEW_ITEMS} records"
                     ),
                 )
-            items = tuple(json.loads(line) for line in lines)
-            if any(not isinstance(item, dict) for item in items):
-                raise OperatorError(
-                    ErrorCode.CONSOLE_TREE_UNREADABLE,
-                    detail="review-items.jsonl contains a row that is not an object",
+            # Parsed row by row rather than in one comprehension: the queue may
+            # hold up to MAX_REVIEW_ITEMS rows, and a refusal that names only
+            # the bundle leaves the operator to find the bad row by hand. The
+            # one-based number each item already carries is now in both
+            # refusals. Found by CodeRabbit.
+            parsed: list[dict[str, Any]] = []
+            for number, line in enumerate(lines, start=1):
+                try:
+                    row = json.loads(line)
+                except ValueError as error:
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            f"review-items.jsonl line {number} in bundle {path} is not "
+                            f"valid JSON: {error}"
+                        ),
+                    ) from error
+                if not isinstance(row, dict):
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            f"review-items.jsonl line {number} in bundle {path} is not an object"
+                        ),
+                    )
+                parsed.append(
+                    {
+                        "row": row,
+                        "record_ref": export_ref,
+                        "bundle_path": path,
+                        "member": _REVIEW_ITEMS_MEMBER,
+                        "line": number,
+                    }
                 )
-            return items
+            return tuple(parsed)
     except OperatorError:
         raise
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="review-items.jsonl could not be read"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"review-items.jsonl could not be read from bundle {path}: "
+                f"{type(error).__name__}: {error}"
+            ),
         ) from error

@@ -61,6 +61,13 @@ permission in the session, with this gate refusing everything that never saw a p
 CHALLENGE_BYTES = 8
 """Wide enough that a phrase cannot be guessed; short enough to retype from a screen."""
 
+PRICE_MOVE_MARKER = "the price may have changed between preview and confirmation"
+"""Gate-owned discriminator for two refusal meanings sharing one launch state.
+
+The operator surface must distinguish a price move from a mistyped phrase, so
+the producer and classifier share this spelling instead of duplicating it.
+"""
+
 
 def mint_challenge() -> str:
     """A fresh, unpredictable challenge for exactly one preview."""
@@ -333,8 +340,25 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
     source = Path(path)
     try:
         with source.open("rb") as handle:
-            raw = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+            data = handle.read()
+    except OSError as error:
+        raise SpendRefusal(f"cannot read spend policy {source}: {error}") from error
+    return load_spend_policy_bytes(data, source=source)
+
+
+def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> SpendPolicy:
+    """Parse a closed TOML policy from bytes the caller already holds.
+
+    A caller that publishes a digest beside the ceilings must hash and parse the
+    *same* bytes. Reading the file once to hash it and again to parse it lets a
+    policy that changed between the two reads — and was restored before the
+    confirming hash — show one file's limits under another file's digest.
+    Found by CodeRabbit.
+    """
+
+    try:
+        raw = tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise SpendRefusal(f"cannot read spend policy {source}: {error}") from error
     if not isinstance(raw, dict):
         raise SpendRefusal("spend policy root must be a TOML table")
@@ -546,9 +570,8 @@ def require_confirmation(value: str | None, expected: str) -> None:
         and value[:price_start] == expected[:price_start]
     ):
         raise SpendRefusal(
-            "typed confirmation does not match this preview's phrase; the price may "
-            "have changed between preview and confirmation -- re-run the preview and "
-            "confirm the current price; no paid action occurred"
+            f"typed confirmation does not match this preview's phrase; {PRICE_MOVE_MARKER}"
+            " -- re-run the preview and confirm the current price; no paid action occurred"
         )
     # The expected phrase is deliberately not reproduced here: this refusal is
     # printed and logged, and the phrase it would quote is still spendable
