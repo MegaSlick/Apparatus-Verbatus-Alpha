@@ -87,7 +87,6 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import crop_png, dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
-from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
@@ -96,18 +95,15 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_WITHHELD,
     SECONDARY_PROPOSER_CHAIR,
     StageContext,
-    adapter_recipe_for,
     continuation_for,
     current_recovery_request,
     fallback_page_act_key,
     fixture_serving_details,
-    open_context,
+    open_stage_context,
     page_residual_act_key,
-    refuse_halted_run,
     run_stage,
     stage_parser,
     validate_serving_provenance,
-    verify_predecessor_seal,
 )
 
 # Fields a Designator artifact may never carry, at any depth of its payload.
@@ -361,8 +357,9 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     shared Pillow fallback under the same pixel bound `dimensions` already
     falls back through — a third hand-rolled decode-and-fallback pair is what
     that module exists to prevent. Real ingress is still stopped earlier
-    (`_open`), so this changes nothing a run does today; what it changes is
-    that the decode is no longer what would stop it.
+    (`main`'s real-input refusal, before any page is decoded), so this changes
+    nothing a run does today; what it changes is that the decode is no longer
+    what would stop it.
     """
     page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = grayscale_rows(page_bytes)
@@ -2467,34 +2464,20 @@ def _regions_of(context, act_id: str) -> list[dict]:
     return records
 
 
-def _open(args, registry_factory) -> tuple[object, bool]:
-    """Open either a fixture stage context or the honest real-input boundary.
+def _open(args, registry_factory) -> tuple[StageContext, bool]:
+    """Open the run on either ingress route, and say which route it was.
 
-    Real ingress must verify the immediate Ink Map boundary and the underlying
-    Exemplar ledger before refusing the unimplemented structural-proposal work.
-    It must not fabricate fixture acts, successful no-op work, or a synthetic
-    hold that could make an unproposed corpus look exported.
+    The shared constructor decides the route from the run authority it read
+    once; the flag is read back off that same `context.run`, never from a second
+    read of `run.json`, so the route `main` acts on is the route the context was
+    built for. Real ingress must still verify the immediate Ink Map boundary and
+    the underlying Exemplar ledger before refusing the unimplemented
+    structural-proposal work. It must not fabricate fixture acts, successful
+    no-op work, or a synthetic hold that could make an unproposed corpus look
+    exported.
     """
-    tree = RunTree(Path(args.run_root), args.run_id)
-    run = tree.read_run()
-    mode = parse_ingress_record(run.get("ingress"))
-    if mode != REAL_INGRESS:
-        return open_context(args, DESIGNATOR, registry_factory=registry_factory), False
-    refuse_halted_run(tree, DESIGNATOR, args.hard_failure_config)
-    verify_predecessor_seal(tree, DESIGNATOR)
-    return (
-        StageContext(
-            tree=tree,
-            run=run,
-            fixture={},
-            scenario="real-submission",
-            stage=DESIGNATOR,
-            adapter_revision=adapter_recipe_for(run, DESIGNATOR),
-            args=args,
-            registry=None,
-        ),
-        True,
-    )
+    context = open_stage_context(args, DESIGNATOR, registry_factory=registry_factory)
+    return context, parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:

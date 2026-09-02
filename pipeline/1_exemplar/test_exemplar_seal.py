@@ -33,10 +33,13 @@ from common.exemplar_boundary import verify_sealed_page_pixels
 from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
-from operations.submit import submit
+from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
+DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
+DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
 def _load_exemplar_run():
@@ -914,3 +917,122 @@ def test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_
     sources = {row["ordinal"]: row for row in run["source_manifest"]}
     with pytest.raises(ContractError, match="would mint each act on it twice"):
         verify_exemplar_corpus_seal(tree, run, manifest, sources, {1: page}, {1: entry})
+
+
+def _real_submission(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, list[str]]:
+    """A real submission folder inside an approved storage root, with its ledger.
+
+    Returns the run root and the Door argv that names the folder, the filename
+    ledger and the data-gate policy -- the three things the real route needs and
+    the fixture route has no counterpart for.
+    """
+    approved = tmp_path / "approved"
+    source = approved / "source"
+    source.mkdir(parents=True)
+    for path, data in files.items():
+        target = source / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["storage_roots"] = [str(approved)]
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    ledger_path = approved / "source-ledger.json"
+    submit.submit(source, ledger_path, policy_path=policy_path)
+    door_argv = [
+        "--submission-folder",
+        str(source),
+        "--submission-manifest",
+        str(ledger_path),
+        "--data-gate-policy",
+        str(policy_path),
+    ]
+    return approved / "runs", door_argv
+
+
+def _run_program(program: Path, run_root: Path, run_id: str, *extra: str):
+    """Drive a stage program the way the orchestrator does, defaults and all."""
+    return subprocess.run(
+        [sys.executable, str(program), "--run-root", str(run_root), "--run-id", run_id, *extra],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete(tmp_path):
+    """The predecessor-seal check holds on the real route, not only the fixture one.
+
+    The real Exemplar used to build its context by hand and never asked for the
+    Door's completion seal, so a hand-driven Exemplar after a refusing Door still
+    sealed pages -- the gap the HANDOFF recorded. The operator case is the one
+    the Door's duplicate refusal exists for: one scan under two filenames. The
+    Door seals its duplicate report, refuses the run at `EXIT_FATAL`, and never
+    seals its boundary; the Exemplar must then refuse by name over that missing
+    boundary and leave the tree exactly as the Door left it.
+    """
+    data = png(4, 3)
+    run_root, door_argv = _real_submission(
+        tmp_path, {"FS-1234.png": data, "iPhone/FS-1234 copy.png": data}
+    )
+
+    door = _run_program(DOOR_CLI, run_root, "merged", *door_argv)
+    assert door.returncode == EXIT_FATAL, door.stderr
+    assert "derives one page identity from more than one submitted file" in door.stderr
+    tree = RunTree(run_root, "merged")
+    assert tree.read_run()["ingress"] == real_ingress_record()
+    door_kinds = {entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]}
+    assert "duplicate-report" in door_kinds, "the evidence is sealed before the run is refused"
+    assert "stage-seal" not in door_kinds, "a refused Door never completes its boundary"
+
+    before = _tree_bytes(run_root)
+    sealed = _run_program(EXEMPLAR_CLI, run_root, "merged")
+
+    assert sealed.returncode == EXIT_FATAL, sealed.stderr
+    assert "predecessor door has no stage-seal" in sealed.stderr
+    assert "Traceback" not in sealed.stderr
+    assert _tree_bytes(run_root) == before, "a refused open writes nothing"
+    assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
+def test_the_real_route_still_seals_behind_a_completed_door_and_reaches_the_designator(
+    tmp_path,
+):
+    """The only real path that works today, driven program by program.
+
+    Door, Exemplar and Ink Map complete over a real submission opened through
+    the shared constructor, and the Designator reaches its honest real-input
+    refusal -- the ledger reconciled, nothing fabricated -- without ever
+    touching the refusing fixture accessor a real context now carries.
+    """
+    run_root, door_argv = _real_submission(tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 2)})
+
+    assert _run_program(DOOR_CLI, run_root, "real", *door_argv).returncode == 0
+    sealed = _run_program(EXEMPLAR_CLI, run_root, "real")
+    assert sealed.returncode == 0, sealed.stderr
+    tree = RunTree(run_root, "real")
+    ledger_hashes = {row["ledger_sha256"] for row in tree.read_run()["source_manifest"]}
+    pages = [
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    ]
+    assert len(pages) == 2
+    assert {page["payload"]["ledger_sha256"] for page in pages} == ledger_hashes
+
+    ink_map = _run_program(INK_MAP_CLI, run_root, "real")
+    assert ink_map.returncode == 0, ink_map.stderr
+
+    boundary = _run_program(DESIGNATOR_CLI, run_root, "real")
+    assert boundary.returncode == EXIT_FATAL
+    assert "reconciled the Exemplar filename ledger" in boundary.stderr
+    assert "no proposals or holds were fabricated" in boundary.stderr
+    assert "asked its context for fixture declarations" not in boundary.stderr
+    assert "Traceback" not in boundary.stderr

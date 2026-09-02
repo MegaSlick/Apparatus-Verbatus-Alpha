@@ -39,17 +39,24 @@ and `require_some_admitted` raise — so the evidence is on disk and no `stage-s
 is, and the Exemplar's "predecessor door has no stage-seal" names a refused
 submission rather than a missing file.
 
-**On a real submission that sentence does not hold, and it is a gap rather than
-a design.** `run.py::_open` takes the real-ingress branch, which builds a
-`StageContext` directly instead of going through `common.stage.open_context` —
+**That sentence now holds on a real submission too, and it was a gap before it
+did.** Until the shared constructor landed, `run.py` built its real-ingress
+`StageContext` by hand instead of going through `common.stage.open_context` —
 the fixture/scenario binding it exists to check has nothing to compare on a real
-run — and `verify_predecessor_seal` is called from `open_context` alone. So a
-real run whose Door refused still seals its Exemplar pages if the programs are
-driven one at a time. The pipeline is not driven that way:
-`pipeline/orchestrator/run.py::invoke` refuses any stage exit outside
-complete/held/halted, so a Door at `EXIT_FATAL` stops the run there. Found while
-building the merged-page refusal below; `1_exemplar/run.py` is not that unit's
-file and the check is not moved here.
+run — and `verify_predecessor_seal` was called from `open_context` alone, so a
+real run whose Door refused still sealed its Exemplar pages when the programs
+were driven one at a time; only `pipeline/orchestrator/run.py::invoke`, which
+refuses any stage exit outside complete/held/halted, stood between a refused
+Door and a sealed corpus. The gap is closed here: the Exemplar, the Ink Map and
+the Designator all open through `common.stage.open_stage_context`, which decides
+the route from one read of the run authority and asks for the predecessor's
+completion seal on both routes, in the same order, before anything writes. A
+hand-driven Exemplar over a Door that never sealed its boundary now refuses with
+"predecessor door has no stage-seal" and leaves the tree byte-identical
+(`test_exemplar_seal.py` pins both). Two consequences ride the same change: the
+real Exemplar's `scenario` is `REAL_SCENARIO`, never the unchecked argv value it
+used to store, and its context carries the roster and the sealed digest map like
+every later stage's, checked name by name against the run before the seal check.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
