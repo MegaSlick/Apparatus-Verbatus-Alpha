@@ -30,6 +30,7 @@ from live_reader import EngineSignalRefusal
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
+from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import PERLECTOR
 from common.decoding import load_decoding_policy
@@ -41,6 +42,7 @@ from operations.serving.config import (
     load_serving_recipes,
     profile_preflight_digest,
 )
+from operations.serving.errors import ServiceStopError
 from operations.serving.fakes import (
     ABSENT,
     FakeEndpoint,
@@ -161,7 +163,7 @@ def _live_catalogue(destination: Path) -> Path:
     return path
 
 
-def _chain_through_attestatores(root: Path, catalogue: Path) -> None:
+def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = "happy") -> None:
     for program in CHAIN_THROUGH_ATTESTATORES:
         result = subprocess.run(
             [
@@ -172,7 +174,7 @@ def _chain_through_attestatores(root: Path, catalogue: Path) -> None:
                 "--run-id",
                 "r",
                 "--scenario",
-                "happy",
+                scenario,
                 "--serving-recipes-config",
                 str(catalogue),
             ],
@@ -201,6 +203,33 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 @pytest.fixture()
 def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
     template, catalogue = chained_run
+    root = tmp_path / "runs"
+    shutil.copytree(template, root)
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def declaring_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """A run tree sealed under `no-readable-text-reading` throughout.
+
+    `config_digest` binds the scenario along with everything else
+    (`run_config_bindings`), so a live Perlector pass over this scenario
+    must be sealed by the whole chain under it — asking a run built as
+    `happy` to read as a different scenario is refused by `open_context`
+    itself (`IncompatibleReuse`) before the Perlector's own guard is ever
+    reached, and rightly so: it is a different question from the one this
+    guard answers.
+    """
+    base = tmp_path_factory.mktemp("live-perlector-declaring")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, scenario="no-readable-text-reading")
+    return root, catalogue
+
+
+@pytest.fixture()
+def declaring_run(declaring_chained_run, tmp_path: Path) -> tuple[Path, Path]:
+    template, catalogue = declaring_chained_run
     root = tmp_path / "runs"
     shutil.copytree(template, root)
     return root, catalogue
@@ -259,8 +288,18 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
     return factory
 
 
-def _run_perlector(live_run, tmp_path: Path, monkeypatch, *answers: ScriptedAnswer):
-    """Run the real stage in this process against a scripted endpoint."""
+def _run_perlector(
+    live_run, tmp_path: Path, monkeypatch, *answers: ScriptedAnswer, scenario: str = "happy"
+):
+    """Run the real stage in this process against a scripted endpoint.
+
+    `scenario` names only this invocation's own `--scenario`, independent of
+    whatever scenario built the run tree ahead of it (always `"happy"` — see
+    `_chain_through_attestatores`): `open_context` binds `context.scenario` and
+    `context.fixture` from this process's own `args.scenario`
+    (`common/stage.py`), not from anything sealed upstream, exactly as it does
+    for a real Perlector invocation of a resumed run.
+    """
     root, catalogue = live_run
     endpoint = FakeEndpoint(
         served_model_id=SERVED_MODEL_ID,
@@ -284,7 +323,7 @@ def _run_perlector(live_run, tmp_path: Path, monkeypatch, *answers: ScriptedAnsw
             "--run-id",
             "r",
             "--scenario",
-            "happy",
+            scenario,
             "--serving-recipes-config",
             str(catalogue),
             "--placement-tier",
@@ -543,6 +582,54 @@ def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     assert len(_published_readings(root)) == sealed
 
 
+def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
+    declaring_run, tmp_path, monkeypatch
+):
+    """A declared `reading_failure` is a stand-in for a real engine's own
+    report (`_reconciled_truncation`'s own docstring). Once a live chair has
+    answered, there is a real report, and the fixture's stand-in must not be
+    allowed to override it -- letting `no-readable-text` blank a real reading
+    would be a declared value standing where a measurement belongs
+    (GOVERNANCE 10). `declaring_run` is sealed under `no-readable-text-reading`
+    throughout the chain, so `config_digest` matches this same scenario."""
+    root, _catalogue = declaring_run
+    with pytest.raises(perlector.ContractError, match="declares reading outcome"):
+        _run_perlector(
+            declaring_run,
+            tmp_path,
+            monkeypatch,
+            ScriptedAnswer(content=READING, finish_reason="stop"),
+            scenario="no-readable-text-reading",
+        )
+    assert _published_readings(root) == [], (
+        "a refused act must publish nothing rather than a reading contradicted "
+        "by its own declared outcome"
+    )
+
+
+def test_a_duplicated_page_render_input_still_refuses_the_double_count(live_run):
+    """The dedup added for a repeated re-proof reference must stay scoped to
+    the re-proof: `row["inputs"]` (the image, testimonia, attachment and prior
+    references) can never legitimately repeat, and a duplicate there must
+    still hit the envelope's own two-digests-for-one-path refusal rather than
+    being silently absorbed by `_distinct_inputs` across the whole list."""
+    page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
+    row_inputs = [page, page]
+    reproof_inputs: list[dict[str, str]] = []
+    deduped = [
+        reference
+        for reference in perlector._distinct_inputs(reproof_inputs)
+        if reference not in row_inputs
+    ]
+    reading_inputs = row_inputs + deduped
+    assert reading_inputs.count(page) == 2, (
+        "a page repeated in row['inputs'] must reach the envelope's own "
+        "double-count refusal unchanged, not be collapsed here"
+    )
+    with pytest.raises(SchemaRefusal, match="is listed twice"):
+        validate_input_refs(reading_inputs)
+
+
 # --- the refusals this wiring adds --------------------------------------------
 
 
@@ -584,12 +671,43 @@ def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
         }
     )
     honest = {"relative_path": result.relative_path, "sha256": digest_bytes(b"a retained response")}
-    assert perlector.engine_call_inputs(
-        context, {"raw_response_ref": honest, "call_record_ref": honest}
-    ) == [honest, honest]
+    full_call = {
+        "raw_response_ref": honest,
+        "call_record_ref": honest,
+        "response_sha256": honest["sha256"],
+        "finish_reason": "stop",
+        "served_model_id": SERVED_MODEL_ID,
+    }
+    assert perlector.engine_call_inputs(context, full_call) == [honest, honest]
     lying = {"relative_path": result.relative_path, "sha256": "c" * 64}
     with pytest.raises(SchemaRefusal, match="retained bytes at that path"):
-        perlector.engine_call_inputs(context, {"raw_response_ref": lying})
+        perlector.engine_call_inputs(
+            context, {**full_call, "raw_response_ref": lying, "response_sha256": lying["sha256"]}
+        )
+
+
+def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
+    """`engine_call_inputs` is the one publication path with no closed schema
+    until this refusal: every other field's shape is checked, and a live
+    reading's `engine_call` should not be the one exception."""
+    with pytest.raises(SchemaRefusal, match="wrong shape"):
+        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}})
+
+
+def test_an_engine_call_with_two_digests_for_one_response_is_refused():
+    """`response_sha256` and `raw_response_ref["sha256"]` must never disagree --
+    two digests for one response is exactly the ambiguity a content-addressed
+    store is supposed to make impossible."""
+    ref = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
+    engine_call = {
+        "raw_response_ref": ref,
+        "call_record_ref": ref,
+        "response_sha256": "b" * 64,
+        "finish_reason": "stop",
+        "served_model_id": SERVED_MODEL_ID,
+    }
+    with pytest.raises(SchemaRefusal, match="two different digests"):
+        perlector.engine_call_inputs(SimpleNamespace(), engine_call)
 
 
 def test_a_fixture_reading_carries_no_engine_call_field():
@@ -610,3 +728,121 @@ def test_a_fixture_reading_carries_no_engine_call_field():
     fields = perlector.with_engine_call(payload, live, frozenset({"text"}))
     assert payload["engine_call"] == {"finish_reason": "stop"}
     assert fields == frozenset({"text", "engine_call"})
+
+
+# --- the shutdown-before-seal ordering, and the production factory ------------
+
+
+def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
+    live_run, tmp_path, monkeypatch
+):
+    """HANDOFF.md: 'One chair, started late, stopped before the seal.' A
+    mutation probe deleting `service.close()` ahead of `context.seal_boundary()`
+    left the rest of this module green, so nothing else here pins the ordering.
+    This makes the shutdown itself fail and checks the seal was never reached:
+    if `close()` ran *after* the seal, the failure would either be swallowed by
+    `main`'s own `finally` or reported over an already-sealed stage."""
+    root, catalogue = live_run
+    endpoint = FakeEndpoint(
+        served_model_id=SERVED_MODEL_ID,
+        blob_store=_TreeBlobs(root),
+        assert_retained_before_next_request=True,
+    )
+    answer = ScriptedAnswer(content=READING, finish_reason="stop")
+    endpoint.script(answer, *([answer] * 60))
+    inner_factory = _serving_factory(
+        endpoint, catalogue, tmp_path / "logs", tmp_path / "pod-gpu.lock"
+    )
+
+    class _ExitFails:
+        """Wraps the real client so shutdown itself fails, after really
+        shutting down -- proving the ordering, not merely leaking a process."""
+
+        def __init__(self, client: ChairClient) -> None:
+            self._client = client
+
+        def __enter__(self):
+            self._client.__enter__()
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._client.__exit__(*exc)
+            raise ServiceStopError("simulated shutdown verification failure")
+
+        def __getattr__(self, name):
+            return getattr(self._client, name)
+
+    def failing_factory(context, chair, tier):
+        return _ExitFails(inner_factory(context, chair, tier))
+
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--serving-recipes-config",
+            str(catalogue),
+            "--placement-tier",
+            TIER,
+        ],
+    )
+    with pytest.raises(ServiceStopError, match="simulated shutdown"):
+        perlector.main(serving_factory=failing_factory)
+    seal_dir = root / "r" / "4_perlector" / "artifacts" / "stage-seal"
+    assert not seal_dir.exists() or not any(seal_dir.iterdir()), (
+        "the completion boundary must never be written over a chair whose "
+        "shutdown could not be verified"
+    )
+
+
+def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(live_run, monkeypatch):
+    """`default_serving_factory` is the only path a real run takes, and nothing
+    else in this suite ever constructs it -- the injected `_serving_factory`
+    above deliberately diverges on the two things production alone decides:
+    where the serving log directory and the pod-GPU residency lease live.
+    Constructing the client starts nothing (`ChairClient.__init__` only stores
+    its manager), so this proves both locations, and the manager keyword set
+    that builds them, without starting a service or needing a card."""
+    root, catalogue = live_run
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--serving-recipes-config",
+            str(catalogue),
+            "--placement-tier",
+            TIER,
+        ],
+    )
+    args = perlector.stage_parser(perlector.__doc__.splitlines()[0]).parse_args()
+    context = perlector.open_context(args, PERLECTOR, registry_factory=ChairRegistry.from_toml)
+    decoding_policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
+    recipes = load_serving_recipes(catalogue)
+    factory = perlector.default_serving_factory(
+        recipes,
+        decoding_config_sha256=decoding_sha256,
+        record_temperature=decoding_policy["reading_of_record"]["temperature"],
+    )
+    client = factory(context, _perlector_identity(), TIER)
+    tree_root = context.tree.root
+    assert client._manager.log_root.is_relative_to(tree_root)
+    assert client._manager.residency_lease.path.is_relative_to(tree_root)
+    # Neither write disturbs the witnessed inventory (`build_manifest` walks
+    # only `<stage>/artifacts`, the blob inventory only `<stage>/blobs`), so the
+    # seal must still succeed with these paths named but nothing started.
+    context.seal_boundary()

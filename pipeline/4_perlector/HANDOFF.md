@@ -608,6 +608,21 @@ that is not a reading at all (`parse_problem`): a Perlectio has no `failed` shap
 `outcome="failed"` is produced nowhere in `run.py` — and minting one here would invent a
 record kind this section does not own.
 
+**A declared reading failure never reaches a live chair's answer.** `declared_failure`
+stands in for a real engine's own report exactly once, before there is one — the
+fixture's own docstring says so. In live mode there always is one by the time
+`declared_reading_failure` is consulted, so the establishing pass refuses outright
+(`serving_mode == "live" and declared_failure is not None`) rather than letting a
+declared `no-readable-text` blank real transcribed ink, or a declared `truncated`
+overwrite a real `complete`, which would be a declared value standing where a
+measurement belongs (GOVERNANCE 10). The guard is one branch that never executes in
+fixture mode, so it does not move the acceptance pin. Proven end to end in
+`test_live_perlector.py::test_a_live_pass_refuses_a_fixture_declared_reading_failure`
+against a run tree sealed under `no-readable-text-reading` throughout — a live pass
+cannot honestly mix a `happy`-sealed run tree with a different Perlector-only scenario,
+because `config_digest` binds the scenario too, so the test builds its own chain rather
+than pointing a `happy` run at a different `--scenario`.
+
 **`engine_call`, and what it names.** A live reading's payload carries
 `engine_call = {call_record_ref, raw_response_ref, response_sha256, finish_reason,
 served_model_id}`, and the envelope binds both blobs as direct inputs, re-derived from
@@ -621,6 +636,19 @@ widens the closed field set for the record that carries it (`with_engine_call`, 
 `_NOT_RUN_CAPACITY_FIELDS` precedent) rather than becoming optional inside one set. A
 `FixtureReader` result never sets it, so fixture payloads and their envelopes are
 byte-for-byte what they were, which is what leaves the acceptance pin where it is.
+`engine_call_inputs` refuses a malformed `engine_call` by name — the wrong key set, or
+`response_sha256` disagreeing with `raw_response_ref["sha256"]` — rather than raising a
+bare `KeyError` or publishing two digests for one response.
+
+**`_distinct_inputs` is scoped to the re-proof, never the whole input list.** The
+envelope refuses a repeated path outright, even at an identical digest
+(`validate_input_refs`) — that is the double-count guard GOVERNANCE 5's "one text" rests
+on. The one place a duplicate can be legitimate is a live re-proof answering with the
+same bytes as the establishing call, which content-addresses to the same path twice; the
+Pass-C publication path therefore dedups only `reproof_inputs`, and only against
+`row["inputs"]` (the image, testimonia, attachment and prior references, which can never
+legitimately repeat) — a duplicate inside `row["inputs"]` itself still reaches the
+envelope's own refusal unchanged.
 
 **The receipt is the live one.** `provenance_for(..., receipt_ref=…)` takes the receipt
 the serving manager published and `ChairClient.__enter__` re-read through the tree and
@@ -634,7 +662,12 @@ act that actually needs a reading, so a resumed pass whose acts are all sealed n
 loads a model onto a card that bills by the hour. `ResidentChair` owns the shutdown:
 `_read_the_acts` closes it before `seal_boundary`, so a failed shutdown is never
 reported over a sealed stage, and `main`'s `finally` catches every path that raised
-first. A `ServiceStopError` propagates — an unverified shutdown is fatal.
+first. A `ServiceStopError` propagates — an unverified shutdown is fatal. This ordering
+is pinned by `test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written`,
+which wraps the injected client so `__exit__` raises after really shutting the fake
+service down, and asserts the run tree's `stage-seal` directory stays empty — a
+mutation probe deleting the `service.close()` call ahead of the seal left the rest of
+the module green before this test existed.
 
 **The live resume rule.** An act whose `perlectio` already exists at
 `perlegere:<ordinal>` is never asked again (`_reading_already_sealed`). Fixture readers
