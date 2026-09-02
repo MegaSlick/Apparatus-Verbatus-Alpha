@@ -53,7 +53,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
-        formats_config=ROOT / "config" / "armarium_formats.toml",
+        formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,
@@ -112,26 +112,53 @@ def test_orchestrator_forwards_placement_tier_only_when_set(tmp_path):
     assert command[command.index("--placement-tier") + 1] == "generic-48gb"
 
 
-def test_invoke_does_not_crash_on_a_namespace_that_declares_placement_tier(tmp_path):
-    """The stand-in must carry the attribute `invoke` reads directly.
+def test_invoke_namespace_fields_mirrors_the_argv_surface_invoke_reads():
+    """This file's own stand-in must carry exactly the attributes `invoke` reads.
 
-    `invoke` reads `args.placement_tier` by name, exactly like every sibling
-    flag (`pdf_target_dpi`, `corpus_register`, ...) — no `getattr` fallback.
-    A namespace built without the attribute would raise `AttributeError`
-    before a single stage ran; this proves the documented namespace shape
-    (mirrored in `_orchestrator_namespace_fields`, which U7p also updated to
-    carry `placement_tier=None`) is what `invoke` actually needs and gets.
+    A bidirectional AST guard, mirrored from
+    `test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to`
+    (pipeline/orchestrator/test_run_security.py): parse `invoke` and
+    `require_coherent_ingress_options` in the real orchestrator module and
+    collect every `args.<attr>` read, then require that set to match
+    `_invoke_namespace_fields` exactly in both directions. A stand-in that
+    merely repeats a caller's assertion (the previous version of this test)
+    cannot fail when `invoke`'s surface moves; this one does — it is what
+    caught pr/14's dropped `placement_tier` attribute.
     """
-    orchestrator = _orchestrator_module("orchestrator_placement_tier_namespace")
-    import types
+    import ast
 
-    orchestrator.subprocess = types.SimpleNamespace(
-        run=lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", "")
+    tree = ast.parse((ROOT / "pipeline" / "orchestrator" / "run.py").read_text(encoding="utf-8"))
+    reads: set[str] = set()
+    for name in ("invoke", "require_coherent_ingress_options"):
+        target = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        for node in ast.walk(target):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "args"
+            ):
+                reads.add(node.attr)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "args"
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                reads.add(node.args[1].value)
+
+    supplied = set(_invoke_namespace_fields(Path("/tmp")))
+    assert reads - supplied == set(), (
+        f"invoke() reads {sorted(reads - supplied)}, which _invoke_namespace_fields never "
+        "sets; a probe built from it would raise AttributeError before asserting anything"
     )
-    args = Namespace(**_invoke_namespace_fields(tmp_path))
-    program = orchestrator.STAGE_PROGRAMS["door"]
-
-    orchestrator.invoke(program, args)  # must not raise AttributeError
+    assert supplied - reads == set(), (
+        f"_invoke_namespace_fields sets {sorted(supplied - reads)}, which invoke() never reads"
+    )
 
 
 def test_placement_tier_flag_defaults_to_none():
@@ -169,4 +196,8 @@ def test_placement_tier_is_absent_from_the_sealed_config_digests():
     assert "placement_tier" not in bindings["sealed_config_digests"]
     assert "placement-tier" not in bindings["sealed_config_digests"]
     assert "tier" not in bindings["sealed_config_digests"]
-    assert "placement_tier" not in bindings["serving_config_inputs"]
+    assert set(bindings["serving_config_inputs"]) == {
+        "schema",
+        "serving_recipes_sha256",
+        "pod_placement_sha256",
+    }
