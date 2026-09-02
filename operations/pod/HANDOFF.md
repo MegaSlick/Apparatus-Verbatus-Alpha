@@ -233,3 +233,14 @@ separate ask.
    observer against v1's adapter now and migrating later means building it twice.
    Whether to build the observer before or after the v2 migration is next-section
    engineering, not named here as a decision for Tyrel.
+
+## Provenance correction
+
+Four commits on this branch — `ffc9d4ebc9` (the U4 armer build),
+`dda1a1776c`, `0e30c5ef7b` and `c83f96b79d` (the U4, U6 and U7 review-fix
+commits) — carry a `Co-Authored-By: Claude Fable 5.1` trailer inherited from
+the host harness's attribution line. The seats that wrote those lines were an
+Opus 5 seat (the first) and Sonnet 5 seats (the three fixes); the Fable seat
+in this session was the host orchestrator and wrote none of them. History
+rewriting is reserved to Tyrel, so the record stands here rather than in the
+trailers.
