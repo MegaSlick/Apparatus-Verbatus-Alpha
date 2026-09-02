@@ -307,14 +307,14 @@ check.
   `--page-witness-file` lets an operator supply a rendered page instead.
   `test_bootstrap_main.py` proves the wiring green through the real registry
   over the committed model fixtures and the serving package's fakes, and red
-  by chair name when a row is unproven. **Two things keep the first real
-  `PREFLIGHT` red, and neither is a wiring fault:** every vLLM row in
+  by chair name when a row is unproven. **One thing keeps the first real
+  `PREFLIGHT` red, and it is not a wiring fault:** every vLLM row in
   `config/serving_recipes_real.toml` is `preflight_state = "unproven"`, which
   `ServingManager.start` refuses by name before it launches anything, so a
   reviewer must stamp rows proven first (the serving README says that happens
-  after a real-silicon preflight — a circle this unit names rather than cuts);
-  and the real roster's serving stack cannot be installed at all, see
-  "The serving stack cannot be locked yet" below. Both the ordinary hold and the `--hold-only` drill
+  after a real-silicon preflight — a circle this unit names rather than cuts).
+  The stack those rows name is installable now, see
+  "The serving stack, re-planned and locked" below. Both the ordinary hold and the `--hold-only` drill
   hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer
   factory reads), so this process's own end approximately coincides with the
   pod-side timer closing the pod regardless. Refusals precede any action: a
@@ -584,17 +584,22 @@ an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
-## The serving stack cannot be locked yet
+## The serving stack, re-planned and locked
 
-Nothing in `pyproject.toml` or `uv.lock` names vLLM. `bootstrap.py` runs
-`uv sync --locked --frozen`, `operations/serving/manager.py` launches
-`sys.executable -m vllm` and checks `importlib.metadata` for every
-`required_packages` pin in the chosen row, and `config/serving_recipes_real.toml`
-pins `vllm 0.10.1`, `transformers 4.57.1`, `qwen-vl-utils 0.0.14` and, for the
-Perlector, `flash-attn 2.7.4.post1`. The pod-run seam unit tried to add a `pod`
-dependency group carrying exactly those pins under
-`sys_platform == 'linux' and platform_machine == 'x86_64'` markers, and `uv lock`
-refused it:
+The stack the real roster asks for is now a `pod` dependency group in
+`pyproject.toml`, resolved into `uv.lock`. Every vLLM row in
+`config/serving_recipes_real.toml` names the same three packages, and the group
+carries those exact versions under
+`sys_platform == 'linux' and platform_machine == 'x86_64'` markers:
+
+| Package | Pin | Why this one |
+|---|---|---|
+| `vllm` | `0.27.1` | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
+| `transformers` | `5.14.1` | The version the vLLM 0.27 line's own requirements were bumped to; above vLLM's `transformers >= 5.5.3` floor and above the Perlector's stated `>= 5.8.0` |
+| `qwen-vl-utils` | `0.0.14` | Unchanged; latest, and its dependencies are pure-Python |
+
+**Why the old pins could not be locked.** The catalogue previously pinned
+`vllm 0.10.1` / `transformers 4.57.1`, and `uv lock` refused the group outright:
 
 > Because transformers==4.57.1 depends on huggingface-hub>=0.34.0,<1.0 and
 > verbatus:pod depends on transformers==4.57.1, we can conclude that verbatus:pod
@@ -602,24 +607,72 @@ refused it:
 > huggingface-hub==1.26.0, we can conclude that your project and verbatus:pod are
 > incompatible.
 
-Probed further, off-tree: no `transformers` 4.57.x accepts `huggingface-hub` 1.x,
-and with `transformers` left free beside `vllm==0.10.1` the resolver picks
-`transformers 5.16.1` — a pairing `vllm 0.10.1` was never built against, which
-would lock, install several gigabytes of wheels on a billing card, and then be
-refused by the manager's own pin check (or fail to import) for every chair.
-`flash-attn 2.7.4.post1` does lock from its sdist, so that pin is not the
-obstacle. **The recipe's `vllm`/`transformers` pair has to be re-planned
-against a `huggingface_hub` 1.x-compatible stack before any `pod` group can
-exist**; that is a reviewed edit to `config/serving_recipes_real.toml` (and, once
-the pins change, a fresh real-silicon preflight before any row is stamped
-proven), which this unit does not own. Until then `bootstrap.py`'s sync is
-unchanged and installs no serving stack; `operations/pod/test_pod_run.py` carries
-the group-to-recipe reconciliation as a strict expected failure that turns red the
-day the group lands, so it goes live instead of lapsing. When it does land, the
-wheel download (vLLM, torch and the CUDA libraries — on the order of ten
-gigabytes) happens inside `UV_ENVIRONMENT` on the billing card, into the
-container-local `UV_CACHE_DIR` `bootstrap.py` already names and warns about; it
-is paid once per pod and never survives one.
+No `transformers` 4.57.x accepts `huggingface-hub` 1.x, so the pair itself had to
+move rather than the project's hub pin.
+
+**What the four chairs actually need, read from their own configuration.** Every
+version below was read on 2026-09-02 from the cited page.
+
+- Chandra-2 (`datalab-to/chandra-ocr-2`, Designator structure and Attestator 1)
+  and the Perlector (`Qwen/Qwen3.8-27B`) both declare
+  `"architectures": ["Qwen3_5ForConditionalGeneration"]`, `"model_type":
+  "qwen3_5"` — a multimodal architecture, not the text-only Qwen3.5 — with
+  `transformers_version` `5.2.0` and `5.8.0.dev0` respectively
+  (`huggingface.co/datalab-to/chandra-ocr-2/raw/main/config.json`,
+  `huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json`).
+- The DAI fine-tune (`Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
+  Attestator 2) and Churro-3B (`stanford-oval/churro-3B`, Attestator 3) both
+  declare `Qwen2_5_VLForConditionalGeneration` / `qwen2_5_vl`, saved by
+  `transformers` `5.2.0` and `4.51.3` (their `raw/main/config.json`). Churro's
+  card names `Qwen/Qwen2.5-VL-3B-Instruct` as its base.
+- vLLM's own recipe page for `Qwen/Qwen3.8-27B` (`recipes.vllm.ai/Qwen/Qwen3.8-27B`)
+  states **vLLM 0.17.0+** and **transformers >= 5.8.0**. Only its DFlash2
+  speculative decoding wants `>= 0.28.0`, and no row here asks for that.
+- vLLM v0.27.1's model registry
+  (`raw.githubusercontent.com/vllm-project/vllm/v0.27.1/vllm/model_executor/models/registry.py`)
+  lists `Qwen3_5ForConditionalGeneration` **and**
+  `Qwen2_5_VLForConditionalGeneration` in `_MULTIMODAL_MODELS`, and the tag's
+  `docs/models/supported_models.md` carries both rows. **One release covers all
+  four chairs; no chair had to be split off onto transformers-direct serving.**
+
+**Why 0.27.1 and not 0.28.0, the newest release.** vLLM 0.28.0 (PyPI upload
+2026-08-26) declares `huggingface_hub>=1.27.0` directly in its metadata, which
+collides with the project's `huggingface_hub==1.26.0`. vLLM 0.27.1 (PyPI upload
+2026-08-11) declares no `huggingface_hub` requirement at all — its hub floor
+arrives only through `transformers`, whose `5.14.1` metadata asks for
+`huggingface-hub<2.0,>=1.5.0`. So 0.27.1 locks beside the project's pin and
+0.28.0 cannot, and nothing in 0.28.0's notes is needed by any chair here.
+
+**Why `flash-attn` was dropped rather than re-pinned.** The Perlector's row used
+to carry `flash-attn 2.7.4.post1`. vLLM does not depend on the PyPI `flash-attn`
+package: v0.27.1's `qwen2_5_vl.py` imports no `flash_attn`, selecting a backend
+through vLLM's own `AttentionBackendEnum` registry instead, and vLLM ships its
+own FlashAttention build. Meanwhile `flash-attn` publishes **no wheel** — its
+latest release, `2.8.3.post1`, is an sdist only — so keeping the pin would have
+meant an hours-long nvcc build against `torch 2.13.0` on a rented card, to
+satisfy a pin the server never imports. Dropping it removes a failure mode and
+costs nothing.
+
+**What is proven, and what only a boot can prove.** Proven here: `uv lock`
+resolves the group (`vllm 0.27.1`, `transformers 5.14.1`, `torch 2.13.0`, 173
+packages added, no previously locked version changed), `uv lock --check` is
+clean, and `uv sync --frozen --python 3.12 --group test --group audit` still
+succeeds on macOS, resolving none of the pod group — the markers hold.
+**Unproven, and only a boot proves it: that the wheels install on the pod image
+and that the four sets of weights actually load and answer under this release.**
+Vendor metadata says the architectures are registered; it does not say these
+specific checkpoints run. Every row therefore stays `preflight_state =
+"unproven"`, and `ServingManager.start` still refuses each by name until a
+reviewer stamps it after a real-silicon preflight.
+
+`bootstrap.py`'s `uv sync` now carries `--group pod`, and its journal records
+`"groups": ["pod"]`. The wheel download (vLLM, torch and the CUDA libraries — on
+the order of ten gigabytes) happens inside `UV_ENVIRONMENT` on the billing card,
+into the container-local `UV_CACHE_DIR` `bootstrap.py` already names and warns
+about; it is paid once per pod and never survives one.
+`operations/pod/test_pod_run.py` holds the group and the catalogue to the same
+bytes as a live test — it was a strict expected failure while no group could
+exist, and it is now the guard against the two drifting apart.
 
 ## First gated live-pod checklist
 
@@ -705,8 +758,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   preflight. The committed preflight and roster are fixture and planning evidence, not a
   measured assembly. `bootstrap_main`'s `PREFLIGHT` is now the real wiring (registry
   cache verification and a served golden-page smoke through `ServingManager`); before
-  it can go green on real silicon the serving stack must be installable (see "The
-  serving stack cannot be locked yet") and each real row must be stamped proven.
+  it can go green on real silicon each real row must be stamped proven, and the
+  locked serving stack (see "The serving stack, re-planned and locked") must
+  actually install and load — record whether `uv sync --group pod` completed, how
+  long the wheel download took, and whether each chair's weights loaded under
+  `vllm 0.27.1`, since no offline check can answer that.
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
@@ -765,7 +821,7 @@ One more, found while wiring the pod run seam. Tyrel's to accept or send back:
 
 | # | What is deferred | Status |
 |---|---|---|
-| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (see "The serving stack cannot be locked yet") | Open. Closes when: the recipe's `vllm`/`transformers` pair is re-planned against a `huggingface_hub` 1.x-compatible stack by a reviewed config edit, the `pod` group is added with those exact pins, and `test_pod_run.py`'s strict expected failure flips. |
+| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (see "The serving stack cannot be locked yet") | **Closed.** Every named condition is met: the pair was re-planned onto `vllm 0.27.1` / `transformers 5.14.1` (researched against the four chairs' own `config.json` files and vLLM's v0.27.1 registry, cited in "The serving stack, re-planned and locked"), the `pod` group carries exactly those pins under Linux/x86_64 markers, `uv lock` resolves, `bootstrap.py` syncs `--group pod`, and `test_pod_run.py`'s expected failure is now a live test binding the group to the catalogue. `flash-attn` was dropped rather than re-pinned, for the reasons given there. **What this does not close:** no wheel has been installed and no weight loaded — the rows stay `preflight_state = "unproven"`, and the first boot is what proves the stack runs. |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
 

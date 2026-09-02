@@ -31,7 +31,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -59,7 +59,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -87,7 +87,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -115,7 +115,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -143,7 +143,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -171,7 +171,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -201,7 +201,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -229,7 +229,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -257,7 +257,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -285,7 +285,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -313,7 +313,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -341,7 +341,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -395,7 +395,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -423,7 +423,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -451,7 +451,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048

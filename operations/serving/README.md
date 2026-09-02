@@ -68,6 +68,23 @@ interpreter is refused at construction unless the caller also supplies the
 pin would pass against distributions the engine never imports, and the launch
 audit's `runtime_packages.observed` would measure the wrong Python.
 
+**Where the pinned stack comes from.** This package asserts the pins; it never
+installs them. For the real catalogue the installer is the pod: `pyproject.toml`
+carries a `pod` dependency group — `vllm 0.27.1`, `transformers 5.14.1`,
+`qwen-vl-utils 0.0.14`, under `sys_platform == 'linux' and platform_machine ==
+'x86_64'` markers — resolved in `uv.lock`, and `operations/pod/bootstrap.py`
+syncs it with `--group pod`. Those versions and every
+`required_packages` row in `config/serving_recipes_real.toml` are the same
+bytes, and `operations/pod/test_pod_run.py` fails if they ever stop being: a
+group that drifted from the catalogue would mean a pod that downloads about ten
+gigabytes of wheels and is then refused by the pin assertion above, on a billing
+card. `operations/pod/README.md`'s "The serving stack, re-planned and locked"
+carries why those three versions and no others, chair by chair, with the vendor
+pages and the date they were read. Nothing there is a claim that the stack has
+run: the versions were chosen from published metadata, every real row is still
+`unproven`, and the first boot is what turns an installable stack into a served
+one.
+
 The command uses the verified base snapshot; gives the API a stable
 `--served-model-name`; and passes the typed profile flags. For a Hugging Face
 chair it duplicates the exact commit in `--revision` and

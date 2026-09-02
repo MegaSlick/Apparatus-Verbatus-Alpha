@@ -633,28 +633,36 @@ def _recipe_pins() -> dict[str, str]:
 
 
 def test_the_real_catalogue_pins_one_serving_stack() -> None:
-    """Every vLLM row names the same versions; the group would carry exactly these."""
+    """Every vLLM row names the same versions; the group carries exactly these.
+
+    The stack is the one researched for the four ruled chairs: vLLM 0.27.1 registers
+    both architectures the roster declares — `Qwen3_5ForConditionalGeneration`
+    (Chandra-2 and the Perlector) and `Qwen2_5_VLForConditionalGeneration` (the DAI
+    fine-tune and Churro-3B) — and, unlike 0.28.0, states no direct
+    `huggingface_hub` floor, so the project's `huggingface_hub==1.26.0` stands. No
+    `flash-attn`: vLLM brings its own FlashAttention through its attention backend
+    registry, and the PyPI package is sdist-only.
+    """
 
     pins = _recipe_pins()
 
-    assert set(pins) == {"vllm", "transformers", "qwen-vl-utils", "flash-attn"}
-    assert pins["vllm"] == "0.10.1"
+    assert set(pins) == {"vllm", "transformers", "qwen-vl-utils"}
+    assert pins["vllm"] == "0.27.1"
+    assert pins["transformers"] == "5.14.1"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=KeyError,
-    reason=(
-        "no `pod` dependency group can be locked today: transformers==4.57.1 requires "
-        "huggingface-hub<1.0 while the project pins huggingface_hub==1.26.0 (uv's own "
-        "resolution, recorded in operations/pod/README.md). Strict, so the day the group "
-        "lands this reconciliation goes live instead of lapsing. `raises=KeyError` narrows "
-        "the expected failure to the group's absence: once a `pod` group exists with the "
-        "wrong pins the assertion below fails loudly instead of being absorbed, and once it "
-        "carries exactly the recipe's pins the marker XPASSes strictly, forcing removal."
-    ),
-)
 def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:
+    """The locked group and the catalogue's rows are the same bytes, both ways.
+
+    This was a strict expected failure while no `pod` group could be locked at all
+    (`transformers==4.57.1` wanted `huggingface-hub<1.0`). The group exists now, so
+    the reconciliation is live: `ServingManager` checks each `required_packages` pin
+    through `importlib.metadata` before it launches, and a group that drifted from
+    the catalogue would mean a pod that installs the stack and is then refused.
+    Every requirement must also carry the Linux/x86_64 marker, which is what keeps a
+    laptop `uv sync` from resolving torch.
+    """
+
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     group = pyproject["dependency-groups"]["pod"]
     marker = "sys_platform == 'linux' and platform_machine == 'x86_64'"

@@ -379,6 +379,8 @@ one without the other is refused.
   be a lie on a money path. The honest deliverable is the finding, deferral 04-10, and a
   strict expected failure in `test_pod_run.py` that goes live when the group lands. The
   re-pin is a reviewed edit to `config/serving_recipes_real.toml`, outside this unit.
+  **Superseded by U-B below**, which did that re-pin: the group exists, the lock resolves,
+  and deferral 04-10 is closed.
 - **No `--placement-tier` anywhere.** The consult named it; the orchestrator and the
   stage parser accept no such flag and no stage reads a tier. `pod_run` records the tier
   the green `PREFLIGHT` receipt measured and refuses a receipt without one; the console's
@@ -503,6 +505,65 @@ through the shared test lock only, iterated per this unit's own budget; the full
 wherever the data-gate tests actually live, since no `common/test_data_gate.py` exists —
 `operations/submit/test_gate.py`) run once at the end. `sh .githooks/check-documents.sh`
 on every `.md` touched.
+
+## U-B — the serving-stack re-pin (on `work/pod-run-seam`, over U-A)
+
+**What it closes.** Deferral 04-10. U-A found that no `pod` dependency group could be
+locked and left the re-pin to a reviewed config edit; this is that edit, plus the group,
+the lock, the sync flag and the test that binds them.
+
+**The research, in one paragraph.** Read on 2026-09-02 from the pages cited in the pod
+README's "The serving stack, re-planned and locked". The four ruled chairs declare two
+architectures between them: Chandra-2 and the Perlector (`Qwen/Qwen3.8-27B`) are both
+`Qwen3_5ForConditionalGeneration` / `qwen3_5` — the multimodal Qwen3.5 architecture, not
+the text-only one — while the DAI fine-tune and Churro-3B are both
+`Qwen2_5_VLForConditionalGeneration` / `qwen2_5_vl`. vLLM v0.27.1's model registry lists
+all of those in `_MULTIMODAL_MODELS`, and vLLM's own recipe page for `Qwen/Qwen3.8-27B`
+asks for vLLM 0.17.0+ and transformers >= 5.8.0. **One release serves all four; no chair
+had to be split off onto transformers-direct serving.**
+
+**Rule-13 decisions, each with its reason:**
+
+- **`vllm 0.27.1`, not 0.28.0.** 0.28.0 declares `huggingface_hub>=1.27.0` in its own
+  metadata and so cannot lock beside the project's `huggingface_hub==1.26.0`; 0.27.1
+  declares no hub requirement at all and inherits only `>=1.5.0,<2.0` from
+  `transformers`. Nothing any chair needs is 0.28.0-only. The project's hub pin was not
+  touched — moving it to suit a serving pin would have been the money path bending the
+  laptop's.
+- **`transformers 5.14.1`.** The version the vLLM 0.27 line's own requirements were
+  bumped to, above vLLM's `>= 5.5.3` floor and above the Perlector's stated `>= 5.8.0`,
+  and its metadata accepts `huggingface-hub 1.26.0`.
+- **`flash-attn` dropped, not re-pinned.** vLLM imports no external `flash_attn` in its
+  Qwen vision path — it selects through its own `AttentionBackendEnum` and ships its own
+  FlashAttention — and the package publishes no wheel, so the pin would have bought an
+  hours-long nvcc build against `torch 2.13.0` on a rented card for something the server
+  never loads.
+- **The tripwire became a live test rather than being deleted.** `test_pod_run.py` now
+  holds the `pod` group and every catalogue row to the same bytes, both directions, and
+  still requires the Linux/x86_64 marker on each requirement — that marker is what keeps
+  a laptop `uv sync` from resolving torch.
+- **Two files outside the named ownership were corrected, not left lying.**
+  `operations/serving/test_manager.py` asserted `vllm == "0.10.1"` against the real
+  catalogue, and `bootstrap_main.py`'s module docstring stated that no `uv sync` could
+  put vLLM on a pod. Both became false the moment the pins moved; leaving either would
+  have been a false statement on a money path.
+
+**Verification.** `uv lock` resolves (173 packages added — `vllm 0.27.1`,
+`transformers 5.14.1`, `torch 2.13.0` among them — with **no** previously locked version
+changed and nothing removed); `uv lock --check` clean; `uv sync --frozen --python 3.12
+--group test --group audit` succeeds on macOS and resolves none of the pod group;
+`ruff format` and `ruff check` on every touched `.py`; `sh .githooks/check-documents.sh`
+for the `.md` files; the named test files through the serialized test lock, then
+`operations/pod operations/serving` once.
+
+**The one thing only a boot proves.** That the wheels install on the pod image and that
+the four sets of weights actually load and answer under `vllm 0.27.1`. Vendor metadata
+says the architectures are registered; it does not say these checkpoints run. Every row
+stays `preflight_state = "unproven"` and the manager still refuses each by name.
+Confidence, named honestly: high that the group installs, moderate that all four chairs
+load unmodified on the first attempt — Chandra-2 and the Perlector are the risk, because
+vLLM's supported-models row for their architecture names Qwen's own `Qwen3.5-*` repos,
+not a fine-tune and not a `Qwen3.8` checkpoint.
 
 ## Provenance correction
 

@@ -493,11 +493,25 @@ class SubprocessBootstrapActions:
                 f"lockfile {supplied_lockfile} is missing",
                 "Restore the pinned uv.lock before creating an environment.",
             )
-        self._command(["uv", "sync", "--locked", "--frozen"], BootstrapStep.UV_ENVIRONMENT)
+        # `--group pod` is the serving stack: vLLM, transformers, qwen-vl-utils and
+        # everything they drag in, including torch and the CUDA libraries. It is
+        # named here and nowhere else, because the pod is the only machine that may
+        # install it -- the group's Linux/x86_64 markers make a laptop sync resolve
+        # none of it. Without this flag `ServingManager` refuses every real chair on
+        # a missing pin, after the pod has already billed for the boot.
+        #
+        # The cost is real and lands here: on the order of ten gigabytes of wheels,
+        # downloaded on the billing card into the container-local `UV_CACHE_DIR`
+        # above, paid once per pod because that cache does not survive one.
+        self._command(
+            ["uv", "sync", "--locked", "--frozen", "--group", "pod"],
+            BootstrapStep.UV_ENVIRONMENT,
+        )
         return {
             "lockfile": str(supplied_lockfile),
             "sha256": hashlib.sha256(supplied_lockfile.read_bytes()).hexdigest(),
             "mode": "locked-frozen",
+            "groups": ["pod"],
         }
 
     def resume_transfer(self) -> dict[str, object]:

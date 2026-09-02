@@ -2438,7 +2438,7 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
             else:
                 assert isinstance(profile, ServingProfile)
                 assert profile.preflight_state == "unproven"
-                assert profile.required_packages["vllm"] == "0.10.1"
+                assert profile.required_packages["vllm"] == "0.27.1"
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

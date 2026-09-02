@@ -34,18 +34,19 @@ has an injection point in :class:`PreflightSeams`, which is how
 ``test_bootstrap_main.py`` proves the wiring green against the serving fakes
 without a card.
 
-**Two things the wiring cannot make green, said here rather than discovered
-on a billing card.**  Every vLLM row in ``config/serving_recipes_real.toml``
-is ``preflight_state = "unproven"``, and ``ServingManager.start`` refuses an
+**One thing the wiring cannot make green, said here rather than discovered on a
+billing card.**  Every vLLM row in ``config/serving_recipes_real.toml`` is
+``preflight_state = "unproven"``, and ``ServingManager.start`` refuses an
 unproven row by name before it launches anything; so the first real
 ``PREFLIGHT`` is red at ``smoke-read-failed`` for every real chair until a
 reviewer stamps those rows proven, which the serving README says happens
-*after* a real-silicon preflight.  And the real roster's pins cannot be
-installed: ``transformers==4.57.1`` requires ``huggingface-hub<1.0`` while the
-project pins ``huggingface_hub==1.26.0`` (``operations/pod/README.md`` carries
-the resolver's own words), so no ``uv sync`` can put vLLM on the pod until the
-recipe's pins are re-planned.  Neither is this file's to fix; both are named
-so nobody reads a red first preflight as a wiring fault.
+*after* a real-silicon preflight.  It is not this file's to fix; it is named so
+nobody reads a red first preflight as a wiring fault.  The stack itself is no
+longer the obstacle it was: the recipe's pins were re-planned onto
+``vllm 0.27.1`` / ``transformers 5.14.1``, which lock beside the project's
+``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` now carries
+``--group pod``.  That the wheels install and the weights load on real silicon
+is still unproven; only a boot proves it.
 
 **The transfer target stays optional.**  With no submission manifest on the
 volume, transfer is a vacuous success and this process needs no object-store
