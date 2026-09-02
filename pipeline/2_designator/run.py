@@ -137,6 +137,11 @@ _FORBIDDEN_TEXT_KEYS = frozenset(
     }
 )
 
+# The page-residual reason code, named once so the frozenset entry below and
+# every hold payload that cites it are the same string by construction rather
+# than by two authors agreeing.
+PAGE_RESIDUAL_REASON_CODE = "residual-components-over-page-bound"
+
 # Why an act could not be marked out. A closed vocabulary rather than free text,
 # so a consumer can branch on the cause without parsing a sentence, and so a new
 # cause has to be declared here rather than appearing as prose nothing expects.
@@ -156,7 +161,7 @@ HOLD_REASON_CODES = frozenset(
         # name is about the reconciliation, never about the paper: nothing here
         # says the page is speckled, foxed, or bad, only that this many
         # components were counted against this bound.
-        "residual-components-over-page-bound",
+        PAGE_RESIDUAL_REASON_CODE,
     }
 )
 
@@ -1411,9 +1416,6 @@ def _publish_residual_holds(
     return rows
 
 
-PAGE_RESIDUAL_REASON_CODE = "residual-components-over-page-bound"
-
-
 def _publish_page_residual_hold(
     context,
     page_id: str,
@@ -1471,11 +1473,6 @@ def _publish_page_residual_hold(
     against the run's own sealed `designator-grouping` digest, and the count
     against the conservation record reached through the digest-checked hop.
     """
-    if PAGE_RESIDUAL_REASON_CODE not in HOLD_REASON_CODES:
-        raise ContractError(
-            f"page {page_ordinal} is held for {PAGE_RESIDUAL_REASON_CODE!r}, which is not one "
-            f"of the declared hold reasons {sorted(HOLD_REASON_CODES)}"
-        )
     minted_act_id = derive_minted_act_id(page_id, "page-residual", page_bounds)
     act_key = page_residual_act_key(page_ordinal)
     payload = {

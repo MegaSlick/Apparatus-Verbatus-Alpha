@@ -337,6 +337,20 @@ def test_one_component_over_the_bound_holds_the_page_as_a_single_item(
     assert [row for row in rows if row["act_key"].startswith("residual:1:")] == []
     assert held is True
 
+    # The seam this unit exists to close is producer-to-consumer, not merely
+    # this file's own reading of the fields both sides call the same names.
+    # `expected_acts` is the seal's own reader: it runs
+    # `_verify_synthetic_act_denominator` -> `_verify_minted_act_rows` ->
+    # `_verify_page_residual_act_row` (sealed-page rectangle, reserved class
+    # identity, sealed grouping digest) and
+    # `_verify_every_conservation_residual_is_accounted`, over this same run.
+    # A real withheld run must satisfy all of it, not just the payload shape
+    # asserted above.
+    from common.stage import expected_acts
+
+    acts = expected_acts(context)
+    assert any(act["act_key"] == page_residual_act_key(1) for act in acts)
+
 
 def test_the_withheld_pair_satisfies_the_consumers_own_premise_check(
     tmp_path, monkeypatch, measured_scatter
