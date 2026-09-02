@@ -414,7 +414,12 @@ run reaches a **sealed terminal export that is held for review, not delivered**:
 both acts are read and every reading names the exact bytes its engine sent, but
 only one witness of a floor of three counts, because `chandra.v1` has no
 verifiable wire schema and a live page witness's act attachment is unaligned
-until R4 owns live alignment. Second, the identical driver pointed at the
-committed fixture catalogue reproduces the orchestrator's own fixture tree
-byte for byte — with `--placement-tier` supplied and both stage `main`s called
-in-process — which is what says this seam, and the flag, moved no fixture byte.
+until R4 owns live alignment. Second, two independent drivers reach the same
+fixture tree byte for byte: the orchestrator's own subprocess chain on one
+side, and — on the other — the identical driver this module uses for the live
+seam, pointed at the committed fixture catalogue, with `--placement-tier`
+supplied and both stage `main`s called in-process rather than as subprocesses.
+That equality says this seam's own driving code takes the fixture path
+unchanged; whether the fixture tree itself has moved relative to history is
+`pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST`
+pin to say, not this suite.

@@ -89,7 +89,6 @@ from operations.serving.fakes import (  # noqa: E402
     FakeEndpoint,
     FakeLauncher,
     FakePackages,
-    FakeRegistry,
     ScriptedAnswer,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
@@ -326,8 +325,9 @@ def invoke_stage(program: str, run_root: Path, catalogue: Path, *, placement_tie
     A held stage is not a failed one: the orchestrator carries a run past
     `EXIT_HELD` and stops only on the codes outside its own accepted set, and a
     live run's Recensor really does hold (see the completion test below). This
-    refuses exactly what the orchestrator refuses, so a driver written here
-    cannot be more permissive than the one operators use.
+    is stricter than the orchestrator, which also carries `EXIT_RUN_HALTED` to
+    its own halt reporting, so a driver written here cannot be more permissive
+    than the one operators use.
     """
     result = subprocess.run(
         [
@@ -397,6 +397,36 @@ class RecordingEndpoint(FakeEndpoint):
         if method == "POST" and url.endswith("/chat/completions"):
             self.served.append(response.body)
         return response
+
+
+class VaryingReadingEndpoint(RecordingEndpoint):
+    """A reader endpoint whose answer content is derived from the request body.
+
+    A fixed scripted answer, replayed for every reading POST, cannot say
+    whether a Perlectio is bound to *its own* engine response or to any
+    canonical one: sixty identical replies make every response blob
+    identical too. Hashing the incoming request body into the content
+    instead ties each answer to the exact bytes that asked for it, while
+    still answering the same for the Pass A / Pass B / re-proof calls of one
+    act, which `live_reader.py`'s own docstring says carry identical dossier
+    arguments and so render to the same request body.
+    """
+
+    def __init__(self, *, finish_reason: Any, **keywords: Any) -> None:
+        super().__init__(**keywords)
+        self._finish_reason = finish_reason
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        if (
+            method == "POST"
+            and url.endswith("/chat/completions")
+            and self._readiness_probe_answered
+        ):
+            digest = hashlib.sha256(body).hexdigest()[:12] if body is not None else "no-body"
+            self.script(
+                ScriptedAnswer(content=f"{READING} {digest}", finish_reason=self._finish_reason)
+            )
+        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
 
 
 class _TreeBlobs:
@@ -504,24 +534,15 @@ class ReaderWorld:
 
     def factory(self, context, identity, tier: str) -> ChairClient:
         policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
-        endpoint = RecordingEndpoint(
+        endpoint = VaryingReadingEndpoint(
+            finish_reason=self.answer.finish_reason,
             served_model_id=f"served-{identity.role}",
             blob_store=_TreeBlobs(context, PERLECTOR),
             assert_retained_before_next_request=True,
         )
-        # Padded rather than exactly counted: how many reader calls an act
-        # takes is the pass structure's business (Pass A, Pass B, and a re-proof
-        # when the frozen flags ask for one), and pinning it here would fail on
-        # any honest change to that structure while proving nothing about this
-        # seam.
-        endpoint.script(*([self.answer] * 60))
         self.endpoint = endpoint
         manager = ServingManager(
-            # The Perlector's own suite resolves its chair through a fake
-            # registry for the same reason: `manager.start` materializes the
-            # snapshot it is handed, and the identity under test here is the
-            # one the run already resolved.
-            registry=FakeRegistry({identity.role: identity}, self.work),
+            registry=context.registry,
             recipes=load_serving_recipes(self.catalogue),
             config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
             launcher=FakeLauncher(endpoint),
@@ -530,6 +551,7 @@ class ReaderWorld:
             log_root=self.work / "serving-logs",
             package_inspector=FakePackages({"vllm": "0.test"}),
             residency_lease=FileResidencyLease(self.work / "pod-gpu.lock"),
+            producer="pipeline/4_perlector/run.py",
         )
         return ChairClient(
             manager=manager,
@@ -675,6 +697,7 @@ def test_every_act_reaches_a_perlectio_bound_to_the_bytes_the_engine_sent(live_s
 
     served = live_seam.reader.endpoint.served
     assert served, "the live Perlector pass sent no reading request"
+    response_digests = set()
     for record in readings:
         call = record["payload"]["engine_call"]
         retained = tree.read_bytes(call["raw_response_ref"]["relative_path"])
@@ -683,12 +706,21 @@ def test_every_act_reaches_a_perlectio_bound_to_the_bytes_the_engine_sent(live_s
             "cannot be traced back to the response that produced it"
         )
         assert call["raw_response_ref"]["sha256"] == call["response_sha256"]
-        assert json.loads(retained)["choices"][0]["message"]["content"] == READING
+        assert json.loads(retained)["choices"][0]["message"]["content"].startswith(READING)
         # And the envelope binds both blobs as direct inputs, so an ordinary
         # artifact read re-hashes them rather than trusting a nested reference.
         bound = {reference["relative_path"] for reference in record["inputs"]}
         assert call["raw_response_ref"]["relative_path"] in bound
         assert call["call_record_ref"]["relative_path"] in bound
+        response_digests.add(call["raw_response_ref"]["sha256"])
+    # The endpoint's answer is derived from each request's own body
+    # (`VaryingReadingEndpoint`), so two acts binding to the same response
+    # digest would mean one act's Perlectio was proven against another
+    # act's bytes, or against a canonical answer neither act actually sent.
+    assert len(response_digests) == len(readings), (
+        "two acts' Perlectios name the same response blob; per-act binding is "
+        "asserted, not measured"
+    )
 
 
 def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
@@ -714,6 +746,16 @@ def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
         assert call["schema"] == "chair-call-record.v1"
         assert call["chair"] == chair
+        # The witness half of "every reading names the exact bytes its engine
+        # sent": chain record -> adapter output -> wire content -> served
+        # bytes, so `WitnessWorld.served` is actually exercised rather than
+        # left as dead scaffolding.
+        wire = tree.read_bytes(call["raw_response_ref"]["relative_path"])
+        assert wire in live_seam.witnesses.served(chair)
+        assert call["response_sha256"] == call["raw_response_ref"]["sha256"]
+        assert json.loads(wire)["choices"][0]["message"]["content"].encode() == tree.read_bytes(
+            payload["raw_response_ref"]["relative_path"]
+        )
 
 
 def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live_seam):
@@ -729,8 +771,7 @@ def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live
         payload = record["payload"]
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
         assert call["finish_reason"] == "stop", (act_id, chair)
-        if payload.get("native_capture") is not None:
-            assert payload["native_capture"]["transport_stop_reason"] == "stop"
+        assert payload["native_capture"]["transport_stop_reason"] == "stop"
     for record in published_readings(live_seam.run_root):
         assert record["payload"]["engine_call"]["finish_reason"] == "stop"
         assert record["payload"]["truncation"]["signals"]["stop_reason_declared"] == "stop"
@@ -861,8 +902,7 @@ def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held
         payload = record["payload"]
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
         assert call["finish_reason"] is None, (act_id, chair)
-        if payload.get("native_capture") is not None:
-            assert payload["native_capture"]["transport_stop_reason"] == STOP_REASON_UNREPORTED
+        assert payload["native_capture"]["transport_stop_reason"] == STOP_REASON_UNREPORTED
         assert payload["content_health"]["truncated"] is None
 
     reader = ReaderWorld(
@@ -919,6 +959,13 @@ def test_an_engine_word_this_pipeline_never_measured_stops_the_pass_publishing_n
     blobs = run_root / RUN_ID / "4_perlector" / "blobs" / "sha256"
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
+    # A blob merely containing the word is satisfied by the chair-call-record
+    # too, which also carries `"finish_reason":"abort"`. Pin the exact raw
+    # response bytes the endpoint served, by their own digest, so this proves
+    # the response itself was retained before it was parsed -- not only that
+    # a record describing it was.
+    served = reader.endpoint.served[-1]
+    assert (blobs / hashlib.sha256(served).hexdigest()).read_bytes() == served
 
 
 # ============================ the fixture path, unmoved =======================
