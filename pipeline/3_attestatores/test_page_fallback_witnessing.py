@@ -28,8 +28,8 @@ import pytest
 
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
-from common.contracts.identities import act_id
-from common.stage import fallback_page_act_key
+from common.contracts.identities import ACT_CLASSES, act_id
+from common.stage import fallback_page_act_key, page_residual_act_key
 
 
 def _load_attestatores():
@@ -196,11 +196,18 @@ def test_two_declared_responses_at_one_precedence_are_refused():
         _resolve(context, FALLBACK_KEY, _declarations(empty={(FALLBACK_KEY, CHAIR)}))
 
 
-def test_the_three_minted_act_classes_produce_three_different_identities():
-    """The property that matters downstream is that three classes of act mint three
+def test_the_four_minted_act_classes_produce_four_different_identities():
+    """The property that matters downstream is that four classes of act mint four
     different `act_id`s **on the same page, from the same bounds**, since that is
     the worst case: a page-fallback act and a residual both cover ink the
     structure pass did not propose, and identity is all that separates them.
+
+    The fourth makes that worst case sharper rather than merely longer. A
+    page-fallback act and a page-residual act are both minted over the *page
+    rectangle itself*, so on a page whose bounds are the whole page they differ
+    in nothing but their class — and they carry opposite dispositions: one is
+    proposed and goes to the witnesses, the other is held and is never read. The
+    set below is asserted over the full page rectangle for that reason.
     """
     page = "pg_0000000000000001"
     bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
@@ -208,10 +215,23 @@ def test_the_three_minted_act_classes_produce_three_different_identities():
     proposed = act_id(page, "proposal", bounds)
     residual = act_id(page, "residual", bounds)
     fallback = act_id(page, "page-fallback", bounds)
+    page_residual = act_id(page, "page-residual", bounds)
 
-    assert len({proposed, residual, fallback}) == 3
+    assert len({proposed, residual, fallback, page_residual}) == 4
+    assert ACT_CLASSES == {"proposal", "residual", "page-fallback", "page-residual"}, (
+        "a class added to the enum and not to this set mints an identity nothing here separates"
+    )
 
 
 def test_fallback_key_remains_presentation_only():
     assert FALLBACK_KEY == "page-fallback:3"
     assert not hasattr(attestatores, "_is_page_fallback")
+
+
+def test_the_two_page_wide_keys_do_not_collide_on_one_page():
+    """Both labels are derived from a page ordinal alone, so on one page they are
+    the only thing telling a reviewer which page-wide act they are looking at.
+    `expected_acts` refuses a duplicate act key outright, so a shared spelling
+    would not be a cosmetic collision — it would take a run down."""
+    assert page_residual_act_key(3) == "page-residual:3"
+    assert page_residual_act_key(3) != fallback_page_act_key(3)
