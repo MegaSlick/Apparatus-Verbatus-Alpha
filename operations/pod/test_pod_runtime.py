@@ -52,6 +52,7 @@ from .launch import (
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    POD_REPORT_SCHEMA,
     AbsenceObservation,
     AccountBalanceObservation,
     BillingState,
@@ -65,6 +66,7 @@ from .models import (
     ProviderFailure,
     ProviderStatus,
     SpendRefusal,
+    validate_pod_report_identity,
 )
 from .notify_bridge import NotifyOutcome, shell_notifier, silent
 from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
@@ -6082,3 +6084,296 @@ def test_fake_provider_never_reports_running_for_a_pod_it_put_in_exited() -> Non
     observed = provider.status(record.pod_id)
 
     assert observed.provider_state != "RUNNING"
+
+
+# --- U2: the timer's acknowledgement becomes a record --------------------
+#
+# Every durable report this module writes after a `TimerContext` exists must
+# carry `schema: "pod-report.v1"` and an identity block naming this exact
+# lease/pod/deadline, plus an `acknowledged_at` stamped once from the injected
+# clock at `TimerContext` construction.  These drills walk each of the five
+# write sites in `pod_timer.py` and the one write that precedes any lease at
+# all (the factory-failure report), plus the shared refusal in `models.py`.
+
+
+def _expected_identity(lease: PodLease) -> dict[str, object]:
+    return {
+        "lease_id": lease.lease_id,
+        "pod_id": lease.pod_id,
+        "hard_deadline": lease.hard_deadline.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def test_the_first_durable_write_is_the_acknowledgement_before_the_monitoring_loop(
+    tmp_path: Path,
+) -> None:
+    """`pod_timer.py`'s first write (today ~123-125) is the acknowledgement:
+    it proves a provider-backed close capability exists on this pod, written
+    after the `TimerContext` wraps the timer and before any monitoring."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "ack-first-write.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "ack-report.json"
+
+    _persist_or_close(
+        context,
+        report_path,
+        {"bootstrap": {"argv": ["true"], "state": "running"}, "close": None, "green": False},
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == _expected_identity(lease)
+    assert report["acknowledged_at"] == context.acknowledged_at
+    validate_pod_report_identity(
+        report, lease_id=lease.lease_id, pod_id=lease.pod_id, hard_deadline=lease.hard_deadline
+    )
+
+
+def test_a_red_bootstrap_close_report_carries_the_same_identity(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "ack-bootstrap-failed.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    report_path = tmp_path / "ack-bootstrap-failed-report.json"
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["bootstrap"]["state"] == "failed"
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == _expected_identity(lease)
+    assert report["acknowledged_at"] == context.acknowledged_at
+
+
+def test_a_completed_early_close_report_carries_the_same_identity(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.05")
+    store = LeaseStore(tmp_path / "ack-completed-early.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    class CompletedChild:
+        def poll(self) -> int:
+            return 0
+
+    report_path = tmp_path / "ack-completed-early-report.json"
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        popen=lambda argv: CompletedChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["bootstrap"]["state"] == "completed-early"
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == _expected_identity(lease)
+    assert report["acknowledged_at"] == context.acknowledged_at
+
+
+def test_the_final_hard_deadline_expiry_report_carries_the_same_identity(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "ack-expiry.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    class RunningChild:
+        def poll(self) -> None:
+            return None
+
+    report_path = tmp_path / "ack-expiry-report.json"
+    result = run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result.close_report is not None and result.close_report.verified
+    assert report["green"] is True
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == _expected_identity(lease)
+    assert report["acknowledged_at"] == context.acknowledged_at
+    validate_pod_report_identity(
+        report, lease_id=lease.lease_id, pod_id=lease.pod_id, hard_deadline=lease.hard_deadline
+    )
+
+
+def test_the_write_failure_fallback_receipt_carries_the_same_identity(tmp_path: Path) -> None:
+    """The fallback receipt `_durable_failure_close` writes when the primary
+    write itself fails must still name this exact lease -- it is the only
+    durable evidence a report-write failure leaves behind."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "ack-fallback.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "ack-fallback-report.json"
+
+    with pytest.raises(RuntimeError, match="mandatory pod report write failed"):
+        _persist_or_close(
+            context,
+            report_path,
+            {
+                "bootstrap": {"argv": ["true"], "state": "failed"},
+                "close": object(),  # unserializable: the primary write fails
+                "close_attempts": 0,
+                "green": False,
+            },
+        )
+
+    fallback = json.loads(report_path.read_text(encoding="utf-8"))
+    assert fallback["schema"] == POD_REPORT_SCHEMA
+    assert fallback["identity"] == _expected_identity(lease)
+    assert fallback["acknowledged_at"] == context.acknowledged_at
+    validate_pod_report_identity(
+        fallback, lease_id=lease.lease_id, pod_id=lease.pod_id, hard_deadline=lease.hard_deadline
+    )
+
+
+def test_the_factory_failure_report_names_the_launch_from_argv_not_a_timer_it_never_built(
+    tmp_path: Path,
+) -> None:
+    """No timer was ever built here, so there is no lease to stamp an identity
+    from -- the report still names the launch via the bound report path, and
+    its identity shape deliberately does not match a real lease's, so
+    `validate_pod_report_identity` refuses it exactly as a genuine mismatch."""
+
+    from .pod_timer import main as pod_timer_main
+
+    report_path = tmp_path / "factory-failure-identity.json"
+
+    exit_code = pod_timer_main(
+        [
+            "--timer-factory",
+            "operations.pod.no_such_module:factory",
+            "--bootstrap-command-json",
+            '["true"]',
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    assert exit_code == 2
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == {"report_path": str(report_path)}
+    assert report["acknowledged_at"] is None
+    with pytest.raises(ValueError, match="lease_id, pod_id, hard_deadline"):
+        validate_pod_report_identity(
+            report, lease_id="c" * 32, pod_id="some-pod", hard_deadline=START
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda identity: {**identity, "lease_id": "f" * 32}, "does not name this exact lease"),
+        (lambda identity: {**identity, "pod_id": "another-pod"}, "does not name this exact lease"),
+        (
+            lambda identity: {**identity, "hard_deadline": "2099-01-01T00:00:00Z"},
+            "does not name this exact lease",
+        ),
+        (lambda identity: {k: v for k, v in identity.items() if k != "pod_id"}, "exactly lease_id"),
+    ],
+)
+def test_a_report_whose_identity_disagrees_with_the_lease_is_machine_refusable(
+    tmp_path: Path, mutate, match: str
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "ack-mismatch.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "ack-mismatch-report.json"
+    _persist_or_close(
+        context,
+        report_path,
+        {"bootstrap": {"argv": ["true"], "state": "running"}, "close": None, "green": False},
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["identity"] = mutate(report["identity"])
+
+    with pytest.raises(ValueError, match=match):
+        validate_pod_report_identity(
+            report, lease_id=lease.lease_id, pod_id=lease.pod_id, hard_deadline=lease.hard_deadline
+        )
+
+
+def test_a_report_missing_its_schema_is_refused_before_any_identity_check() -> None:
+    with pytest.raises(ValueError, match="schema is absent or unsupported"):
+        validate_pod_report_identity(
+            {"identity": {"lease_id": "a", "pod_id": "b", "hard_deadline": "x"}},
+            lease_id="a",
+            pod_id="b",
+            hard_deadline=START,
+        )
+
+
+def test_a_report_missing_acknowledged_at_is_refused_even_with_a_matching_identity() -> None:
+    lease_id = "a" * 32
+    pod_id = "pod-1"
+    hard_deadline = START + timedelta(seconds=60)
+    with pytest.raises(ValueError, match="non-blank acknowledged_at"):
+        validate_pod_report_identity(
+            {
+                "schema": POD_REPORT_SCHEMA,
+                "identity": {
+                    "lease_id": lease_id,
+                    "pod_id": pod_id,
+                    "hard_deadline": hard_deadline.isoformat().replace("+00:00", "Z"),
+                },
+            },
+            lease_id=lease_id,
+            pod_id=pod_id,
+            hard_deadline=hard_deadline,
+        )
+
+
+def test_acknowledged_at_is_stamped_from_the_injected_clock_not_wall_time(tmp_path: Path) -> None:
+    """A mutation to `time.time()` must fail this test: the injected `Clock`
+    fixture is pinned far from any plausible wall-clock read, so an exact
+    match against it is only possible through `context.timer.now()`."""
+
+    clock = Clock(seconds=100_000_000)  # ~3.2 years past the fixture's START
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "ack-clock.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    expected = clock.now().isoformat().replace("+00:00", "Z")
+    assert context.acknowledged_at == expected
+    real_wall_clock_year = datetime.now(timezone.utc).year
+    assert clock.now().year != real_wall_clock_year

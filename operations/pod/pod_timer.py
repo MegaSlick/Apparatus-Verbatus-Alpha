@@ -13,12 +13,14 @@ import json
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .controllers import ControllerResult, ControllerState, PodDeadmanTimer
 from .durable import atomic_write, canonical_json
+from .models import POD_REPORT_SCHEMA, require_utc
 
 _CLOSE_ATTEMPTS = 3
 """Bounded re-attempts of a non-green close before the timer exits.
@@ -34,11 +36,41 @@ class PodTimerFailureClosed(RuntimeError):
     """Raised after a startup failure has already spent an immediate close."""
 
 
+def _stamp(value: datetime) -> str:
+    return require_utc(value, "pod timer timestamp").isoformat().replace("+00:00", "Z")
+
+
 @dataclass(frozen=True, slots=True)
 class TimerContext:
-    """A generic timer already supplied with its provider-neutral close path."""
+    """A generic timer already supplied with its provider-neutral close path.
+
+    ``identity`` and ``acknowledged_at`` are captured once, in ``__post_init__``
+    -- the moment this timer's provider-backed close capability is wrapped and
+    first exists -- so every report a run writes afterward carries the same
+    lease/pod/deadline binding and the same acknowledgement instant, rather
+    than a fresh guess recomputed at each write.  ``acknowledged_at`` is
+    stamped from ``timer.now()``, the same injected clock the timer itself
+    uses to decide expiry, never from wall-clock time: a report claiming an
+    acknowledgement moment nobody's clock measured is exactly what
+    GOVERNANCE 10 forbids.
+    """
 
     timer: PodDeadmanTimer
+    identity: Mapping[str, object] = field(init=False)
+    acknowledged_at: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        lease = self.timer.lease
+        object.__setattr__(
+            self,
+            "identity",
+            {
+                "lease_id": lease.lease_id,
+                "pod_id": lease.pod_id,
+                "hard_deadline": _stamp(lease.hard_deadline),
+            },
+        )
+        object.__setattr__(self, "acknowledged_at", _stamp(self.timer.now()))
 
 
 _MAX_CLOSE_RETRY_WAIT_SECONDS = 60.0
@@ -223,6 +255,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_report(
                 Path(args.report_path),
                 {
+                    "schema": POD_REPORT_SCHEMA,
+                    "identity": _identity_from_report_path(args.report_path),
+                    "acknowledged_at": None,
                     "bootstrap": {
                         "state": "unstarted",
                         "detail": "no close capability was constructed; the timer factory failed",
@@ -301,11 +336,45 @@ def _write_report(path: Path, value: dict[str, object]) -> None:
     atomic_write(path, canonical_json(value))
 
 
+def _identity_from_report_path(report_path: str) -> dict[str, object]:
+    """Best-effort identity for a report filed before any lease was ever loaded.
+
+    The timer factory failed, so no lease exists to name this launch by
+    lease_id/pod_id/hard_deadline -- the only launch-identifying fact argv
+    carries at this point is the bound report path itself, which
+    ``models._required_timer_arguments`` already requires to include this
+    launch's token.  This deliberately does not match the closed
+    ``{lease_id, pod_id, hard_deadline}`` shape ``validate_pod_report_identity``
+    accepts: a reader comparing this report against a real lease refuses it,
+    the same way an actual mismatch would be refused.
+    """
+
+    return {"report_path": report_path}
+
+
+def _acknowledged_report(context: TimerContext, value: dict[str, object]) -> dict[str, object]:
+    """Tag a report with this run's schema, lease identity, and acknowledgement.
+
+    Every write this module makes after the timer object exists carries the
+    same three facts, captured once at ``TimerContext`` construction, so a
+    reader can refuse one that does not name this exact lease
+    (``models.validate_pod_report_identity``) without ever having watched the
+    pod run.
+    """
+
+    return {
+        "schema": POD_REPORT_SCHEMA,
+        "identity": dict(context.identity),
+        "acknowledged_at": context.acknowledged_at,
+        **value,
+    }
+
+
 def _persist_or_close(context: TimerContext, path: Path, value: dict[str, object]) -> None:
     """A missing durable report is an immediate-close condition, never green."""
 
     try:
-        _write_report(path, value)
+        _write_report(path, _acknowledged_report(context, value))
     except Exception as error:
         bootstrap = value.get("bootstrap")
         if not isinstance(bootstrap, dict):
@@ -362,7 +431,7 @@ def _durable_failure_close(
     }
     receipt = "fallback receipt was written"
     try:
-        _write_report(path, fallback)
+        _write_report(path, _acknowledged_report(context, fallback))
     except Exception as write_error:  # reported below, never swallowed
         receipt = f"fallback receipt also failed: {write_error}"
     state = result.close_report.state.value if result.close_report else "shutdown-exception"

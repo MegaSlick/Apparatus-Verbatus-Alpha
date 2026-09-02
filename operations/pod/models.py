@@ -141,6 +141,61 @@ def parse_billing_cutoff_margin_seconds(value: object, label: str) -> int:
     return require_billing_cutoff_margin_seconds(parsed, label)
 
 
+POD_REPORT_SCHEMA = "pod-report.v1"
+"""Schema tag for the pod-side timer's durable acknowledgement and close reports.
+
+The pod timer's first durable write proves a provider-backed close capability
+exists on this exact pod; every later write from the same run -- each bootstrap
+outcome, each close attempt, the final expiry report -- must be traceable to
+that same lease, pod, and deadline. ``validate_pod_report_identity`` below is
+the one shared check a restarting supervisor or armer runs before trusting
+what it reads.
+"""
+
+
+def validate_pod_report_identity(
+    value: Mapping[str, object],
+    *,
+    lease_id: str,
+    pod_id: str,
+    hard_deadline: datetime,
+) -> None:
+    """Refuse a pod report unless its identity names this exact lease.
+
+    A pod report is durable evidence a restarting supervisor or armer may act
+    on without ever having watched the pod run.  One whose identity block does
+    not name the lease it claims to speak for -- wrong lease, wrong pod, wrong
+    deadline, or missing the block entirely -- is not evidence of anything and
+    must be refused mechanically here, the same posture
+    ``lease._validate_controller_record`` already takes for the controller
+    receipt this report eventually feeds.
+    """
+
+    if not isinstance(value, Mapping) or value.get("schema") != POD_REPORT_SCHEMA:
+        raise ValueError(
+            f"pod report schema is absent or unsupported (expected {POD_REPORT_SCHEMA!r})"
+        )
+    identity = value.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != {
+        "lease_id",
+        "pod_id",
+        "hard_deadline",
+    }:
+        raise ValueError("pod report identity must contain exactly lease_id, pod_id, hard_deadline")
+    stamped_deadline = (
+        require_utc(hard_deadline, "pod report hard_deadline").isoformat().replace("+00:00", "Z")
+    )
+    if (
+        identity["lease_id"] != lease_id
+        or identity["pod_id"] != pod_id
+        or identity["hard_deadline"] != stamped_deadline
+    ):
+        raise ValueError("pod report identity does not name this exact lease")
+    acknowledged_at = value.get("acknowledged_at")
+    if not isinstance(acknowledged_at, str) or not acknowledged_at:
+        raise ValueError("pod report must carry a non-blank acknowledged_at stamp")
+
+
 @dataclass(frozen=True, slots=True)
 class PodCreateRequest:
     """The complete requested pod shape, before a provider sees it.
