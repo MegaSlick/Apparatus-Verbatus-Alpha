@@ -23,6 +23,7 @@ from .volume_s3 import (
     S3VolumeTarget,
     VolumeSpec,
     VolumeTransferRefusal,
+    _read_bounded,
     build_client,
 )
 
@@ -474,6 +475,38 @@ def test_an_object_exactly_at_the_bound_is_read() -> None:
     client = FakeReadClient({"pod-report.json": b"y" * 1024})
 
     assert _channel(client, max_bytes=1024).read("pod-report.json") == b"y" * 1024
+
+
+class _OverservingBody:
+    """A body that ignores `amount` and hands back everything it has left.
+
+    `read(amount)` is documented to allow short reads, never long ones, but
+    nothing enforces that on the caller's side -- so `_read_bounded` must stay
+    bounded even against a stream that breaks the contract in the other
+    direction.
+    """
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.offset = 0
+
+    def read(self, amount: int) -> bytes:
+        del amount
+        served = self.payload[self.offset :]
+        self.offset = len(self.payload)
+        return served
+
+
+def test_read_bounded_truncates_a_chunk_larger_than_the_remaining_limit() -> None:
+    """A single over-serving `read` must not push `remaining` negative and
+    must not hand back more than the limit -- one big chunk is still bounded."""
+
+    body = _OverservingBody(b"z" * 100)
+
+    result = _read_bounded(body, 10)
+
+    assert result == b"z" * 10
+    assert len(result) == 10
 
 
 @pytest.mark.parametrize(

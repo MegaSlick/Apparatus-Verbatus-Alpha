@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -392,6 +393,43 @@ class ChannelControllerArmer:
                 "now could not be given the timeout it must run under",
                 receipt,
             )
+        # The poll below heartbeats the lease at most every `poll_seconds`; a
+        # heartbeat timeout that does not comfortably outlast three polls lets
+        # the supervisor started just below close the pod mid-poll, before the
+        # launch owner's next heartbeat lands. Refusing here costs nothing;
+        # discovering it mid-arming costs the create.
+        if self.poll_seconds * 3 >= policy.laptop_heartbeat_timeout_seconds:
+            return ControllerReadiness(
+                False,
+                observed,
+                f"this armer's {self.poll_seconds:.1f}s poll interval does not stay well "
+                f"inside the policy's {policy.laptop_heartbeat_timeout_seconds}s laptop "
+                "heartbeat timeout; a supervisor started here would close every pod it "
+                "was meant to guard during arming",
+                receipt,
+            )
+        command = self.supervisor_argv[0]
+        if not (shutil.which(command) or Path(command).is_file()):
+            return ControllerReadiness(
+                False,
+                observed,
+                f"the laptop supervisor command {command!r} is neither on the path nor a "
+                "file that exists; a supervisor started from it could not run",
+                receipt,
+            )
+        try:
+            spend_index = self.supervisor_argv.index("--spend")
+        except ValueError:
+            spend_index = -1
+        if 0 <= spend_index < len(self.supervisor_argv) - 1:
+            spend_path = self.supervisor_argv[spend_index + 1]
+            if not Path(spend_path).is_file():
+                return ControllerReadiness(
+                    False,
+                    observed,
+                    f"the laptop supervisor's --spend file {spend_path!r} does not exist",
+                    receipt,
+                )
         try:
             key = report_key(request)
         except ValueError as error:
@@ -403,6 +441,7 @@ class ChannelControllerArmer:
             )
         receipt["report_object"] = key
         receipt["heartbeat_timeout_seconds"] = str(policy.laptop_heartbeat_timeout_seconds)
+        receipt["supervisor_command"] = command
         try:
             payload = self.channel.read(key)
         except Exception as error:
@@ -572,7 +611,14 @@ class ChannelControllerArmer:
                 "the lease's hard deadline has already passed, so there is no window in "
                 "which a pod report could be believed",
             )
-        attempt = self._poll(base, store=store, owner_token=owner_token, lease=lease, record=record)
+        attempt = self._poll(
+            base,
+            store=store,
+            owner_token=owner_token,
+            lease=lease,
+            record=record,
+            process=supervisor.process,
+        )
         if attempt.state != OBSERVED:
             return attempt
 
@@ -629,9 +675,29 @@ class ChannelControllerArmer:
         except FileExistsError:
             # Something already owns this lease's identity file.  Lease ids are
             # minted per launch, so this is not the ordinary path -- and
-            # overwriting another controller's token is never the answer.  The
-            # supervisor started below will resume whatever is in there, or
-            # refuse on the lock, and either outcome is recorded.
+            # overwriting another controller's token is never the answer.  If
+            # the file already names *this* launch's own token (a retried
+            # arming attempt over the same lease, say), the supervisor started
+            # below resumes it and that is fine.  If it names a different
+            # token, the supervisor about to start would resume a foreign
+            # owner and would only ever reach this pod through
+            # `LeaseStore.claim_if_orphan` -- closing it, a heartbeat timeout
+            # after this launcher exits, as an orphan.  A receipt saying "the
+            # laptop supervisor started" would then be describing a controller
+            # that does not own this lease, so that is refused here rather
+            # than discovered later as a closed pod nobody meant to close.
+            try:
+                existing = supervise.read_identity(handover)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"this lease's identity file at {handover} could not be read to check "
+                    f"which controller it names: {error}"
+                ) from error
+            if existing is None or existing.owner_token != owner_token:
+                raise RuntimeError(
+                    "this lease's supervisor identity file names another controller; the "
+                    "supervisor started here would not own this lease"
+                ) from None
             detail = "an identity file already existed and was left untouched"
         argv = [*self.supervisor_argv, "--leases", str(leases_root), "--lease", lease.lease_id]
         process = self.start_supervisor(argv)
@@ -656,11 +722,30 @@ class ChannelControllerArmer:
         owner_token: str,
         lease: PodLease,
         record: PodRecord,
+        process: SupervisorProcess,
     ) -> _ArmingAttempt:
-        """Read until the report appears, the bound expires, or something breaks."""
+        """Read until the report appears, the bound expires, or something breaks.
+
+        The supervisor is checked on every pass, not only once after the poll
+        ends: a real ``Popen`` cannot report an exit status the instant it is
+        started (the child has not even finished ``exec``), so a check made
+        only before or after the loop cannot fire until the whole bound has
+        run. Checking here turns a discovery that could take the full
+        ``timeout_seconds`` into one bounded by a single ``poll_seconds``.
+        """
 
         started = attempt.started_at
         while True:
+            exited = _exit_status(process)
+            if exited is not None:
+                waited = (self.now() - started).total_seconds()
+                return self._refuse(
+                    replace(attempt, waited_seconds=waited),
+                    SUPERVISOR_FAILED,
+                    f"the laptop supervisor exited with status {exited} after {waited:.1f}s "
+                    "while the pod report was being awaited; the receipt would name a "
+                    "controller that is not there",
+                )
             try:
                 payload = self.channel.read(attempt.key)
             except Exception as error:

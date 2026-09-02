@@ -381,8 +381,13 @@ def _read_bounded(body: Any, limit: int) -> bytes:
             break
         if not isinstance(chunk, (bytes, bytearray)):
             raise TypeError("the network volume answered with a non-bytes body chunk")
-        chunks.append(bytes(chunk))
-        remaining -= len(chunk)
+        # A stream is free to ignore `amount` and hand back more than asked;
+        # truncating here is what keeps `remaining` from going negative and
+        # the returned buffer from exceeding `limit` even against a
+        # misbehaving body.
+        bounded = bytes(chunk)[:remaining]
+        chunks.append(bounded)
+        remaining -= len(bounded)
     return b"".join(chunks)
 
 

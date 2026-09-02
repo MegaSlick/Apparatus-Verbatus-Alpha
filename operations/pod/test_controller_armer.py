@@ -16,6 +16,7 @@ and the observing drill armer must refuse a perfect report.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from . import supervise
+from . import durable, supervise
 from .arming import ControllerArming
 from .controller_armer import (
     ACKNOWLEDGEMENT_FUTURE_SKEW_SECONDS,
@@ -45,6 +46,7 @@ from .models import (
 )
 from .spend import SpendPolicy
 
+SPEND_FILE = str(Path(__file__).resolve().parent / "spend.py")
 START = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
 LEASE_ID = "c" * 32
 OWNER = "e" * 32
@@ -140,11 +142,30 @@ class InMemoryChannel:
 
 
 class FakeProcess:
-    def __init__(self, pid: int, exit_status: int | None) -> None:
+    """``exit_status`` is fixed unless ``dies_after_polls`` says otherwise.
+
+    A real ``Popen.poll()`` answers ``None`` on the first call every time --
+    the child has not even finished ``exec`` -- and only reports a status
+    later. ``dies_after_polls`` lets a drill rehearse that: ``poll()`` returns
+    ``None`` for that many calls, then the exit status on every call after.
+    """
+
+    def __init__(
+        self,
+        pid: int,
+        exit_status: int | None,
+        *,
+        dies_after_polls: int | None = None,
+    ) -> None:
         self.pid = pid
         self.exit_status = exit_status
+        self.dies_after_polls = dies_after_polls
+        self.poll_calls = 0
 
     def poll(self) -> int | None:
+        self.poll_calls += 1
+        if self.dies_after_polls is not None and self.poll_calls <= self.dies_after_polls:
+            return None
         return self.exit_status
 
 
@@ -158,33 +179,39 @@ class FakeStarter:
         pid: int = 4242,
         exit_status: int | None = None,
         fail: Exception | None = None,
+        dies_after_polls: int | None = None,
     ) -> None:
         self.channel = channel
         self.pid = pid
         self.exit_status = exit_status
         self.fail = fail
+        self.dies_after_polls = dies_after_polls
         self.argv: list[str] | None = None
         self.reads_before_start: int | None = None
+        self.process: FakeProcess | None = None
 
     def __call__(self, argv):  # type: ignore[no-untyped-def]
         self.argv = list(argv)
         self.reads_before_start = len(self.channel.reads)
         if self.fail is not None:
             raise self.fail
-        return FakeProcess(self.pid, self.exit_status)
+        self.process = FakeProcess(
+            self.pid, self.exit_status, dies_after_polls=self.dies_after_polls
+        )
+        return self.process
 
 
 def armer(clock: Clock, channel: InMemoryChannel, starter: FakeStarter, **kwargs):  # type: ignore[no-untyped-def]
     return ChannelControllerArmer(
         channel=channel,
         supervisor_argv=(
-            "python",
+            sys.executable,
             "-m",
             "operations.pod.supervise",
             "--provider-factory",
             "untracked.provider:factory",
             "--spend",
-            "config/spend.toml",
+            SPEND_FILE,
         ),
         now=clock.now,
         sleeper=clock.sleep,
@@ -345,6 +372,58 @@ def test_the_supervisor_is_handed_this_launchs_owner_token_through_its_identity_
     assert identity.owner_token == OWNER
 
 
+def test_a_handover_that_finds_its_own_token_already_there_still_arms(tmp_path: Path) -> None:
+    """A retried arming attempt over the same lease writes the identical
+    handover it would have written the first time -- `FileExistsError` here
+    names no foreign controller, and the launch proceeds."""
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    handover = supervise.identity_path(tmp_path, LEASE_ID)
+    durable.exclusive_write(
+        handover,
+        durable.canonical_json(
+            supervise.SupervisorIdentity(
+                owner_token=OWNER, started_at=clock.now(), pid=999
+            ).to_record()
+        ),
+    )
+
+    result = arm(armer(clock, channel, FakeStarter(channel)), ask, record, store, lease)
+
+    assert result.armed
+
+
+def test_a_handover_that_finds_a_foreign_token_already_there_refuses(tmp_path: Path) -> None:
+    """The identity file already names another controller's owner token. The
+    supervisor about to start would resume that foreign token and could only
+    ever reach this pod through `claim_if_orphan`, closing it once this
+    launcher exits -- so a receipt claiming a live laptop controller for
+    *this* lease must never be written."""
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    handover = supervise.identity_path(tmp_path, LEASE_ID)
+    durable.exclusive_write(
+        handover,
+        durable.canonical_json(
+            supervise.SupervisorIdentity(
+                owner_token="f" * 32, started_at=clock.now(), pid=999
+            ).to_record()
+        ),
+    )
+    starter = FakeStarter(channel)
+
+    result = arm(armer(clock, channel, starter), ask, record, store, lease)
+
+    assert not result.armed
+    assert "names another controller" in result.detail
+    assert starter.argv is None
+    assert channel.reads == []
+
+
 def test_a_supervisor_that_cannot_start_refuses_before_any_read(tmp_path: Path) -> None:
     clock = Clock()
     ask, record, store, lease = scene(tmp_path, clock)
@@ -370,6 +449,28 @@ def test_a_supervisor_that_exits_immediately_refuses_before_any_read(tmp_path: P
     assert not result.armed
     assert "exited immediately with status 1" in result.detail
     assert channel.reads == []
+
+
+def test_a_supervisor_that_dies_mid_poll_is_caught_within_a_poll_interval_not_the_whole_bound(
+    tmp_path: Path,
+) -> None:
+    """A real `Popen.poll()` answers `None` right after start every time -- the
+    child has not even finished `exec` -- so the only production-reachable
+    guard is one that checks on every pass of the poll loop. This proves it
+    fires there, not only after the whole `timeout_seconds` bound runs out."""
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel()  # never answers, so the poll would otherwise run to the bound
+    starter = FakeStarter(channel, exit_status=17, dies_after_polls=2)
+
+    result = arm(armer(clock, channel, starter), ask, record, store, lease)
+
+    assert not result.armed
+    assert "exited with status 17" in result.detail
+    assert result.laptop_supervisor_started
+    # Caught within a couple of poll intervals, nowhere near the 300s bound.
+    assert clock.seconds < CONTROLLER_ARMING_TIMEOUT_SECONDS / 2
 
 
 # -- the happy path, and the two validators it has to satisfy ---------------
@@ -662,6 +763,81 @@ def test_preflight_refuses_an_unconfigured_policy() -> None:
     assert "heartbeat timeout" in readiness.detail
 
 
+def test_preflight_refuses_a_poll_interval_that_does_not_stay_inside_the_heartbeat_timeout() -> (
+    None
+):
+    """`policy.laptop_heartbeat_timeout_seconds = 1` is a legal `spend.toml`.
+    Under the default 5s poll interval the supervisor started during arming
+    would wake and close the pod before the launch owner's next heartbeat --
+    every launch under that policy would die mid-arming. Catching it here
+    costs nothing before the create."""
+
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+    short_heartbeat = replace(policy(), laptop_heartbeat_timeout_seconds=1)
+
+    readiness = armer(clock, channel, FakeStarter(channel)).preflight(
+        action="create", request=ask, policy=short_heartbeat
+    )
+
+    assert not readiness.ready
+    assert "poll interval" in readiness.detail
+    assert channel.reads == []
+
+
+def test_preflight_refuses_a_supervisor_command_that_is_not_startable() -> None:
+    """An interpreter that is not on the path, or a missing `--spend` file,
+    passes today's checks and fails only after a paid create -- or, worse,
+    after the whole arming bound. Both are free reads before that create."""
+
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+    unstartable = ChannelControllerArmer(
+        channel=channel,
+        supervisor_argv=(
+            "/no/such/interpreter-fpuxeu",
+            "-m",
+            "operations.pod.supervise",
+        ),
+        now=clock.now,
+        sleeper=clock.sleep,
+        start_supervisor=FakeStarter(channel),
+    )
+
+    readiness = unstartable.preflight(action="create", request=ask, policy=policy())
+
+    assert not readiness.ready
+    assert "interpreter-fpuxeu" in readiness.detail
+    assert channel.reads == []
+
+
+def test_preflight_refuses_a_supervisor_argv_naming_a_spend_file_that_does_not_exist() -> None:
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+    missing_spend = ChannelControllerArmer(
+        channel=channel,
+        supervisor_argv=(
+            sys.executable,
+            "-m",
+            "operations.pod.supervise",
+            "--spend",
+            "/no/such/spend-fpuxeu.toml",
+        ),
+        now=clock.now,
+        sleeper=clock.sleep,
+        start_supervisor=FakeStarter(channel),
+    )
+
+    readiness = missing_spend.preflight(action="create", request=ask, policy=policy())
+
+    assert not readiness.ready
+    assert "spend-fpuxeu.toml" in readiness.detail
+    assert channel.reads == []
+
+
 # -- the drill armer --------------------------------------------------------
 
 
@@ -731,7 +907,7 @@ def test_the_observing_armer_is_still_ready_at_preflight() -> None:
     drill = ObservingControllerArmer(
         evidence_root=Path("/does-not-need-to-exist"),
         channel=channel,
-        supervisor_argv=("python", "-m", "operations.pod.supervise"),
+        supervisor_argv=(sys.executable, "-m", "operations.pod.supervise"),
         now=clock.now,
         sleeper=clock.sleep,
         start_supervisor=FakeStarter(channel),
