@@ -1,11 +1,15 @@
 """The structure chair's closed answer contract (SPEC_D §1.2).
 
 This lives in `common/` rather than in `pipeline/2_designator/` because two
-stages must derive the identical record from the same bytes: the Designator
-publishes it, and the Attestatores' captured intake (`chandra_capture.v1`,
-SPEC_D §3) re-derives it and refuses on any difference. A stage may not import
-another stage's module, so the parser that both sides call has to live where
-neither owns it.
+stages read Chandra on the same page and must land its geometry in one
+page-pixel mapping: the Designator publishes this answer, and the
+Attestatores' own Chandra witness contract
+(`pipeline/3_attestatores/chandra_response.py`) converts its normalized boxes
+through `to_page_bounds` below. The two calls are separate readings -- every
+witness runs its own full pass and nothing is captured from one call into
+another (Tyrel's ruling, 2026-09-02) -- so what they share is the conversion,
+never the bytes. A stage may not import another stage's module, so that
+conversion has to live where neither owns it.
 
 **What is accepted, and only this:**
 `{"schema": "verbatus-structure-answer.v1", "acts": [{"box_1000": [x0,y0,x1,y1],
