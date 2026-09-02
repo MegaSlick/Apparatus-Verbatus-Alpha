@@ -3235,6 +3235,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     # the tree is still exactly as this invocation found it.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
+    # Resolved here too, before the run partition is published and before any
+    # chair is started: a real submission with a non-live row refuses here, by
+    # name, while the tree is still exactly as this invocation found it.
+    reader = fixture_reader_for(context, chair, serving_mode)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
     )
@@ -3288,15 +3292,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     all_proposal_regions = sealed_proposal_regions(context)
     reported_unrouted: set[tuple[str, int]] = set()
 
-    # A live chair is started on first use, not here. In fixture mode there is
-    # nothing to start and the reader exists from this line; in live mode the
-    # loop below starts one the first time an act actually clears capacity and
-    # needs a reading, so a resumed pass whose acts are all already sealed --
-    # or all over capacity -- never loads a 27B model onto a card that bills
+    # A live chair is started on first use, not here. `reader`, resolved above
+    # before the run partition was published, already exists; in live mode the
+    # loop below starts a chair the first time an act actually clears capacity
+    # and needs a reading, so a resumed pass whose acts are all already sealed
+    # -- or all over capacity -- never loads a 27B model onto a card that bills
     # by the hour to read nothing. `service` owns the shutdown from the moment
-    # the client exists. A real submission with a non-live row refuses here, by
-    # name, before any act is touched.
-    reader = fixture_reader_for(context, chair, serving_mode)
+    # the client exists.
     receipt_ref: dict[str, str] | None = None
 
     for act in wanted:

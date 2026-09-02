@@ -20,14 +20,15 @@ What is proven:
   by name, and needs no reader for an absent chair;
 - `declared_unreconciled` has no producer on a real run, so the review route is
   silent about cross-act reconciliation there;
-- driven as programs over a real submission, all three stages refuse at the
-  missing Designator seal with their contexts already opened: no "sealed no
+- driven as programs over a real submission, all three stages refuse at their
+  own missing predecessor seal with their contexts already opened: no "sealed no
   digest", no fixture accessor, no binding refusal, no traceback, nothing written.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ import pytest
 from common.chairs.models import AbsentChair
 from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
-from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
 from common.stage import EXIT_FATAL, REAL_SCENARIO, StageContext
 from operations.submit import gate, submit
 
@@ -204,6 +205,28 @@ def test_the_fixture_reader_is_refused_by_name_on_a_real_submission():
     assert "asked its context for fixture" not in message, "refused by name, not by accessor"
 
 
+def test_the_fixture_reader_refusal_is_resolved_before_the_partition_is_published():
+    """A real submission's non-live-chair refusal must leave the tree untouched.
+
+    `fixture_reader_for` can raise `ContractError` (the test above). If that
+    call happened after `build_run_partition` published the Perlector's
+    partition blob, the refusal would arrive after a write, breaking the
+    standard `perlector_serving_mode`'s own docstring states for this class of
+    check: refuse while the tree is still exactly as this invocation found it.
+    Read from source rather than driven end to end, because the real route
+    that would reach this line refuses earlier still, at the predecessor seal
+    (see the parametrized test above) -- there is no real Designator yet to
+    build a submission past that point.
+    """
+    source = inspect.getsource(PERLECTOR_RUN._read_the_acts)
+    reader_call = source.index("fixture_reader_for(")
+    partition_call = source.index("build_run_partition(")
+    assert reader_call < partition_call, (
+        "fixture_reader_for must be resolved before build_run_partition writes "
+        "the partition blob, or a real submission's refusal arrives after a write"
+    )
+
+
 def test_an_absent_chair_on_a_real_run_needs_no_reader_and_a_live_row_starts_none_yet():
     """Two `None`s for two different reasons: an absent chair reads nothing and
     publishes `not-run` for every act; a live row starts its chair on first use."""
@@ -241,6 +264,20 @@ def test_unreconciled_has_no_producer_on_a_real_run_and_the_route_stays_silent()
         )
         is None
     )
+
+
+def test_declared_scenario_is_none_on_a_real_run_and_the_declared_row_on_the_fixture_route():
+    """The one branch `main` reads the scenario through, named as its own function.
+
+    A real submission carries no fixture to declare one, and the refusing
+    accessor is never touched to find that out. The fixture route still reads
+    the exact row `scenario_for` names.
+    """
+    assert RECENSOR_RUN.declared_scenario(_real_context(RECENSOR)) is None
+
+    fixture = {"act": [], "page": [], "scenario": [{"name": "held", "hold_acts": ["held-act"]}]}
+    scenario = RECENSOR_RUN.declared_scenario(_fixture_context(RECENSOR, fixture, "held"))
+    assert scenario == {"name": "held", "hold_acts": ["held-act"]}
 
 
 def test_a_declared_scenario_still_feeds_unreconciled_on_the_fixture_route():
@@ -329,7 +366,7 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("stage", [PERLECTOR, RECENSOR, ARCHETYPUS])
-def test_each_stage_refuses_a_real_run_at_the_designator_seal_with_its_context_open(
+def test_each_stage_refuses_a_real_run_at_its_predecessor_seal_with_its_context_open(
     real_root, stage
 ):
     """The honest claim of the wiring, and its whole value today.
@@ -346,7 +383,7 @@ def test_each_stage_refuses_a_real_run_at_the_designator_seal_with_its_context_o
     result = _run_program(STAGE_PROGRAMS[stage], "--run-root", str(real_root), "--run-id", RUN_ID)
 
     assert result.returncode == EXIT_FATAL, result.stderr
-    assert "predecessor designator has no stage-seal" in result.stderr
+    assert f"predecessor {SEAL_PREDECESSORS[stage]} has no stage-seal" in result.stderr
     assert "sealed no digest" not in result.stderr
     assert "asked its context for fixture declarations" not in result.stderr
     assert "bound to different" not in result.stderr
