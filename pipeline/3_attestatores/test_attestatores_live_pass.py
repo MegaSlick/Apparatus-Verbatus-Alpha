@@ -610,6 +610,56 @@ def test_every_live_record_says_which_kind_of_bytes_it_retained(live_run, tmp_pa
     with pytest.raises(SchemaRefusal, match="without saying which kind of bytes"):
         attestatores.validate_testimonium_payload(payload)
 
+    # An unrecognized vocabulary word is refused by name, not silently accepted.
+    unknown_kind = dict(payload)
+    unknown_kind["raw_response_kind"] = "bogus-kind"
+    with pytest.raises(SchemaRefusal, match="which is not one of"):
+        attestatores.validate_testimonium_payload(unknown_kind)
+
+    # A kind with no retained bytes beside it is refused too -- naming a kind
+    # is meaningless without the response it describes.
+    kind_without_bytes = dict(payload)
+    del kind_without_bytes["raw_response_ref"]
+    del kind_without_bytes["native_capture"]
+    del kind_without_bytes["serving_call_ref"]
+    kind_without_bytes["raw_response_kind"] = "model-output"
+    with pytest.raises(SchemaRefusal, match="while retaining none"):
+        attestatores.validate_testimonium_payload(kind_without_bytes)
+
+
+def test_a_wire_response_the_client_cannot_parse_at_all_is_retained_as_the_transport_body(
+    live_run, tmp_path
+):
+    """The second value `raw_response_kind` exists for: no adapter parser ran.
+
+    A body `ChairClient` cannot shape into a reading at all (here, an
+    OpenAI-shaped envelope with zero choices) is `_malformed_response_attempt`'s
+    branch -- retained, never repaired, with `raw_response_kind` naming the
+    whole transport body rather than a model view nothing ever parsed.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_2"] = [
+        ScriptedAnswer(body=json.dumps({"model": "served-attestator_2", "choices": []}).encode()),
+        ScriptedAnswer(content=DAI_ACT_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    record = act_records(tree)[("a1", "attestator_2")]
+    payload = record["payload"]
+    assert record["outcome"] == "failed"
+    assert payload["raw_response_kind"] == "transport-response-body"
+    assert "native_capture" not in payload
+    assert "serving_call_ref" in payload
+    attestatores.validate_retained_response_blob(tree, payload["raw_response_ref"])
+
+    # The next act on the same chair, unaffected: one malformed reading does
+    # not poison the rest of the roster.
+    other = act_records(tree)[("a2", "attestator_2")]["payload"]
+    assert other["raw_response_kind"] == "model-output"
+
 
 def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produced_it(
     live_run, tmp_path

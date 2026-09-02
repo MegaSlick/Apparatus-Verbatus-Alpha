@@ -735,6 +735,32 @@ def test_a_declared_view_that_collides_with_the_decimal_form_is_refused_not_mang
     assert len(blob_store) == 0
 
 
+def test_a_declared_view_with_a_malformed_decimal_form_is_refused_not_crashed(
+    tmp_path: Path,
+) -> None:
+    """A tagged form whose ``decimal`` is not a number is the vendor's malformed
+
+    evidence, not the client's to trust or to raise a bare exception over. It
+    fails the same round-trip the well-formed collision above fails, so it
+    surfaces as the same named refusal instead of an untyped ``ValueError``
+    escaping the client's refusal boundary.
+    """
+
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        with pytest.raises(ChairRequestRefusal) as excinfo:
+            client.read(
+                _request(
+                    generation_declared={
+                        "vendor_note": {"schema": "wire-decimal.v1", "decimal": "abc"}
+                    }
+                )
+            )
+        assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
 # --- receipt re-verification on __enter__ -------------------------------------
 
 

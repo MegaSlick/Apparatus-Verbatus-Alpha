@@ -720,6 +720,7 @@ def test_a_live_act_record_may_name_its_retained_response_call_and_model_view():
     payload = _base()
     reference = _blob_ref("live response bytes")
     payload["raw_response_ref"] = reference
+    payload["raw_response_kind"] = "model-output"
     payload["serving_call_ref"] = _blob_ref("call record bytes")
     payload["native_capture"] = _live_capture(reference)
     assert attestatores.validate_testimonium_payload(payload) is payload
@@ -737,6 +738,7 @@ def test_a_retained_model_view_naming_another_response_is_refused():
     """One attempt reads one response, and both references must say the same one."""
     payload = _base()
     payload["raw_response_ref"] = _blob_ref("live response bytes")
+    payload["raw_response_kind"] = "model-output"
     payload["serving_call_ref"] = _blob_ref("call record bytes")
     payload["native_capture"] = _live_capture(_blob_ref("some other response entirely"))
     with pytest.raises(SchemaRefusal, match="different response blob"):

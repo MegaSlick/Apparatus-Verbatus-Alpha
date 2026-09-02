@@ -424,10 +424,12 @@ def _dai_model_view(
     Designator record, matching `feeding.py`'s own tests' naming
     (``"designator/crops/..."``). ``model_image_ref`` is DAI's own further
     crop-and-resize output (``presented``, from `witness_adapters._dai_present`).
-    The module docstring names the one invariant this cannot always satisfy: a
-    genuine no-resize DAI act may still be refused by ``dai_model_view``'s
-    identity-transform rule, because ``_dai_present`` always republishes its
-    own crop as a fresh blob rather than reusing the Designator's bytes.
+    The no-resize case is satisfied by *content*, not by path identity:
+    ``_dai_present`` always republishes its own crop as a fresh blob under
+    ``3_attestatores/``, but on that path it is ``crop_png`` of the same sealed
+    page at the same bounds as the Designator's ``2_designator/`` proposal
+    crop, so the two references share one digest under two stage-owned paths,
+    and ``feeding.dai_model_view`` compares exactly that digest.
 
     Prompt and generation-config bytes are retained here (not carried bytes
     read back from elsewhere) because DAI's closed view requires digest-backed
