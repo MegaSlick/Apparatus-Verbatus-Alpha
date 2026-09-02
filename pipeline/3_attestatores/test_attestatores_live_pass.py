@@ -1124,6 +1124,76 @@ def test_a_page_record_the_fixture_posture_wrote_is_not_resumed_into_a_live_pass
         attestatores._page_capture_from_record(context, record, "the page Testimonium")
 
 
+def test_a_resumed_parsed_but_unconfirmed_blank_chandra_page_carries_no_observation_payload():
+    """A resume must not rederive a *different* partition than the pass sealed.
+
+    `captured_page_attempt` sets `observation_payload` only on its first
+    parsed branch (`completed is True or parsed["text"] != ""`), which is
+    ``read``/``genuinely-empty``. A response whose body parsed to a closed
+    shape but whose transport word reported neither a natural stop nor any
+    text -- cut off, unreported, unrecognized -- lands on the *second* parsed
+    branch instead: outcome ``failed``, "not a confirmed blank page", and
+    deliberately no `observation_payload`. `_page_capture_from_record` used
+    to rehydrate on `parse.state == "parsed"` alone, which is true on that
+    same record, so a resume handed the bytes back and re-derived geometry
+    the interrupted pass never sealed -- the immutable writer then refuses
+    the differing republish. Gating on `record["outcome"] in
+    WITNESS_READING_OUTCOMES` (the same set `captured_page_attempt`'s reading
+    branch uses) closes the gap; the fake tree's `read_bytes` raising proves
+    the rehydration path is never even entered.
+    """
+    record = {
+        "outcome": "failed",
+        "payload": {
+            "payload": "",
+            "witness_reported": None,
+            "content_health": {
+                "native_type": "text",
+                "encoding": "utf-8",
+                "recordable": True,
+                "empty": True,
+                "blank": True,
+                "truncated": None,
+                "characters": 0,
+                "truncation_basis": "not-a-confirmed-blank-page",
+            },
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "reason": "not a confirmed blank page: the response was cut off before any stop word",
+            "raw_response_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/x",
+                "sha256": "x" * 64,
+            },
+            "native_capture": {
+                "adapter": "chandra.v1",
+                "parse": {"state": "parsed", "parser": "json"},
+                "raw_response_ref": {
+                    "relative_path": "3_attestatores/blobs/sha256/x",
+                    "sha256": "x" * 64,
+                },
+            },
+            "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
+        },
+    }
+
+    def refuse_read(relative_path):
+        raise AssertionError(
+            f"rehydration must not read raw bytes for a non-reading outcome: {relative_path}"
+        )
+
+    context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_run_receipt=lambda reference: {"endpoint": "https://live.example/chair"},
+            read_bytes=refuse_read,
+        )
+    )
+    attempt, capture = attestatores._page_capture_from_record(
+        context, record, "the page Testimonium sealed for page 1, chair 'attestator_1'"
+    )
+
+    assert attempt.observation_payload is None
+    assert capture == record["payload"]["native_capture"]
+
+
 def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):
     """The defect that used to keep DAI out of the live roster, from the outside.
 

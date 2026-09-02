@@ -4411,7 +4411,19 @@ def _page_capture_from_record(
         capture is not None
         and capture.get("adapter") == "chandra.v1"
         and capture["parse"]["state"] == "parsed"
+        and record["outcome"] in WITNESS_READING_OUTCOMES
     ):
+        # `capture["parse"]["state"] == "parsed"` alone is wider than the
+        # condition `captured_page_attempt` used when it decided whether to
+        # carry the bytes forward as `observation_payload` in the first
+        # place: a parsed-but-unconfirmed-blank body (cut off, or an
+        # unrecognized stop word) is also "parsed" but lands on the `failed`
+        # branch there, with no `observation_payload` ever set. Rehydrating
+        # on parse-state alone would hand a resume different geometry than
+        # the interrupted pass sealed -- the immutable writer then refuses
+        # the differing republish. Gate on the same outcome set
+        # `captured_page_attempt`'s reading branch uses (GOVERNANCE 4).
+        #
         # The page record's geometry is re-derived from the response bytes on
         # republish (`publish_page_testimonia_and_attachments`), so a resumed
         # page capture must carry them exactly as the interrupted pass did --
