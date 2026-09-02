@@ -1220,6 +1220,45 @@ def test_a_withheld_page_that_kept_its_component_list_refuses(monkeypatch):
         RUN.geometry_coverage_inputs(context)
 
 
+def test_a_withheld_page_without_a_usable_integer_bound_refuses(monkeypatch):
+    """The count-and-bound refusal is exercised, not merely present in source.
+
+    A page held with no `max_residual_components` at all -- or one that is a
+    float or a bool rather than a plain int -- must not fall through to the
+    `count <= bound` comparison and be silently accepted or misreported; a
+    mutation deleting this check left every test in this file green while a
+    withheld page with an absent bound was reported to a reviewer as held
+    against a sealed bound of 0.
+    """
+    context = _context(
+        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10.0)
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
+
+    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_a_withheld_page_with_a_boolean_bound_refuses(monkeypatch):
+    context = _context(
+        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=True)
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
+
+    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_a_withheld_page_with_no_bound_at_all_refuses(monkeypatch):
+    record = _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
+    del record["payload"]["max_residual_components"]
+    context = _context(record)
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
+
+    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
+        RUN.geometry_coverage_inputs(context)
+
+
 def test_a_withheld_page_within_its_own_bound_refuses(monkeypatch):
     context = _context(
         _conservation(
@@ -1280,6 +1319,30 @@ def test_a_withheld_pages_ink_accounting_is_still_reconciled(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
 
     with pytest.raises(FatalAccounting, match="pixel accounting does not reconcile"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_a_withheld_pages_malformed_pixel_counts_are_refused(monkeypatch):
+    """The withheld shape's own copy of the malformed-count check, pinned directly.
+
+    `geometry_coverage_inputs` and `_withheld_page_conservation` each held this
+    check separately until they were folded into one shared helper
+    (`_require_reconciled_pixels`); nothing in this file exercised the withheld
+    copy on its own, so a mutation that dropped it left the whole suite green.
+    This pins the withheld call site by name rather than inferring it from the
+    enumerated page's coverage above.
+    """
+    context = _context(
+        _conservation(
+            "conservation-1",
+            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
+            bound=10,
+            counts=(12, True, 12),
+        )
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
+
+    with pytest.raises(FatalAccounting, match="page 1 has malformed measured pixel counts"):
         RUN.geometry_coverage_inputs(context)
 
 

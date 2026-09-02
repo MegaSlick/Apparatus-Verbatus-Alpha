@@ -1977,6 +1977,34 @@ def unresolved_observation_hold(
     )
 
 
+def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, int, int]:
+    """Pixel-count typing and conservation, shared by every consumer of `pixel_counts`.
+
+    Both the enumerated and the withheld page shapes hold the sealed page's own
+    ink accounting to the same two facts: the three counts are non-negative
+    integers, and `claimed + residual == total`. Returns the triple so the
+    enumerated caller can still check its own per-component sum against it.
+    """
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in pixel_counts.values()
+    ):
+        raise FatalAccounting(
+            f"Designator conservation page {ordinal} has malformed measured pixel "
+            "counts; total, claimed, and residual must be non-negative integers"
+        )
+    total = pixel_counts["total_ink_pixel_count"]
+    claimed = pixel_counts["claimed_pixel_count"]
+    residual = pixel_counts["residual_pixel_count"]
+    if claimed + residual != total:
+        raise FatalAccounting(
+            f"Designator conservation page {ordinal} pixel accounting does not "
+            "reconcile: claimed_pixel_count + residual_pixel_count does not equal "
+            "total_ink_pixel_count"
+        )
+    return total, claimed, residual
+
+
 def geometry_coverage_inputs(context) -> dict[int, dict]:
     """Consume, and independently reconcile, R2's conservation denominator.
 
@@ -2089,23 +2117,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                     "is malformed"
                 )
         if measurable:
-            if any(
-                not isinstance(count, int) or isinstance(count, bool) or count < 0
-                for count in pixel_counts.values()
-            ):
-                raise FatalAccounting(
-                    f"Designator conservation page {ordinal} has malformed measured pixel "
-                    "counts; total, claimed, and residual must be non-negative integers"
-                )
-            total = pixel_counts["total_ink_pixel_count"]
-            claimed = pixel_counts["claimed_pixel_count"]
-            residual = pixel_counts["residual_pixel_count"]
-            if claimed + residual != total:
-                raise FatalAccounting(
-                    f"Designator conservation page {ordinal} pixel accounting does not "
-                    "reconcile: claimed_pixel_count + residual_pixel_count does not equal "
-                    "total_ink_pixel_count"
-                )
+            _, _, residual = _require_reconciled_pixels(ordinal, pixel_counts)
             if sum(component["pixel_count"] for component in components) != residual:
                 raise FatalAccounting(
                     f"Designator conservation page {ordinal} residual component pixel sum "
@@ -2205,22 +2217,7 @@ def _withheld_page_conservation(
             f"components against a bound of {bound}, which it does not exceed; a page within "
             "the bound owes one held act per residual, not a withheld enumeration"
         )
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in pixel_counts.values()
-    ):
-        raise FatalAccounting(
-            f"Designator conservation page {ordinal} has malformed measured pixel counts; "
-            "total, claimed, and residual must be non-negative integers"
-        )
-    if (
-        pixel_counts["claimed_pixel_count"] + pixel_counts["residual_pixel_count"]
-        != pixel_counts["total_ink_pixel_count"]
-    ):
-        raise FatalAccounting(
-            f"Designator conservation page {ordinal} pixel accounting does not reconcile: "
-            "claimed_pixel_count + residual_pixel_count does not equal total_ink_pixel_count"
-        )
+    _require_reconciled_pixels(ordinal, pixel_counts)
     minted = sorted(key for key in residual_keys if key.startswith(f"residual:{ordinal}:"))
     if minted:
         raise FatalAccounting(

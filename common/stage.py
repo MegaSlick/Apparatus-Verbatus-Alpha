@@ -1877,13 +1877,11 @@ def run_config_bindings(
     # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
     # holds to the same rule across stage directories — would buy a bind-time
     # refusal by breaking two live guards, so the refusal for a *malformed* file
-    # is meant to sit where the loader already is: the Designator's structure
-    # pass, loading it in `initial_pass` and proving it against this digest
-    # through `require_sealed_config("designator-grouping", ...)`, with
+    # sits where the loader already is: the Designator's structure pass,
+    # loading it in `initial_pass` and proving it against this digest through
+    # `require_sealed_config("designator-grouping", ...)`, with
     # `load_grouping_config` refusing loudly there, before the stage marks
-    # anything out. That call has not landed yet — see the note beside
-    # `sealed_config_digests` below — so today a malformed file is only hashed,
-    # never parsed. An *unreadable* file still refuses right here, at run
+    # anything out. An *unreadable* file still refuses right here, at run
     # creation, exactly as geometry's does.
     try:
         grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
@@ -1989,20 +1987,14 @@ def run_config_bindings(
         # merely re-derive them.
         #
         # Every name here is bound into `config_digest` above, and every name here
-        # has a point of use that requires it: padding and geometry at the
-        # Designator's crop, alignment at the Attestatores, the shard limit at run
-        # creation, the two Perlector policies at the reading, `recovery` at the
-        # Recensor, the Designator recovery pass and the orchestrator's dispatch,
-        # `pdf-render` at the Door that parsed it, and `hard-failure` at the
-        # orchestrator's own checkpoint. A name sealed with no point of use would
-        # read as a closed window that nothing actually shuts.
-        #
-        # `grouping` is the one entry ahead of its point of use today: it is
-        # bound and sealed here so the digest exists to prove against, but
-        # `pipeline/2_designator/run.py::initial_pass` does not yet call
-        # `require_sealed_config("designator-grouping", ...)` — that call, and the
-        # malformed-policy refusal it guards, arrive with the Designator's
-        # structure pass, not with this binding.
+        # has a point of use that requires it: padding, geometry and grouping at
+        # the Designator's crop and structure pass, alignment at the
+        # Attestatores, the shard limit at run creation, the two Perlector
+        # policies at the reading, `recovery` at the Recensor, the Designator
+        # recovery pass and the orchestrator's dispatch, `pdf-render` at the Door
+        # that parsed it, and `hard-failure` at the orchestrator's own
+        # checkpoint. A name sealed with no point of use would read as a closed
+        # window that nothing actually shuts.
         #
         # `hard-failure` is the family's fourth member and the last to be sealed.
         # It is the one the orchestrator reads BEFORE the run exists — the tally
@@ -2793,6 +2785,47 @@ def _verify_minted_act_rows(
         _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
 
 
+def _prove_page_wide_act_rectangle(
+    context, act_id: str, page_id: str, ordinal: int, bounds: dict, act_class: str
+) -> None:
+    """The read/re-derive proof both page-wide act rows share, parameterized by class.
+
+    Recomputes the sealed page's own rectangle from its sealed bytes rather than
+    trusting the bounds a record claims, refuses a rectangle that is not the
+    whole page, and re-derives the act's identity against the reserved
+    ``act_class`` and that rectangle. Shared verbatim by
+    `_verify_page_fallback_act_row` and `_verify_page_residual_act_row` — the
+    two rows differ only in which act class they mint and which premise gates
+    them, both handled by their own callers before and after this proof.
+    """
+    sources = [
+        source
+        for source in context.run.get("source_manifest", [])
+        if source.get("ordinal") == ordinal
+    ]
+    if len(sources) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
+        )
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    width, height = dimensions(page_bytes)
+    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
+    if bounds != full_page_bounds:
+        raise FatalAccounting(
+            f"act {act_id}'s {act_class} rectangle {bounds} is not the complete sealed page "
+            f"rectangle {full_page_bounds}"
+        )
+    try:
+        verify_identity(act_id, "act", act_bindings(page_id, act_class, bounds))
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the reserved {act_class} class and the "
+            f"page rectangle its own record names: {error}"
+        ) from error
+
+
 def _verify_page_fallback_act_row(
     context, act_id: str, row: dict[str, Any], fallbacks_by_subject: dict[str, dict[str, Any]]
 ) -> None:
@@ -2832,34 +2865,9 @@ def _verify_page_fallback_act_row(
             f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
             "derived fallback key, and page rectangle it must bind"
         )
-    sources = [
-        source
-        for source in context.run.get("source_manifest", [])
-        if source.get("ordinal") == ordinal
-    ]
-    if len(sources) != 1:
-        raise FatalAccounting(
-            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
-        )
-    page = context.tree.read_artifact(
-        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-fallback"
     )
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    width, height = dimensions(page_bytes)
-    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
-    if bounds != full_page_bounds:
-        raise FatalAccounting(
-            f"act {act_id}'s page-fallback rectangle {bounds} is not the complete sealed page "
-            f"rectangle {full_page_bounds}"
-        )
-    try:
-        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-fallback", bounds))
-    except IdentityRefusal as error:
-        raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-fallback class and the "
-            f"page rectangle its own record names: {error}"
-        ) from error
     inputs = record.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
         raise FatalAccounting(
@@ -2955,34 +2963,9 @@ def _verify_page_residual_act_row(
             f"{sealed_grouping_digest!r} this run sealed at binding time; a Designator free to "
             "invent the grouping policy behind its bound could hold any page it likes"
         )
-    sources = [
-        source
-        for source in context.run.get("source_manifest", [])
-        if source.get("ordinal") == ordinal
-    ]
-    if len(sources) != 1:
-        raise FatalAccounting(
-            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
-        )
-    page = context.tree.read_artifact(
-        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-residual"
     )
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    width, height = dimensions(page_bytes)
-    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
-    if bounds != full_page_bounds:
-        raise FatalAccounting(
-            f"act {act_id}'s page-residual rectangle {bounds} is not the complete sealed page "
-            f"rectangle {full_page_bounds}"
-        )
-    try:
-        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-residual", bounds))
-    except IdentityRefusal as error:
-        raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-residual class and the "
-            f"page rectangle its own record names: {error}"
-        ) from error
     inputs = hold.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
         raise FatalAccounting(

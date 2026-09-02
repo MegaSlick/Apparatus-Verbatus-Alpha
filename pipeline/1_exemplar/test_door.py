@@ -3248,21 +3248,21 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     require_triage_modes(sealed, triage_modes)
 
 
-def test_a_rewritten_grouping_policy_is_refused_by_name_at_the_designators_point_of_use(tmp_path):
+def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
     """The sealed grouping name must be able to fail, and to say which fault it is.
 
     A name in `sealed_config_digests` earns its place by having a point of use
     that requires it; a name nothing can refuse against "would read as a closed
     window that nothing actually shuts" (`common/stage.py`). So this drives the
-    Door's own real-path map into the comparison the Designator makes, and proves
-    both refusals separately: a file rewritten after the door bound it, and an
-    authority that never sealed the name at all. They need different operator
-    actions — restore the policy, versus create the run again on a build that
-    seals it — so they must not collapse into one message.
+    Door's own real-path map into the comparison `require_sealed_config` makes,
+    and proves both refusals separately: a file rewritten after the door bound
+    it, and an authority that never sealed the name at all. They need different
+    operator actions — restore the policy, versus create the run again on a
+    build that seals it — so they must not collapse into one message.
 
     Deliberately a rewritten *file*, not an invented hex string: the digest under
     test is one the loader would really produce from bytes really on disk, which
-    is what the point of use will be handed on a real run.
+    is what the point of use is handed on a real run.
     """
 
     class Models:

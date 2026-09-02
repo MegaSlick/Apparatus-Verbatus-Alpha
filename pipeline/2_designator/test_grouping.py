@@ -103,6 +103,13 @@ def test_assign_columns_refuses_a_missing_margin_px():
         assign_columns([], PAGE_W)
 
 
+def test_assign_columns_refuses_a_non_integer_margin_px():
+    with pytest.raises(
+        ContractError, match=rf"margin 1\.5px is not between 0 and page width {PAGE_W}"
+    ):
+        assign_columns([], PAGE_W, margin_px=1.5)
+
+
 def test_assign_columns_pins_margin_px_at_its_own_boundary():
     """MARGIN_PX must actually decide the partition, not just describe it.
 
@@ -124,6 +131,31 @@ def test_assign_columns_pins_margin_px_at_its_own_boundary():
 
 def test_no_components_groups_to_nothing():
     assert group([], PAGE_W, PAGE_H) == []
+
+
+@pytest.mark.parametrize("margin_px", [0, PAGE_W, -5, 1.5])
+def test_group_page_refuses_a_bad_margin_even_with_no_components(margin_px):
+    """The margin threshold is validated whether or not there is ink to sort.
+
+    `group_page` short-circuits to `[]` on an empty page, and before this fix
+    that short-circuit sat ahead of the margin check -- a sealed policy that
+    resolved to an out-of-range or non-integer margin_px produced no refusal
+    at all on an ink-free page, only a resolved_thresholds record naming a
+    margin nothing had actually validated.
+    """
+    with pytest.raises(
+        ContractError,
+        match=rf"margin {margin_px}px is not between 0 and page width {PAGE_W}",
+    ):
+        group_page(
+            [],
+            PAGE_W,
+            PAGE_H,
+            margin_px=margin_px,
+            chain_gap_px=CHAIN_GAP_PX,
+            anchor_reach_px=ANCHOR_REACH_PX,
+            brace_min_height_px=BRACE_MIN_HEIGHT_PX,
+        )
 
 
 def test_one_anchored_body_run_is_one_act():

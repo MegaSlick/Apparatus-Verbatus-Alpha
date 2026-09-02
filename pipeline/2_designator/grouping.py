@@ -64,6 +64,18 @@ def _plain_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _check_margin(margin_px: int, page_w: int) -> None:
+    """The one margin predicate both `assign_columns` and `group_page` hold.
+
+    A single spelling so the two call sites cannot drift apart: a float
+    margin or one outside the page must be refused the same way regardless
+    of which caller resolved it first, including when `group_page` short-
+    circuits on an empty page and never reaches `assign_columns` at all.
+    """
+    if not _plain_int(margin_px) or not (0 < margin_px < page_w):
+        raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
+
+
 def _y_range(component: dict) -> tuple[int, int]:
     bounds = component["bounds"]
     return bounds["y"], bounds["y"] + bounds["h"]
@@ -106,8 +118,7 @@ def assign_columns(
     """
     if page_w <= 0:
         raise ContractError(f"page width {page_w} is not positive")
-    if not (0 < margin_px < page_w):
-        raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
+    _check_margin(margin_px, page_w)
     margin: list[dict] = []
     body: list[dict] = []
     for component in components:
@@ -219,6 +230,7 @@ def group_page(
     ):
         if not _plain_int(value) or value < 0:
             raise ContractError(f"{name} {value}px is not a non-negative integer")
+    _check_margin(margin_px, page_w)
     if not components:
         return []
 
