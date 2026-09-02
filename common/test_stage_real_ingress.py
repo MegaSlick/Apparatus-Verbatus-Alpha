@@ -34,6 +34,7 @@ from typing import Any
 
 import pytest
 
+from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import (
     ContractError,
@@ -785,6 +786,36 @@ def test_exemplar_page_ids_on_a_real_run_derive_from_the_sealed_bytes(real_root,
         for ordinal, name in ((1, "page-1.png"), (2, "page-2.png"))
     }
     assert submission_identity(context.run) == json.loads(ledger.read_text())["self_hash"]
+
+
+# --- submission_identity refuses a forged or absent filename ledger --------------
+
+
+def test_submission_identity_refuses_a_real_run_with_no_source_manifest():
+    """No `source_manifest` at all: nothing to name a submission by."""
+    run = {"ingress": real_ingress_record()}
+    with pytest.raises(ContractError, match="no submitted source manifest to name a submission by"):
+        submission_identity(run)
+
+
+def test_submission_identity_refuses_a_real_run_naming_two_filename_ledgers():
+    """Two source rows disagreeing on `ledger_sha256`: no single identity to choose."""
+    run = {
+        "ingress": real_ingress_record(),
+        "source_manifest": [{"ledger_sha256": "a" * 64}, {"ledger_sha256": "b" * 64}],
+    }
+    with pytest.raises(ContractError, match="filename ledgers, not one"):
+        submission_identity(run)
+
+
+def test_submission_identity_refuses_a_real_run_with_a_non_sha256_ledger():
+    """A `ledger_sha256` that is not a sha256 hex string: nothing may stand in for it."""
+    run = {
+        "ingress": real_ingress_record(),
+        "source_manifest": [{"ledger_sha256": "not-a-sha256"}],
+    }
+    with pytest.raises(ContractError, match="no filename-ledger sha256"):
+        submission_identity(run)
 
 
 def test_open_context_takes_the_tree_and_its_authority_together(fixture_template):

@@ -1293,6 +1293,20 @@ def test_a_projection_with_both_run_identities_is_refused(tmp_path):
         build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
 
 
+def test_a_projection_with_a_non_sha256_submission_id_is_refused(tmp_path):
+    """The projection boundary is at least as strict as `submission_identity` itself.
+
+    The manifest-boundary twin of this check is
+    `test_a_manifest_run_binding_naming_a_non_sha256_submission_is_refused`; this
+    pins the other end -- `_validate_projection`'s own `_require_sha256` call --
+    which nothing had reached before, since every other test's `submission_id`
+    is a well-formed `"a" * 64`.
+    """
+    projection = replace(_projection(), fixture_id=None, submission_id="not-a-lowercase-sha256")
+    with pytest.raises(SchemaRefusal, match="projection submission identity is not a lowercase sha256"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
 def test_a_manifest_run_binding_naming_both_identities_is_refused(tmp_path):
     """A resealed manifest cannot smuggle both identity fields past the closure check."""
 

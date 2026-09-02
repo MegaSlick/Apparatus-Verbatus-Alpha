@@ -93,15 +93,22 @@ know which counting convention a package uses before it can interpret
 `expected_count` at all, so the id has to carry that decision before the
 reader opens `claims`. A real-run manifest changes only *which run this
 package is,* the way a different `fixture_id` value already did before this
-unit — every consumer already had to branch on the identity field's value
-(there was never a fixed fixture id to compare against), and branching on
-which key is present (`"submission_id" in run` vs `"fixture_id" in run`) is
-the same kind of read. A fourth schema id would encode a distinction that
-existing consumers make correctly today by checking the fields the record
-actually has, which is what a closed two-shape union is for. Any future
-schema-versioning ruling belongs to Tyrel under the boundary this project's
-`CLAUDE.md` sets for governed change; this paragraph records the reasoned
-default rather than presupposing that ruling.
+unit — but it changes it by a shape, not a value: every v3 package before
+this unit carried `run.fixture_id` unconditionally, and a reader doing
+`manifest["run"]["fixture_id"]` worked on all of them. After this unit a v3
+package may instead carry `run.submission_id` with no `fixture_id` key at
+all, and that same unconditional read now `KeyError`s. This is latent, not a
+break: a repo-wide search finds no reader of `run.fixture_id` outside the
+Armarium's own tests, and no real run reaches the Armarium today. A consumer
+that keys on the schema id and then reads the run block must branch on which
+identity key is present (`"submission_id" in run` vs `"fixture_id" in run`)
+before it may read either — the two-shape union is closed, but it is not
+uniform, and the id alone does not say which shape a given package has. A
+fourth schema id would let a consumer learn that from the id instead of by
+opening the block first. Any future schema-versioning ruling belongs to
+Tyrel under the boundary this project's `CLAUDE.md` sets for governed
+change; this paragraph records the reasoned default — and the real risk it
+accepts — rather than presupposing that ruling.
 
 ## Export contract
 
