@@ -523,12 +523,86 @@ def test_status_list_absence_and_terminate_use_documented_v1_paths_and_shapes() 
 
     assert status.presence is Presence.ABSENT
     assert status.http_status == 404
+    assert status.provider_state is None
     assert listed.presence is Presence.ABSENT
     assert [(method, path) for method, path, _ in transport.calls] == [
         ("GET", "/pods/pod-1"),
         ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
         ("DELETE", "/pods/pod-1"),
     ]
+
+
+def test_status_parses_desiredstatus_verbatim_from_the_200_body_it_already_fetches() -> None:
+    """An EXITED pod is still PRESENT to this seam -- lifecycle is a separate
+    fact from presence, and the word is reported exactly as the provider
+    spelled it, never normalized against the create/adopt vocabulary."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus="EXITED"))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state == "EXITED"
+
+
+def test_status_reports_a_lifecycle_word_unknown_to__pod_states_rather_than_raising() -> None:
+    """`status` is an observation, not a gate: an unfamiliar future lifecycle
+    word must reach the caller verbatim, and casing must survive untouched,
+    or a live supervisor polling a billing pod gets a raised ProviderFailure
+    on a read-only GET the moment RunPod renames a state word."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus="Provisioning_v3"))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.provider_state == "Provisioning_v3"
+
+
+def test_status_yields_no_lifecycle_word_when_the_200_body_omits_desiredstatus() -> None:
+    payload = pod_payload()
+    del payload["desiredStatus"]
+    transport = ScriptedTransport([json_response(payload)])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state is None
+
+
+@pytest.mark.parametrize("malformed", [123, "", "   "])
+def test_status_drops_a_malformed_desiredstatus_and_names_it_rather_than_reporting_it(
+    malformed: object,
+) -> None:
+    """A malformed value is not the same fact as an absent one: `None` from
+    this seam must never mean "the provider actually sent something we could
+    not use" without that being visible somewhere -- here, in `detail`."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=malformed))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.provider_state is None
+    assert f"unusable desiredStatus {malformed!r}" in status.detail
+
+
+@pytest.mark.parametrize("padded", [" RUNNING ", "RUNNING\n", "\tRUNNING"])
+def test_status_strips_a_padded_but_usable_desiredstatus_before_storing_it(
+    padded: str,
+) -> None:
+    """The usability decision and the stored word must agree: deciding on the
+
+    stripped word but storing the padded one let `supervise.py`'s RUNNING
+    guard (which case-folds but did not used to strip) disagree with this
+    seam about the same byte string, closing a healthy pod. See
+    `test_supervise.py`'s companion drill for the consuming guard."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=padded))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state == "RUNNING"
+    assert "unusable desiredStatus" not in status.detail
 
 
 def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:

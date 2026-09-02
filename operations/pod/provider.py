@@ -51,7 +51,13 @@ class PodProvider(Protocol):
         """Read the named existing pod for a separately gated adoption."""
 
     def status(self, pod_id: str) -> ProviderStatus:
-        """Observe that exact pod, including an explicit 404-as-absent result."""
+        """Observe that exact pod, including an explicit 404-as-absent result.
+
+        The returned ``provider_state`` is a separate fact from ``presence``:
+        an EXITED pod is still PRESENT to this seam, and still bills its
+        attached volume. An adapter that omits a lifecycle word leaves it
+        ``None``, and ``None`` is never read as RUNNING by any caller.
+        """
 
     def terminate(self, pod_id: str) -> None:
         """Request idempotent termination; an acknowledgement is not proof."""

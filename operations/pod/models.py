@@ -141,6 +141,68 @@ def parse_billing_cutoff_margin_seconds(value: object, label: str) -> int:
     return require_billing_cutoff_margin_seconds(parsed, label)
 
 
+POD_REPORT_SCHEMA = "pod-report.v1"
+"""Schema tag for the pod-side timer's durable acknowledgement and close reports.
+
+The pod timer's first durable write proves a provider-backed close capability
+exists on this exact pod; every later write from the same run -- each bootstrap
+outcome, each close attempt, the final expiry report -- must be traceable to
+that same lease, pod, and deadline. ``validate_pod_report_identity`` below is
+the one shared check a restarting supervisor or armer runs before trusting
+what it reads.
+"""
+
+
+def validate_pod_report_identity(
+    value: Mapping[str, object],
+    *,
+    lease_id: str,
+    pod_id: str | None,
+    hard_deadline: datetime,
+) -> None:
+    """Refuse a pod report unless its identity names this exact lease.
+
+    A pod report is durable evidence a restarting supervisor or armer may act
+    on without ever having watched the pod run.  One whose identity block does
+    not name the lease it claims to speak for -- wrong lease, wrong pod, wrong
+    deadline, or missing the block entirely -- is not evidence of anything and
+    must be refused mechanically here, the same posture
+    ``lease._validate_controller_record`` already takes for the controller
+    receipt this report eventually feeds.
+    """
+
+    if not isinstance(value, Mapping) or value.get("schema") != POD_REPORT_SCHEMA:
+        raise ValueError(
+            f"pod report schema is absent or unsupported (expected {POD_REPORT_SCHEMA!r})"
+        )
+    identity = value.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != {
+        "lease_id",
+        "pod_id",
+        "hard_deadline",
+    }:
+        raise ValueError("pod report identity must contain exactly lease_id, pod_id, hard_deadline")
+    if pod_id is None or not isinstance(identity["pod_id"], str) or not identity["pod_id"].strip():
+        raise ValueError("pod report cannot prove a pod before exact pod binding")
+    stamped_deadline = (
+        require_utc(hard_deadline, "pod report hard_deadline").isoformat().replace("+00:00", "Z")
+    )
+    if (
+        identity["lease_id"] != lease_id
+        or identity["pod_id"] != pod_id
+        or identity["hard_deadline"] != stamped_deadline
+    ):
+        raise ValueError("pod report identity does not name this exact lease")
+    acknowledged_at = value.get("acknowledged_at")
+    if not isinstance(acknowledged_at, str) or not acknowledged_at:
+        raise ValueError("pod report must carry a non-blank acknowledged_at stamp")
+    try:
+        parsed_acknowledged_at = datetime.fromisoformat(acknowledged_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("pod report acknowledged_at is not an RFC3339 UTC stamp") from error
+    require_utc(parsed_acknowledged_at, "pod report acknowledged_at")
+
+
 @dataclass(frozen=True, slots=True)
 class PodCreateRequest:
     """The complete requested pod shape, before a provider sees it.
@@ -680,16 +742,34 @@ class AccountBalanceObservation:
 
 @dataclass(frozen=True, slots=True)
 class ProviderStatus:
-    """The result of the exact-pod GET observation."""
+    """The result of the exact-pod GET observation.
+
+    ``provider_state`` is an observed lifecycle word (``"EXITED"``, for
+    example) or ``None`` — it never invents one.  Presence and lifecycle are
+    different facts: a pod can be PRESENT and simultaneously not running (an
+    EXITED pod still bills its attached volume), so a consumer that only
+    checks ``presence`` cannot see that.  An adapter that has no lifecycle
+    word to report — because its provider's status body carries none, or
+    because the pod is absent — leaves this ``None``, and ``None`` must never
+    be read as RUNNING by anything that consumes it; the absence of an
+    observation is not evidence the pod is healthy.
+    """
 
     pod_id: str
     presence: Presence
     observed_at: datetime
     detail: str = ""
     http_status: int | None = None
+    provider_state: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.observed_at, "provider status observed_at")
+        if self.provider_state is not None and (
+            not isinstance(self.provider_state, str) or not self.provider_state.strip()
+        ):
+            raise ValueError(
+                "provider status provider_state must be a non-blank lifecycle word or None"
+            )
 
 
 @dataclass(frozen=True, slots=True)

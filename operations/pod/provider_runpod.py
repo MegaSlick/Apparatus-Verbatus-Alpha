@@ -399,8 +399,30 @@ class RunPodProvider:
         row = _object(response.body, "RunPod status")
         if _text(row.get("id"), "RunPod status id") != pod_id:
             raise ProviderFailure("RunPod status response id does not equal the requested pod id")
+        # Verbatim, never normalized against _POD_STATES: this is an
+        # observation, not a gate. `_record` (used by create/adopt) refuses an
+        # unrecognised desiredStatus because it manufactures a PodRecord that
+        # other code trusts as RUNNING; `status` only reports what the
+        # provider said, so an unfamiliar future lifecycle word still reaches
+        # its caller instead of becoming a raised ProviderFailure on a
+        # read-only observation. "Verbatim" covers casing and unknown future
+        # words, which survive untouched -- it does not cover surrounding
+        # whitespace, because this value is compared against `"RUNNING"`
+        # downstream (`supervise.py`), never displayed, and the usability
+        # decision below is already made on the stripped word.
+        raw_state = row.get("desiredStatus")
+        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
+        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
+        detail = "RunPod exact-pod GET returned 200"
+        if raw_state is not None and not usable_state:
+            detail = f"{detail}; unusable desiredStatus {raw_state!r}"
         return ProviderStatus(
-            pod_id, Presence.PRESENT, observed, "RunPod exact-pod GET returned 200", 200
+            pod_id,
+            Presence.PRESENT,
+            observed,
+            detail,
+            200,
+            provider_state=provider_state,
         )
 
     def terminate(self, pod_id: str) -> None:

@@ -32,7 +32,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--controller-armer-factory",
         required=True,
-        help="untracked module:callable returning a durable two-controller handshake",
+        help=(
+            "untracked module:callable returning a durable two-controller handshake -- "
+            "normally operations.pod.controller_armer.ChannelControllerArmer, given a "
+            "report channel over this launch's volume and the argv that starts "
+            "operations.pod.supervise; ObservingControllerArmer beside it performs the "
+            "identical read, never arms, and files what it saw, which is what a first "
+            "authorized boot runs"
+        ),
     )
     parser.add_argument("--spend", type=Path, default=Path("config/spend.toml"))
     parser.add_argument("--leases", type=Path, required=True)
