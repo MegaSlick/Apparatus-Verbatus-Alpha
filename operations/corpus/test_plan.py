@@ -4,12 +4,11 @@ Every row is an inline dict shaped like a `recordgold-rows.v1` row; no test read
 a file or opens a socket.
 """
 
-import copy
 import json
 
 import pytest
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from operations.corpus import CorpusRefusal
 from operations.corpus.plan import (
     build_fetch_plan,
@@ -194,10 +193,21 @@ def test_build_fetch_plan_groups_two_records_on_one_page():
 
 
 def test_build_fetch_plan_is_deterministic():
-    rows = [_row("r1", "val", ONE_PAGE_URL), _row("r2", "val", OTHER_RECORD_ON_SAME_PAGE)]
+    """Rebuilding from a reversed row list must produce byte-identical output.
+
+    A fixture with only one identifier and one record per identifier has
+    nothing to sort, so it cannot tell `sorted(...)` apart from `list(...)`.
+    This one spans two identifiers, with two records on one of them and a
+    cross-split page, and builds from opposite arrival orders.
+    """
+    rows = [
+        _row("r3", "test", OTHER_PAGE_URL),
+        _row("r1", "val", ONE_PAGE_URL),
+        _row("r2", "test", OTHER_RECORD_ON_SAME_PAGE),
+    ]
     plan_a = build_fetch_plan(rows, SNAPSHOT_HASH)
-    plan_b = build_fetch_plan(copy.deepcopy(rows), SNAPSHOT_HASH)
-    assert plan_a == plan_b
+    plan_b = build_fetch_plan(list(reversed(rows)), SNAPSHOT_HASH)
+    assert canonical_bytes(plan_a) == canonical_bytes(plan_b)
     assert plan_a["self_hash"] == plan_b["self_hash"]
 
 
@@ -409,6 +419,7 @@ def test_main_builds_and_writes_a_validated_plan(tmp_path):
     plan = main(snapshot_path, output_path)
     assert plan["schema"] == "recordgold-fetch-plan.v1"
     assert output_path.exists()
+    assert output_path.read_bytes() == canonical_bytes(plan)
 
 
 def test_load_plan_returns_a_byte_identical_validated_plan(tmp_path):
@@ -417,6 +428,7 @@ def test_load_plan_returns_a_byte_identical_validated_plan(tmp_path):
     built = main(snapshot_path, output_path)
     loaded = load_plan(output_path)
     assert loaded == built
+    assert output_path.read_bytes() == canonical_bytes(built)
 
 
 def test_validate_plan_refuses_a_non_list_pages():

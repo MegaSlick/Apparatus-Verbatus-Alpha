@@ -44,7 +44,7 @@ from . import CorpusRefusal
 from . import cache as cache_module
 from . import plan as plan_module
 from .cache import CacheUnusable
-from .holdout import load_holdout, refuse_held_out_page, validate_holdout
+from .holdout import HELD_SPLIT, load_holdout, refuse_held_out_page, validate_holdout
 
 # `SPEC.md` §5.1's closed refusal vocabulary, verbatim. A caller that wants to
 # dispatch on the reason reads `str(error).split(":", 1)[0]`, same convention as
@@ -94,6 +94,42 @@ _EXIF_ORIENTATION_TAG = 0x0112
 
 _SIZE_ORDER = ("full", "max")
 _FALLBACK_STATUSES = frozenset({400, 501})
+
+# The closed shapes this module itself writes to `cache/requests/<key>.json`
+# (image request records) and to the retained `info.json` (`info_root`). A
+# request record loaded from disk is checked against the shape its own
+# `status` claims before any field is read by name — a record damaged outside
+# this module's own writes (a partial cache-root copy, a restored backup, an
+# operator editing rather than deleting a record) must be refused by name, not
+# read as a raw `KeyError`. `cache.load_request_record` already catches an
+# unreadable *file*; these catch a readable file with the wrong *fields*.
+_IMAGE_FETCHED_RECORD_FIELDS = frozenset(
+    {
+        "kind",
+        "identifier",
+        "size_parameter",
+        "status",
+        "response_sha256",
+        "http_status",
+        "bytes",
+        "fetched_at_utc",
+    }
+)
+_IMAGE_UNSUPPORTED_RECORD_FIELDS = frozenset(
+    {"kind", "identifier", "size_parameter", "status", "http_status", "fetched_at_utc"}
+)
+_RETAINED_INFO_FIELDS = frozenset({"declared_width", "declared_height", "raw"})
+
+
+def _require_closed_record(
+    record: Any, fields: frozenset[str], *, identifier: str, key: str
+) -> None:
+    if not isinstance(record, dict) or set(record) != fields:
+        raise CorpusRefusal(
+            f"http-error: stale request record for {identifier!r} — "
+            f"cache/requests/{key}.json was written by a different version of this cache "
+            "or is damaged; delete it to force a re-fetch"
+        )
 
 
 class FetchHalt(Exception):
@@ -389,7 +425,13 @@ def _image_request_key(identifier: str, size_parameter: str) -> str:
 
 
 def _fetch_info(session: FetchSession, page: dict[str, Any]) -> dict[str, Any]:
-    """`info.json`, once per identifier, retained under `info_root` and never re-asked."""
+    """`info.json`, once per identifier, retained under `info_root` and never re-asked.
+
+    A retained copy is never overwritten (`write_new_file` never overwrites);
+    if a second fetch's bytes disagree with what is already retained, the page
+    is refused by name rather than the disagreement being resolved silently in
+    either direction — this is not "keep the old answer."
+    """
     identifier = page["identifier"]
     key = _info_request_key(identifier)
     record = cache_module.load_request_record(session.config.cache_root, key)
@@ -401,7 +443,20 @@ def _fetch_info(session: FetchSession, page: dict[str, Any]) -> dict[str, Any]:
                 f"record ({key}) says this was already fetched but the retained copy is gone; "
                 "delete that request record to force a re-fetch"
             )
-        return json.loads(info_path.read_bytes())
+        try:
+            retained = json.loads(info_path.read_bytes())
+        except ValueError as error:
+            raise CorpusRefusal(
+                f"http-error: retained info.json for {identifier!r} at {info_path} is not "
+                f"readable JSON ({error}); delete that request record to force a re-fetch"
+            ) from error
+        if not isinstance(retained, dict) or set(retained) != _RETAINED_INFO_FIELDS:
+            raise CorpusRefusal(
+                f"http-error: retained info.json for {identifier!r} at {info_path} is not "
+                f"the closed record {sorted(_RETAINED_INFO_FIELDS)}; delete that request "
+                "record to force a re-fetch"
+            )
+        return retained
 
     body, status = session._request(page["info_url"])
     try:
@@ -417,7 +472,16 @@ def _fetch_info(session: FetchSession, page: dict[str, Any]) -> dict[str, Any]:
 
     declared = {"declared_width": width, "declared_height": height}
     info_path = _info_path(session.config.info_root, identifier)
-    cache_module.write_new_file(info_path, canonical_bytes({**declared, "raw": info}))
+    body_to_retain = canonical_bytes({**declared, "raw": info})
+    if not cache_module.write_new_file(info_path, body_to_retain) and (
+        info_path.read_bytes() != body_to_retain
+    ):
+        raise CorpusRefusal(
+            f"http-error: retained info.json for {identifier!r} at {info_path} disagrees "
+            "with the copy the server just returned; nothing was overwritten and no "
+            "request record was written — delete that file and re-run so the page is "
+            "checked against the dimensions actually fetched"
+        )
     cache_module.write_request_record(
         session.config.cache_root,
         key,
@@ -456,7 +520,11 @@ def _fetch_image_bytes(
         key = _image_request_key(identifier, size_parameter)
         record = cache_module.load_request_record(session.config.cache_root, key)
         if record is not None:
-            if record.get("status") == "fetched":
+            status_value = record.get("status") if isinstance(record, dict) else None
+            if status_value == "fetched":
+                _require_closed_record(
+                    record, _IMAGE_FETCHED_RECORD_FIELDS, identifier=identifier, key=key
+                )
                 body_path = cache_module.body_path(
                     session.config.cache_root, record["response_sha256"]
                 )
@@ -473,10 +541,22 @@ def _fetch_image_bytes(
                     record["bytes"],
                     record["fetched_at_utc"],
                 )
-            # A previously recorded fallback (e.g. "full" recorded as unsupported)
-            # means never ask that size again either — move straight to the next.
-            last_error = _HttpStatusError(record.get("http_status", 0), candidates[size_parameter])
-            continue
+            if status_value == "unsupported":
+                _require_closed_record(
+                    record, _IMAGE_UNSUPPORTED_RECORD_FIELDS, identifier=identifier, key=key
+                )
+                # A previously recorded fallback (e.g. "full" recorded as
+                # unsupported) means never ask that size again either — move
+                # straight to the next.
+                last_error = _HttpStatusError(
+                    record.get("http_status", 0), candidates[size_parameter]
+                )
+                continue
+            raise CorpusRefusal(
+                f"http-error: stale request record for {identifier!r} — "
+                f"cache/requests/{key}.json was written by a different version of this "
+                "cache or is damaged; delete it to force a re-fetch"
+            )
         try:
             body, status = session._request(candidates[size_parameter])
         except _HttpStatusError as error:
@@ -661,9 +741,9 @@ def run_fetch(
     plan = plan_module.validate_plan(plan)
     if holdout is not None:
         holdout = validate_holdout(holdout)
-    if split == "val" and enforce_holdout and holdout is None:
+    if enforce_holdout and holdout is None:
         raise CorpusRefusal(
-            "holdout-ledger-required: split='val' requires a hold-out ledger — pass "
+            f"holdout-ledger-required: split={split!r} requires a hold-out ledger — pass "
             "`holdout=...` or, to deliberately skip the defence, `enforce_holdout=False`"
         )
 
@@ -770,11 +850,20 @@ def validate_fetch_log(record: Any) -> dict[str, Any]:
     entries = record["entries"]
     if not isinstance(entries, list):
         raise CorpusRefusal("malformed-record: fetch log entries must be a list")
+    seen_identifiers: dict[str, int] = {}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict) or "status" not in entry:
             raise CorpusRefusal(
                 f"malformed-record: entries[{index}] must be a dict carrying a status"
             )
+        identifier = entry.get("identifier")
+        if identifier in seen_identifiers:
+            raise CorpusRefusal(
+                f"malformed-record: entries[{index}] names identifier {identifier!r}, "
+                f"already named by entries[{seen_identifiers[identifier]}] — a fetch log "
+                "carries one entry per page"
+            )
+        seen_identifiers[identifier] = index
         status = entry["status"]
         if status not in _ENTRY_STATUSES:
             raise CorpusRefusal(
@@ -803,13 +892,16 @@ def main(argv: list[str] | None = None) -> RunResult:
     """Run one fetch pass from the CLI, writing a sealed `ledger/fetch-log.json` and
     `ledger/refusals.json`.
 
-    `--split test` additionally requires `--release-test-split`: deliberately
-    fetching the held-out split is not the same mistake as a `val` build silently
-    including a held page (`SPEC.md` §5.4 point 2), so it needs a second,
-    explicit flag rather than falling out of `--split` alone. The distinct root
-    §5.4 asks for is simply whichever `--cache-root`/`--info-root`/`--output-dir`
-    the operator passes for that run — this module keeps no default of its own
-    that would let a `val` and a `test` run collide on one directory by accident.
+    `--split test` additionally requires `--release-test-split`, and every other
+    `--split` refuses it: deliberately fetching the held-out split is not the
+    same mistake as a `val` or `train` build silently including a held page
+    (`SPEC.md` §5.4 point 2), so releasing it needs a second, explicit flag
+    rather than falling out of `--split` alone, and hold-out enforcement is on
+    for every split but the one the flag deliberately releases. The distinct
+    root §5.4 asks for is simply whichever `--cache-root`/`--info-root`/
+    `--output-dir` the operator passes for that run — this module keeps no
+    default of its own that would let a `val` and a `test` run collide on one
+    directory by accident.
 
     A run that halted (403, or the per-run request ceiling) before covering the
     whole split exits nonzero, once both ledger files are sealed to disk: a
@@ -830,19 +922,24 @@ def main(argv: list[str] | None = None) -> RunResult:
     parser.add_argument(
         "--release-test-split",
         action="store_true",
-        help="Required to fetch --split test; also disables hold-out enforcement.",
+        help=(
+            f"Required to fetch --split {HELD_SPLIT}, and refused with any other --split — "
+            "the flag releases the held split only, it does not disable hold-out "
+            "enforcement for val or train."
+        ),
     )
     args = parser.parse_args(argv)
 
-    if args.split == "test" and not args.release_test_split:
+    if (args.split == HELD_SPLIT) != args.release_test_split:
         raise CorpusRefusal(
-            "holdout-ledger-required: --split test requires --release-test-split as well — "
-            "fetching the held-out split must be a deliberate, separate act"
+            f"holdout-ledger-required: --release-test-split and --split {HELD_SPLIT} go "
+            "together — fetching the held-out split must be a deliberate, separate act, "
+            "and the flag releases no other split"
         )
 
     plan = plan_module.load_plan(args.plan)
     holdout = load_holdout(args.holdout) if args.holdout else None
-    enforce_holdout = not args.release_test_split
+    enforce_holdout = args.split != HELD_SPLIT
     config = FetchConfig(cache_root=Path(args.cache_root), info_root=Path(args.info_root))
 
     result = run_fetch(

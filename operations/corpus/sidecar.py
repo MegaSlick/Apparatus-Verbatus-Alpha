@@ -174,7 +174,11 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
     page_height = _positive_int(page["height"], "page.height")
 
     splits_present = sidecar["splits_present"]
-    if not isinstance(splits_present, list) or splits_present != sorted(set(splits_present)):
+    if not isinstance(splits_present, list) or not all(
+        isinstance(split, str) for split in splits_present
+    ):
+        raise CorpusRefusal("malformed-record: splits_present must be a list of strings")
+    if splits_present != sorted(set(splits_present)):
         raise CorpusRefusal("malformed-record: splits_present must be a sorted, deduplicated list")
     for split in splits_present:
         if split not in SPLITS:

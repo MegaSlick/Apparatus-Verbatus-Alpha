@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from common.contracts.canonical import digest_bytes
@@ -88,12 +91,12 @@ def test_physical_act_id_never_derived_from_the_box():
 
 
 def test_refuses_unknown_split():
-    with pytest.raises(CorpusRefusal, match="unknown-split"):
+    with pytest.raises(CorpusRefusal, match="^unknown-split:"):
         _build(split="holdout")
 
 
 def test_refuses_split_not_present_among_records():
-    with pytest.raises(CorpusRefusal, match="split-not-present"):
+    with pytest.raises(CorpusRefusal, match="^split-not-present:"):
         _build(
             split="test",
             records=[_record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10}, split="val")],
@@ -101,7 +104,7 @@ def test_refuses_split_not_present_among_records():
 
 
 def test_refuses_region_outside_page():
-    with pytest.raises(CorpusRefusal, match="region-outside-page"):
+    with pytest.raises(CorpusRefusal, match="^region-outside-page:"):
         _build(
             page=_page(width=100, height=100),
             records=[_record("rec-1", {"x": 50, "y": 50, "w": 100, "h": 100})],
@@ -109,7 +112,7 @@ def test_refuses_region_outside_page():
 
 
 def test_refuses_duplicate_record_id():
-    with pytest.raises(CorpusRefusal, match="duplicate-record-id"):
+    with pytest.raises(CorpusRefusal, match="^duplicate-record-id:"):
         _build(
             records=[
                 _record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10}),
@@ -119,7 +122,7 @@ def test_refuses_duplicate_record_id():
 
 
 def test_refuses_duplicate_region():
-    with pytest.raises(CorpusRefusal, match="duplicate-region"):
+    with pytest.raises(CorpusRefusal, match="^duplicate-region:"):
         _build(
             records=[
                 _record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10}),
@@ -131,12 +134,12 @@ def test_refuses_duplicate_region():
 def test_refuses_text_sha256_mismatch():
     record = _record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10})
     record["text_sha256"] = "0" * 64
-    with pytest.raises(CorpusRefusal, match="text-sha256-mismatch"):
+    with pytest.raises(CorpusRefusal, match="^text-sha256-mismatch:"):
         _build(records=[record])
 
 
 def test_refuses_empty_records():
-    with pytest.raises(CorpusRefusal, match="empty-acts"):
+    with pytest.raises(CorpusRefusal, match="^empty-acts:"):
         _build(records=[])
 
 
@@ -146,7 +149,7 @@ def test_validate_refuses_act_id_where_pac_id_expected():
     tampered_acts = [dict(act) for act in reference["acts"]]
     tampered_acts[0]["physical_act_id"] = "act_0123456789abcdef"
     tampered["acts"] = tampered_acts
-    with pytest.raises(CorpusRefusal, match="wrong-identity-family"):
+    with pytest.raises(CorpusRefusal, match="^wrong-identity-family:"):
         validate_reference_page(tampered)
 
 
@@ -154,7 +157,7 @@ def test_validate_refuses_non_null_adjudicated_by():
     reference = _build()
     tampered = dict(reference)
     tampered["adjudicated_by"] = "some-person"
-    with pytest.raises(CorpusRefusal, match="malformed-record"):
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
         validate_reference_page(tampered)
 
 
@@ -166,7 +169,7 @@ def test_validate_refuses_tampered_self_hash():
     tampered_page = dict(reference["page"])
     tampered_page["height"] = reference["page"]["height"] + 1
     tampered["page"] = tampered_page
-    with pytest.raises(CorpusRefusal, match="self-hash-mismatch"):
+    with pytest.raises(CorpusRefusal, match="^self-hash-mismatch:"):
         validate_reference_page(tampered)
 
 
@@ -174,7 +177,7 @@ def test_validate_refuses_extra_field():
     reference = _build()
     tampered = dict(reference)
     tampered["extra"] = True
-    with pytest.raises(CorpusRefusal, match="malformed-record"):
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
         validate_reference_page(tampered)
 
 
@@ -242,27 +245,18 @@ def test_validate_refuses_a_resealed_source_carrying_a_slash():
         validate_reference_page(tampered)
 
 
-def test_reference_refusal_reasons_covered_here_are_a_subset_of_the_declared_vocabulary():
-    exercised = {
-        "malformed-record",
-        "wrong-schema",
-        "wrong-corpus",
-        "unknown-split",
-        "split-not-present",
-        "empty-acts",
-        "duplicate-record-id",
-        "duplicate-region",
-        "act-count-mismatch",
-        "region-outside-page",
-        "empty-text",
-        "text-sha256-mismatch",
-        "wrong-identity-family",
-        "unmintable-physical-act",
-        "duplicate-physical-act-id",
-        "unsafe-source-value",
-        "self-hash-mismatch",
-    }
-    assert exercised <= REFERENCE_REFUSAL_REASONS
+def test_every_declared_reference_refusal_reason_is_exercised_here():
+    """`exercised` is read from this file's own `pytest.raises` calls, not hand-typed.
+
+    A hand-typed set can drift from the tests it claims to describe: adding a
+    phantom reason, or deleting the test that exercises a real one, both leave a
+    hardcoded set green. Deriving it from the anchored `match="^reason:"`
+    patterns this file actually asserts makes the coverage check track the
+    tests themselves.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
+    assert exercised == REFERENCE_REFUSAL_REASONS
 
 
 # --- The pac_ identity binds this page and this record_id, not the box ---------

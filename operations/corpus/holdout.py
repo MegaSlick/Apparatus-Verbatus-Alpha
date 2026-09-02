@@ -116,7 +116,11 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
         )
 
     identifiers = holdout["held_identifiers"]
-    if not isinstance(identifiers, list) or identifiers != sorted(set(identifiers)):
+    if not isinstance(identifiers, list) or not all(
+        isinstance(identifier, str) for identifier in identifiers
+    ):
+        raise CorpusRefusal("malformed-record: held_identifiers must be a list of strings")
+    if identifiers != sorted(set(identifiers)):
         raise CorpusRefusal(
             "malformed-record: held_identifiers must be a sorted, deduplicated list"
         )
@@ -137,8 +141,13 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
         if (
             not isinstance(record_ids, list)
             or not record_ids
-            or record_ids != sorted(set(record_ids))
+            or not all(isinstance(record_id, str) for record_id in record_ids)
         ):
+            raise CorpusRefusal(
+                f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
+                "non-empty list of strings"
+            )
+        if record_ids != sorted(set(record_ids)):
             raise CorpusRefusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "sorted, deduplicated, non-empty list"

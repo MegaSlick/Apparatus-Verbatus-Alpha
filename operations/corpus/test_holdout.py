@@ -3,12 +3,11 @@
 Every row is an inline dict shaped like a `recordgold-rows.v1` row.
 """
 
-import copy
 import json
 
 import pytest
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.canonical import self_hash as _self_hash
 from operations.corpus import CorpusRefusal
 from operations.corpus.holdout import (
@@ -81,11 +80,24 @@ def test_build_holdout_groups_multiple_test_records_on_one_page():
 
 
 def test_build_holdout_is_deterministic():
-    rows = [_row("s1", "test", TEST_ONLY_PAGE_URL), _row("v1", "val", VAL_PAGE_URL)]
+    """Rebuilding from a reordered row list must produce byte-identical output.
+
+    A fixture with only one identifier and one record per identifier has
+    nothing to sort, so it cannot tell `sorted(...)` apart from `list(...)`.
+    This one spans two identifiers, with two records on one of them, and
+    builds twice from opposite arrival orders.
+    """
+    rows = [
+        _row("s2", "test", TEST_ONLY_PAGE_URL),
+        _row("s1", "test", TEST_ONLY_PAGE_URL),
+        _row("s3", "test", CROSS_SPLIT_URL_SAME_PAGE),
+        _row("v1", "val", VAL_PAGE_URL),
+    ]
     a = build_holdout(rows, SNAPSHOT_HASH)
-    b = build_holdout(copy.deepcopy(rows), SNAPSHOT_HASH)
-    assert a == b
+    b = build_holdout(list(reversed(rows)), SNAPSHOT_HASH)
+    assert canonical_bytes(a) == canonical_bytes(b)
     assert a["self_hash"] == b["self_hash"]
+    assert a["held_record_ids"] == ["s1", "s2", "s3"]
 
 
 def test_build_holdout_with_no_test_rows_is_empty_and_still_valid():
@@ -164,6 +176,44 @@ def test_validate_holdout_refuses_held_record_ids_out_of_sync_with_entries():
         validate_holdout(tampered)
 
 
+def test_validate_holdout_refuses_a_non_string_element_in_held_identifiers_by_name():
+    """A non-string in `held_identifiers` must refuse by name, not leak a `TypeError`.
+
+    `held_identifiers != sorted(set(held_identifiers))` sorts before checking
+    element types; mixing `str` and `int` raises an unguarded `TypeError`, and
+    an unhashable element (a `dict` or a `list`) raises inside `set()` before
+    the sort even runs.
+    """
+    rows = [_row("s1", "test", TEST_ONLY_PAGE_URL)]
+    holdout = build_holdout(rows, SNAPSHOT_HASH)
+
+    mixed_types = dict(holdout)
+    mixed_types["held_identifiers"] = [1, "x"]
+    with pytest.raises(CorpusRefusal, match="^malformed-record: held_identifiers"):
+        validate_holdout(mixed_types)
+
+    unhashable = dict(holdout)
+    unhashable["held_identifiers"] = [{"a": 1}]
+    with pytest.raises(CorpusRefusal, match="^malformed-record: held_identifiers"):
+        validate_holdout(unhashable)
+
+
+def test_validate_holdout_refuses_a_non_string_element_in_record_ids_by_name():
+    """Same guard, for an entry's `record_ids` — reachable through `load_holdout`."""
+    rows = [_row("s1", "test", TEST_ONLY_PAGE_URL)]
+    holdout = build_holdout(rows, SNAPSHOT_HASH)
+
+    mixed_types = dict(holdout)
+    mixed_types["entries"] = [{**entry, "record_ids": [1, "x"]} for entry in holdout["entries"]]
+    with pytest.raises(CorpusRefusal, match="^malformed-record: entry .* record_ids"):
+        validate_holdout(mixed_types)
+
+    unhashable = dict(holdout)
+    unhashable["entries"] = [{**entry, "record_ids": [["x"]]} for entry in holdout["entries"]]
+    with pytest.raises(CorpusRefusal, match="^malformed-record: entry .* record_ids"):
+        validate_holdout(unhashable)
+
+
 def test_validate_holdout_refuses_a_non_digest_source_row_snapshot_self_hash():
     rows = [_row("s1", "test", TEST_ONLY_PAGE_URL)]
     holdout = build_holdout(rows, SNAPSHOT_HASH)
@@ -196,6 +246,7 @@ def test_main_builds_and_writes_a_validated_holdout(tmp_path):
     holdout = main(snapshot_path, output_path)
     assert holdout["schema"] == "recordgold-holdout.v1"
     assert output_path.exists()
+    assert output_path.read_bytes() == canonical_bytes(holdout)
 
 
 def test_load_holdout_returns_a_byte_identical_validated_holdout(tmp_path):
@@ -204,6 +255,7 @@ def test_load_holdout_returns_a_byte_identical_validated_holdout(tmp_path):
     built = main(snapshot_path, output_path)
     loaded = load_holdout(output_path)
     assert loaded == built
+    assert output_path.read_bytes() == canonical_bytes(built)
 
 
 def test_load_holdout_refuses_a_tampered_file(tmp_path):

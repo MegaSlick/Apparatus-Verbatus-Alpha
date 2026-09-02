@@ -9,6 +9,8 @@ reason it names.
 """
 
 import copy
+import re
+from pathlib import Path
 
 import pytest
 
@@ -125,16 +127,18 @@ def test_validate_row_refuses_a_text_sha256_mismatch():
         validate_row(row, 0)
 
 
-def test_row_refusal_reasons_covered_here_are_a_subset_of_the_declared_vocabulary():
-    exercised = {
-        "malformed-record",
-        "unknown-split",
-        "empty-field",
-        "empty-text",
-        "malformed-field",
-        "text-sha256-mismatch",
-    }
-    assert exercised <= ROW_REFUSAL_REASONS
+def test_every_declared_row_refusal_reason_is_exercised_here():
+    """`exercised` is read from this file's own `pytest.raises` calls, not hand-typed.
+
+    A hand-typed set can drift from the tests it claims to describe: adding a
+    phantom reason, or deleting the test that exercises a real one, both leave a
+    hardcoded set green. Deriving it from the anchored `match="^reason:"`
+    patterns this file actually asserts makes the coverage check track the
+    tests themselves.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
+    assert exercised == ROW_REFUSAL_REASONS
 
 
 # --- validate_snapshot: shape, schema, and uniqueness ----------------------------

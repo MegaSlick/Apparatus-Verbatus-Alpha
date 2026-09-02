@@ -178,7 +178,11 @@ out of alpha measurement scope entirely.
 The hold-out is mechanical, in three layers, strongest first: `holdout.py`
 derives the ledger from the row snapshot alone, before a single image is
 fetched; the fetcher defaults to `--split val`, and `--split test` requires an
-explicit second flag writing to a distinct root; and the submission builder
+explicit second flag, `--release-test-split`, writing to a distinct root —
+that flag releases the held split alone and is refused with any other
+`--split`, and hold-out enforcement now holds for every split it is on for
+(not just `val`), so a ledger is required whichever non-held split is being
+fetched; and the submission builder
 refuses any page the ledger names, by identifier, including a page that also
 carries a non-held split's records (`cross-split-page` — the case where a page
 cannot be used for calibration without exposing held-out material). Whether the

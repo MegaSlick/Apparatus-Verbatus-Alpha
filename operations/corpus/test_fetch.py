@@ -498,6 +498,76 @@ def test_refused_reason_is_always_in_the_closed_vocabulary(tmp_path, server):
     assert "malformed-digest" in entry["detail"]
 
 
+def test_damaged_request_record_refuses_the_page_not_the_run(tmp_path, server):
+    """A request record damaged outside this module's own writes (a half-copied
+    cache root, a hand-edited file) must surface as one page's named refusal —
+    not a raw `KeyError`/`JSONDecodeError` that escapes `run_fetch` and takes
+    the whole run's fetch log with it.
+    """
+    other_info = json.dumps({"width": PAGE_WIDTH - 10, "height": PAGE_HEIGHT}).encode("utf-8")
+    _script(server, "vol/021b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    _script(server, "vol/021c", info=[{"body": other_info}], full=[{"body": WRONG_SIZE_JPEG}])
+    config = _config(tmp_path)
+    plan = _valid_plan([_page(server, "vol/021b"), _page(server, "vol/021c")])
+
+    # Populate the cache, then damage vol/021b's image request record by
+    # dropping a field a fetched record must carry.
+    run_fetch(plan, config, split="val", enforce_holdout=False)
+    key = fetch_module._image_request_key("vol/021b", "full")
+    record_path = cache_module.request_record_path(config.cache_root, key)
+    record = json.loads(record_path.read_bytes())
+    del record["fetched_at_utc"]
+    record_path.write_bytes(json.dumps(record).encode("utf-8"))
+
+    result = run_fetch(plan, config, split="val", enforce_holdout=False)
+
+    assert result.halted is None
+    assert len(result.entries) == 2
+    first = next(e for e in result.entries if e["identifier"] == "vol/021b")
+    assert first["status"] == "refused"
+    assert first["reason"] in FETCH_REFUSAL_REASONS
+    assert "stale request record" in first["detail"]
+    second = next(e for e in result.entries if e["identifier"] == "vol/021c")
+    assert second["status"] == "fetched"
+
+
+def test_truncated_request_record_refuses_the_page(tmp_path, server):
+    _script(server, "vol/021d", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/021d")
+
+    fetch_page(FetchSession(config), page)
+    key = fetch_module._image_request_key("vol/021d", "full")
+    record_path = cache_module.request_record_path(config.cache_root, key)
+    original = record_path.read_bytes()
+    record_path.write_bytes(original[: len(original) // 2])
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "http-error"
+    assert "unreadable-request-record" in entry["detail"]
+
+
+def test_damaged_retained_info_refuses_the_page(tmp_path, server):
+    _script(server, "vol/021e", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/021e")
+
+    fetch_page(FetchSession(config), page)
+    info_path = fetch_module._info_path(config.info_root, "vol/021e")
+    retained = json.loads(info_path.read_bytes())
+    del retained["declared_width"]
+    info_path.write_bytes(json.dumps(retained).encode("utf-8"))
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "http-error"
+    assert "retained info.json" in entry["detail"]
+    assert str(info_path) in entry["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # Politeness: retries, backoff, and the stop-on-403 run halt
 
@@ -735,6 +805,55 @@ def test_fetch_page_refuses_cached_body_missing_from_disk(tmp_path, server):
     assert str(body_path) in second["detail"]
 
 
+def test_fetch_info_refuses_when_retained_copy_disagrees_with_a_fresh_fetch(tmp_path, server):
+    """A retained `info.json` is never overwritten; if the request record for it
+    is gone (an interrupt between the info write and the request-record write,
+    or a `cache_root` cleared while `info_root` is kept) and a fresh fetch's
+    `info.json` disagrees with what is on disk, the page must be refused —
+    not silently answered from stale dimensions with no request record written.
+    """
+    _script(server, "vol/029b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/029b")
+
+    fetch_page(FetchSession(config), page)
+    info_key = fetch_module._info_request_key("vol/029b")
+    cache_module.request_record_path(config.cache_root, info_key).unlink()
+    info_path = fetch_module._info_path(config.info_root, "vol/029b")
+    retained_before = info_path.read_bytes()
+
+    other_info = json.dumps({"width": PAGE_WIDTH + 5, "height": PAGE_HEIGHT}).encode("utf-8")
+    server.script["/iiif/2/vol/029b/info.json"] = [{"body": other_info}]
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "http-error"
+    assert "disagrees with the copy" in entry["detail"]
+    assert info_path.read_bytes() == retained_before  # never overwritten
+    assert cache_module.load_request_record(config.cache_root, info_key) is None
+
+
+def test_fetch_info_resumes_when_retained_copy_matches_a_fresh_fetch(tmp_path, server):
+    """The interrupt-resume case: request record gone, retained file present and
+    byte-identical to what the server returns again — the page must fetch
+    normally, not be refused.
+    """
+    _script(server, "vol/029c", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/029c")
+
+    fetch_page(FetchSession(config), page)
+    info_key = fetch_module._info_request_key("vol/029c")
+    cache_module.request_record_path(config.cache_root, info_key).unlink()
+    server.script["/iiif/2/vol/029c/info.json"] = [{"body": INFO_JSON}]
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "fetched"
+    assert cache_module.load_request_record(config.cache_root, info_key) is not None
+
+
 def test_truncated_body_is_retried_on_the_next_run(tmp_path, server):
     """No request record means the next attempt asks the server again, not skips it."""
     server.script["/iiif/2/vol/015/info.json"] = [{"body": INFO_JSON}]
@@ -867,6 +986,65 @@ def test_run_fetch_requires_a_holdout_ledger_for_split_val_by_default(tmp_path, 
     reason = str(excinfo.value).split(":", 1)[0]
     assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
     assert reason not in FETCH_REFUSAL_REASONS
+
+
+def test_run_fetch_requires_a_holdout_ledger_for_split_train_too(tmp_path, server):
+    """The ledger requirement must not be keyed to the literal `'val'` — a
+    `train` run with `enforce_holdout` left at its default and no ledger is
+    just as unprotected, and must be refused the same way.
+    """
+    plan = _valid_plan([_page(server, "vol/024b", splits_present=["train"])])
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
+        run_fetch(plan, _config(tmp_path), split="train")
+
+    reason = str(excinfo.value).split(":", 1)[0]
+    assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
+
+
+def test_cross_split_page_refused_in_a_train_run_with_a_ledger(tmp_path, server):
+    """Mirrors `test_cross_split_page_refused_by_fetcher` for the `val` split:
+    a page held for `test` but also present in `train` must still be refused
+    by name when a `train` run carries a hold-out ledger.
+    """
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+    plan = _valid_plan([_page(server, "held/001.jpg", splits_present=["test", "train"])])
+
+    result = run_fetch(plan, _config(tmp_path), split="train", holdout=holdout)
+
+    assert result.halted is None
+    assert len(result.entries) == 1
+    assert result.entries[0]["status"] == "refused"
+    assert result.entries[0]["reason"] == "cross-split-page"
+
+
+def test_main_refuses_release_test_split_flag_on_a_val_run(tmp_path, server):
+    """`--release-test-split` releases the held split only — passing it with any
+    other `--split` must be refused by name, not silently ignored.
+    """
+    plan = _valid_plan([_page(server, "vol/024c", splits_present=["val"])])
+    plan_path = tmp_path / "fetch-plan.json"
+    plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
+        fetch_module.main(
+            [
+                "--plan",
+                str(plan_path),
+                "--cache-root",
+                str(tmp_path / "cache"),
+                "--info-root",
+                str(tmp_path / "info"),
+                "--output-dir",
+                str(tmp_path / "ledger"),
+                "--split",
+                "val",
+                "--release-test-split",
+            ]
+        )
+
+    reason = str(excinfo.value).split(":", 1)[0]
+    assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
 
 
 def test_run_fetch_val_proceeds_with_a_holdout_ledger(tmp_path, server):
@@ -1021,6 +1199,69 @@ def test_validate_fetch_log_accepts_halted_entry_shape():
     }
     log["self_hash"] = self_hash(log)
     assert validate_fetch_log(log) == log
+
+
+def _fetched_entry(identifier: str, response_sha256: str) -> dict[str, Any]:
+    return {
+        "identifier": identifier,
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "fetched",
+        "info_url": "http://x/info.json",
+        "image_url": "http://x/full/full/0/default.jpg",
+        "size_parameter_used": "full",
+        "response_sha256": response_sha256,
+        "bytes": 10,
+        "http_status": 200,
+        "fetched_at_utc": "2026-09-01T00:00:00Z",
+        "declared_width": 10,
+        "declared_height": 10,
+        "width": 10,
+        "height": 10,
+    }
+
+
+def _sealed_log(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    log = {
+        "schema": fetch_module.FETCH_LOG_SCHEMA,
+        "split": "val",
+        "plan_self_hash": digest_bytes(b"plan"),
+        "holdout_self_hash": None,
+        "entries": entries,
+        "halted": None,
+    }
+    log["self_hash"] = self_hash(log)
+    return log
+
+
+def test_validate_fetch_log_refuses_two_fetched_entries_for_one_identifier():
+    """Two entries claiming the same identifier must not silently collapse to
+    the last one when `integrate.fetched_pages_from_log` builds its dict — the
+    earlier entry's verified bytes would reach no shard and no refusal list.
+    """
+    log = _sealed_log(
+        [
+            _fetched_entry("vol/x", "a" * 64),
+            _fetched_entry("vol/x", "b" * 64),
+        ]
+    )
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
+
+
+def test_validate_fetch_log_refuses_a_refused_and_a_fetched_entry_for_one_identifier():
+    """A duplicate identifier is just as contradictory when one entry is
+    'refused' and the other 'fetched' — same page, two claimed outcomes.
+    """
+    refused_entry = {
+        "identifier": "vol/y",
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "refused",
+        "reason": "http-error",
+        "detail": "http-error: transport failure",
+    }
+    log = _sealed_log([refused_entry, _fetched_entry("vol/y", "c" * 64)])
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
 
 
 def test_main_refuses_split_test_without_release_test_split(tmp_path, server):

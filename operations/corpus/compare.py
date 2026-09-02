@@ -5,19 +5,20 @@ asserted: it runs after pipeline output is immutable (this module never imports
 `pipeline/`, pinned by `test_compare.py::test_no_pipeline_module_imports_operations_corpus`'s
 AST scan across the whole tree), it never returns to the pipeline (`RunTree` is
 read here only through `build_manifest`/`read_artifact`, and this module never
-calls `publish_artifact`/`put_blob`/`write_manifest`/`write_index` —
+calls any `RunTree` writer at all —
 `test_compare.py` asserts this with `ReadOnlyRunTree`, a wrapper that delegates
-every read and raises on every write, rather than a `RunTree` subclass), it
-selects nothing about the *reading* (the pipeline already decided what it
-proposed; this only pairs a proposal with a reference box after the fact), and it
-drops nothing on either side: every unmatched reference act is reported as a MISS
-and every unmatched pipeline act is reported, not scored. `SPEC.md` Section
-5.3(d) names this boundary exactly this way.
+every read and refuses every write it names, by name, rather than a `RunTree`
+subclass), it selects nothing about the *reading* (the pipeline already decided
+what it proposed; this only pairs a proposal with a reference box after the
+fact), and it drops nothing on either side: every unmatched reference act is
+reported as a MISS and every unmatched pipeline act is reported, not scored.
+`SPEC.md` Section 5.3(d) names this boundary exactly this way.
 
-`SPEC.md` Section 5.6 is explicit that its 2.5-3.5 records/page figure is an
-estimate, not a measurement -- so `MAX_ACTS_PER_PAGE` bounds this DP by the
-side its `2**R` state space actually depends on, not on the page's raw
-proposal count (see `_best_assignment`).
+`plan.py`'s own `records_per_page_distribution`, measured over the sealed row
+snapshot, is what `MAX_ACTS_PER_PAGE` is set against (1,165 pages, mean 6.59
+records/page, maximum 30) -- not `SPEC.md` Section 5.6's 2.5-3.5 estimate,
+which this package had already replaced with a measurement before this cap
+was chosen (see `_best_assignment`).
 
 **IoU assignment.** For one page, every sealed proposal region's *raw* bounds
 (`origin: "proposal"`, `2_designator`'s own structural crop rectangle from
@@ -34,13 +35,13 @@ whether the act was found. IoU stays exact throughout: `x,y,w,h` are always
 integers, so intersection and union areas are integers and every comparison is an
 exact `Fraction`, never a float — nothing here is a canonical artifact until the
 final record is built, and that record stores areas, not the ratio, because
-`common.contracts.canonical` refuses floats outright. The assignment itself is a
-small bitmask DP (`_best_assignment`), exact for the page sizes this corpus
-actually has (`SPEC.md` Section 5.6 estimates 2.5-3.5 records/page; `MAX_ACTS_PER_PAGE`
-bounds the DP's `2**R` state space -- driven by reference acts, and by pipeline
-acts only insofar as they carry an eligible edge into that state space -- and
-refuses rather than silently degrading to an approximation on an unexpectedly
-crowded page).
+`common.contracts.canonical` refuses floats outright. The assignment itself is
+an exact maximum-weight bipartite matching (`_best_assignment`, Kuhn-Munkres /
+Hungarian algorithm, `O(size**3)` over `Fraction` weights, never a float) —
+polynomial in the number of eligible acts, so it is exact for every page size
+this corpus actually has, not only a small one; `MAX_ACTS_PER_PAGE` is a sanity
+bound well above the corpus's own measured maximum (see below), refusing an
+absurd input rather than silently degrading to an approximation.
 
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
@@ -80,15 +81,17 @@ SCHEMA = "reference-comparison.v1"
 # per run would make "how many misses" a knob rather than a measurement.
 PREDECLARED_IOU_THRESHOLD = Fraction(1, 2)
 
-# Bounds the assignment DP's `2**R` state space, where R is reference_count --
-# the exponent the DP actually pays, since pipeline acts only cost it a linear
-# scan. `SPEC.md` Section 5.6 estimates (not measures) 2.5-3.5 records/page;
-# this is a wide, deliberately round margin above that, not a tuned figure — a
-# page whose reference or eligible-pipeline count actually exceeds it is
-# refused by name rather than silently handed to an assignment that would stop
-# being exact. Also caps the eligible-pipeline side (see `_best_assignment`)
-# so a densely proposalled page can't grow the DP's row count without bound.
-MAX_ACTS_PER_PAGE = 20
+# A sanity bound on the assignment's size, not a state-space limit -- the
+# matcher is polynomial (`O(size**3)`), so this no longer guards exponential
+# blow-up. Set well above this corpus's own measured maximum:
+# `plan.py`'s `records_per_page_distribution`, over the sealed row snapshot,
+# reports 1,165 pages at a mean of 6.59 records/page and a maximum of 30 (the
+# `SPEC.md` Section 5.6 figure of 2.5-3.5 records/page was an estimate this
+# package had already replaced with that measurement). A page whose reference
+# or eligible-pipeline count exceeds this cap is refused by name rather than
+# scored, on the working assumption that a page this crowded is malformed
+# input, not a real page of this corpus.
+MAX_ACTS_PER_PAGE = 128
 
 COMPARE_REFUSAL_REASONS = frozenset(
     {
@@ -97,6 +100,7 @@ COMPARE_REFUSAL_REASONS = frozenset(
         "too-many-acts-for-page",
         "wrong-identity-family",
         "wrong-page",
+        "region-outside-page",
         "unresolvable-page-ordinal",
         "missing-hypothesis",
         "self-hash-mismatch",
@@ -164,7 +168,84 @@ def _iou(a: dict[str, int], b: dict[str, int]) -> Fraction:
     return Fraction(intersection, union)
 
 
-# --- Assignment: exact bitmask DP over a small state space -----------------
+# --- Assignment: exact maximum-weight bipartite matching --------------------
+
+
+def _max_weight_assignment(
+    weight: dict[tuple[int, int], Fraction], n_rows: int, n_cols: int
+) -> dict[int, int]:
+    """Maximum-total-weight bipartite matching over `weight`, in exact `Fraction`
+    arithmetic (Kuhn-Munkres / Hungarian algorithm, `O(size**3)`, never a float).
+
+    `weight` carries only the eligible edges (every entry strictly positive --
+    an edge below threshold is never in it). The cost matrix pads the rectangle
+    to `size = max(n_rows, n_cols)` with `Fraction(0)` everywhere `weight` has
+    no entry, so a minimum-cost *perfect* matching on the padded square carries
+    the same total as the maximum-weight (non-perfect) matching over the real
+    edges alone: any real edge strictly beats a zero-weight pad, so the
+    algorithm never prefers a pad to a real edge when one is available, and any
+    row or column left over is simply assigned to a pad at no cost. Returns
+    row -> col for every row matched to a real edge; a row matched only to a
+    pad (or not present at all) is absent from the result.
+    """
+    size = max(n_rows, n_cols)
+    if size == 0:
+        return {}
+    inf = Fraction(size + 1)
+
+    def cost(row: int, col: int) -> Fraction:
+        if row < n_rows and col < n_cols:
+            return -weight.get((row, col), Fraction(0))
+        return Fraction(0)
+
+    u = [Fraction(0)] * (size + 1)
+    v = [Fraction(0)] * (size + 1)
+    matched_row = [0] * (size + 1)  # matched_row[col] = 1-indexed row, or 0
+    way = [0] * (size + 1)
+
+    for i in range(1, size + 1):
+        matched_row[0] = i
+        j0 = 0
+        minv = [inf] * (size + 1)
+        used = [False] * (size + 1)
+        while True:
+            used[j0] = True
+            i0 = matched_row[j0]
+            delta = inf
+            j1 = -1
+            for j in range(1, size + 1):
+                if used[j]:
+                    continue
+                cur = cost(i0 - 1, j - 1) - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur
+                    way[j] = j0
+                if minv[j] < delta:
+                    delta = minv[j]
+                    j1 = j
+            for j in range(size + 1):
+                if used[j]:
+                    u[matched_row[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if matched_row[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            matched_row[j0] = matched_row[j1]
+            j0 = j1
+
+    matches: dict[int, int] = {}
+    for j in range(1, size + 1):
+        i = matched_row[j]
+        if i == 0:
+            continue
+        row, col = i - 1, j - 1
+        if (row, col) in weight:
+            matches[row] = col
+    return matches
 
 
 def _best_assignment(
@@ -175,20 +256,23 @@ def _best_assignment(
     """The pipeline-index -> reference-index pairing maximising total IoU.
 
     Every pair below `threshold` is simply not an edge, so the optimum can never
-    include one. Deterministic given a fixed input order: ties are broken toward
-    the lexicographically-earliest reference mask, which is why every caller sorts
-    both lists by id before calling this.
+    include one. The assignment itself is `_max_weight_assignment`, an exact
+    maximum-weight bipartite matching -- deterministic given a fixed input
+    order (every caller sorts both lists by id before calling this). There is
+    no mask here, so there is no "lexicographically-earliest reference mask" to
+    break a tie toward as the old DP did; the replacement rule is the
+    Kuhn-Munkres loop's own augmenting order: rows (pipeline acts, already
+    sorted by `act_id`) are processed in ascending index, and among reduced
+    costs tied for the augmenting step's minimum, the lowest column index
+    (reference act, already sorted by `record_id`) wins -- pinned by
+    `test_compare.py::test_tied_total_iou_breaks_toward_the_lower_reference_id`.
 
-    The DP's state space is `2**reference_count`, over which it does a linear
-    scan of pipeline acts -- doubling the pipeline side doubles the work, it
-    does not square it. A pipeline act with no eligible edge to any reference
-    act can never be chosen regardless of state-space size, so it is dropped
-    before the cap is applied (and always comes back unmatched); only the
-    *eligible* pipeline acts are counted against `MAX_ACTS_PER_PAGE`, alongside
-    `reference_count`, and the returned indices are mapped back onto the
-    original `pipeline_acts` ordering. This still bounds the DP's memory --
-    `(eligible_count + 1) * 2**reference_count` cells -- to something finite on
-    a densely proposalled page, without refusing a page the DP is exact for.
+    A pipeline act with no eligible edge to any reference act can never be
+    chosen regardless of matrix size, so it is dropped before the cap is
+    applied (and always comes back unmatched); only the *eligible* pipeline
+    acts are counted against `MAX_ACTS_PER_PAGE`, alongside `reference_count`,
+    and the returned indices are mapped back onto the original `pipeline_acts`
+    ordering.
     """
     reference_count = len(reference_acts)
     weight: dict[tuple[int, int], Fraction] = {}
@@ -204,14 +288,12 @@ def _best_assignment(
         raise CorpusRefusal(
             "too-many-acts-for-page: "
             f"{eligible_count} pipeline acts with an eligible reference edge / "
-            f"{reference_count} reference acts exceeds the predeclared cap of "
-            f"{MAX_ACTS_PER_PAGE} the assignment DP's 2**R state space and candidate "
-            "rows are exact for"
+            f"{reference_count} reference acts exceeds the predeclared sanity "
+            f"cap of {MAX_ACTS_PER_PAGE} acts per page"
         )
 
     # Compact indexing over only the eligible pipeline acts -- everything else
-    # can never be matched, so it costs the DP nothing and is simply reported
-    # unmatched by the caller.
+    # can never be matched, so it is simply reported unmatched by the caller.
     compact_weight: dict[tuple[int, int], Fraction] = {
         (compact_p, r): weight[(original_p, r)]
         for compact_p, original_p in enumerate(eligible_pipeline)
@@ -219,52 +301,8 @@ def _best_assignment(
         if (original_p, r) in weight
     }
 
-    size = 1 << reference_count
-    dp: list[list[Fraction | None]] = [[None] * size for _ in range(eligible_count + 1)]
-    choice: list[list[tuple[str, int | None] | None]] = [
-        [None] * size for _ in range(eligible_count + 1)
-    ]
-    dp[0][0] = Fraction(0)
-    for p in range(eligible_count):
-        for mask in range(size):
-            current = dp[p][mask]
-            if current is None:
-                continue
-            if dp[p + 1][mask] is None or current > dp[p + 1][mask]:
-                dp[p + 1][mask] = current
-                choice[p + 1][mask] = ("skip", None)
-            for r in range(reference_count):
-                if mask & (1 << r):
-                    continue
-                edge = compact_weight.get((p, r))
-                if edge is None:
-                    continue
-                new_mask = mask | (1 << r)
-                candidate = current + edge
-                best_so_far = dp[p + 1][new_mask]
-                if best_so_far is None or candidate > best_so_far:
-                    dp[p + 1][new_mask] = candidate
-                    choice[p + 1][new_mask] = ("match", r)
-
-    best_mask = 0
-    best_value = dp[eligible_count][0]
-    for mask in range(size):
-        value = dp[eligible_count][mask]
-        if value is not None and (best_value is None or value > best_value):
-            best_value = value
-            best_mask = mask
-
-    matches: dict[int, int] = {}
-    mask = best_mask
-    for p in range(eligible_count, 0, -1):
-        decision = choice[p][mask]
-        if decision is None:
-            continue
-        kind, r = decision
-        if kind == "match":
-            matches[eligible_pipeline[p - 1]] = r
-            mask ^= 1 << r
-    return matches
+    compact_matches = _max_weight_assignment(compact_weight, eligible_count, reference_count)
+    return {eligible_pipeline[p]: r for p, r in compact_matches.items()}
 
 
 # --- Run-tree reading: read-only, bounded to what this join needs ----------
@@ -274,6 +312,15 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
     """Ordinal -> sealed page sha256, read from the Exemplar's own manifest.
 
     Read-only: `build_manifest`/`read_artifact` only. Nothing here writes.
+
+    This reads a tree it did not produce, so a non-sealed page is skipped --
+    the Exemplar publishes a `kind: "page"` artifact with `outcome: "refused"`
+    for every Door-refused source, carrying no `source_sha256` at all, and a
+    Door refusal inside an otherwise ordinary run is not a malformed page, it
+    is a page with no digest by design -- and every field on what survives is
+    checked by name, never left to leave this function as a bare `KeyError`,
+    the way `load_pipeline_proposal_acts`'s docstring says every other read in
+    this package refuses.
     """
     shas: dict[int, str] = {}
     manifest = tree.build_manifest(EXEMPLAR)
@@ -281,8 +328,27 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
         if entry["kind"] != "page":
             continue
         record = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        if record["outcome"] != "sealed":
+            continue
         payload = record["payload"]
-        shas[payload["ordinal"]] = payload["source_sha256"]
+        ordinal = payload.get("ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise CorpusRefusal(
+                f"malformed-record: Exemplar page {record['subject_id']!r} carries no "
+                "integer ordinal"
+            )
+        digest = payload.get("source_sha256")
+        if not is_sha256(digest):
+            raise CorpusRefusal(
+                f"malformed-record: Exemplar page {record['subject_id']!r} carries no "
+                "lowercase sha256 source_sha256"
+            )
+        if ordinal in shas:
+            raise CorpusRefusal(
+                f"malformed-record: the Exemplar carries more than one sealed page for "
+                f"ordinal {ordinal}"
+            )
+        shas[ordinal] = digest
     return shas
 
 
@@ -404,7 +470,7 @@ _MATRIX_ENTRY_FIELDS = frozenset(
 )
 
 
-_EMPTY_EXCLUDED_REGION_COUNTS: dict[str, dict[str, int]] = {"by_kind": {}, "by_origin": {}}
+_EXCLUDED_COUNT_LENSES = frozenset({"by_kind", "by_origin"})
 
 
 def compare_page(
@@ -429,6 +495,14 @@ def compare_page(
     against synthetic acts in tests without a run tree at all -- the acts just
     have to carry the reference page's own `page.sha256`.
 
+    `page_sha256` equality makes `reference_page["page"]["width"]`/`["height"]`
+    that act's own frame, so an act whose bounds leave that frame is refused by
+    name too (`region-outside-page`): scoring it would put a MISS count on the
+    record that no artifact supports. `threshold` itself is refused by name
+    (`malformed-record`) unless it is a `Fraction` in `(0, 1]` -- this module
+    never compares IoU in binary floating point, so a caller-supplied float
+    threshold must not silently reach that comparison.
+
     `excluded_region_counts` is this call's own `count_excluded_designator_artifacts`
     result, when the caller read `pipeline_acts` from a run tree -- carried into
     the record so a reader can see how much of the run this comparison declined to
@@ -444,8 +518,14 @@ def compare_page(
     compare_page to score.
     """
     reference_page = validate_reference_page(reference_page)
+    if not isinstance(threshold, Fraction) or not (0 < threshold <= 1):
+        raise CorpusRefusal(
+            f"malformed-record: threshold must be a Fraction in (0, 1], got {threshold!r}"
+        )
     pipeline_acts = [_validate_pipeline_act(act) for act in pipeline_acts]
     page_sha256 = reference_page["page"]["sha256"]
+    page_width = reference_page["page"]["width"]
+    page_height = reference_page["page"]["height"]
     for act in pipeline_acts:
         if act["page_sha256"] != page_sha256:
             raise CorpusRefusal(
@@ -453,15 +533,26 @@ def compare_page(
                 f"{act['page_sha256']!r}, which does not match this reference page's "
                 f"{page_sha256!r}"
             )
+        bounds = act["bounds"]
+        if bounds["x"] + bounds["w"] > page_width or bounds["y"] + bounds["h"] > page_height:
+            raise CorpusRefusal(
+                f"region-outside-page: pipeline act {act['act_id']!r} bounds {bounds} "
+                f"exceed this reference page's {page_width}x{page_height} bounds"
+            )
     if excluded_region_counts is None:
-        excluded_region_counts = _EMPTY_EXCLUDED_REGION_COUNTS
+        excluded_region_counts = {"by_kind": {}, "by_origin": {}}
     else:
+        excluded_region_counts = _closed(
+            excluded_region_counts, _EXCLUDED_COUNT_LENSES, "excluded_region_counts"
+        )
         excluded_region_counts = {
-            "by_kind": _closed_counts(
-                excluded_region_counts.get("by_kind"), "excluded_region_counts.by_kind"
+            "by_kind": dict(
+                _closed_counts(excluded_region_counts["by_kind"], "excluded_region_counts.by_kind")
             ),
-            "by_origin": _closed_counts(
-                excluded_region_counts.get("by_origin"), "excluded_region_counts.by_origin"
+            "by_origin": dict(
+                _closed_counts(
+                    excluded_region_counts["by_origin"], "excluded_region_counts.by_origin"
+                )
             ),
         }
 
@@ -592,6 +683,28 @@ _MATCHED_PAIR_FIELDS = frozenset(
         "status",
     }
 )
+_THRESHOLD_FIELDS = frozenset({"numerator", "denominator"})
+
+
+def _closed_threshold(value: Any) -> Fraction:
+    threshold = _closed(value, _THRESHOLD_FIELDS, "threshold")
+    numerator, denominator = threshold["numerator"], threshold["denominator"]
+    if (
+        not isinstance(numerator, int)
+        or isinstance(numerator, bool)
+        or not isinstance(denominator, int)
+        or isinstance(denominator, bool)
+        or numerator <= 0
+        or denominator <= 0
+    ):
+        raise CorpusRefusal(
+            "malformed-record: threshold.numerator and threshold.denominator must be "
+            "positive plain integers"
+        )
+    fraction = Fraction(numerator, denominator)
+    if fraction > 1:
+        raise CorpusRefusal(f"malformed-record: threshold must be at most 1, got {fraction}")
+    return fraction
 
 
 def _closed_counts(value: Any, what: str) -> dict[str, int]:
@@ -620,6 +733,7 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     if comparison["schema"] != SCHEMA:
         raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")
 
+    _closed_threshold(comparison["threshold"])
     _closed_list(comparison["matrix"], _MATRIX_ENTRY_FIELDS, "matrix")
     matched_pairs = _closed_list(comparison["matched_pairs"], _MATCHED_PAIR_FIELDS, "matched_pairs")
     for pair in matched_pairs:
@@ -631,7 +745,7 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     )
     excluded = _closed(
         comparison["excluded_region_counts"],
-        frozenset({"by_kind", "by_origin"}),
+        _EXCLUDED_COUNT_LENSES,
         "excluded_region_counts",
     )
     _closed_counts(excluded["by_kind"], "excluded_region_counts.by_kind")

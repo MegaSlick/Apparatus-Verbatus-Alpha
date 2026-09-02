@@ -780,6 +780,59 @@ def test_validate_sidecar_refuses_extra_field():
         validate_sidecar(with_ordinal)
 
 
+def test_validate_sidecar_refuses_a_non_string_element_in_splits_present_by_name():
+    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`.
+
+    `splits_present != sorted(set(splits_present))` sorts before checking element
+    types; mixing `str` and `int` raises an unguarded `TypeError` in CPython, and
+    an unhashable element (a `dict` or a `list`) raises inside `set()` before the
+    sort even runs.
+    """
+    from operations.corpus.sidecar import build_sidecar
+
+    good = build_sidecar(
+        source="Ardennes",
+        volume_id="geneanet/Ardennes_BMS/380403",
+        designation="00026.jpg",
+        iiif={
+            "identifier": "geneanet/Ardennes_BMS/380403/00026.jpg",
+            "info_url": "https://europe.iiif.teklia.com/iiif/2/x/info.json",
+            "image_url": "https://europe.iiif.teklia.com/iiif/2/x/full/full/0/default.jpg",
+            "size_parameter": "full",
+            "response_sha256": "a" * 64,
+            "bytes": 100,
+            "http_status": 200,
+            "fetched_at_utc": "2026-09-01T00:00:00Z",
+            "declared_width": 4000,
+            "declared_height": 6000,
+        },
+        page={"sha256": "a" * 64, "width": 4000, "height": 6000},
+        splits_present=["val"],
+        records=[
+            {
+                "record_id": "rec-1",
+                "split": "val",
+                "region": {"x": 1, "y": 1, "w": 10, "h": 10},
+                "text": "hello",
+                "text_sha256": digest_bytes(b"hello"),
+                "start_date": None,
+                "end_date": None,
+                "parish": None,
+            }
+        ],
+    )
+
+    mixed_types = dict(good)
+    mixed_types["splits_present"] = [1, "val"]
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        validate_sidecar(mixed_types)
+
+    unhashable = dict(good)
+    unhashable["splits_present"] = [{"a": 1}]
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        validate_sidecar(unhashable)
+
+
 def test_validate_sidecar_refuses_zero_sized_page():
     from operations.corpus.sidecar import build_sidecar
 

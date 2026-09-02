@@ -42,6 +42,7 @@ CACHE_REFUSAL_REASONS = frozenset(
         "malformed-digest",
         "duplicate-request-record",
         "no-hard-link-support",
+        "unreadable-request-record",
     }
 )
 
@@ -125,11 +126,32 @@ def request_record_path(cache_root: Path, request_key: str) -> Path:
 
 
 def load_request_record(cache_root: Path, request_key: str) -> dict[str, Any] | None:
-    """The recorded answer to `request_key`, or `None` if it has never been asked."""
+    """The recorded answer to `request_key`, or `None` if it has never been asked.
+
+    Raises `CorpusRefusal` (`"unreadable-request-record"`) if the file exists but
+    is not readable JSON, or is JSON that is not an object — a request record
+    damaged by something outside this module's own writes (a half-finished
+    copy of a cache root, a restored backup, a hand-edited file) must not reach
+    a caller as a raw `JSONDecodeError`; `write_new_file` never leaves a partial
+    file at this path, so a damaged record here always came from outside a
+    completed run of this code.
+    """
     path = request_record_path(cache_root, request_key)
     if not path.exists():
         return None
-    return json.loads(path.read_bytes())
+    try:
+        record = json.loads(path.read_bytes())
+    except ValueError as error:
+        raise CorpusRefusal(
+            f"unreadable-request-record: {path} is not readable JSON ({error}); delete it "
+            "to force a re-fetch"
+        ) from error
+    if not isinstance(record, dict):
+        raise CorpusRefusal(
+            f"unreadable-request-record: {path} does not contain a JSON object; delete it "
+            "to force a re-fetch"
+        )
+    return record
 
 
 def write_new_file(path: Path, data: bytes) -> bool:
@@ -215,5 +237,10 @@ def write_request_record(cache_root: Path, request_key: str, record: dict[str, A
 
 
 def already_answered(cache_root: Path, request_key: str) -> bool:
-    """Whether `request_key` has a recorded answer — the never-re-fetch gate."""
+    """Whether `request_key` has a recorded answer — the never-re-fetch gate.
+
+    Raises `CorpusRefusal` (`"unreadable-request-record"`), same as
+    `load_request_record`, if the record on disk exists but is not readable
+    JSON — this is not silently `False` on a damaged record.
+    """
     return load_request_record(cache_root, request_key) is not None
