@@ -664,8 +664,10 @@ def test_the_printed_schedule_names_every_chair_the_real_roster_configures() -> 
     is invisible in the direction that matters: a chair added to a stage the
     schedule calls podless is a boot nobody was asked to authorize. The real
     roster is the one a pod ever serves -- the fixture roster resolves to local
-    snapshots -- and `secondary_proposer` is configured there and absent here,
-    which is how this list was wrong when it was written.
+    snapshots. `secondary_proposer` is `absent` in the real roster itself
+    (Tyrel's ruling of 2026-08-12), so it belongs to neither `configured` nor
+    the schedule; the drift this test exists to catch is a *launchable*
+    configured chair the schedule omits.
 
     A *configured* chair is not automatically a *launched* one: `attestator_1`
     is configured, but `config/serving_recipes_real.toml` resolves it to a

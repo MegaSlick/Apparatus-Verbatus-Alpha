@@ -17,7 +17,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import encode_grayscale_png_deterministic
 from common.native_witness import validate_presented_page_binding
-from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
+from common.witness_adapters import CAPTURE_WITNESS_ADAPTER_NAMES, KNOWN_WITNESS_ADAPTER_NAMES
 
 STAGE = Path(__file__).resolve().parent
 
@@ -46,10 +46,15 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     # `chandra-capture.v1` is declared (`common/witness_adapters.py`,
     # `CAPTURE_WITNESS_ADAPTER_NAMES`) but has no runnable binding here yet: a
     # captured witness reads a retained response, never runs a fixture shape of
-    # its own. Every runnable name must still be a declared one; the reverse
-    # (every declared name is runnable) is D5's to close when it registers a
-    # runnable binding for it -- proven separately below so it is not lost.
-    assert set(adapters.RUNNABLE_ADAPTERS) <= KNOWN_WITNESS_ADAPTER_NAMES
+    # its own. Every non-capture declared name must be exactly the runnable
+    # set -- a bare subset would let a future declared, non-capture adapter
+    # with no runnable binding pass silently. The reverse (capture names
+    # becoming runnable too) is D5's to close -- proven separately below so
+    # it is not lost.
+    assert (
+        set(adapters.RUNNABLE_ADAPTERS)
+        == KNOWN_WITNESS_ADAPTER_NAMES - CAPTURE_WITNESS_ADAPTER_NAMES
+    )
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
     assert set(spec.prompt()) == {"system", "user"}
