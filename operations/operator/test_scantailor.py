@@ -710,11 +710,16 @@ def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
 
     readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
     words = [line for line in readme.splitlines() if line.startswith("| `")]
-    assert "## The fourteen words" in readme
-    assert "Twelve things this tool can do" in readme
     documented = {line.split("`")[1].split()[0] for line in words}
     (verb_action,) = (action for action in cli.build_parser()._actions if action.dest == "verb")
     assert documented == set(verb_action.choices)
+    # The heading's number words come from the parser too, as the docstring
+    # promises: a count written into the test stayed green through one added
+    # verb and then broke on the next for the README saying the right thing.
+    spelled = {13: ("thirteen", "Eleven"), 14: ("fourteen", "Twelve"), 15: ("fifteen", "Thirteen")}
+    total, doers = spelled[len(verb_action.choices)]
+    assert f"## The {total} words" in readme
+    assert f"{doers} things this tool can do" in readme
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
