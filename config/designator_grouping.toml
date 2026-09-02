@@ -13,8 +13,16 @@
 #
 # Each field's basis is named below because it is NOT uniform: five fields
 # are a fraction of the page's own HEIGHT and one (`margin_bp`) is a fraction
-# of the page's own WIDTH, matching what the retired pixel constant actually
-# measured against in `grouping.py`/`structure.py`/`conservation.py`.
+# of the page's own WIDTH. This basis is a design decision recorded in
+# SPEC_C section 2, chosen from what each threshold is compared against in
+# code -- vertical extents for the five height-based fields, the page-width
+# margin lane for `margin_bp` -- not a property recovered from the retired
+# pixel constants themselves: five of the six were bare pixel counts with no
+# dimension to measure against, and `review_priority_min_dimension_bp`'s own
+# retired constant (`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`)
+# is documented as applying on either axis, not against height specifically
+# (see `conservation.py`). Resolving it against height here is this build's
+# choice, not something the old code measured.
 #
 #   field                               | basis  | retired constant
 #   ------------------------------------|--------|---------------------------
