@@ -32,10 +32,130 @@ Exemplar crop lineage verify. Each attempted Testimonium names precisely the
 original proposal regions and their pixel blobs. A later recovery crop is not
 silently substituted for what a chair saw.
 
-The current writer is the declared synthetic skeleton. Its `fixture://` serving
-facts are fixture declarations, not measurements of a live model. Spec 04 has not
-landed a serving response/body contract, and Spec 06's capture-as-Testimonium
-intake is not present in this tree; no fake capture intake is claimed here.
+This stage now has two writers, and which one runs is decided by the sealed
+serving-recipe row for each configured witness chair — never by a new
+configuration key, and never by a fallback in either direction. Under the
+committed fixture catalogue every chair is `kind = "fixture"` and the writer is
+the declared synthetic skeleton described here: its `fixture://` serving facts
+are fixture declarations, not measurements of a live model, and its bytes are
+the pinned acceptance path. Under a catalogue whose rows for those chairs are
+`kind = "vllm"`, the live boundary below runs instead: the serving response and
+body contract Spec 04 was waiting for is `common/contracts/serving.py`'s
+`chair-call-record.v1` plus `operations/serving/http.py::parse_openai_reading`,
+and the capture-as-Testimonium intake is `common/native_witness.py`'s retained
+model view, which the live pass records on every act attempt whose bytes reached
+an adapter parser.
+
+## Live response boundary
+
+**Selection.** `main` resolves one mode per configured witness chair through
+`operations.serving.client.serving_mode_for` — a three-name lookup (recipe,
+chair, measured placement tier) in the catalogue the run sealed, re-read and
+digest-checked against `config_digest` at the moment it is used. A roster that
+mixes postures is refused by name: one run reads its witnesses one way, or every
+consumer comparing witnesses across an act is comparing two kinds of evidence
+without being told. An absent chair names no mode and stays `dead`.
+`--placement-tier` is required to resolve a live row and is deliberately not
+sealed: it is a measured fact of the card, and the receipt records the caps that
+actually bound the serving moment.
+
+**Pass structure.** The live pass is chair-outer and publishes per response.
+Preflight stays a no-write preflight and consults no chair: its resolver returns
+a pending sentinel for every unsealed pair, and the pass fills each one in as its
+own response arrives. Serving runs through `feeding.stage_major_schedule` and
+`feeding.execute_stage_major_schedule` under a `SingleChairResidency`, one
+schedule per chair concatenated, so one chair is resident at a time, no unit is
+served twice, and a schedule that returned to an unloaded chair is refused. A
+chair's unit of work is its own sealed scope: an act-scoped chair is asked once
+per act, a page-scoped chair once per *page*, and that page response derives both
+the page Testimonium and the act-scoped compatibility records of every act whose
+primary page it is. A continuation page's response feeds no act record; the act's
+own view belongs to its primary page.
+
+**Resume.** A pair already sealed at this ordinal is reused from its retained
+Testimonium and never asked again — a live chair cannot reproduce immutable
+bytes. A page response is likewise never re-requested while a sealed record
+describes it: the page Testimonium if the interrupted pass reached it, otherwise
+the act-scoped record of an act whose primary page it is, which carries the same
+capture. A page nothing sealed depends on — a continuation page after an
+interruption — is asked for again, because no sealed record contradicts a new
+answer. A record whose receipt says `fixture://`, or an act record naming no
+serving call, is refused rather than resumed over: a live pass cannot continue a
+fixture-posture run.
+
+**What a live record gains.** `native_capture` (the adapter's retained model
+view) and `serving_call_ref` (the `chair-call-record.v1` blob for the one
+request) are admitted on an act Testimonium and written only in live mode, so a
+fixture record is byte-for-byte what it was. `provenance.receipt_ref` names the
+receipt the chair's own client re-read at start, never a declared `fixture://`
+stand-in. `content_health.truncated` comes from the engine's stop word:
+`"stop"` → `false`, `"length"` → `true`, and an unreported word → `null` with
+`truncation_basis = "not-recorded"`. Both retained blobs are re-read and
+digest-checked by the attempt tally rather than carried as envelope inputs,
+because the tally re-derives an act record's inputs from its regions and
+presentation alone.
+
+**Chandra is live in transport only.** Its request is built, sent, retained and
+recorded like any other, and `chandra.parse` recognizes only
+`fixture-chandra-response.v1`, so a real Chandra body lands as `failed` with
+`unverified-response-schema` and its bytes retained. That is honest and visible,
+and it stays that way until a real Chandra wire schema is evidence rather than
+invention. Its retained model view is not attached to the record: the shared
+capture contract admits no `unrecognized-shape` parse state (see below).
+
+**Fixture declarations a live pass does not read.** A live pass reads the
+fixture's pages, acts, continuations and proposals — that is the corpus — and
+reads none of its declared witness responses (`testimony`, `witness_failure`,
+`witness_empty`, `witness_not_run`, `churro_page_response`) or declared
+`native_observation` geometry, which are the offline posture's stand-in for a
+model. The pass names on stderr how many such rows it passed over, so an
+operator cannot mistake one posture's record for the other's. Fixture-declared
+Chandra anchors are not read either, so a live page witness's act attachment
+comes back `unaligned: missing-chandra-page-anchor` until R4 owns live
+alignment: aligning real witness text against declared act spans would place a
+reading on geometry nobody measured.
+
+**No live reread.** `--operation reread` is refused by name under a live roster.
+A reread asks one chair for one act again at a new ordinal; it needs its own
+residency, its own per-response publication, and its own answer to what an
+act-scoped reread of a page witness means. Run the whole pass at the next
+ordinal, or reread under the fixture catalogue.
+
+### Owed before a live pass can carry every chair
+
+Four gaps sit in files this unit does not own. Each is a named refusal or an
+explicit omission in the code, never a silent default.
+
+1. **A live `dai.v1` chair cannot be served at all.** `feeding.dai_generation()`
+   carries floats, and `ChairClient.read` writes its call record with the shared
+   canonical writer, which refuses floats — so the request cannot be recorded and
+   therefore is not made. Fixing it means deciding how a vendor's float decoding
+   value is recorded canonically (`operations/serving/client.py`, or the shared
+   canonical contract), not dropping the value.
+2. **A no-resize DAI act is refused after its response returns.**
+   `witness_adapters._dai_present` republishes its own crop even when no resize
+   is needed, while `feeding.dai_model_view`'s identity-transform rule requires
+   the source and model image references to be the same retained blob. Closing it
+   means `_dai_present` reusing the Designator's own blob on that path.
+3. **A Churro page response with no engine stop word is refused by name.** The
+   shared page contract re-derives a Churro page record's health from its capture
+   and asks a two-valued question — "is this a cut-off word" — so an unreported
+   boundary would have to be published as `truncated: false`. Widening that
+   reconciliation in `common/native_witness.py` to the same three states the
+   live boundary measures is what unblocks it.
+4. **A Chandra capture cannot be attached to any record.** The shared capture
+   contract's parse states do not include `unrecognized-shape`, which is the one
+   state a live Chandra response reaches today. Admitting it, also in
+   `common/native_witness.py`, would let the page and act records carry the
+   retained view beside the bytes they already name.
+
+Two smaller notes for whoever comes next: a page Testimonium cannot yet name its
+`serving_call_ref` (the shared page contract's optional fields do not admit it),
+so a continuation-page response's call record is an inventoried blob no record
+links; and `RunTree.read_run_receipt` accepts its own reference type or a plain
+`dict` and refuses the read-only mapping a `ServiceHandle` carries, so the client
+is wired with a one-line copy rather than the bare method the serving README
+names.
 
 ## Testimonium schema
 
