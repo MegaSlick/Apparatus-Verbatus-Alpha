@@ -968,3 +968,20 @@ Closing it is stage integration, not a Recensor change: it needs a producer here
 and a settled contract for what an occlusion record seals (page identity,
 polygon in that page's own coordinate space, and the `z_relationship` the
 Recensor already refuses to infer). Named in review of PR #78, 2026-08-31.
+
+## Who wrote what (from the dispatch record, not the trailers)
+
+Derived from the session's workflow scripts (realpage-ua-ub-*, realpage-uc-sealing-*,
+realpage-ue-verifier-*, realpage-unit-d-*, realpage-unit-f-*), which record the model
+each seat was dispatched as. Commit trailers are self-reported by the seats and some
+are wrong (seats copied the host's "Fable 5.1" line); this table is authoritative.
+The Fable seat was the host orchestrator and wrote no unit code.
+
+| unit | built by | verified by | fixed by |
+|---|---|---|---|
+| A config + loader | Sonnet 5 | Opus 5 | Sonnet 5 |
+| B pure modules lose defaults | Sonnet 5 | Opus 5 | Sonnet 5 |
+| C sealing wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| E act class + consumer verifier | Opus 5 | Opus 5 | Sonnet 5 |
+| D Designator behaviour + Recensor withheld branch | Opus 5 | Opus 5 | Sonnet 5 |
+| F Door refusal, geometry, pins | Opus 5 | Opus 5 | Sonnet 5 |
