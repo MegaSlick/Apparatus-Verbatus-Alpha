@@ -313,13 +313,21 @@ subject, the live schedule's page unit -- goes through `page_subject`, which is
 fixture run the index agrees with the old fixture-declared identity for every
 sealed page, because a sealed page's identity is its admitted bytes' digest and
 "sealed" means those bytes matched the declaration; a refused page is indexed
-under the Door's `source-N` admission subject, but this stage only ever asks
-about pages that carry proposed acts, which are sealed pages, so no fixture
-byte moves. The index is rebuilt from the inventory on each lookup rather than
-cached (one walk per lookup, about three lookups per page per pass): the
-Exemplar layer is sealed before this stage opens, so the walk answers the same
-every time, and a cache could outlive the tree it described. A page-level bound
-on a large corpus is roadmap work.
+under the Door's `source-N` admission subject, and this stage only asks a
+page-scoped chair about pages that carry proposed acts -- on every shipped
+fixture family those are sealed pages, so no fixture byte moves -- but `by_page`
+is built from a real run's own seal rows, not from this invariant, so
+`presentation_for_page` checks the Exemplar page's `outcome` itself and refuses
+by name rather than reading a refused page's absent `image_path`. The index is
+built once per pass (`publish_page_testimonia_and_attachments` and
+`live_attempt_pass` each call `exemplar_page_ids` once and thread the result
+into every `page_subject` / `presentation_for_page` call as `page_ids`) rather
+than walked again at every lookup: the Exemplar layer is sealed before this
+stage opens, so the walk answers the same every time for the life of the
+process, and a cache scoped to one pass cannot outlive the tree it described.
+Review found this stage paying roughly seven such walks per page rather than
+the three this note used to claim; a page-level bound on a large corpus is
+still roadmap work.
 
 **The declared witness tables have no real-mode counterpart.** `witness_failure`,
 `witness_not_run`, `witness_malformed`, `witness_empty`, `native_observation`,
