@@ -1323,15 +1323,18 @@ def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
     return approval_ref
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
-    # The manifest's run identity: a fixture id on a fixture run, a real
-    # submission's filename-ledger self-hash on a real one -- never both, never
-    # neither. `submission_identity` itself decides which route this run took;
-    # `context.fixture` is asked only once that has already ruled out real
-    # ingress, so it is never touched on the route where it would refuse.
+def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]]:
+    """The manifest's run identity: a fixture id on a fixture run, a real
+    submission's filename-ledger self-hash on a real one -- never both, never
+    neither. `submission_identity` itself decides which route this run took
+    from `context.run` alone; `context.fixture` -- the refusing accessor -- is
+    asked only once that has already ruled out real ingress, so it is never
+    touched on the route where it would refuse.
+
+    Returns `(submission_id, fixture_id, run_identity)`: the two raw values a
+    caller may still need individually, and the one-key dict `main` splices
+    straight into the `export` artifact's payload.
+    """
     submission_id = submission_identity(context.run)
     fixture_id = context.fixture["fixture_id"] if submission_id is None else None
     run_identity: dict[str, str] = (
@@ -1339,6 +1342,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if submission_id is not None
         else {"fixture_id": fixture_id}
     )
+    return submission_id, fixture_id, run_identity
+
+
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run under the explicitly supplied chair/config implementation."""
+    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
+    submission_id, fixture_id, run_identity = export_run_identity(context)
     formats = context.armarium_formats
     if formats is None:
         raise FatalAccounting("Armarium has no format projection bound to the run configuration")

@@ -870,6 +870,12 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
         raise SchemaRefusal(
             f"the manifest run binding has no non-blank {subject} and scenario identities"
         )
+    if has_submission:
+        # Mirrors `_validate_projection`'s tightening: the manifest boundary must
+        # not be looser than the projection boundary that fed it, or a resealed
+        # package could carry a hand-typed corpus label under the field
+        # documented as a filename ledger's self-hash.
+        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
@@ -1332,6 +1338,14 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "an Armarium projection has both a fixture identifier and a submission "
             "identifier; a run's export must be identified by exactly one, never both"
         )
+    if has_submission:
+        # `fixture_id` is a human-chosen label with no fixed shape; `submission_id`
+        # is documented (dataclass comment above, HANDOFF.md) as the filename
+        # ledger's own self-hash, and `common.stage.submission_identity` refuses
+        # to produce one that is not a sha256. The export boundary must be at
+        # least as strict as the thing that produces the value, or a hand-typed
+        # corpus label could ride out of the pipeline under this field forever.
+        _require_sha256(projection.submission_id, "an Armarium projection submission identity")
     if not isinstance(projection.scenario, str) or not projection.scenario:
         raise SchemaRefusal("an Armarium projection has no scenario")
     _require_sha256(projection.config_digest, "an Armarium projection sealed configuration digest")

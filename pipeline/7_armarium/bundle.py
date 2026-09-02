@@ -94,6 +94,37 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
     return data, record["payload"]
 
 
+def _expected_run_binding(payload: dict, run: dict) -> dict:
+    """The `run` binding a sealed export artifact's payload should reseal to.
+
+    Mirrors `armarium_export._verify_manifest_field_closure`'s two closed shapes:
+    a fixture run's payload carries `fixture_id`, a real run's carries
+    `submission_id`, never both and never neither. This reads the export
+    artifact's own payload rather than deciding again which route the run
+    took -- that decision was `run.py`'s, made once, before this bundle was
+    ever sealed -- so a payload naming both or neither is refused by name
+    instead of silently comparing against a binding this stage invented.
+    """
+    has_fixture = "fixture_id" in payload
+    has_submission = "submission_id" in payload
+    if has_fixture and has_submission:
+        raise ContractError(
+            "the sealed export artifact names both a fixture identifier and a submission "
+            "identifier; a run's export is identified by exactly one, never both"
+        )
+    if not has_fixture and not has_submission:
+        raise ContractError(
+            "the sealed export artifact names neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    identity_field = "fixture_id" if has_fixture else "submission_id"
+    return {
+        identity_field: payload.get(identity_field),
+        "scenario": payload.get("scenario"),
+        "config_digest": run.get("config_digest"),
+    }
+
+
 def publish(tree: RunTree, out_dir: Path) -> dict:
     """Verify the sealed bundle and put it at `out_dir`, atomically or not at all.
 
@@ -143,11 +174,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                     "retrying publication"
                 )
             run = tree.read_run()
-            expected_run_binding = {
-                "fixture_id": payload.get("fixture_id"),
-                "scenario": payload.get("scenario"),
-                "config_digest": run.get("config_digest"),
-            }
+            expected_run_binding = _expected_run_binding(payload, run)
             if manifest.get("run") != expected_run_binding:
                 # A clean-machine verifier has no external record to compare these
                 # labels with. The publisher does: fixture/scenario come from the
