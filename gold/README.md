@@ -113,6 +113,34 @@ A name shaped like a pipeline identity is refused wherever a person is named:
 gold is what the pipeline is measured against, so gold made of its output would
 make the measurement circular.
 
+**RecordGold truth cannot be filed here as gold.**  `operations/corpus/` fetches a
+third-party expert-annotated corpus and gives it its own `reference.py` record
+family — one unnamed expert reading, no adjudication, `provenance:
+"third-party-expert-annotation"` — because it cannot satisfy this module's
+two-reading custody shape.  `_person` (`gold/core.py:795-811`) catches a
+pipeline identity, but it would not catch an invented Teklia annotator name —
+nothing here can, which is why the boundary has to be the record family
+rather than a name check.  `adjudicate` derives `outcome` from two
+independently stored readings that RecordGold never has, and `validate_corpus`
+refuses closure without both.  Forcing a reference record in as gold would
+mean inventing two transcriber names for one text and minting a fabricated
+`agreed` custody chain — the exact fabrication this module's two-reading
+requirement exists to make impossible.  A reference record and a gold record
+may describe the same page; they are never the same kind of record, and
+neither directory is the right home for the other's.
+
+Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
+GOVERNANCE 10 acceptance claim is a separate question, and it is Tyrel's, not
+this module's (`operations/corpus/README.md`'s "The acceptance corpus is
+Tyrel's call" gets this right; his 2026-09-01 direction on RecordGold reads
+the other way and is not yet reconciled with it — see the workbench ledger
+at `workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`, local and
+gitignored like `workbench/standing/SUSPENSIONS.md`, not a file a clone of
+this repository carries).  If he rules
+RecordGold in for that claim, the route is a named substitution recorded
+where the acceptance corpus is chosen, never a forged entry through this
+module's custody chain.
+
 ## Custody
 
 The layout schema embeds its source `gold-page-sample.v2`, whose page carries
