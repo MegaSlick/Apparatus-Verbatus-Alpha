@@ -182,7 +182,18 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
 
     rows = [bytearray(row) for row in rows]
     rows[stray_y][stray_x] = 10  # unambiguous ink, far below any background threshold
-    analysis = {"width": width, "height": height, "rows": rows, "background": background}
+    analysis = {
+        "width": width,
+        "height": height,
+        "rows": rows,
+        "background": background,
+        # The secondary scan runs at this page's own resolved gap tolerance, the
+        # way `_analyze_page` resolves it for the primary scan, so a page
+        # analysis handed in by a test carries the same field the real one does.
+        "thresholds": designator.grouping_config.resolve_thresholds(
+            designator.grouping_config.load_grouping_config(), width, height
+        ),
+    }
     secondary = _published_secondary_provenance(designator, context)
 
     before_kinds = {
@@ -304,7 +315,11 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "secondary held-exit test")
 
-    def one_stray_candidate(width, height, rows, *, background):
+    # `gap_tolerance_px` is now resolved per page from the sealed grouping
+    # policy and passed in, so a stand-in for the real scan takes it too --
+    # a stub with the old signature would pass by not being called the way the
+    # stage calls it.
+    def one_stray_candidate(width, height, rows, *, background, gap_tolerance_px):
         return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
 
     monkeypatch.setattr(designator.structure, "secondary_scan", one_stray_candidate)
@@ -401,7 +416,7 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
         designator, root, models_config, "out-of-page secondary candidate test"
     )
 
-    def out_of_page_candidate(width, height, rows, *, background):
+    def out_of_page_candidate(width, height, rows, *, background, gap_tolerance_px):
         return [{"bounds": {"x": width - 1, "y": height - 1, "w": 5, "h": 5}, "pixel_count": 25}]
 
     monkeypatch.setattr(designator.structure, "secondary_scan", out_of_page_candidate)

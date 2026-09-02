@@ -267,11 +267,25 @@ background cannot be inferred is recorded
 page_ordinal, background_source, background_value | null
 ink_measurable, reason | null
 total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
-residual_components = [{bounds, pixel_count, review_priority}]
+residual_component_count, residual_ink_fraction_bp | null, max_residual_components
+residual_enumeration = "complete" | "withheld-page-held"
+residual_components = [{bounds, pixel_count, review_priority}]   # key OMITTED when withheld
 ```
 
 `claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` always,
-by construction, whenever `ink_measurable` is true.
+by construction, whenever `ink_measurable` is true — on a withheld page too.
+
+`residual_enumeration` is a closed pair and is on every record. It is what lets
+a consumer tell a page with no unclaimed ink from a page whose unclaimed ink was
+counted and not listed; when it is `withheld-page-held` the `residual_components`
+key is **omitted rather than emptied**, because an empty list is the first of
+those two claims and the key's absence is what makes every existing consumer
+fail loudly instead of reading absence as none. `residual_component_count`
+equals `len(residual_components)` on an enumerated page and is the count the
+reconciliation took on a withheld one. `residual_ink_fraction_bp` is
+`residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
+gating nothing. `max_residual_components` is the sealed bound the page was judged
+against, published whether or not it was crossed.
 
 The background fields belong to this reconciliation, not to the structure
 pass. This distinction matters on a page whose structure pass was held before
@@ -333,6 +347,32 @@ construction: it derives from `act_id(page_id, "residual", bounds)` -- the
 `"residual"` act class is its own namespace in the identity ladder -- so a
 structure pass's `"proposal"`-class identities can never collide with it,
 present fixture or real one.
+
+**The `page-residual` hold is the fourth act class and the second hold shape.**
+When a page's reconciliation counts more residual components than the sealed
+`max_residual_components` allows, no per-component act is minted for that page
+at all; one act is, bound to `act_id(page_id, "page-residual", page_rectangle)`
+and held. Its hold record carries `act_key`, `page_id`, `page_ordinal`,
+`page_bounds`, `residual_component_count`, `max_residual_components`,
+`grouping_config_sha256`, `blocking_page_ordinal`, `reason_code` and `reason`,
+and names exactly one input: that page's own `conservation` record, which is
+the independent premise saying the count exceeded the bound.
+`common/stage.py::_verify_page_residual_act_row` recomputes every one of those
+rather than reading it — the rectangle from the sealed page bytes, the identity
+from the reserved class, the bound against the run's own sealed
+`designator-grouping` digest — and
+`_verify_every_conservation_residual_is_accounted` checks the other direction, so
+a withheld record with no such row is a refusal rather than a silent loss.
+`reason_code = "residual-components-over-page-bound"` names the reconciliation
+and never the paper: nothing in this artifact says a page is speckled, foxed or
+bad, only that this many components were counted against this bound.
+
+The Recensor consumes the same decision in `geometry_coverage_inputs`, with its
+own refusals and its own finding shape: `residual_act_count` is 0 on a withheld
+page, and the count, the bound, the enumeration and the one page-residual act
+are named beside it so that zero cannot read as a loss. The check it genuinely
+loses there is the per-component pixel sum, because the list it summed is the
+thing deliberately not carried.
 
 ## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
@@ -631,19 +671,43 @@ asked for the claimed regions on each page separately (pages × regions) and
 (`_claimed_regions_by_page`, `_designator_holds_by_subject`). Neither changed
 what is computed.
 
-**The residual denominator itself stays unbounded in the input, deliberately.**
-Every residual component becomes one held act, one hold artifact and one seal
-row, because "every residual region is accounted regardless of size" is spec
-06's own sentence and a size floor in the accounting is GOVERNANCE 10's named
-defect. A page whose ink is scattered rather than clustered therefore mints
-acts in proportion to the scatter: measured on this build, a synthetic A4 page
-at 300 dpi with 3% randomly scattered ink reconciles to ~60,000 residual
-components in about 3 seconds of labeling, and would mint ~60,000 held acts
-that every stage after this one carries to the Armarium's review list. That is
-the correct accounting and the wrong ergonomics, and it is a real operating
-limit rather than a bug to close by dropping regions: whatever bounds it must
-bound the *page* (refuse a page this speckled, visibly and as a hold) rather
-than the accounting over one. Named here rather than discovered at scale.
+**The residual denominator is unbounded in the accounting and bounded on the
+page.** Every residual component still enters the reconciliation regardless of
+size — "every residual region is accounted regardless of size" is spec 06's own
+sentence and a size floor in the accounting is GOVERNANCE 10's named defect, so
+`conservation.reconcile` returns all of them and no ink leaves the measurement.
+What is bounded is how many of them become *separate review items*. A page whose
+reconciliation counts more components than the sealed
+`max_residual_components` allows becomes one `page-residual` held act instead of
+that many, and its record says so in `residual_enumeration`.
+
+The number this closes is measured on this build: a synthetic A4 page at 300 dpi
+with 3% scattered ink reconciles to ~60,000 residual components (this tree now
+measures ~254,000 at a 33px pitch), each of which used to mint its own held act,
+hold artifact and seal row. `operations/operator/review.py` refuses a run past
+`MAX_REVIEW_ITEMS` by name, so one such page made every *other* page's findings
+unreadable on the only surface a person uses.
+`pipeline/2_designator/test_page_residual_bound.py` carries that case, marked
+`full` because the pure-Python structure pass takes ~100 seconds at that size.
+
+**The honest cost, stated as a cost.** On a withheld page the per-component
+rectangles are not in any artifact. They stay recomputable from the sealed page
+bytes under the sealed conservation policy — the same reasoning the pipeline
+already uses for the exact image a model was shown — and both the count and the
+bound are on the hold and on the record. But a reviewer cannot open that page's
+evidence and read off where the unclaimed ink was. The alternative is a payload
+of the order of megabytes per page that nobody reads and that makes the run
+unopenable for a different reason.
+
+**The retirement condition, written down now.** The bound counts review items,
+and the number of review items is a property of how well the structure pass
+performed as much as of the page. Today's pass is one modal-background ink scan
+at a 20-level margin, so a run in which *every* page carries a `page-residual`
+hold is the legible first-run signal that the structure pass does not work on
+this corpus — a true finding delivered on run one. But if roadmap item 4 lands a
+real structural Designator and real pages still trip the bound, the bound is
+measuring the wrong thing and must be revisited rather than raised. The first
+real run's `page-residual` count is the measurement that settles it.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
@@ -793,23 +857,46 @@ absent. This closes the silent `EXIT_COMPLETE` path found in review on
 2026-08-10; the remaining calibration limit is the unmeasured derivation of both
 thresholds recorded below.
 
-**Eight grouping and scanning thresholds ship with no recorded derivation.**
-`grouping.DEFAULT_MARGIN_FRACTION`, `DEFAULT_CHAIN_GAP_PX`,
-`DEFAULT_ANCHOR_REACH_PX`, `DEFAULT_BRACE_MIN_HEIGHT_PX`,
-`DEFAULT_PAGE_EDGE_REACH_PX`, and `structure.DEFAULT_GAP_TOLERANCE_PX`,
-`PRIMARY_MARGIN`/`SECONDARY_MARGIN` are tuned by eye against the synthetic
-fixtures' own small pages. Five are absolute pixel counts; on a 300-dpi
-register scan (~2480×3508) a 6-pixel chain gap or a 30-pixel brace threshold
-is not the same approximation it is on a 200×300 synthetic page. The capture
-padding in `config/designator_padding.toml` got a required
-`[padding.provenance]` schema, a calibration harness, and an honest
-"not calibrated for this corpus" flag; these eight constants got a comment.
-Not a blocker while the structure pass is a synthetic ink scan with no real
-page to calibrate against. Before the pod leg: either move them into a
-`config/designator_grouping.toml` with the padding config's own provenance
-schema, or express them as fractions of page dimensions rather than absolute
-pixels — the padding entry is the model for how. Named here rather than left
-uncalibrated and unremarked. Found in review, 2026-08-10.
+**The grouping and scanning thresholds are sealed policy now, and there were
+nine of them, not eight.** `config/designator_grouping.toml` carries them with
+the padding config's own provenance schema and the same honest
+`calibrated_for_this_corpus = false`; `grouping_config.py` loads it,
+`run.py::_analyze_page` resolves it against *each page's own* width and height,
+and the modules take the resolved pixel integers as required keyword arguments
+with no defaults left to fall back on. The digest is sealed as
+`designator-grouping` and rechecked at that point of use. The ninth was
+`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`, which the earlier
+inventory missed: it orders review rather than filtering it, but at 2480×3508
+every residual over 6px on either axis is "high", so the ordering silently
+stopped working.
+
+Six fields are integer basis points of a page dimension — `margin_bp` of the
+page's **width**, the other five of its **height** — and each resolves
+bit-identically to its retired constant on the 200×260 fixture pages, so no
+fixture geometry changed.
+
+Two do **not** move and never will. `structure.PRIMARY_MARGIN` and
+`SECONDARY_MARGIN` are 8-bit ink-intensity offsets, not geometry;
+`common/test_designator_recensor_ink_calibration.py` is an AST pin that reads
+`SECONDARY_MARGIN` as a source literal and cross-checks it against the
+Recensor's own contrast constant, and a per-run value would make that
+cross-stage invariant unenforceable statically. The config's closed schema
+refuses both names wherever they are written.
+
+**`gap_tolerance_px` stays absolute at 3, and must never be scaled — do not
+"fix" this by reflex.** It is a stroke-connectivity radius, not a page-layout
+proportion: scaled to a 3508-tall page it becomes ~41px, which bridges
+inter-word gaps and changes what "connected" means, and
+`structure.label_components` builds a Chebyshev offset list of radius
+`gap + 1`, so the labeller's cost is quadratic in it and would grow with the
+cube of page scale. Its correct value is a function of scan resolution, not of
+page dimension, and no measurement of that relationship exists here yet. It is
+the one threshold this build cannot honestly set, and it is set by decision
+rather than by oversight. Related and separate: `structure.ink_pixels` builds a
+Python set over every pixel (8.7 million on an A4 page at 300 dpi) before
+labelling starts, which roadmap item 4 replaces rather than optimises.
+
+Original finding: review, 2026-08-10.
 
 **This stage builds occlusion geometry and publishes none of it.**
 `geometry_layer.occlusion_envelope` derives an occlusion envelope, and
