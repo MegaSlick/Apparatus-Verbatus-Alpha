@@ -684,3 +684,149 @@ def test_a_declared_quantization_rule_has_nowhere_to_ride_in_this_contract():
         mutate(payload)
         with pytest.raises(SchemaRefusal, match="closed|unknown field"):
             attestatores.validate_testimonium_payload(payload)
+
+
+# ------------------- the two fields only a live reading writes ----------------
+#
+# `serving_call_ref` names the `chair-call-record.v1` blob for the one request
+# this attempt came from, and `native_capture` is the adapter's own retained
+# model view of the response (SPEC_A section 2.3). Both are optional and are
+# written only by the live pass, so a fixture Testimonium is byte-for-byte what
+# it always was; what follows closes them at the writer, which is the same
+# validator the tally read-back uses.
+
+_BLOB_PREFIX = "3_attestatores/blobs/sha256/"
+
+
+def _blob_ref(seed: str) -> dict[str, str]:
+    digest = digest_bytes(seed.encode("utf-8"))
+    return {"relative_path": _BLOB_PREFIX + digest, "sha256": digest}
+
+
+def _live_capture(reference: dict[str, str], *, stop: str = "stop") -> dict[str, object]:
+    return {
+        "schema": "attestatores-model-view.v1",
+        "adapter": "chandra.v1",
+        "view": {"prompt": {"instruction": "read"}},
+        "raw_response_ref": reference,
+        "transport_stop_reason": stop,
+        "stop_reason": stop,
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "json", "text": "native bytes remain elsewhere"},
+    }
+
+
+def test_a_live_act_record_may_name_its_retained_response_call_and_model_view():
+    payload = _base()
+    reference = _blob_ref("live response bytes")
+    payload["raw_response_ref"] = reference
+    payload["serving_call_ref"] = _blob_ref("call record bytes")
+    payload["native_capture"] = _live_capture(reference)
+    assert attestatores.validate_testimonium_payload(payload) is payload
+
+
+def test_a_serving_call_reference_without_a_retained_response_is_refused():
+    """A request with no retained answer is not evidence of a reading."""
+    payload = _base()
+    payload["serving_call_ref"] = _blob_ref("call record bytes")
+    with pytest.raises(SchemaRefusal, match="retains no response"):
+        attestatores.validate_testimonium_payload(payload)
+
+
+def test_a_retained_model_view_naming_another_response_is_refused():
+    """One attempt reads one response, and both references must say the same one."""
+    payload = _base()
+    payload["raw_response_ref"] = _blob_ref("live response bytes")
+    payload["serving_call_ref"] = _blob_ref("call record bytes")
+    payload["native_capture"] = _live_capture(_blob_ref("some other response entirely"))
+    with pytest.raises(SchemaRefusal, match="different response blob"):
+        attestatores.validate_testimonium_payload(payload)
+
+
+def test_a_serving_call_reference_outside_this_stage_s_blob_store_is_refused():
+    payload = _base()
+    payload["raw_response_ref"] = _blob_ref("live response bytes")
+    payload["serving_call_ref"] = {
+        "relative_path": "4_perlector/blobs/sha256/" + "0" * 64,
+        "sha256": "0" * 64,
+    }
+    with pytest.raises(SchemaRefusal, match="serving_call_ref is not an Attestatores blob"):
+        attestatores.validate_testimonium_payload(payload)
+
+
+def test_a_malformed_retained_model_view_is_refused_at_the_act_writer_too():
+    """The shared capture contract closes an act record, not only a page record.
+
+    The stop word is deliberately not what this proves: the shared validator
+    checks that only for `churro.v1` (`_validate_churro_capture`), so the live
+    boundary refuses an unreadable engine word itself, before publication
+    (`run.py::refuse_unpublishable_stop_word`, proven in
+    `test_attestatores_live_pass.py`). What this closes here is that a view
+    which is not a retained model view at all cannot ride into an act record
+    unexamined.
+    """
+    payload = _base()
+    reference = _blob_ref("live response bytes")
+    payload["raw_response_ref"] = reference
+    payload["native_capture"] = {**_live_capture(reference), "schema": "not-a-model-view.v9"}
+    with pytest.raises(SchemaRefusal, match="retained model-view schema"):
+        attestatores.validate_testimonium_payload(payload)
+
+
+# ------------- the serving moment a live provenance record names --------------
+
+
+class _ProvenanceContext:
+    """Just enough `StageContext` for `provenance_for`: it writes one receipt."""
+
+    def __init__(self) -> None:
+        self.adapter_revision = "fake-attestatores-v0"
+        self.written: list[str] = []
+
+    def write_serving_receipt(self, identity, details):
+        self.written.append(identity.role)
+        return {"relative_path": "receipts/" + "a" * 64 + ".json", "sha256": "a" * 64}
+
+
+def _identity(role: str = "attestator_1"):
+    return ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(role)
+
+
+def test_a_live_provenance_record_names_the_receipt_the_chair_already_published():
+    """The live pass never writes a second, declared receipt over a real one."""
+    context = _ProvenanceContext()
+    live_receipt = {"relative_path": "receipts/" + "b" * 64 + ".json", "sha256": "b" * 64}
+    provenance = attestatores.provenance_for(
+        context, _identity(), attempted=True, receipt_ref=live_receipt
+    )
+    assert provenance["receipt_ref"] == live_receipt
+    assert context.written == []
+    # The fixture posture is unchanged: no reference in, one declared receipt out.
+    fixture = attestatores.provenance_for(context, _identity(), attempted=True)
+    assert context.written == ["attestator_1"]
+    assert fixture["receipt_ref"]["sha256"] == "a" * 64
+
+
+def test_a_chair_that_was_never_asked_cannot_carry_a_serving_receipt():
+    context = _ProvenanceContext()
+    with pytest.raises(ContractError, match="never made"):
+        attestatores.provenance_for(
+            context,
+            _identity(),
+            attempted=False,
+            receipt_ref={"relative_path": "receipts/x.json", "sha256": "c" * 64},
+        )
+
+
+def test_an_absent_chair_cannot_carry_a_serving_receipt():
+    context = _ProvenanceContext()
+    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config.chairs[
+        "secondary_proposer"
+    ]
+    with pytest.raises(ContractError, match="absent"):
+        attestatores.provenance_for(
+            context,
+            absent,
+            attempted=True,
+            receipt_ref={"relative_path": "receipts/x.json", "sha256": "c" * 64},
+        )
