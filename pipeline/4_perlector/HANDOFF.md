@@ -577,13 +577,100 @@ test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals` captures
 the real reader call and requires exact equality with the sealed plan; it is the
 test that fails if the two ever part again.
 
+## Live reader
+
+The stage reads through `VLLMReader` (`live_reader.py`) behind one `ChairClient`
+(`operations/serving/client.py`) whenever the sealed serving-recipe row for the
+resolved Perlector chair is a `kind = "vllm"` row. Everything below is offline-proven
+against `operations/serving/fakes.py` in `test_live_perlector.py`; none of it has met a
+card.
+
+**The selector is the sealed catalogue, never a flag.** `perlector_serving_mode` asks
+`serving_mode_for` for the `(serving_recipe, chair, tier)` row in the catalogue named by
+`--serving-recipes-config`, whose digest is already inside `config_digest` through
+`serving_config_inputs`. No new configuration key was added and none is planned:
+`bound_serving_recipes` refuses a catalogue whose bytes are not the ones the run sealed,
+so the posture cannot be moved after the run was bound. `--placement-tier` must be
+supplied beside a live catalogue and is deliberately *not* sealed — it is a measured
+runtime fact of the card, and the receipt records the caps that actually bound the
+serving moment. An absent chair is fixture without consulting the catalogue: an absence
+has no resolved identity to look a row up by. `main(registry_factory=…,
+serving_factory=…)` are dependency seams only; neither makes a run live or fixture.
+
+**Stop reason, verbatim, and where it stops the pass.** `"stop"` and `"length"` reach
+`truncation.classify` as the reader protocol's own two words; an absent `finish_reason`
+arrives as `None` and classifies `unknown`, which holds. Any other engine string —
+`"abort"`, a vendor's own vocabulary — raises `EngineSignalRefusal` from `live_reader`
+and stops the pass with nothing published for that act. Nothing is lost: `ChairClient`
+retains the raw response before it parses, so the bytes that stopped the pass are on
+disk under their own digest and the refusal names them. The same refusal covers a body
+that is not a reading at all (`parse_problem`): a Perlectio has no `failed` shape —
+`outcome="failed"` is produced nowhere in `run.py` — and minting one here would invent a
+record kind this section does not own.
+
+**`engine_call`, and what it names.** A live reading's payload carries
+`engine_call = {call_record_ref, raw_response_ref, response_sha256, finish_reason,
+served_model_id}`, and the envelope binds both blobs as direct inputs, re-derived from
+disk and compared to what the reader claimed. The field names *the call the published
+text came from*: on an act whose Pass-C re-proof changed the text, it moves to the
+re-proof's own call, beside `truncation` and `self_revision`, which move for the same
+reason (audit finding H6). A re-proof reading that ran and changed nothing is still
+bound as an input — it is the second thing that looked at this act's pixels and it is
+what the `change_record` reports on — but it does not become the named call. The field
+widens the closed field set for the record that carries it (`with_engine_call`, the
+`_NOT_RUN_CAPACITY_FIELDS` precedent) rather than becoming optional inside one set. A
+`FixtureReader` result never sets it, so fixture payloads and their envelopes are
+byte-for-byte what they were, which is what leaves the acceptance pin where it is.
+
+**The receipt is the live one.** `provenance_for(..., receipt_ref=…)` takes the receipt
+the serving manager published and `ChairClient.__enter__` re-read through the tree and
+matched to this chair and revision. Fixture mode passes nothing and writes the declared
+`fixture_serving_details` receipt exactly as before; minting one of those beside a
+reading a real engine produced would put a declared value (`fixture://`, dtype
+`fixture`) where a measurement belongs.
+
+**One chair, started late, stopped before the seal.** The client is entered on the first
+act that actually needs a reading, so a resumed pass whose acts are all sealed never
+loads a model onto a card that bills by the hour. `ResidentChair` owns the shutdown:
+`_read_the_acts` closes it before `seal_boundary`, so a failed shutdown is never
+reported over a sealed stage, and `main`'s `finally` catches every path that raised
+first. A `ServiceStopError` propagates — an unverified shutdown is fatal.
+
+**The live resume rule.** An act whose `perlectio` already exists at
+`perlegere:<ordinal>` is never asked again (`_reading_already_sealed`). Fixture readers
+are deterministic, so a resumed fixture pass republishes identical bytes and the store
+reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and the
+store refuses the collision. Skipped acts are counted apart from `read`, because this
+invocation did not read them.
+
+**Two live-resume limits, named rather than hidden.** First, an act interrupted *between*
+its `lectio-prior` publication and its Perlectio cannot resume: the resume rule looks at
+the Perlectio, so the act is read again and Pass A is republished from a fresh live
+reading, which the store refuses as an incompatible reuse. Extending the rule to skip on
+a lone Pass A would leave the act permanently unread, which is worse; the forward path
+from that refusal is the one the design already has, a Recensor recovery request.
+Second, every re-invocation of a live pass starts and stops the service, so an `--act`
+recovery loop pays a full model load per act
+(`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
+outlives one stage, but no cross-process handle exists; that is the next serving item.
+
+**`max_tokens` is not sent, and that is a decision.** No output bound is sealed
+anywhere, and this section does not invent one. vLLM bounds generation by
+`max_model_len`, so an engine `"length"` then honestly means the context itself was
+exhausted rather than that the harness cut the reading short. A sealed output bound
+belongs with the variance-experiment section, which will need one too.
+
 ## Not built here
 
-- Real serving (vLLM, LoRA-unmerged adapter, revision pinning, readiness
-  polling, service receipts) is spec 04's territory and needs a live pod.
-  `reader.py`'s `Reader` protocol and `prompts.py`'s per-recipe registry are the
-  seam a real implementation occupies later without `run.py`'s orchestration
-  changing.
+- Real serving on real silicon. What is proven offline: reader selection by sealed row
+  kind, the stop-reason mapping and its refusals, the call record and its retained
+  bytes, the live receipt on the record, the resume rule, and one chair started and
+  stopped per pass — all against `operations/serving/fakes.py`. What still needs a card:
+  readiness against a real vLLM process, the real builder's byte fidelity against a real
+  chat template (`prompts.py` renders a declared template, and no tokenizer files are
+  fetched here), whether vLLM emits an omitted `finish_reason` key or an explicit
+  `null`, and every timing value in `config/serving_recipes_real.toml`, which is
+  labelled UNMEASURED in the file for that reason.
 - Reconciliation across several *independently produced* readings of one
   unrecovered attempt (spec_08's general "where it produces several readings, it
   reconciles them itself, against the image") is not modeled: nothing upstream
