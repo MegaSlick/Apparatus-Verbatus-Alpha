@@ -4213,8 +4213,9 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
     """
     readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
     # A multi-word cell like `spend show` documents the verb plus its
-    # subcommand; the verb is its first word.
-    documented = set(re.findall(r"^\| `([a-z]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
+    # subcommand; the verb is its first word. A hyphen is part of a verb's
+    # name (`fetch-run`), not a word boundary.
+    documented = set(re.findall(r"^\| `([a-z-]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
     subparsers_action = next(
         action
         for action in cli.build_parser()._actions
