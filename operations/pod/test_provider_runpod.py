@@ -523,12 +523,37 @@ def test_status_list_absence_and_terminate_use_documented_v1_paths_and_shapes() 
 
     assert status.presence is Presence.ABSENT
     assert status.http_status == 404
+    assert status.provider_state is None
     assert listed.presence is Presence.ABSENT
     assert [(method, path) for method, path, _ in transport.calls] == [
         ("GET", "/pods/pod-1"),
         ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
         ("DELETE", "/pods/pod-1"),
     ]
+
+
+def test_status_parses_desiredstatus_verbatim_from_the_200_body_it_already_fetches() -> None:
+    """An EXITED pod is still PRESENT to this seam -- lifecycle is a separate
+    fact from presence, and the word is reported exactly as the provider
+    spelled it, never normalized against the create/adopt vocabulary."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus="EXITED"))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state == "EXITED"
+
+
+def test_status_yields_no_lifecycle_word_when_the_200_body_omits_desiredstatus() -> None:
+    payload = pod_payload()
+    del payload["desiredStatus"]
+    transport = ScriptedTransport([json_response(payload)])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state is None
 
 
 def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:

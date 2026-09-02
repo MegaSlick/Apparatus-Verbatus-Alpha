@@ -8,6 +8,7 @@ requests.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable
@@ -79,6 +80,20 @@ class FakeProvider:
 
     def set_billing(self, capture: CostCapture) -> None:
         self._billing[capture.pod_id] = capture
+
+    def set_pod_state(self, pod_id: str, state: str) -> None:
+        """Move an existing fake pod's observed lifecycle word, e.g. to EXITED.
+
+        Presence and lifecycle are independent facts here as everywhere else:
+        this never removes the pod from ``_present``, so a caller can put a
+        pod in exactly the shape a real EXITED pod has -- PRESENT to `status`
+        and still billing its attached volume.
+        """
+
+        record = self.pods.get(pod_id)
+        if record is None:
+            raise ProviderFailure(f"fake provider cannot set state on unknown pod {pod_id!r}")
+        self.pods[pod_id] = replace(record, state=state)
 
     def set_account_balance(self, available_usd: Decimal | str) -> None:
         self._account_balance_usd = as_decimal(available_usd, "fake available account balance")
@@ -171,7 +186,11 @@ class FakeProvider:
     def status(self, pod_id: str) -> ProviderStatus:
         self._call("status", pod_id)
         if self._present.get(pod_id, False):
-            return ProviderStatus(pod_id, Presence.PRESENT, self.now(), http_status=200)
+            record = self.pods.get(pod_id)
+            provider_state = record.state if record is not None else None
+            return ProviderStatus(
+                pod_id, Presence.PRESENT, self.now(), http_status=200, provider_state=provider_state
+            )
         lag = self._get_lag[pod_id]
         if lag > 0:
             self._get_lag[pod_id] = lag - 1

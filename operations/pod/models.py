@@ -680,13 +680,25 @@ class AccountBalanceObservation:
 
 @dataclass(frozen=True, slots=True)
 class ProviderStatus:
-    """The result of the exact-pod GET observation."""
+    """The result of the exact-pod GET observation.
+
+    ``provider_state`` is an observed lifecycle word (``"EXITED"``, for
+    example) or ``None`` — it never invents one.  Presence and lifecycle are
+    different facts: a pod can be PRESENT and simultaneously not running (an
+    EXITED pod still bills its attached volume), so a consumer that only
+    checks ``presence`` cannot see that.  An adapter that has no lifecycle
+    word to report — because its provider's status body carries none, or
+    because the pod is absent — leaves this ``None``, and ``None`` must never
+    be read as RUNNING by anything that consumes it; the absence of an
+    observation is not evidence the pod is healthy.
+    """
 
     pod_id: str
     presence: Presence
     observed_at: datetime
     detail: str = ""
     http_status: int | None = None
+    provider_state: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.observed_at, "provider status observed_at")

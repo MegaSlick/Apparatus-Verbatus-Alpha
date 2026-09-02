@@ -61,6 +61,7 @@ from .models import (
     LeaseFormatError,
     PodCreateRequest,
     PodRecord,
+    Presence,
     ProviderFailure,
     ProviderStatus,
     SpendRefusal,
@@ -6013,3 +6014,54 @@ def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     assert sum(1 for verb, _ in provider.calls if verb == "create") == creates, (
         "a phrase spent before the restart created a second billing pod after it"
     )
+
+
+# -- provider_state: lifecycle is a separate fact from presence (pod-runtime U1) --
+
+
+def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:
+    """The objection this closes: an EXITED pod bills volume disk, and the
+    seven-verb seam must not let a supervisor mistake it for healthy.
+
+    `presence` alone cannot show this -- `verify_absent`/`status` presence is
+    unchanged by lifecycle -- so `provider_state` carries the word separately,
+    verbatim from the provider's own report.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+
+    provider.set_pod_state(record.pod_id, "EXITED")
+    observed = provider.status(record.pod_id)
+
+    assert observed.presence is Presence.PRESENT
+    assert observed.provider_state == "EXITED"
+
+
+def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_word() -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.terminate(record.pod_id)
+
+    observed = provider.status(record.pod_id)
+
+    assert observed.presence is Presence.ABSENT
+    assert observed.http_status == 404
+    assert observed.provider_state is None
+
+
+def test_provider_status_default_carries_no_lifecycle_word_and_is_never_running() -> None:
+    """A fresh ``ProviderStatus`` is never read as RUNNING by omission.
+
+    No consumer in this unit reads ``provider_state`` yet -- the supervisor
+    that will is a later unit -- so this pins the field's own contract: an
+    adapter that supplies nothing yields ``None``, and ``None`` is not the
+    string ``"RUNNING"`` under any comparison a future consumer might write.
+    """
+
+    status = ProviderStatus("pod-1", Presence.PRESENT, START, http_status=200)
+
+    assert status.provider_state is None
+    assert status.provider_state != "RUNNING"
