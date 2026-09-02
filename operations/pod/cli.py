@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .arming import ControllerArmer
+from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .models import PodCreateRequest, require_utc
 from .notify_bridge import Notifier, shell_notifier, silent
@@ -53,6 +54,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "a launch decision either way"
         ),
     )
+    parser.add_argument(
+        "--record-fixture",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "append every provider exchange this launch sees -- method, path, request "
+            "body, status, response body -- to PATH as JSON lines, credential-shaped "
+            "fields scrubbed, so a drill boot leaves a replayable fixture behind. The "
+            "provider must be able to record its own exchanges; the fake cannot"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     create = subparsers.add_parser("create", help="preview then optionally create a guarded pod")
     create.add_argument("--request", type=Path, required=True)
@@ -67,6 +80,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     provider = _provider(args.provider_factory)
+    if args.record_fixture is not None:
+        _record_fixture(provider, args.record_fixture)
     runtime = PodRuntime(
         provider,
         provider_name=args.provider_name,
@@ -119,7 +134,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
         raise
-    print(json.dumps(_record(result), sort_keys=True, indent=2))
+    record = _record(result)
+    if args.record_fixture is not None:
+        record["record_fixture"] = str(args.record_fixture)
+    print(json.dumps(record, sort_keys=True, indent=2))
     # Exit status alone must never read as "nothing happened": 0 is guarded
     # success, 2 is a refusal that made no paid action, 3 means a pod or lease
     # exists (or existed and a close was attempted) -- go and look.
@@ -164,6 +182,26 @@ def _provider(reference: str) -> PodProvider:
     if not isinstance(provider, PodProvider):
         raise TypeError("provider factory did not return the seven-verb PodProvider seam")
     return provider
+
+
+def _record_fixture(provider: PodProvider, path: Path) -> FixtureRecorder:
+    """Attach the recorder before the preview, or refuse before anything is paid.
+
+    Duck-typed on ``record_exchanges`` so this surface names no vendor: an
+    adapter that owns an HTTP transport routes it through the recorder; a
+    provider with no such method -- the fake -- cannot honour the flag, and
+    saying so here is better than a launch that silently records nothing.
+    """
+
+    attach = getattr(provider, "record_exchanges", None)
+    if not callable(attach):
+        raise ValueError(
+            f"--record-fixture needs a provider that can record its exchanges; "
+            f"{type(provider).__name__} cannot"
+        )
+    recorder = FixtureRecorder(path)
+    attach(recorder)
+    return recorder
 
 
 def _controller_armer(reference: str) -> ControllerArmer:

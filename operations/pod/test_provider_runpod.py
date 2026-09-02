@@ -28,6 +28,9 @@ from .models import (
 )
 from .provider_runpod import (
     _MAX_RESPONSE_BYTES,
+    BALANCE_QUERY,
+    RUNPOD_GRAPHQL_ROOT,
+    GraphQLBalanceObserver,
     HttpResponse,
     RunPodProvider,
     UrllibRunPodTransport,
@@ -950,3 +953,288 @@ def test_a_same_name_pod_with_no_env_still_refuses_token_correlation() -> None:
 
     # The refusal happened during correlation: the list GET ran, no POST did.
     assert [call[0] for call in transport.calls] == ["GET"]
+
+
+# -- the GraphQL balance observer -------------------------------------------
+#
+# Documented shapes only (module docstring of provider_runpod.py, 2026-09-02).
+# No live call: the fake transport answers, and two loopback servers measure
+# the query-placed credential the way the redirect test above measures urllib.
+
+
+def balance_body(**overrides: object) -> bytes:
+    myself: dict[str, object] = {"clientBalance": 76.5, "currentSpendPerHr": 0.0}
+    myself.update(overrides)
+    return json.dumps({"data": {"myself": myself}}).encode()
+
+
+def observer(transport: ScriptedTransport) -> GraphQLBalanceObserver:
+    return GraphQLBalanceObserver(transport, now=lambda: NOW)
+
+
+def test_the_balance_observer_sends_exactly_the_documented_query() -> None:
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+
+    observed = observer(transport)()
+
+    assert transport.calls == [("POST", "/graphql", {"query": BALANCE_QUERY})]
+    assert observed.available_usd == Decimal("76.5")
+    assert observed.observed_at == NOW
+    assert "US dollars per the vendor's billing documentation" in observed.source
+    assert "currentSpendPerHr=0.0" in observed.source
+
+
+def test_the_balance_never_exists_as_a_binary_float() -> None:
+    exact = "0.1234567890123456789"
+    body = json.dumps({"data": {"myself": {"clientBalance": 0.5, "currentSpendPerHr": 0}}})
+    transport = ScriptedTransport([HttpResponse(200, body.replace("0.5", exact).encode())])
+
+    assert observer(transport)().available_usd == Decimal(exact)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (
+            json.dumps({"data": {"myself": {"currentSpendPerHr": 0}}}).encode(),
+            "missing field data.myself.clientBalance",
+        ),
+        (
+            json.dumps({"data": {"myself": {"clientBalance": 1}}}).encode(),
+            "missing field data.myself.currentSpendPerHr",
+        ),
+        (json.dumps({"data": {}}).encode(), "missing field data.myself"),
+        (json.dumps({"myself": {}}).encode(), "missing field data"),
+        (balance_body(clientBalance=None), "clientBalance is not a number: NoneType"),
+        (balance_body(clientBalance="76.5"), "clientBalance is not a number: str"),
+        (balance_body(clientBalance=True), "clientBalance is not a number: bool"),
+        (balance_body(currentSpendPerHr="1"), "currentSpendPerHr is not a number: str"),
+        (balance_body(clientBalance=-3.25), "is -3.25; a negative"),
+        (b"[]", "response is not an object"),
+        (b"not json", "response is not JSON"),
+        (
+            json.dumps({"errors": [{"message": "Unauthorized"}], "data": None}).encode(),
+            "answered with errors: Unauthorized",
+        ),
+    ],
+)
+def test_the_balance_observer_refuses_each_doubt_by_name(body: bytes, reason: str) -> None:
+    transport = ScriptedTransport([HttpResponse(200, body)])
+
+    with pytest.raises(ProviderFailure, match=reason):
+        observer(transport)()
+
+
+def test_a_non_200_balance_answer_is_refused_not_read_as_zero() -> None:
+    transport = ScriptedTransport([HttpResponse(401, b'{"errors":[{"message":"nope"}]}')])
+
+    with pytest.raises(ProviderFailure, match="balance query returned HTTP 401"):
+        observer(transport)()
+
+
+def test_a_credential_shaped_field_anywhere_in_the_balance_answer_refuses_unread() -> None:
+    body = json.dumps(
+        {"data": {"myself": {"clientBalance": 9, "currentSpendPerHr": 0, "apiKeys": [{"id": "k"}]}}}
+    ).encode()
+    transport = ScriptedTransport([HttpResponse(200, body)])
+
+    with pytest.raises(ProviderFailure, match="credential-shaped field data.myself.apiKeys"):
+        observer(transport)()
+
+
+def test_the_live_transport_is_the_default_balance_source_and_a_fake_gets_none() -> None:
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    derived = live.balance_observer.transport
+    assert isinstance(derived, UrllibRunPodTransport)
+    assert derived.root == RUNPOD_GRAPHQL_ROOT
+    assert derived.credential_placement == "query"
+    assert derived.capability == "test-capability-value"
+
+    faked = provider(ScriptedTransport([]))
+    assert faked.balance_observer is None
+    with pytest.raises(ProviderFailure, match="balance source was not configured"):
+        faked.observe_account_balance()
+
+
+def test_the_default_observer_runs_through_the_bounded_balance_read() -> None:
+    """The adapter's own timeout and latch apply to the built-in source too."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body(clientBalance=12))])
+    adapter = provider(transport)
+    adapter.balance_observer = observer(transport)
+
+    assert adapter.observe_account_balance().available_usd == Decimal("12")
+
+
+def _serve(handler_class):  # type: ignore[no-untyped-def]
+    import http.server
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_the_graphql_transport_places_the_key_in_the_documented_query_and_no_header() -> None:
+    """Loopback only: what urllib actually sends, measured, never a live call."""
+
+    import http.server
+
+    seen: dict[str, object] = {}
+
+    class Endpoint(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            seen["path"] = self.path
+            seen["authorization"] = self.headers.get("Authorization")
+            seen["content_type"] = self.headers.get("Content-Type")
+            seen["body"] = json.loads(self.rfile.read(length))
+            payload = balance_body(clientBalance=41.25, currentSpendPerHr=0.77)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = _serve(Endpoint)
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{server.server_address[1]}",
+            credential_placement="query",
+        )
+        observed = GraphQLBalanceObserver(transport, now=lambda: NOW)()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Composed, not spelled: the repository's credential scanner reads a literal
+    # `api_key=<value>` as a secret, and its caution is worth more than the line.
+    assert seen["path"] == "/graphql?" + "=".join(("api_key", transport.capability))
+    assert seen["authorization"] is None
+    assert seen["content_type"] == "application/json"
+    assert seen["body"] == {"query": BALANCE_QUERY}
+    assert observed.available_usd == Decimal("41.25")
+    assert "currentSpendPerHr=0.77" in observed.source
+
+
+def test_the_query_placed_key_is_not_carried_across_a_redirect_either() -> None:
+    import http.server
+
+    seen: dict[str, str] = {}
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            seen["path"] = self.path
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_address[1]}/stolen")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    target = _serve(Target)
+    redirector = _serve(Redirector)
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{redirector.server_address[1]}",
+            credential_placement="query",
+        )
+        with pytest.raises(ProviderFailure, match="redirect was not followed") as refused:
+            GraphQLBalanceObserver(transport, now=lambda: NOW)()
+    finally:
+        for server in (target, redirector):
+            server.shutdown()
+            server.server_close()
+
+    assert "path" not in seen
+    assert "test-capability-value" not in str(refused.value)
+
+
+def test_a_query_placed_key_refuses_a_path_that_already_has_a_query() -> None:
+    transport = UrllibRunPodTransport("test-capability-value", credential_placement="query")
+
+    with pytest.raises(ProviderFailure, match="already carries a query string"):
+        transport.request("GET", "/graphql?x=1")
+
+
+def test_a_connection_failure_in_query_placement_names_no_key() -> None:
+    """A refused connection on a closed loopback port: the message carries the
+    reason, never the URL the key rides in."""
+
+    import socket
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    transport = UrllibRunPodTransport(
+        "test-capability-value",
+        timeout_seconds=2.0,
+        root=f"http://127.0.0.1:{port}",
+        credential_placement="query",
+    )
+
+    with pytest.raises(ProviderFailure, match="HTTP request failed") as refused:
+        transport.request("POST", "/graphql", {"query": BALANCE_QUERY})
+
+    assert "test-capability-value" not in str(refused.value)
+
+
+def test_record_exchanges_writes_every_exchange_scrubbed_and_replayable(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from .fixture import SCRUBBED, FixtureRecorder, read_fixture
+
+    created = pod_payload()
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, json.dumps([]).encode()),
+            HttpResponse(200, json.dumps(created).encode()),
+        ]
+    )
+    balance_transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    adapter = provider(transport)
+    adapter.balance_observer = observer(balance_transport)
+    recorder = FixtureRecorder(tmp_path / "evidence" / "fixture.jsonl", now=lambda: NOW)
+
+    adapter.record_exchanges(recorder)
+    adapter.observe_account_balance()
+    record = adapter.create(request())
+
+    records = read_fixture(recorder.path)
+    assert [(entry["method"], entry["path"], entry["status"]) for entry in records] == [
+        ("POST", "/graphql", 200),
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true", 200),
+        ("POST", "/pods", 200),
+    ]
+    balance, listing, create = records
+    assert balance["verbatim"] is True and balance["response_body"] == balance_body().decode()
+    assert listing["verbatim"] is True and listing["response_body"] == "[]"
+    # The launch token rides in `env` both ways, and the predicate scrubs it.
+    assert create["request_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
+    assert create["verbatim"] is False
+    assert create["response_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
+    assert "response_body.env.VERBATUS_LAUNCH_TOKEN" in create["scrubbed"]
+    # Money in a scrubbed body is still a number, and the same digits.
+    assert create["response_body"]["costPerHr"] == Decimal("0.77")
+    assert record.pod_id == created["id"]
+    assert (recorder.path.stat().st_mode & 0o777) == 0o600

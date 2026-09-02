@@ -6511,3 +6511,90 @@ def test_timer_context_is_hashable(tmp_path: Path) -> None:
 
     hash(context)
     assert {context} == {context}
+
+
+# -- `--record-fixture` ------------------------------------------------------
+
+
+class _RecordingFake(FakeProvider):
+    """A fake that can honour `--record-fixture`, the way the live adapter does.
+
+    `FakeProvider` itself has no HTTP transport and so no exchanges to record;
+    this subclass stands in for an adapter that does, recording one synthetic
+    exchange per verb so the CLI wiring -- attach before preview, name the file
+    in the result -- is drilled without a vendor in sight.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.recorder = None
+
+    def record_exchanges(self, recorder) -> None:  # type: ignore[no-untyped-def]
+        self.recorder = recorder
+
+    def create(self, request: PodCreateRequest) -> PodRecord:
+        record = super().create(request)
+        if self.recorder is not None:
+            self.recorder.record(
+                "POST",
+                "/fake/pods?api_key=should-not-survive",
+                {"name": request.name, "env": {"VERBATUS_LAUNCH_TOKEN": "tok"}},
+                status=200,
+                response_body=json.dumps({"id": record.pod_id, "costPerHr": 0.77}).encode(),
+            )
+        return record
+
+
+def test_cli_record_fixture_writes_a_scrubbed_replayable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from .fixture import SCRUBBED, read_fixture
+
+    clock = Clock()
+    provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
+    fixture_path = tmp_path / "raw" / "boot-a-fixture.jsonl"
+
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["--record-fixture", str(fixture_path), "create", "--request"],
+    )
+
+    assert provider.recorder is not None
+    # The CLI prints the preview record, then the result record, each indented.
+    out = capsys.readouterr().out
+    documents = [json.loads(chunk + "\n}") for chunk in out.split("\n}\n") if chunk.strip()]
+    assert documents[-1]["record_fixture"] == str(fixture_path)
+    assert "record_fixture" not in documents[0]
+    records = read_fixture(fixture_path)
+    assert len(records) == 1
+    (exchange,) = records
+    assert exchange["path"] == "/fake/pods?api_key=SCRUBBED"
+    assert exchange["request_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
+    assert exchange["verbatim"] is True
+    body = json.loads(exchange["response_body"])
+    assert isinstance(body["id"], str) and body["costPerHr"] == 0.77
+    assert exchange["status"] == 200
+    assert exit_code in {0, 3}
+
+
+def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    fixture_path = tmp_path / "fixture.jsonl"
+
+    with pytest.raises(ValueError, match="FakeProvider cannot"):
+        _drive_cli(
+            tmp_path,
+            monkeypatch,
+            provider,
+            clock,
+            command=["--record-fixture", str(fixture_path), "create", "--request"],
+        )
+
+    assert not fixture_path.exists()
+    assert provider.create_requests == []
