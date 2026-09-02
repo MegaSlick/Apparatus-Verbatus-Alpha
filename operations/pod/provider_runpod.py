@@ -83,6 +83,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol
 
+from . import notify_hooks
 from .controllers import PodDeadmanTimer
 from .fixture import FixtureRecorder, RecordingTransport
 from .lease import PodLease
@@ -282,9 +283,23 @@ class GraphQLBalanceObserver:
     two numbers and a body carrying a key or token is not the answer to it.
     """
 
-    def __init__(self, transport: HttpTransport, *, now: Callable[[], datetime] = utc_now) -> None:
+    def __init__(
+        self,
+        transport: HttpTransport,
+        *,
+        now: Callable[[], datetime] = utc_now,
+        notify: Callable[[Decimal, Decimal], object] | None = None,
+    ) -> None:
         self.transport = transport
         self.now = now
+        # `None` by default -- exactly like `balance_observer` itself two
+        # classes up -- so every offline test that builds this observer
+        # directly, as most of this file's tests do, never touches
+        # `operations/notify/notify.sh`. `RunPodProvider` wires the real
+        # `notify_hooks.notify_balance` in only when *it* builds this observer
+        # as the default for a live transport (below), which no offline test
+        # both builds and calls.
+        self.notify = notify
 
     def __call__(self) -> AccountBalanceObservation:
         response = self.transport.request("POST", GRAPHQL_PATH, {"query": BALANCE_QUERY})
@@ -309,6 +324,14 @@ class GraphQLBalanceObserver:
         balance = _money_field(myself, "clientBalance")
         spend_per_hour = _money_field(myself, "currentSpendPerHr")
         observed_at = self.now()
+        if self.notify is not None:
+            # Best-effort, never raised: a notification hook must never turn a
+            # successful observation into a failed one (ruling (b) -- tracking
+            # plus notifications only, no new enforcement).
+            try:
+                self.notify(balance, spend_per_hour)
+            except Exception:  # noqa: BLE001 - a notification hook must never propagate
+                pass
         return AccountBalanceObservation(
             balance,
             observed_at,
@@ -381,6 +404,8 @@ class RunPodProvider:
         balance_observer: Callable[[], AccountBalanceObservation] | None = None,
         balance_timeout_seconds: float = BALANCE_OBSERVATION_TIMEOUT_SECONDS,
         now: Callable[[], datetime] = utc_now,
+        balance_notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
+        | None = None,
     ) -> None:
         self.transport = transport
         self.pod_price = pod_price
@@ -390,9 +415,19 @@ class RunPodProvider:
             # a fake transport gets none, so the offline suite's "balance
             # source was not configured" refusal is still reachable, and the
             # provider never touches the key -- `sibling` carries it across.
+            # `balance_notify` is the ONLY way a phone notification reaches
+            # this observer: it defaults to `None`, so a bare live-transport
+            # provider -- including the pod-side one `timer_context_from_
+            # environment` builds, and any host call that omits `--notify`
+            # -- carries no hook at all, never pinging a phone unasked. The
+            # host CLI wires the real `notify_hooks.notify_balance` in here
+            # only when `args.notify` is set (see `cli.py`'s `_notifier`
+            # construction site), so --notify is the single gate for every
+            # phone notification a launch can send, balance included.
             balance_observer = GraphQLBalanceObserver(
                 transport.sibling(root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"),
                 now=now,
+                notify=balance_notify,
             )
         self.balance_observer = balance_observer
         self.balance_timeout_seconds = balance_timeout_seconds

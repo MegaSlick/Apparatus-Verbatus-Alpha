@@ -52,11 +52,13 @@ green bootstrap whose receipt carries no tier is refused by name.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
-storage roots, and ``config/data_handling_policy.json`` names none on a volume
--- that listing is a disclosure decision, Tyrel's under hard rule 1.  This
-process asks the gate the same question first, so a launch whose volume is not
-yet an approved root is refused here, by name, before a model is fetched on a
-billing card rather than after.
+storage roots.  ``config/data_handling_policy.json`` now names the pod volume
+mount path (``operations/pod/boot_a_request.py``'s sealed
+``volume_mount_path``) beside the local ``private/`` root -- that listing was
+a disclosure decision, Tyrel's under hard rule 1, made once rather than
+per-launch.  This process asks the gate the same question first, so a launch
+whose submission folder is outside every listed root is refused here, by
+name, before a model is fetched on a billing card rather than after.
 """
 
 from __future__ import annotations

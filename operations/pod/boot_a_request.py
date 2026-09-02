@@ -110,11 +110,9 @@ def pod_request(
     """The `cli.py create --request` JSON for the drill, placeholders where Tyrel decides.
 
     The report paths carry no launch token: `launch._bind_report_path_to_launch`
-    folds it into the timer's ``--report-path`` at sealing time. The nested
-    bootstrap ``--report-path`` is *not* bound by anything in the tree today,
-    and `bootstrap_main` refuses one that lacks the token -- for this drill
-    that refusal is the same immediate close the timer would perform anyway,
-    and `HANDOFF.md` carries it as a finding for Boot B.
+    folds it into both the timer's own ``--report-path`` and the nested
+    bootstrap argv's ``--report-path`` at sealing time, so `bootstrap_main`
+    reaches its hold rather than refusing at plan time for a missing token.
     """
 
     hold_only = [

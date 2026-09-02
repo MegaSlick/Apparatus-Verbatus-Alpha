@@ -343,6 +343,22 @@ def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
             raise ValueError("docker_start_cmd must not invoke a shell before the pod timer module")
 
 
+def _nested_flag_value(argv: list[str], flag: str) -> str | None:
+    """A flag's value from a decoded nested argv, in either argparse spelling.
+
+    ``bootstrap_main``'s own parser accepts both ``--report-path value`` and
+    ``--report-path=value``; a validator that only recognized one spelling
+    would wave the other through unbound and uninspected.
+    """
+
+    for index, item in enumerate(argv):
+        if item == flag:
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if item.startswith(f"{flag}="):
+            return item.split("=", 1)[1]
+    return None
+
+
 def _required_timer_arguments(
     command: tuple[str, ...], volume_mount_path: str, metadata: Mapping[str, str]
 ) -> None:
@@ -397,6 +413,36 @@ def _required_timer_arguments(
             "pod timer report path must include this launch's token, "
             "so a second launch on the same volume cannot overwrite its evidence"
         )
+    # The nested bootstrap argv (``bootstrap_main --hold-only`` for Boot A) can
+    # carry its own ``--report-path`` -- launch.py's ``_bind_report_path_to_launch``
+    # binds the launch token into it at sealing time, the same as the outer
+    # path above. That binding is best-effort by design (a nested argv naming
+    # no ``--report-path`` at all, e.g. the library-module placeholder the
+    # tests use, is left alone rather than having one invented for it) so
+    # nothing downstream re-validated the result -- a request shape the binder
+    # could not handle would reach the pod unbound and refuse only at plan
+    # time, after billing had already started. Re-validated here, at the same
+    # money-path gate as the outer path, so that gap is closed before create
+    # rather than found on the pod.
+    nested_report_path = _nested_flag_value(bootstrap, "--report-path")
+    if nested_report_path is not None:
+        nested_path = PurePosixPath(nested_report_path)
+        if (
+            ".." in nested_report_path.split("/")
+            or not nested_path.is_absolute()
+            or nested_path == volume_path
+            or not nested_path.is_relative_to(volume_path)
+        ):
+            raise ValueError(
+                "pod bootstrap command's nested --report-path must be inside the "
+                "attached volume mount"
+            )
+        if launch_token and launch_token not in nested_path.name:
+            raise ValueError(
+                "pod bootstrap command's nested --report-path must include this "
+                "launch's token, so a second launch on the same volume cannot "
+                "overwrite its evidence"
+            )
     # A bad interval would refuse inside the pod -- for a non-numeric value,
     # in argparse before the timer object even exists -- so refuse it here,
     # before any paid create, where refusals belong.  Both argv spellings the

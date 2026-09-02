@@ -699,6 +699,64 @@ def test_holds_when_the_report_path_carries_the_launch_token(tmp_path: Path) -> 
     assert exit_code == 0
 
 
+def test_hold_only_reaches_the_hold_through_the_real_launch_binding(tmp_path: Path) -> None:
+    """The regression this unit closes.
+
+    ``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
+    argv nested inside ``--bootstrap-command-json``, with no launch token in
+    either report path -- ``launch._bind_report_path_to_launch`` folds the
+    token in at sealing time. Before this unit, that helper bound only the
+    outer timer's ``--report-path``: the nested one reached the pod still
+    unbound, and ``resolve_plan`` refused it (this module's own
+    ``test_refuses_a_report_path_missing_the_launch_token`` proves that
+    refusal in isolation). This test drives the real templates and the real
+    binding helper end to end -- not a hand-written argv standing in for
+    them -- so a regression in either module's report-path handling is
+    caught here rather than only in a unit test of one side.
+    """
+
+    from types import SimpleNamespace
+
+    from . import boot_a_request
+    from .launch import _bind_report_path_to_launch
+
+    ws = _workspace(tmp_path)
+    launch_token = "launch-" + "c" * 20
+    card = SimpleNamespace(gpu_type_id="fake-48gb")
+    request = boot_a_request.pod_request(
+        card,
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="test-volume",
+        repository_commit="b" * 40,
+        volume_mount_path=str(ws.volume),
+    )
+
+    bound_command = _bind_report_path_to_launch(tuple(request["docker_start_cmd"]), launch_token)
+    nested_index = bound_command.index("--bootstrap-command-json") + 1
+    nested_argv = json.loads(bound_command[nested_index])
+    assert nested_argv[:3] == ["python", "-m", "operations.pod.bootstrap_main"]
+    assert launch_token in nested_argv[nested_argv.index("--report-path") + 1]
+    argv = nested_argv[3:]
+
+    clock = Clock()
+    environment = _environ(clock, lifetime=2.0, extra={"VERBATUS_LAUNCH_TOKEN": launch_token})
+
+    exit_code = main(
+        argv,
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+    )
+
+    assert exit_code == 0
+    assert clock.seconds == 2.0
+    report = json.loads(
+        (ws.volume / f"bootstrap-hold-only-report-{launch_token}.json").read_text(encoding="utf-8")
+    )
+    assert report["state"] == "hold-only"
+
+
 # --- store-root and chair config stay inside their required container -------
 
 

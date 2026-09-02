@@ -128,6 +128,30 @@ class Clock:
         self.seconds += seconds
 
 
+class _RealClock:
+    """A ``Clock``-shaped ``now()`` backed by the real, advancing wall clock.
+
+    ``_drive_cli`` runs `cli.main`, which builds `PodRuntime` with its
+    default ``now`` -- the real wall clock, not injectable from a test --
+    so every other timestamp along that path (the provider's, the fake
+    controller armer's, the request's ``hard_deadline``) must agree with
+    real time too, not the frozen ``Clock`` this file uses everywhere else
+    a timeline is actually driven forward by hand. It must genuinely
+    advance, not freeze at one instant: the receipt's ``observed_at`` must
+    land at or after the provider's own ``created_at``, which is stamped
+    later, by a separate real-clock read inside ``create``.
+    """
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
 class LaunchedFakeControllers:
     """A fake launch handshake holding the two independently killable controllers."""
 
@@ -209,10 +233,19 @@ class FakeControllerArmer:
                     ),
                 )
             )
+        # Captured once: `lease.py` refuses a receipt whose component
+        # timestamps land after its own `observed_at`, and a genuinely
+        # advancing clock -- `_RealClock`, used to keep this consistent
+        # with `PodRuntime`'s own real-wall-clock `now` in `_drive_cli` --
+        # would put three separate `self.clock.now()` reads a few
+        # microseconds apart and fail that ordering check on its own,
+        # which has nothing to do with what any of these tests prove.
+        observed_at = self.clock.now()
+        now = observed_at.isoformat().replace("+00:00", "Z")
         return ControllerArming(
             self.arm_result,
             self.arm_result,
-            self.clock.now(),
+            observed_at,
             "fake laptop supervisor started and fake pod timer acknowledged"
             if self.arm_result
             else "injected post-create controller arming failure",
@@ -222,13 +255,13 @@ class FakeControllerArmer:
                 "hard_deadline": request.hard_deadline.isoformat().replace("+00:00", "Z"),
                 "laptop_supervisor": {
                     "identity": f"fake-laptop-supervisor-{lease.generation}",
-                    "started_at": self.clock.now().isoformat().replace("+00:00", "Z"),
+                    "started_at": now,
                 },
                 "pod_timer": {
                     "report_path": request.docker_start_cmd[
                         request.docker_start_cmd.index("--report-path") + 1
                     ],
-                    "acknowledged_at": self.clock.now().isoformat().replace("+00:00", "Z"),
+                    "acknowledged_at": now,
                 },
             },
         )
@@ -3341,6 +3374,74 @@ def test_report_path_binding_refuses_a_command_it_cannot_bind(tmp_path: Path) ->
         _bind_report_path_to_launch(("python", "--report-path"), "a" * 32)
 
 
+def test_report_path_binding_also_binds_a_nested_bootstrap_report_path() -> None:
+    """The regression this unit closes.
+
+    Before this fix, only the outer timer's own ``--report-path`` was bound;
+    a nested bootstrap argv's own ``--report-path`` -- carried as JSON inside
+    ``--bootstrap-command-json`` -- reached the pod unbound, and
+    ``bootstrap_main.resolve_plan`` refuses a report path missing the sealed
+    launch token once ``VERBATUS_LAUNCH_TOKEN`` is in the pod's environment.
+    """
+
+    token = "a" * 32
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--timer-factory",
+        "operations.pod.provider_runpod:timer_context_from_environment",
+        "--bootstrap-command-json",
+        json.dumps(
+            [
+                "python",
+                "-m",
+                "operations.pod.bootstrap_main",
+                "--hold-only",
+                "--volume-mount-path",
+                "/workspace/private",
+                "--report-path",
+                "/workspace/private/bootstrap-hold-only-report.json",
+            ]
+        ),
+        "--report-path",
+        "/workspace/private/pod-runtime-report.json",
+    )
+
+    bound = _bind_report_path_to_launch(command, token)
+
+    outer_index = bound.index("--report-path") + 1
+    assert bound[outer_index] == f"/workspace/private/pod-runtime-report-{token}.json"
+    nested = json.loads(bound[bound.index("--bootstrap-command-json") + 1])
+    nested_index = nested.index("--report-path") + 1
+    assert nested[nested_index] == f"/workspace/private/bootstrap-hold-only-report-{token}.json"
+
+
+def test_report_path_binding_leaves_a_nested_command_with_no_report_path_alone() -> None:
+    """A nested argv that never reads a report path (the library-module
+    placeholder ``request()`` uses below) is returned unchanged rather than
+    having a path invented for it."""
+
+    token = "a" * 32
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--timer-factory",
+        "operations.pod.provider_runpod:timer_context_from_environment",
+        "--bootstrap-command-json",
+        json.dumps(["python", "-m", "operations.pod.bootstrap"]),
+        "--report-path",
+        "/workspace/private/pod-runtime-report.json",
+    )
+
+    bound = _bind_report_path_to_launch(command, token)
+
+    assert bound[bound.index("--bootstrap-command-json") + 1] == json.dumps(
+        ["python", "-m", "operations.pod.bootstrap"]
+    )
+
+
 def test_an_altered_lease_is_refused_rather_than_acted_on(tmp_path: Path) -> None:
     """A lease says which pod is still billing. An edited one is not evidence."""
 
@@ -4210,6 +4311,92 @@ def test_a_sealed_report_path_that_omits_its_launch_token_is_refused() -> None:
         replace(
             request(clock),
             metadata={"VERBATUS_LAUNCH_TOKEN": "a" * 32},
+        )
+
+
+def _nested_bootstrap_argv(report_path: str) -> str:
+    return json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            report_path,
+        ]
+    )
+
+
+def test_a_nested_report_path_that_omits_its_launch_token_is_refused() -> None:
+    """The re-validation ``_required_timer_arguments`` performs on the nested
+    bootstrap argv, beside the outer path's own check above.
+
+    ``launch._bind_report_path_to_launch`` binds the token into a nested
+    ``--report-path`` at sealing time already; this proves a request built
+    with an unbound one -- the shape the binder cannot fix, e.g. one carried
+    over from a stale template -- is refused here, at construction, rather
+    than reaching the pod and refusing only at plan time after billing had
+    already started.
+    """
+
+    token = "a" * 32
+    clock = Clock()
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = _nested_bootstrap_argv(
+        "/workspace/private/bootstrap-hold-only-report.json"
+    )
+
+    with pytest.raises(ValueError, match="nested --report-path must include this launch's token"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
+
+
+def test_a_nested_report_path_cannot_lexically_escape_the_attached_volume() -> None:
+    clock = Clock()
+    command = list(request(clock).docker_start_cmd)
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = _nested_bootstrap_argv("/workspace/private/../outside.json")
+
+    with pytest.raises(ValueError, match="nested --report-path must be inside"):
+        replace(request(clock), docker_start_cmd=tuple(command))
+
+
+def test_a_nested_report_path_bound_with_the_equals_form_is_still_validated() -> None:
+    """``bootstrap_main``'s parser accepts ``--report-path=value`` too; a
+    validator that only recognized the space-separated form would wave an
+    unbound equals-form path straight through."""
+
+    token = "a" * 32
+    clock = Clock()
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--report-path=/workspace/private/bootstrap-hold-only-report.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="nested --report-path must include this launch's token"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
         )
 
 
@@ -5867,8 +6054,24 @@ def _drive_cli(
     *,
     command: list[str] | None = None,
     template: str = "pinned-template",
+    notify: bool = False,
 ) -> int:
-    """Run `cli.main` against a fake, answering any prompt correctly."""
+    """Run `cli.main` against a fake, answering any prompt correctly.
+
+    ``PodRuntime`` (built inside `cli.main`, not injectable from here)
+    defaults its own ``now`` to the real wall clock, and this drives the
+    hard-lifetime assessment against the request's ``hard_deadline`` below,
+    which is therefore built from the real clock too. ``provider.now`` is
+    pinned to that same real clock, and so is the ``FakeControllerArmer``
+    below -- through ``_RealClock``, not the frozen ``clock`` fixture -- so
+    every timestamp along this path (provider-observed created_at, the
+    controller receipt's observed_at, the request's hard_deadline) agrees
+    with the one ``PodRuntime`` actually measures the lease lifetime
+    against. Handing the armer the frozen ``clock`` instead put its receipt
+    timestamps outside the lease lifetime the provider recorded at real
+    time, refusing every green create on a timestamp mismatch unrelated to
+    what the test is actually driving at.
+    """
 
     provider.now = lambda: datetime.now(UTC)
     spend_path = tmp_path / "spend.toml"
@@ -5911,7 +6114,7 @@ def _drive_cli(
     )
     monkeypatch.setattr(cli, "_provider", lambda reference: provider)
     monkeypatch.setattr(
-        cli, "_controller_armer", lambda reference: FakeControllerArmer(clock, provider)
+        cli, "_controller_armer", lambda reference: FakeControllerArmer(_RealClock(), provider)
     )
     monkeypatch.setattr("builtins.input", lambda prompt: prompt.split("'")[1])
     return cli.main(
@@ -5926,6 +6129,7 @@ def _drive_cli(
             str(tmp_path / "leases"),
             "--provider-name",
             "fake",
+            *(["--notify"] if notify else []),
             *(command or ["create", "--request"]),
             str(request_path),
         ]
@@ -6598,3 +6802,117 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
 
     assert not fixture_path.exists()
     assert provider.create_requests == []
+
+
+# --- --notify wires launch and close through operations/pod/notify_hooks ----
+
+
+def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
+
+    A fake stands in for ``notify_hooks.notify_launch`` so this never spawns
+    ``operations/notify/notify.sh`` for real.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    calls: list[dict[str, object]] = []
+
+    def fake_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
+        calls.append(kwargs)
+        return cli.notify_hooks.NotifyOutcome(True, True, "delivered")
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_launch", fake_notify_launch)
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["card"] == "fake-48gb"
+    assert calls[0]["max_hourly_usd"] == Decimal("1.00")
+    assert isinstance(calls[0]["lease_id"], str) and calls[0]["lease_id"] != "unknown-lease"
+    record = _last_json_object(capsys.readouterr().out)
+    assert record["launch_notification"] == "Phone notification: sent."
+
+
+def test_cli_without_the_notify_flag_never_calls_the_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(cli.notify_hooks, "notify_launch", lambda **kwargs: calls.append(kwargs))
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=False)
+
+    assert exit_code == 0
+    assert calls == []
+    record = _last_json_object(capsys.readouterr().out)
+    assert "launch_notification" not in record
+
+
+def test_notify_launch_and_close_calls_close_for_a_non_green_result_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A create that closes its own pod (a runtime-contract mismatch) still
+    reports a close notification, even though the launch itself is not green."""
+
+    clock = Clock()
+
+    class ExitedOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            record = super().create(create_request)
+            return replace(record, state="EXITED")
+
+    provider = ExitedOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+    pod_runtime = runtime(provider, clock, tmp_path)
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+    assert result.close_report is not None
+    assert not result.green
+
+    launch_calls: list[dict[str, object]] = []
+    close_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_launch",
+        lambda **kwargs: (
+            launch_calls.append(kwargs) or cli.notify_hooks.NotifyOutcome(True, True, "delivered")
+        ),
+    )
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_close",
+        lambda **kwargs: (
+            close_calls.append(kwargs) or cli.notify_hooks.NotifyOutcome(True, True, "delivered")
+        ),
+    )
+
+    record: dict[str, object] = {}
+    cli._notify_launch_and_close(record, result, request(clock), pod_runtime.spend_policy)
+
+    assert launch_calls == [], "a non-green result must not report a launch"
+    assert len(close_calls) == 1
+    assert close_calls[0]["verified_state"] == result.close_report.state.value
+    assert isinstance(close_calls[0]["elapsed_seconds"], float)
+    assert record["close_notification"] == "Phone notification: sent."
+
+
+def test_a_failed_notification_never_changes_the_cli_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_launch",
+        lambda **kwargs: cli.notify_hooks.NotifyOutcome(True, False, "no topic configured"),
+    )
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    record = _last_json_object(capsys.readouterr().out)
+    assert "NOT DELIVERED" in record["launch_notification"]

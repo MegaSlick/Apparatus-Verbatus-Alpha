@@ -1,9 +1,10 @@
 {
   "policy_version": "data-handling-gate-v0",
   "storage_roots": [
-    "private/"
+    "private/",
+    "/workspace/private"
   ],
-  "storage_roots_note": "local only. No pod volume path exists yet; spec 04 provisions one, and it joins this list only once it does. An unlisted root is refused, never assumed.",
+  "storage_roots_note": "private/ is local only. /workspace/private is the pod's attached network volume, mounted at the path operations/pod/boot_a_request.py seals into every launch request's volume_mount_path: everything a pod run writes lives there for the run's duration (a rented pod is accepted volume exposure, not third-party transmission -- Tyrel's ruling, workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md). `verbatus fetch-run` brings the tree home afterward; the volume itself is destroyed only per retention_and_deletion below, never as a side effect of export. The pod-volume root resolves only on a machine with that path actually mounted -- gate.approved_storage_roots resolves each listed root independently and refuses only when none of them resolve, so a host with no pod mounted still gets the local private/ root and a pod gets both; an absent root is named in the refusal detail and skipped, never silently dropped, and an unlisted root is refused, never assumed.",
   "logging_rule": "filenames and declared paths are retained in the self-hashed submission manifest and private refusal report because they are citation links; terminal output may give counts and the private report location, never image bytes",
   "temp_file_handling": "every write is a temp file in the same directory, flushed and fsynced, then linked or renamed into place; no temp file survives a completed run or a cleanup pass",
   "retention_and_deletion": "retain every run artifact, working copy, export, manifest and filename ledger until the run is dead and broken or complete and exported; only then may the whole run volume be destroyed. The corpus register under private/<corpus>/register/ survives run-volume deletion because it is corpus-scoped evidence, not a run artifact. Testimonia are retained pipeline records under GOVERNANCE 4 and are never subject to a per-stage deletion schedule",

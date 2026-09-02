@@ -177,11 +177,22 @@ def approved_storage_roots(policy: dict[str, Any]) -> tuple[Path, ...]:
     A relative entry is resolved against the repository root, so `private/` in the
     policy means this checkout's `private/` and not whatever `private/` the current
     working directory happens to sit beside.
+
+    Each listed root is resolved independently rather than all-or-nothing: the
+    shipped policy names both the local ``private/`` root, present on every
+    checkout, and the pod's network-volume root, present only while a pod has
+    it mounted. A root that does not resolve on *this* machine is skipped, not
+    silently dropped -- ``GateRefusal`` is raised only when every listed root
+    fails to resolve, and its message names each skipped root and why, so a
+    host with no pod mounted still gets the local root and a pod still gets
+    both, while a policy whose roots are entirely absent is still a failed
+    check, never an unrestricted one.
     """
     raw_roots = policy.get("storage_roots")
     if not isinstance(raw_roots, list) or not raw_roots:
         raise GateRefusal("the data-handling policy names no approved storage roots")
     roots: list[Path] = []
+    skipped: list[str] = []
     for raw_root in raw_roots:
         if not isinstance(raw_root, str) or not raw_root.strip():
             raise GateRefusal("a data-handling storage root is not a non-empty path")
@@ -190,13 +201,18 @@ def approved_storage_roots(policy: dict[str, Any]) -> tuple[Path, ...]:
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as error:
-            raise GateRefusal(
-                f"approved storage root {raw_root!r} does not exist; an unresolvable "
-                "root is a failed check, never an unrestricted one"
-            ) from error
+            skipped.append(f"{raw_root!r} (does not exist: {error})")
+            continue
         if not resolved.is_dir():
-            raise GateRefusal(f"approved storage root {raw_root!r} is not a directory")
+            skipped.append(f"{raw_root!r} (not a directory)")
+            continue
         roots.append(resolved)
+    if not roots:
+        raise GateRefusal(
+            "none of the data-handling policy's approved storage roots resolve on this "
+            f"machine; an unresolvable root is a failed check, never an unrestricted one. "
+            f"Skipped: {skipped}"
+        )
     return tuple(roots)
 
 

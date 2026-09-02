@@ -105,12 +105,53 @@ def test_a_policy_missing_its_version_label_is_refused(tmp_path, policy):
 # --- Storage roots: the policy decides where real material may live --------------
 
 
-def test_the_shipped_policy_names_a_storage_root_that_exists(policy):
-    roots = gate.approved_storage_roots(policy)
-    assert roots and all(root.is_dir() for root in roots)
-    assert any(root.name == "private" for root in roots), (
+def test_the_shipped_policy_names_a_local_storage_root_that_exists(policy):
+    """The local half of the shipped list resolves on every checkout, host or pod.
+
+    Checked directly against the repository rather than through
+    ``gate.approved_storage_roots`` on the unfiltered shipped list, so this
+    assertion does not depend on whichever roots that call happens to resolve
+    on the machine running the suite.
+    """
+    local_roots = [root for root in policy["storage_roots"] if not root.startswith("/")]
+    assert local_roots
+    resolved = gate.approved_storage_roots(dict(policy, storage_roots=local_roots))
+    assert resolved and all(root.is_dir() for root in resolved)
+    assert any(root.name == "private" for root in resolved), (
         "the shipped policy's local storage root is private/, which is gitignored "
         "so that real material can live there without ever entering history"
+    )
+
+
+def test_the_shipped_policy_names_the_pod_volume_mount_as_a_root(policy):
+    """The pod volume root is listed, spelled exactly as the launch seals it.
+
+    ``operations/pod/boot_a_request.py``'s ``BOOT_A_VOLUME_MOUNT_PATH`` is the
+    one concrete ``volume_mount_path`` a real launch request in this tree
+    seals -- this is the path Tyrel's ruling names as accepted storage for the
+    run's duration (workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md).
+    """
+    assert "/workspace/private" in policy["storage_roots"]
+
+
+def test_the_full_shipped_policy_resolves_to_just_the_local_root_off_a_mounted_pod(policy):
+    """A host with no pod mounted still gets a usable gate, off the shipped file as-is.
+
+    ``gate.approved_storage_roots`` resolves each listed root independently.
+    The pod volume root is real only while a pod has it mounted, so running
+    the *unmodified* two-root shipped policy through the gate on a plain
+    checkout -- this test machine included -- still returns exactly the local
+    ``private/`` root: the absent pod-volume root is skipped, not treated as
+    a reason to refuse the whole list. ``operations/pod/test_pod_run.py``
+    proves the pod side the same way, with just the volume substituted in.
+    """
+    resolved = gate.approved_storage_roots(policy)
+    assert resolved
+    assert all(root.is_dir() for root in resolved)
+    assert any(root.name == "private" for root in resolved)
+    assert not any(str(root) == "/workspace/private" for root in resolved), (
+        "this test machine has no pod volume mounted, so the pod root must be "
+        "the one skipped, not silently admitted"
     )
 
 
@@ -122,6 +163,21 @@ def test_a_policy_naming_no_storage_roots_is_refused(policy):
 def test_an_unresolvable_storage_root_is_a_failed_check_not_a_free_pass(tmp_path, policy):
     with pytest.raises(gate.GateRefusal, match="does not exist"):
         gate.approved_storage_roots(dict(policy, storage_roots=[str(tmp_path / "absent")]))
+
+
+def test_one_absent_root_beside_one_present_root_yields_the_present_one(tmp_path, policy):
+    present = tmp_path / "present"
+    present.mkdir()
+    absent = tmp_path / "absent"
+    resolved = gate.approved_storage_roots(dict(policy, storage_roots=[str(absent), str(present)]))
+    assert resolved == (present.resolve(),)
+
+
+def test_all_roots_absent_still_refuses(tmp_path, policy):
+    with pytest.raises(gate.GateRefusal, match="none of the data-handling policy"):
+        gate.approved_storage_roots(
+            dict(policy, storage_roots=[str(tmp_path / "a"), str(tmp_path / "b")])
+        )
 
 
 def test_a_location_inside_an_approved_root_is_allowed(tmp_path, policy):

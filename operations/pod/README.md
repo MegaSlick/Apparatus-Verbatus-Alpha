@@ -387,6 +387,24 @@ check.
   contract change this unit does not make. `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
+- `notify_hooks.py` is a small, vendor-neutral phone-notification seam, distinct from
+  `notify_bridge.py`'s narrower spend-floor-warning one. It sends exactly one short line
+  through `operations/notify/notify.sh` at each of three moments — launch (lease id,
+  card, hourly ceiling), close (lease id, verified state, elapsed), and each account
+  balance observation (balance and spend rate as the observer reports them) — never a
+  secret, never a URL: every message is checked against the same credential-shape and
+  URL markers before the shell call, and a message that fails is never sent. It refuses
+  nothing else, and a failed ping never blocks or changes a launch or close decision
+  (ruling (b): tracking plus notifications only, no new enforcement). `cli.py` wires
+  launch and close notifications behind the existing `--notify` flag. `RunPodProvider`
+  takes an explicit `balance_notify` parameter, defaulted to `None`; only a caller that
+  supplies it gets the hook wired into the default `GraphQLBalanceObserver` it builds
+  for a live transport — a bare live-transport construction, including the one the
+  pod's own `timer_context_from_environment` performs, carries none, so `--notify`
+  stays the single gate for every phone notification a launch can send, balance
+  included, and a pod never pages a phone on its own. `test_notify_hooks.py` proves the
+  three messages, the no-secret and no-URL refusals, and that a failed ping is
+  reported, never raised, offline against a fake runner.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use
@@ -790,16 +808,19 @@ It costs a few dollars in the success case, for the drill's own minutes on a che
   built and is the adapter's default; `boot_a_request.py` renders the drill request from
   his configured policy the moment `config/spend.toml` leaves `unconfigured`.
 
-**One drill-specific finding, recorded rather than fixed here.** `launch.py` binds
-the launch token into the timer's `--report-path` at sealing time, but not into the
+**One drill-specific finding, recorded and now closed.** `launch.py` used to bind
+the launch token into the timer's `--report-path` at sealing time but not into the
 `--report-path` inside the nested `--bootstrap-command-json`, and `bootstrap_main`
 refuses a report path that lacks the token when `VERBATUS_LAUNCH_TOKEN` is in the pod's
-environment — which it is. In Boot A that refusal is harmless in outcome: `bootstrap_main
---hold-only` exits non-zero at once, the timer treats the child's exit as
-`completed-early` and closes, which is the same immediate close the drill armer already
-forces. It means the hold-only journal is never written, so Boot A does not observe the
-hold. Boot B needs the fix: fold the token into the nested path in
-`_bind_report_path_to_launch` the same way. `HANDOFF.md` carries it.
+environment — which it is. In Boot A that refusal was harmless in outcome:
+`bootstrap_main --hold-only` exited non-zero at once, the timer read the child's exit as
+`completed-early` and closed, which is the same immediate close the drill armer already
+forces — but the hold-only journal was never written, so Boot A never observed the hold.
+`_bind_report_path_to_launch` now folds the same sealed token into both the timer's own
+`--report-path` and, when the nested bootstrap argv carries one, its `--report-path`
+too — proven through the real plan/argv path in `test_bootstrap_main.py` (a `--hold-only`
+plan built from a sealed request reaches the hold rather than refusing). `HANDOFF.md`
+carries the closed finding.
 
 **Alternatives considered and declined, one line each.** Push the acknowledgement out
 of the pod over the notify topic — no; it puts a bearer secret in the pod and turns a

@@ -1071,6 +1071,91 @@ def test_the_default_observer_runs_through_the_bounded_balance_read() -> None:
     assert adapter.observe_account_balance().available_usd == Decimal("12")
 
 
+# -- the balance-observation notification hook -------------------------------
+
+
+def test_a_bare_live_transport_carries_no_notify_hook() -> None:
+    """``--notify`` is the single gate for a phone notification: absent it,
+    not even a live-transport provider's default balance observer may carry
+    one.
+
+    A pod's own ``timer_context_from_environment`` builds exactly this
+    unqualified constructor call, with no way to pass ``--notify`` through --
+    so if this defaulted to a hook, a plain ``verbatus pod create`` with no
+    ``--notify`` would still page a phone from the pod on every spend
+    assessment, before any --notify gate was ever consulted. It must not.
+    """
+
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is None
+
+
+def test_a_live_transport_built_with_balance_notify_carries_the_hook() -> None:
+    """The opposite case: a caller that explicitly supplies ``balance_notify``
+    -- the host CLI, only when ``args.notify`` is set -- gets it wired into
+    the default observer.
+
+    Never invoked here: calling it would spawn the real
+    ``operations/notify/notify.sh``.
+    """
+
+    seen: list[tuple[Decimal, Decimal | None]] = []
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_notify=lambda balance, spend: seen.append((balance, spend)),
+    )
+
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is not None
+    assert seen == []
+
+
+def test_an_injected_observer_carries_no_notify_hook_by_default() -> None:
+    """`GraphQLBalanceObserver` built directly, as most of this file's tests
+    build it, never touches the shell -- matching `balance_observer=None`'s
+    own default two classes up."""
+
+    assert observer(ScriptedTransport([])).notify is None
+
+
+def test_a_successful_observation_calls_notify_with_balance_and_spend() -> None:
+    transport = ScriptedTransport(
+        [HttpResponse(200, balance_body(clientBalance=76.5, currentSpendPerHr=1.99))]
+    )
+    seen: list[tuple[Decimal, Decimal]] = []
+    live = GraphQLBalanceObserver(
+        transport, now=lambda: NOW, notify=lambda balance, spend: seen.append((balance, spend))
+    )
+
+    observed = live()
+
+    assert observed.available_usd == Decimal("76.5")
+    assert seen == [(Decimal("76.5"), Decimal("1.99"))]
+
+
+def test_a_raising_notify_hook_never_prevents_the_observation() -> None:
+    """Ruling (b): notifications never become new enforcement."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+
+    def _explode(balance: Decimal, spend: Decimal) -> None:
+        raise RuntimeError("notify.sh is not on PATH")
+
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=_explode)
+
+    observed = live()
+
+    assert observed.available_usd == Decimal("76.5")
+
+
 def _serve(handler_class):  # type: ignore[no-untyped-def]
     import http.server
 

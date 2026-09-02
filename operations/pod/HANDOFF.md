@@ -260,16 +260,12 @@ from it is cited with its page and its date in the file that relies on it.
 
 **What this unit found that it did not fix, and why.**
 
-- **The nested bootstrap `--report-path` is never token-bound.** `launch.py` folds
-  the launch token into the timer's `--report-path` only; `bootstrap_main` refuses a
-  report path without the token when `VERBATUS_LAUNCH_TOKEN` is in the pod's
-  environment, and the create payload puts every metadata key there. So a real
-  `bootstrap_main --hold-only` refuses at plan time and exits non-zero, the timer reads
-  `completed-early` and closes. For Boot A that is the same immediate close the drill
-  armer forces anyway, so the drill's four measurements are unaffected — but the
-  hold-only journal is never written, and Boot B cannot bootstrap at all until
-  `_bind_report_path_to_launch` also binds the path inside `--bootstrap-command-json`.
-  `launch.py` is outside this unit's ownership; the fix is one function and its test.
+- ~~The nested bootstrap `--report-path` is never token-bound.~~ Closed by the pod
+  runtime integration unit: `_bind_report_path_to_launch` now folds the sealed
+  `VERBATUS_LAUNCH_TOKEN` into the nested bootstrap argv's own `--report-path` as well
+  as the timer's, so a real `bootstrap_main --hold-only` reaches its hold instead of
+  refusing at plan time. Proven through the real plan/argv path in
+  `test_bootstrap_main.py`.
 - **v2 has no `interruptible` and no `dockerStartCmd`** (`V2_MIGRATION.md` §2.2, §4).
   The next unit either finds a v2 page stating the rental type and a start-command
   field (the template page was not read in this pass), or puts the conflict to Tyrel
@@ -332,7 +328,8 @@ review pass.
    and its §4 names two facts (`interruptible`, the start command) the v2 pages read
    do not supply. The observer was built against the seam, not against v1's REST
    route, so the migration does not rebuild it.
-4. The nested bootstrap report path (above) must be token-bound before Boot B.
+4. ~~The nested bootstrap report path (above) must be token-bound before Boot B.~~
+   Closed; see the finding above.
 
 ## U-A — the pod run seam (on `work/pod-run-seam`, over this branch)
 
@@ -395,9 +392,15 @@ one without the other is refused.
 - **The roster pair comes from the bootstrap plan.** `pod_run` takes `--models-config`
   and `--serving-recipes-config` from the bootstrap argv rather than accepting them
   again: `PREFLIGHT` measured that roster against that catalogue.
-- **The data gate is asked before the bootstrap.** The shipped policy names no volume
-  root; refusing before a model is fetched saves the fetch. Listing the volume root is
-  Tyrel's (hard rule 1); the refusal says so.
+- **The data gate is asked before the bootstrap.** At the time U-A built this, the
+  shipped policy named no volume root; refusing before a model is fetched saved the
+  fetch. The pod runtime integration unit closed that: the shipped policy now names
+  `operations/pod/boot_a_request.py`'s sealed `volume_mount_path` beside `private/`
+  (Tyrel's ruling, `workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md`), and
+  `pod_run.py`'s own module docstring was corrected to match --
+  `require_approved_submission_folder`'s refusal wording was already generic and needed
+  no change. `pod_run` still refuses a submission outside every listed root, now against
+  the real one.
 - **`ErrorCode.FETCH_RUN_FAILED` was added to `errors.py`**, which the unit did not own:
   the table is closed and `test_errors.py` requires every code to be raised somewhere,
   so a new verb cannot register its failure state anywhere else.
@@ -414,6 +417,92 @@ one without the other is refused.
 serialized test lock, then `operations/pod operations/operator` once. No acceptance pin was
 run: nothing here touches a fixture path. `uv lock --check` is clean because the lock is
 untouched.
+
+## Pod runtime integration — closing three U-C/U-A seams (on `work/pod-runtime-2`)
+
+Four deliverables over U-C and U-A as they stood: the storage-root gap the account
+balance and Boot A work left open, a vendor-neutral phone-notification seam, the nested
+report-path token binding U-C's own docstring flagged and left for a later unit, and
+this record.
+
+- **`config/data_handling_policy.json` names the pod volume.** `storage_roots` gains
+  `/workspace/private` — `operations/pod/boot_a_request.py`'s `BOOT_A_VOLUME_MOUNT_PATH`,
+  the one concrete `volume_mount_path` a real launch request in this tree seals — beside
+  the existing `private/`. `storage_roots_note` states the export flow: the volume is a
+  storage root for a run's duration (Tyrel's ruling (a)), `verbatus fetch-run` brings the
+  tree home, and the volume itself is destroyed only per `retention_and_deletion`, never
+  as a side effect of export. `pod_run.py`'s own docstring, which said the shipped policy
+  named no volume root, is corrected to match; `pod_run` still refuses a submission
+  outside every listed root (unchanged behavior, now against the real one) —
+  `test_pod_run.py`'s own policy fixture already substitutes its own `storage_roots`
+  list per test, so nothing there needed to change.
+
+  **Rule-13 decision, corrected by review.** The first cut of this unit left
+  `operations/submit/gate.py`'s `approved_storage_roots` untouched and all-or-nothing:
+  it resolved *every* listed root before returning any of them, so the unmodified
+  two-root shipped policy refused outright on any machine without the pod volume
+  mounted — every host laptop, CI, this test machine included — breaking the
+  previously-working `private/` root along with it. A lock run proved the blast
+  radius directly: 23 failures in `operations/corpus/test_submission.py`, all through
+  the same "does not exist" refusal, plus every default-policy real-submission path
+  (`operations/submit/submit.py`, `pipeline/1_exemplar/door.py`,
+  `operations/operator/ingest_worker.py`, `operations/corpus/submission.py`). That is
+  not an acceptable cost for naming a volume path in a file most callers never touch
+  a pod through, so `approved_storage_roots` now resolves each listed root
+  independently and refuses only when *none* of them resolve — an absent root is
+  named in the refusal detail and skipped, never silently dropped. A host with no pod
+  mounted gets exactly the local `private/` root back from the unmodified shipped
+  policy; a pod with the volume mounted gets both. `operations/submit/test_gate.py`
+  covers both new shapes (one absent root beside one present one; every root absent)
+  and the two-root shipped-policy case now proves the local-root result instead of
+  pinning the refusal. `pod_run` still refuses a submission outside every listed
+  root — unchanged behavior — and `test_pod_run.py`'s own policy fixture still
+  substitutes its own `storage_roots` list per test, so nothing there needed to
+  change. Every host-side real-submission path (`submit.py`, `door.py`,
+  `ingest_worker.py`, `corpus/submission.py`) now resolves the shipped policy exactly
+  as it did before this policy file named a pod volume at all.
+
+- **`operations/pod/notify_hooks.py`.** Covered in the module list above. `cli.py` wires
+  it behind the existing `--notify` flag (a green create/adopt prints
+  `launch_notification`; any result carrying a `close_report` prints
+  `close_notification`, green or not). `RunPodProvider` takes an explicit
+  `balance_notify` parameter, defaulted to `None`; only a caller that supplies it gets
+  the hook wired into the default `GraphQLBalanceObserver` it builds for a live
+  transport. A bare live-transport construction — including the one the pod's own
+  `timer_context_from_environment` performs, which has no way to receive `--notify`
+  at all — carries no hook, so a plain `verbatus pod create` with no `--notify` can
+  never page a phone from a balance observation, and `--notify` stays the single gate
+  for every phone notification a launch can send. Both hook points are the minimal
+  wiring, not a rebuild of either file: `notify_bridge.py`'s existing
+  spend-floor-warning seam is untouched.
+
+- **The nested bootstrap report-path token binding, closed.**
+  `launch._bind_report_path_to_launch` bound the launch token into the timer's own
+  `--report-path` only; the same token now also folds into the `--report-path` inside
+  `--bootstrap-command-json` when that nested argv carries one, so a real
+  `bootstrap_main --hold-only` (rendered by `boot_a_request.pod_request`) reaches its
+  hold instead of refusing at plan time for a missing token. Proven through the real
+  plan/argv path in `test_bootstrap_main.py`'s
+  `test_hold_only_reaches_the_hold_through_the_real_launch_binding` — it drives
+  `boot_a_request.pod_request` and `launch._bind_report_path_to_launch` themselves, not a
+  hand-written argv standing in for them, and asserts `bootstrap_main.main` reaches
+  `hold-only` and holds to the deadline. `boot_a_request.py`'s own docstring (which named
+  this as unbound) and `README.md`/`HANDOFF.md`'s U-C blocker list are updated to match.
+  Review found the binding itself best-effort by design, with nothing re-validating its
+  result: a nested `--report-path` shape the binder cannot handle (or one carried over
+  unbound from a stale template) reached `PodCreateRequest` unbound and would have
+  refused only at pod-side plan time, after billing had started. `models._required_
+  timer_arguments` — the same money-path gate that already required the outer
+  `--report-path` to carry the launch token and stay inside the volume — now requires
+  the same of a nested one, in either argparse spelling, when one is present; a nested
+  argv naming none is left alone, as before.
+
+**Verification.** `ruff format` and `ruff check` clean on every `.py` touched. Tests
+through the shared test lock only, iterated per this unit's own budget; the full
+`operations/pod operations/operator/test_surface.py common/test_data_gate.py` sweep (or
+wherever the data-gate tests actually live, since no `common/test_data_gate.py` exists —
+`operations/submit/test_gate.py`) run once at the end. `sh .githooks/check-documents.sh`
+on every `.md` touched.
 
 ## Provenance correction
 

@@ -119,12 +119,23 @@ def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
 
 
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
-    """Fold the launch token into the pod-side report path's file name.
+    """Fold the launch token into every report path the launch seals.
 
     A volume outlives any one pod, so an unbound report path lets a second
     launch's durable evidence overwrite the first's (GOVERNANCE 4).  Binding
     happens once, here, at sealing time -- the request's own validation then
     refuses a report path that does not carry the sealed token.
+
+    This binds two things, not one: the outer timer's own ``--report-path``,
+    and, when the nested bootstrap argv sealed inside
+    ``--bootstrap-command-json`` carries its own ``--report-path``, that path
+    too.  Only the outer path was bound before; ``bootstrap_main.resolve_plan``
+    requires the same sealed ``VERBATUS_LAUNCH_TOKEN`` in *its* report path's
+    name (``_require_launch_token_named``), so an unbound nested path refused
+    at pod-side plan time -- after the pod had already started billing.
+    ``operations/pod/boot_a_request.py``'s own docstring named this as an
+    unbound seam left for this unit; it is closed here rather than left for a
+    later one, per CLAUDE.md hard rule 13.
 
     ``PodCreateRequest.__post_init__`` already refuses a command that does not
     carry exactly one ``--report-path`` with a value, so neither refusal below
@@ -139,10 +150,47 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     index = command.index("--report-path") + 1
     if index >= len(command):
         raise ValueError("pod request --report-path flag carries no value")
-    original = PurePosixPath(command[index])
+    bound_path = _bound_report_path(command[index], launch_token)
+    command = command[:index] + (bound_path,) + command[index + 1 :]
+
+    if "--bootstrap-command-json" in command:
+        nested_index = command.index("--bootstrap-command-json") + 1
+        if nested_index < len(command):
+            bound_nested = _bind_nested_report_path(command[nested_index], launch_token)
+            command = command[:nested_index] + (bound_nested,) + command[nested_index + 1 :]
+
+    return command
+
+
+def _bound_report_path(raw_path: str, launch_token: str) -> str:
+    original = PurePosixPath(raw_path)
     bound_name = f"{original.stem}-{launch_token}{original.suffix}"
-    bound_path = str(original.with_name(bound_name))
-    return command[:index] + (bound_path,) + command[index + 1 :]
+    return str(original.with_name(bound_name))
+
+
+def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> str:
+    """Bind the launch token into a nested bootstrap argv's own ``--report-path``.
+
+    ``--bootstrap-command-json`` carries a second, JSON-encoded argv that
+    ``pod_timer`` runs as the pod's mandatory bootstrap step
+    (``operations/pod/boot_a_request.py`` renders ``bootstrap_main --hold-only``
+    this way for Boot A). ``models._required_timer_arguments`` has already
+    proven this decodes to a non-empty JSON array of non-empty strings before
+    a request reaches this helper, so no further shape-checking is needed
+    here. A nested argv carrying no ``--report-path`` of its own -- the
+    library-module placeholder the tests use, which exits before ever
+    reading one -- is returned unchanged rather than treated as a refusal:
+    binding a path that was never asked for would be inventing one.
+    """
+
+    argv = json.loads(bootstrap_command_json)
+    if "--report-path" not in argv:
+        return bootstrap_command_json
+    index = argv.index("--report-path") + 1
+    if index >= len(argv):
+        return bootstrap_command_json
+    argv[index] = _bound_report_path(argv[index], launch_token)
+    return json.dumps(argv)
 
 
 SPEND_ALERT_DEBOUNCE_SECONDS: Final = 900

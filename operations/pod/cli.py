@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from . import notify_hooks
 from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
@@ -49,9 +50,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--notify",
         action="store_true",
         help=(
-            "send notification-only spend warnings through operations/notify/notify.sh; "
-            "off by default so nothing pages a phone unasked, and delivery never changes "
-            "a launch decision either way"
+            "send notification-only spend warnings, and a launch/close line, through "
+            "operations/notify/notify.sh; off by default so nothing pages a phone "
+            "unasked, and delivery never changes a launch or close decision either way"
         ),
     )
     parser.add_argument(
@@ -137,6 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     record = _record(result)
     if args.record_fixture is not None:
         record["record_fixture"] = str(args.record_fixture)
+    if args.notify:
+        _notify_launch_and_close(record, result, request, runtime.spend_policy)
     print(json.dumps(record, sort_keys=True, indent=2))
     # Exit status alone must never read as "nothing happened": 0 is guarded
     # success, 2 is a refusal that made no paid action, 3 means a pod or lease
@@ -144,6 +147,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     if result.green:
         return 0
     return 3 if _observed_something(result) else 2
+
+
+def _notify_launch_and_close(
+    record: dict[str, object],
+    result: LaunchResult,
+    request: PodCreateRequest,
+    spend_policy: object,
+) -> None:
+    """Gated behind ``--notify``, exactly like the existing spend-alert bridge.
+
+    Best-effort in both directions: a failed ping is recorded in the printed
+    record's own notification fields (GOVERNANCE 2 -- nothing lost silently)
+    and never raised, so a broken phone can never turn a green launch or an
+    already-decided close into something this command reports differently.
+    """
+
+    lease_id = result.lease_path.stem if result.lease_path else "unknown-lease"
+    if result.green:
+        outcome = notify_hooks.notify_launch(
+            lease_id=lease_id,
+            card=request.gpu_type or "unknown",
+            max_hourly_usd=getattr(spend_policy, "max_hourly_usd", None),
+        )
+        record["launch_notification"] = outcome.line()
+    close = result.close_report
+    if close is not None:
+        elapsed_seconds: object = "unknown"
+        if result.record is not None:
+            elapsed_seconds = (close.cutoff_at - result.record.created_at).total_seconds()
+        outcome = notify_hooks.notify_close(
+            lease_id=lease_id,
+            verified_state=close.state.value,
+            elapsed_seconds=elapsed_seconds,
+        )
+        record["close_notification"] = outcome.line()
 
 
 def _confirmable_only(result: LaunchResult) -> LaunchResult:
