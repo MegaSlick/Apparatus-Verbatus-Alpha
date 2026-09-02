@@ -23,12 +23,16 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import ROUND_UP, Decimal
 from pathlib import Path
 from typing import Sequence
 
+from .models import require_utc
 from .preflight import CardProfile, PlacementTable, load_placement_table
 from .spend import SpendPolicy, load_spend_policy
+
+UTC = timezone.utc
 
 BOOT_A_HARD_LIFETIME_SECONDS = 900
 """The README's "roughly 900": long enough to pull an image and watch one poll
@@ -57,6 +61,8 @@ def render_boot_a_request(
     image: str | None = None,
     volume_id: str | None = None,
     repository_commit: str | None = None,
+    hard_deadline: str | None = None,
+    now: datetime | None = None,
 ) -> BootARequest:
     """Render the drill request, or a refusal when the policy cannot back one."""
 
@@ -81,14 +87,46 @@ def render_boot_a_request(
             f"the drill's own pod cost ${pod_cost} exceeds max_estimated_metered_cost_usd "
             f"${policy.max_estimated_metered_cost_usd}; the preview will refuse this drill"
         )
+    if hard_deadline is not None:
+        _validate_hard_deadline(
+            hard_deadline, now=now or datetime.now(UTC), lifetime_seconds=lifetime
+        )
     request = pod_request(
         card,
         image=image,
         volume_id=volume_id,
         repository_commit=repository_commit,
+        hard_deadline=hard_deadline,
     )
     text = _render(policy, card, lifetime, pod_cost, obstacles, request)
     return BootARequest(text, False, card, lifetime, pod_cost)
+
+
+def _validate_hard_deadline(value: str, *, now: datetime, lifetime_seconds: int) -> datetime:
+    """The same rule ``cli._timestamp`` applies, plus a not-yet-past-lifetime floor.
+
+    Rendered at drill authorization time, not run time -- the document is
+    read and authorized later, so this refuses a deadline too close (or
+    already past) rather than silently accepting one the drill cannot
+    complete within.
+    """
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("--hard-deadline must be an RFC3339 UTC string") from error
+    try:
+        parsed = require_utc(parsed, "--hard-deadline")
+    except ValueError as error:
+        raise ValueError("--hard-deadline must be UTC") from error
+    if parsed <= now:
+        raise ValueError("--hard-deadline must be in the future")
+    if (parsed - now).total_seconds() < lifetime_seconds:
+        raise ValueError(
+            f"--hard-deadline must be at least {lifetime_seconds} seconds from now, "
+            "the drill's own rendered lifetime"
+        )
+    return parsed
 
 
 def cheapest_card(placement: PlacementTable) -> CardProfile:
@@ -105,6 +143,7 @@ def pod_request(
     image: str | None,
     volume_id: str | None,
     repository_commit: str | None,
+    hard_deadline: str | None = None,
     volume_mount_path: str = BOOT_A_VOLUME_MOUNT_PATH,
 ) -> dict[str, object]:
     """The `cli.py create --request` JSON for the drill, placeholders where Tyrel decides.
@@ -113,6 +152,13 @@ def pod_request(
     folds it into both the timer's own ``--report-path`` and the nested
     bootstrap argv's ``--report-path`` at sealing time, so `bootstrap_main`
     reaches its hold rather than refusing at plan time for a missing token.
+
+    ``hard_deadline`` is the one field with no runtime that fills it in: it
+    is rendered as a placeholder telling the reader to hand-supply it,
+    because `cli._request` refuses to load this JSON without one -- unlike
+    `metadata`'s `VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS`, which the launch
+    seals from the spend policy before every create/adopt and so is accurate
+    and harmless left as printed.
     """
 
     hold_only = [
@@ -142,8 +188,13 @@ def pod_request(
             "--report-path",
             f"{volume_mount_path}/pod-runtime-report.json",
         ],
-        "hard_deadline": "<now plus the hard lifetime, RFC3339 UTC, set when the request is sealed>",
+        "hard_deadline": hard_deadline
+        or "<fill in by hand: an RFC3339 UTC timestamp at least this drill's own "
+        "lifetime past now -- create will not accept this file until you do>",
         "repository_commit": repository_commit or _UNSUPPLIED,
+        # Sealed by the launch from the spend policy at every create/adopt
+        # (`PodRuntime._policy_bound_request`); this value is never read from
+        # here and needs no hand edit.
         "metadata": {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "<the sealed policy value>"},
     }
 
@@ -251,8 +302,14 @@ def _render(
         "- In-session permission for this exact drill (and, separately, for Boot B).",
         "- The pinned image digest, the network volume id and the repository commit",
         "  below where they still read as not yet supplied.",
+        "- `hard_deadline` below, an RFC3339 UTC timestamp at least this drill's own",
+        "  lifetime past whenever it is authorized -- `create` will not accept the",
+        "  file until it is filled in by hand.",
         "- The S3 access and secret keys in the launching shell, for the report channel.",
         "- The untracked provider and controller-armer factories the command names.",
+        "",
+        "`metadata`'s `VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS` needs no hand edit: the",
+        "launch seals it from the spend policy before every create or adopt.",
         "",
         "## The command",
         "",
@@ -293,14 +350,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--image")
     parser.add_argument("--volume-id")
     parser.add_argument("--repository-commit")
-    args = parser.parse_args(argv)
-    rendered = render_boot_a_request(
-        load_spend_policy(args.spend),
-        load_placement_table(args.placement),
-        image=args.image,
-        volume_id=args.volume_id,
-        repository_commit=args.repository_commit,
+    parser.add_argument(
+        "--hard-deadline",
+        help="RFC3339 UTC timestamp; omit to leave it a fill-in-by-hand placeholder",
     )
+    args = parser.parse_args(argv)
+    try:
+        rendered = render_boot_a_request(
+            load_spend_policy(args.spend),
+            load_placement_table(args.placement),
+            image=args.image,
+            volume_id=args.volume_id,
+            repository_commit=args.repository_commit,
+            hard_deadline=args.hard_deadline,
+        )
+    except ValueError as error:
+        print(f"# Boot A drill -- REFUSED\n\n{error}\n", end="")
+        return 2
     print(rendered.text, end="")
     return 2 if rendered.refused else 0
 

@@ -223,6 +223,40 @@ def test_a_timeout_is_reported_not_raised() -> None:
     assert "did not answer" in outcome.detail
 
 
+def test_an_unexpected_runner_exception_is_reported_not_raised() -> None:
+    """`subprocess.run(..., text=True)` decodes strictly and can raise
+
+    `UnicodeDecodeError` -- a `ValueError`, so neither the `OSError` nor the
+    `TimeoutExpired` handler catches it. The "never raised" promise this
+    module's docstring makes must hold for any runner failure, not just the
+    two anticipated ones.
+    """
+
+    runner = FakeRunner(
+        raise_error=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    )
+
+    outcome = notify_close(
+        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+    )
+
+    assert outcome == NotifyOutcome(True, False, outcome.detail)
+    assert not outcome.delivered
+    assert "failed unexpectedly" in outcome.detail
+    assert "NOT DELIVERED" in outcome.line()
+
+
+def test_a_keyboard_interrupt_still_propagates() -> None:
+    """The blanket `except Exception` must not swallow an operator's ^C."""
+
+    runner = FakeRunner(raise_error=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        notify_close(
+            lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+        )
+
+
 def test_no_outcome_from_this_module_ever_raises() -> None:
     """The whole point: a caller closing a pod never has to catch anything here."""
 
@@ -230,6 +264,7 @@ def test_no_outcome_from_this_module_ever_raises() -> None:
         FakeRunner(returncode=1),
         FakeRunner(raise_error=OSError("boom")),
         FakeRunner(raise_error=subprocess.TimeoutExpired(cmd=["sh"], timeout=1.0)),
+        FakeRunner(raise_error=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
     ):
         outcome = notify_close(
             lease_id="lease-abc123", verified_state="verified", elapsed_seconds=1, runner=runner

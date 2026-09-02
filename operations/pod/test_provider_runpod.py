@@ -1313,13 +1313,82 @@ def test_record_exchanges_writes_every_exchange_scrubbed_and_replayable(tmp_path
     ]
     balance, listing, create = records
     assert balance["verbatim"] is True and balance["response_body"] == balance_body().decode()
+    assert balance["body_kind"] == "json-text"
     assert listing["verbatim"] is True and listing["response_body"] == "[]"
+    assert listing["body_kind"] == "json-text"
     # The launch token rides in `env` both ways, and the predicate scrubs it.
     assert create["request_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
     assert create["verbatim"] is False
+    assert create["body_kind"] == "json-object"
     assert create["response_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
     assert "response_body.env.VERBATUS_LAUNCH_TOKEN" in create["scrubbed"]
     # Money in a scrubbed body is still a number, and the same digits.
     assert create["response_body"]["costPerHr"] == Decimal("0.77")
     assert record.pod_id == created["id"]
     assert (recorder.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_concurrent_record_calls_never_share_a_sequence(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`record_exchanges` shares one recorder between a provider's own
+
+    transport and its balance observer's, and the observer runs on a daemon
+    thread that a caller can abandon on overrun -- its blocked call can still
+    be inside `record` when the main thread records its own exchange. Before
+    the lock covered the whole method, `self.sequence` was re-read nine
+    lines after being incremented, so two concurrent calls could stamp the
+    same sequence and skip one entirely.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    class _BlockingBody(dict):
+        """A request body whose ``items()`` parks a thread mid-``_scrub``,
+
+        after `record` has already claimed a sequence number and before it
+        stamps the record with it -- exactly the window the race lived in.
+        """
+
+        def __init__(
+            self,
+            *args: object,
+            release: threading.Event,
+            entered: threading.Event,
+            **kwargs: object,
+        ) -> None:
+            super().__init__(*args, **kwargs)
+            self._release = release
+            self._entered = entered
+
+        def items(self):  # type: ignore[no-untyped-def]
+            self._entered.set()
+            self._release.wait(timeout=5.0)
+            return super().items()
+
+    recorder = FixtureRecorder(tmp_path / "evidence" / "concurrent.jsonl", now=lambda: NOW)
+    release = threading.Event()
+    entered = threading.Event()
+    parked_body = _BlockingBody({"note": "parked"}, release=release, entered=entered)
+
+    def record_parked() -> None:
+        recorder.record("GET", "/parked", parked_body, status=200, response_body=b"{}")
+
+    thread = threading.Thread(target=record_parked)
+    thread.start()
+    # Wait for the parked call to have actually claimed its sequence and
+    # entered `items()`, rather than guessing at a sleep -- a bare sleep
+    # cannot promise the handoff happened before the main thread proceeds.
+    assert entered.wait(timeout=5.0)
+    recorder.record("GET", "/second", {"note": "unparked"}, status=200, response_body=b"{}")
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    recorder.close()
+
+    records = read_fixture(recorder.path)
+    sequences = [record["sequence"] for record in records]
+    assert sequences == sorted(sequences)
+    assert len(set(sequences)) == len(sequences)
+    assert [record["path"] for record in sorted(records, key=lambda r: r["sequence"])] == [
+        "/parked",
+        "/second",
+    ]

@@ -3417,6 +3417,59 @@ def test_report_path_binding_also_binds_a_nested_bootstrap_report_path() -> None
     assert nested[nested_index] == f"/workspace/private/bootstrap-hold-only-report-{token}.json"
 
 
+def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> None:
+    """The regression the equals-form audit closes.
+
+    ``_bind_nested_report_path`` used to recognize only the separate-value
+    spelling of ``--report-path``; an equals-form nested flag was returned
+    unbound, and the money-path validator then refused it by name for a
+    launch token an operator cannot pre-write (it is minted inside
+    ``create``), making that request shape permanently unlaunchable. This
+    proves both the bind and the seal succeed for the equals form.
+    """
+
+    token = "a" * 32
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--timer-factory",
+        "operations.pod.provider_runpod:timer_context_from_environment",
+        "--bootstrap-command-json",
+        json.dumps(
+            [
+                "python",
+                "-m",
+                "operations.pod.bootstrap_main",
+                "--hold-only",
+                "--volume-mount-path",
+                "/workspace/private",
+                "--report-path=/workspace/private/bootstrap-hold-only-report.json",
+            ]
+        ),
+        "--report-path",
+        "/workspace/private/pod-runtime-report.json",
+    )
+
+    bound = _bind_report_path_to_launch(command, token)
+
+    nested = json.loads(bound[bound.index("--bootstrap-command-json") + 1])
+    nested_item = next(item for item in nested if item.startswith("--report-path="))
+    assert nested_item == (
+        f"--report-path=/workspace/private/bootstrap-hold-only-report-{token}.json"
+    )
+
+    # And the bound request seals successfully -- the shape that used to be
+    # refused for an unwritable launch token now validates.
+    clock = Clock()
+    sealed = replace(
+        request(clock),
+        docker_start_cmd=bound,
+        metadata={"VERBATUS_LAUNCH_TOKEN": token},
+    )
+    assert sealed.metadata["VERBATUS_LAUNCH_TOKEN"] == token
+
+
 def test_report_path_binding_leaves_a_nested_command_with_no_report_path_alone() -> None:
     """A nested argv that never reads a report path (the library-module
     placeholder ``request()`` uses below) is returned unchanged rather than
@@ -4393,6 +4446,72 @@ def test_a_nested_report_path_bound_with_the_equals_form_is_still_validated() ->
     )
 
     with pytest.raises(ValueError, match="nested --report-path must include this launch's token"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
+
+
+def test_a_truncated_nested_report_path_is_refused() -> None:
+    """A nested ``--report-path`` flag with nothing after it collapses, in a
+
+    validator that only reads the flag's value, into the same ``None`` as
+    "flag absent" -- which would let a truncated nested argv (e.g. a
+    hand-edited Boot A request that drops the value line) reach the pod and
+    fail only at ``bootstrap_main`` argv-parsing time, after billing had
+    already started. This is the nested counterpart of the outer path's own
+    "carries no value" refusal.
+    """
+
+    clock = Clock()
+    command = list(request(clock).docker_start_cmd)
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--report-path",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="nested --report-path flag carries no value"):
+        replace(request(clock), docker_start_cmd=tuple(command))
+
+
+def test_a_duplicated_nested_report_path_is_refused() -> None:
+    """The outer ``--report-path`` refuses more than one occurrence by
+
+    construction (``len(indexes) != 1``); the nested gate must refuse the
+    same shape rather than silently taking the first occurrence, which
+    would let a duplicated nested flag validate against an in-volume path
+    while ``bootstrap_main``'s own parser -- which takes the LAST
+    occurrence -- resolves to a different one.
+    """
+
+    clock = Clock()
+    token = "a" * 32
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--report-path",
+            f"/workspace/private/bootstrap-hold-only-report-{token}.json",
+            "--report-path",
+            f"/workspace/private/bootstrap-hold-only-report-2-{token}.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at most one nested --report-path value"):
         replace(
             request(clock),
             docker_start_cmd=tuple(command),
@@ -6874,6 +6993,34 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     assert isinstance(calls[0]["lease_id"], str) and calls[0]["lease_id"] != "unknown-lease"
     record = _last_json_object(capsys.readouterr().out)
     assert record["launch_notification"] == "Phone notification: sent."
+
+
+def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mutation the suite used to miss: `notify_hooks` promises never to
+
+    raise, but nothing enforced that promise at this call site. A raising
+    hook must not take the post-action record -- naming the pod and lease --
+    down with it (hard rule 7), and a green create must still exit 0.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+
+    def raising_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_launch", raising_notify_launch)
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    record = _last_json_object(capsys.readouterr().out)
+    assert record["pod_id"]
+    assert record["lease_path"]
+    assert "notification_error" in record
+    assert "launch_notification" not in record
 
 
 def test_cli_without_the_notify_flag_never_calls_the_hook(

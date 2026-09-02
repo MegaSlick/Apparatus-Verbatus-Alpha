@@ -30,7 +30,11 @@ possible.
 
 A raised transport failure is recorded too, as a line with `error` set and
 no status: "every provider response the launch sees" includes the ones it
-never got.
+never got. That text is free-form, not a mapping the shared predicate can
+walk field by field, so it gets its own pass: any `key=value`-shaped or
+`Bearer <token>`-shaped substring that looks credential-shaped is redacted
+before the line is written, and the redaction is named in `scrubbed` like
+every other field's.
 """
 
 from __future__ import annotations
@@ -38,11 +42,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import urllib.parse
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Literal, Mapping, Protocol
 
 from .models import looks_like_credential_field, utc_now
 
@@ -54,6 +59,20 @@ SCRUBBED = "SCRUBBED"
 _DECIMAL_MARK = "\x00decimal:"
 _DECIMAL_END = "\x00"
 _DECIMAL_PATTERN = re.compile(r'"\\u0000decimal:([-+0-9.Ee]+)\\u0000"')
+
+BodyKind = Literal["absent", "text", "json-text", "json-object"]
+"""What shape ``response_body`` actually holds, apart from ``verbatim``.
+
+``verbatim`` alone collapses four cases into one boolean: no response body,
+a non-JSON body, a JSON body that needed no scrubbing, and a scrubbed
+JSON body -- the first three all read ``verbatim: true`` but a caller has
+to know by convention, not by the record's own shape, whether to treat
+``response_body`` as ``None``, a string, or a parsed object. A reader
+branches on ``body_kind`` instead: ``"absent"`` (``None``), ``"text"`` (a
+non-JSON string), ``"json-text"`` (JSON that needed no scrubbing, still a
+string so the original bytes are preserved verbatim), or ``"json-object"``
+(scrubbed, so ``response_body`` is the cleaned object, never the original
+string)."""
 
 
 class _Response(Protocol):
@@ -73,6 +92,16 @@ class FixtureRecorder:
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self._handle = os.fdopen(descriptor, "ab")
         self.sequence = 0
+        # `record_exchanges` wraps both the provider's own transport and its
+        # balance observer's around one recorder, and the observer runs on a
+        # daemon thread that can still be mid-call when the main thread
+        # records a close exchange (its socket timeout matches the join
+        # deadline it is abandoned at). Held across the whole method, not
+        # just the counter increment, so a record's `sequence` and its
+        # position in the file never disagree -- narrowing the lock to the
+        # increment alone would make sequence values unique but let two
+        # records land in the opposite order from their own numbers.
+        self._lock = threading.Lock()
 
     def record(
         self,
@@ -86,31 +115,35 @@ class FixtureRecorder:
     ) -> dict[str, object]:
         """Write one exchange and return the record that was written."""
 
-        self.sequence += 1
-        scrubbed: list[str] = []
-        recorded_path = _scrub_query(path, scrubbed)
-        recorded_request = (
-            None if request_body is None else _scrub(request_body, "request_body", scrubbed)
-        )
-        recorded_response, verbatim = _scrub_body(response_body, scrubbed)
-        record: dict[str, object] = {
-            "schema": FIXTURE_SCHEMA,
-            "sequence": self.sequence,
-            "observed_at": self.now().isoformat(),
-            "method": method,
-            "path": recorded_path,
-            "request_body": recorded_request,
-            "status": status,
-            "response_body": recorded_response,
-            "verbatim": verbatim,
-            "scrubbed": scrubbed,
-            "error": error,
-        }
-        line = _dumps(record) + "\n"
-        self._handle.write(line.encode("utf-8"))
-        self._handle.flush()
-        os.fsync(self._handle.fileno())
-        return record
+        with self._lock:
+            self.sequence += 1
+            sequence = self.sequence
+            scrubbed: list[str] = []
+            recorded_path = _scrub_query(path, scrubbed)
+            recorded_request = (
+                None if request_body is None else _scrub(request_body, "request_body", scrubbed)
+            )
+            recorded_response, verbatim, body_kind = _scrub_body(response_body, scrubbed)
+            recorded_error = _scrub_error(error, scrubbed)
+            record: dict[str, object] = {
+                "schema": FIXTURE_SCHEMA,
+                "sequence": sequence,
+                "observed_at": self.now().isoformat(),
+                "method": method,
+                "path": recorded_path,
+                "request_body": recorded_request,
+                "status": status,
+                "response_body": recorded_response,
+                "body_kind": body_kind,
+                "verbatim": verbatim,
+                "scrubbed": scrubbed,
+                "error": recorded_error,
+            }
+            line = _dumps(record) + "\n"
+            self._handle.write(line.encode("utf-8"))
+            self._handle.flush()
+            os.fsync(self._handle.fileno())
+            return record
 
     def close(self) -> None:
         self._handle.close()
@@ -171,6 +204,42 @@ def _scrub(value: object, where: str, scrubbed: list[str]) -> object:
     return value
 
 
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+\S+")
+_KEY_VALUE_PATTERN = re.compile(r"([A-Za-z_][A-Za-z0-9_.\-]*)=([^&\s'\")]+)")
+
+
+def _scrub_error(error: str | None, scrubbed: list[str]) -> str | None:
+    """Redact credential-shaped substrings from a free-text error message.
+
+    Every other field a record carries is scrubbed through the shared
+    predicate on a parsed structure; `error` is free text taken from a
+    caught exception's own message, which the predicate cannot walk as a
+    mapping. Nothing reaches here credential-shaped today -- the adapters
+    that raise into this recorder name only `reason`, never a URL or a
+    header, and that is pinned by their own tests -- so this is
+    belt-and-braces containment at the recorder itself, not a fix for a
+    reproduced leak.
+    """
+
+    if error is None:
+        return None
+
+    def redact_pair(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if looks_like_credential_field(key):
+            scrubbed.append(f"error.{key}")
+            return f"{key}={SCRUBBED}"
+        return match.group(0)
+
+    redacted = _KEY_VALUE_PATTERN.sub(redact_pair, error)
+
+    def redact_bearer(_match: re.Match[str]) -> str:
+        scrubbed.append("error.bearer")
+        return "Bearer SCRUBBED"
+
+    return _BEARER_PATTERN.sub(redact_bearer, redacted)
+
+
 def _scrub_query(path: str, scrubbed: list[str]) -> str:
     """Replace credential-shaped query values; a key in a URL is still a key."""
 
@@ -186,19 +255,19 @@ def _scrub_query(path: str, scrubbed: list[str]) -> str:
     return f"{base}?{'&'.join(parts)}"
 
 
-def _scrub_body(body: bytes | None, scrubbed: list[str]) -> tuple[object, bool]:
+def _scrub_body(body: bytes | None, scrubbed: list[str]) -> tuple[object, bool, BodyKind]:
     if body is None:
-        return None, True
+        return None, True, "absent"
     text = body.decode("utf-8", "replace")
     try:
         parsed = json.loads(text, parse_float=Decimal)
     except json.JSONDecodeError:
-        return text, True
+        return text, True, "text"
     before = len(scrubbed)
     cleaned = _scrub(parsed, "response_body", scrubbed)
     if len(scrubbed) == before:
-        return text, True
-    return cleaned, False
+        return text, True, "json-text"
+    return cleaned, False, "json-object"
 
 
 def _dumps(value: object) -> str:

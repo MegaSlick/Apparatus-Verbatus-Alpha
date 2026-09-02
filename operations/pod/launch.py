@@ -35,6 +35,7 @@ from .models import (
     PodEstimate,
     PodRecord,
     SpendRefusal,
+    rebind_nested_flag,
     utc_now,
 )
 from .notify_bridge import Notifier, NotifyOutcome, silent
@@ -181,16 +182,33 @@ def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> 
     library-module placeholder the tests use, which exits before ever
     reading one -- is returned unchanged rather than treated as a refusal:
     binding a path that was never asked for would be inventing one.
+
+    Binding is done through :func:`operations.pod.models.rebind_nested_flag`,
+    which reads the argv the same way
+    :func:`operations.pod.models._nested_flag_values` does -- both spellings
+    ``--report-path value`` and ``--report-path=value`` -- so the binder and
+    the money-path validator that re-checks its output cannot drift apart
+    the way they once did (the binder recognized only the separate-value
+    spelling, so an equals-form nested path was left unbound and then
+    permanently refused downstream: no launch token can be pre-written by
+    an operator, since it is minted inside ``create``).
+
+    ``models._required_timer_arguments`` refuses a nested ``--report-path``
+    that carries more than one occurrence, or one that carries no value,
+    before this helper ever runs -- so a truncated or duplicated nested flag
+    is not reachable through ``create``. Those shapes are still passed
+    through unrebound here rather than made to raise, the same way
+    ``_bind_report_path_to_launch``'s own unreachable-through-``create``
+    refusals above are kept as a named contract rather than assumed: a
+    caller other than ``create`` should not have to trust that argv shape
+    by accident.
     """
 
     argv = json.loads(bootstrap_command_json)
-    if "--report-path" not in argv:
-        return bootstrap_command_json
-    index = argv.index("--report-path") + 1
-    if index >= len(argv):
-        return bootstrap_command_json
-    argv[index] = _bound_report_path(argv[index], launch_token)
-    return json.dumps(argv)
+    bound = rebind_nested_flag(
+        argv, "--report-path", lambda raw: _bound_report_path(raw, launch_token)
+    )
+    return json.dumps(bound)
 
 
 SPEND_ALERT_DEBOUNCE_SECONDS: Final = 900

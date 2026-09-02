@@ -161,13 +161,17 @@ equal the one the fetched artifacts rebuild. The authority is fetched first and 
 inventories second, so a bad object stops the fetch at itself rather than after a folder
 of them. An object under the prefix that no stage of a run tree accounts for is refused
 by name. A publication temporary a crashed pod left beside a manifest is skipped and its
-name is in the receipt.
+name is in the receipt. A stage that never reached a `manifest.json` cannot be checked
+against a stored manifest at all; its artifacts are checked by envelope alone, and the
+receipt records `"state": "verified-partial"` instead of `"verified"` — a partial run
+never appears complete.
 
 A file that already exists locally is compared, never replaced: identical bytes are reused
-and counted, different bytes refuse by name and leave the local run untouched. Run it
-again after a refusal and it safely reuses what was verified. The receipt records counts,
-the stages verified and the excluded temporaries; `status` shows it. The listing and
-`GetObject` path has never run against a real endpoint.
+and counted, different bytes refuse by name and leave the local run untouched. Nothing an
+attempt fetched is kept when it refuses; only files an earlier fetch already verified
+survive to be reused. Run it again after a refusal — it safely reuses those files. The
+receipt records counts, the stages verified and the excluded temporaries; `status` shows
+it. The listing and `GetObject` path has never run against a real endpoint.
 
 ## `spend show`: inspect the reviewed guard
 

@@ -139,7 +139,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.record_fixture is not None:
         record["record_fixture"] = str(args.record_fixture)
     if args.notify:
-        _notify_launch_and_close(record, result, request, runtime.spend_policy)
+        try:
+            _notify_launch_and_close(record, result, request, runtime.spend_policy)
+        except Exception as error:  # noqa: BLE001 -- contained so the record below still prints (rule 7)
+            # `notify_hooks` promises never to raise; contained here anyway so a
+            # future bug in that promise cannot take this printed record with it --
+            # the record naming the pod and lease is the one artifact rule 7 exists
+            # to protect, and it must still print even when notification breaks.
+            detail = f"notification raised and was contained: {error!r}"
+            if len(detail) > 160:
+                detail = f"{detail[:160]} (reason truncated at 160 characters)"
+            record["notification_error"] = detail
     print(json.dumps(record, sort_keys=True, indent=2))
     # Exit status alone must never read as "nothing happened": 0 is guarded
     # success, 2 is a refusal that made no paid action, 3 means a pod or lease

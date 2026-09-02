@@ -80,6 +80,11 @@ MAX_READ_BYTES: Final = 1024 * 1024
 # `S3VolumeObjectReader`: one run tree's listing is bounded, and each object is
 # streamed in chunks under the caller's own per-object bound.
 MAX_LISTED_KEYS: Final = 100_000
+# S3's own page ceiling is 1,000 keys, so MAX_LISTED_KEYS bounds a well-behaved
+# listing to well under 100 pages. A page that adds no keys never trips the key
+# bound at all, so the walk needs its own, more generous page bound to refuse a
+# listing that is not making progress.
+MAX_LISTED_PAGES: Final = 1_000
 FETCH_CHUNK_BYTES: Final = 1024 * 1024
 
 # `Error.Code` values that mean "no such object" rather than "something is wrong".
@@ -393,9 +398,11 @@ class S3VolumeObjectReader:
 
     `ListObjects` "may take a long time" past 10,000 objects or 10 GB
     (RunPod's documented limit, module docstring); a run tree of a few pages
-    is far inside that, and `MAX_LISTED_KEYS` refuses one that is not rather
-    than walking it forever. Note 3 of the module docstring applies: nothing
-    here has run against a real endpoint.
+    is far inside that, and `MAX_LISTED_KEYS` together with `MAX_LISTED_PAGES`
+    refuses one that is not -- by key count, and by page count so a listing
+    that answers truncated pages with no new keys is refused instead of
+    walked forever -- rather than walking it forever. Note 3 of the module
+    docstring applies: nothing here has run against a real endpoint.
     """
 
     def __init__(
@@ -417,7 +424,15 @@ class S3VolumeObjectReader:
             )
         keys: list[str] = []
         token: str | None = None
+        seen_tokens: set[str] = set()
+        pages = 0
         while True:
+            pages += 1
+            if pages > MAX_LISTED_PAGES:
+                raise VolumeTransferRefusal(
+                    f"more than {MAX_LISTED_PAGES} pages listing {prefix!r} without reaching "
+                    "the end; that is not the shape of one run tree and was not walked further"
+                )
             request: dict[str, Any] = {"Bucket": self.spec.volume_id, "Prefix": prefix}
             if token is not None:
                 request["ContinuationToken"] = token
@@ -458,6 +473,12 @@ class S3VolumeObjectReader:
                     f"the network volume truncated the listing of {prefix!r} without a "
                     "continuation token; a partial listing is not a run"
                 )
+            if token in seen_tokens:
+                raise VolumeTransferRefusal(
+                    f"the network volume repeated a continuation token listing {prefix!r}; "
+                    "the listing is not making progress and was not walked further"
+                )
+            seen_tokens.add(token)
 
     def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
         """Stream one object into `destination`; the byte count, or a refusal.
@@ -617,6 +638,7 @@ __all__ = [
     "FETCH_CHUNK_BYTES",
     "MAX_CONCURRENCY",
     "MAX_LISTED_KEYS",
+    "MAX_LISTED_PAGES",
     "MAX_READ_BYTES",
     "PART_BYTES",
     "SHA256_METADATA_KEY",

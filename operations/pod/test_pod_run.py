@@ -7,13 +7,13 @@ orchestrator subprocess, and an injected clock for every sleep. The fixture
 roster (``config/models.toml``) and the fixture serving catalogue are what the
 plan names; no chair is ever served and no provider is ever reached.
 
-The last test is the reconciliation the ``pod`` dependency group was to carry
-with ``config/serving_recipes_real.toml``. It is a strict expected failure
-today because that group cannot exist yet -- the recipe's ``transformers``
-pin and the project's ``huggingface_hub`` pin cannot share one environment
-(``operations/pod/README.md`` carries the resolver's own words) -- and it
-flips red the moment the group lands so the reconciliation goes live rather
-than lapsing.
+The last test is the reconciliation the ``pod`` dependency group carries with
+``config/serving_recipes_real.toml``. The group is locked now -- what could
+not share one environment before was ``transformers==4.57.1`` wanting
+``huggingface-hub<1.0``, and that is resolved -- so the reconciliation is
+live: the test fails on drift between the group and the catalogue's pins, or
+on a requirement missing the Linux/x86_64 marker that keeps a laptop
+``uv sync`` from resolving torch.
 """
 
 from __future__ import annotations

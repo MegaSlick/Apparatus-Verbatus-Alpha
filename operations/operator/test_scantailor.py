@@ -717,7 +717,11 @@ def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
     # promises: a count written into the test stayed green through one added
     # verb and then broke on the next for the README saying the right thing.
     spelled = {13: ("thirteen", "Eleven"), 14: ("fourteen", "Twelve"), 15: ("fifteen", "Thirteen")}
-    total, doers = spelled[len(verb_action.choices)]
+    counted = len(verb_action.choices)
+    assert counted in spelled, (
+        f"{counted} verbs: extend this test's number words so the heading stays checkable"
+    )
+    total, doers = spelled[counted]
     assert f"## The {total} words" in readme
     assert f"{doers} things this tool can do" in readme
 

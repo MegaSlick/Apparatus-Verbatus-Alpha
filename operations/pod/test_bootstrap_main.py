@@ -1071,6 +1071,118 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     assert not record["assembly_proven"], "fakes are not a real assembly claim"
 
 
+def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    identities: dict,
+    page_path: Path,
+    *,
+    swap_after_call: int,
+    witness: str = WITNESS,
+):
+    """``_preflight_seams``, but its ``utilization`` seam swaps the golden page
+
+    on disk after the ``swap_after_call``-th chair's smoke -- ``VisionSmokeCall``
+    calls ``utilization()`` only after that chair has already read and sent the
+    page's bytes, so this reproduces a volume write racing the run without
+    touching any of ``bootstrap_main``'s own code.
+    """
+
+    from decimal import Decimal
+
+    from operations.pod.preflight import GpuProfile, UtilizationSample
+    from operations.serving.smoke import render_golden_page
+    from operations.serving.test_manager import FakeHttp, FakeLauncher, FakePackages
+
+    from .bootstrap_main import PreflightSeams
+
+    http = FakeHttp(
+        model_ids=tuple(f"{role}-api" for role in identities),
+        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+    )
+    launcher = FakeLauncher(http)
+
+    class Probe:
+        def profile(self, dtype: str) -> GpuProfile:
+            return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
+
+    calls = {"count": 0}
+
+    def utilization() -> tuple:
+        calls["count"] += 1
+        if calls["count"] == swap_after_call:
+            # A different, still-valid golden page -- `_verify_png` must pass
+            # so the swap is read as a legitimate page and not merely as a
+            # corrupt file the smoke would refuse for an unrelated reason.
+            render_golden_page(page_path, "swappedPageWitnessDoesNotMatch99")
+        return (UtilizationSample(Decimal("71"), Decimal("31")),)
+
+    seams = PreflightSeams(
+        page_witness=lambda: witness,
+        utilization=utilization,
+        gpu_probe=Probe(),
+        launcher=launcher,
+        http=http,
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        residency_lock=tmp_path / "pod-gpu.lock",
+    )
+    return seams, http, launcher
+
+
+def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_bytes(
+    tmp_path: Path,
+) -> None:
+    """The regression this unit closes: the sealed digest used to be a fourth,
+
+    unbound read of the page, taken after every chair had already smoked it.
+    A swap on the volume in that window used to seal a digest naming bytes no
+    chair ever read, while every smoke receipt still carried the real one.
+    """
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page.png"
+    seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
+        tmp_path, identities, page_path, swap_after_call=len(identities)
+    )
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    supplied = {receipt["supplied_fixture_sha256"] for receipt in record["smoke_receipts"]}
+    assert len(supplied) == 1
+    assert record["golden_page_sha256"] == next(iter(supplied))
+    assert record["golden_page_sha256"] != hashlib.sha256(page_path.read_bytes()).hexdigest()
+
+
+def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Path) -> None:
+    """A swap between two chairs' smokes means one preflight measured two
+
+    different pages -- a shape the old single ``golden_page_sha256`` field
+    could not even represent, let alone refuse.
+    """
+
+    from .bootstrap import BootstrapStepFailure
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    assert len(identities) > 1
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page.png"
+    seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
+        tmp_path, identities, page_path, swap_after_call=1
+    )
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        _build_preflight(plan, seams)()
+
+    assert "disagree on the golden page's digest" in failure.value.detail
+
+
 def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
     tmp_path: Path,
 ) -> None:

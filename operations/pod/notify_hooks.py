@@ -164,6 +164,17 @@ def _send(message: str, *, runner: Runner) -> NotifyOutcome:
         )
     except OSError as error:
         return NotifyOutcome(True, False, f"the notification command could not run: {error}")
+    except Exception as error:  # noqa: BLE001 -- "never raised" is the promise; contain, don't propagate
+        # `subprocess.run(..., text=True)` decodes strictly and can raise
+        # `UnicodeDecodeError` on the child's own stderr/stdout, whose `repr`
+        # embeds the offending bytes -- unbounded, that can run to tens of
+        # thousands of characters. Bound it the same way the returncode path
+        # below bounds the child's own reason, so a broken pipe never blows
+        # up the printed record.
+        detail = f"the notification command failed unexpectedly: {error!r}"
+        if len(detail) > 160:
+            detail = f"{detail[:160]} (reason truncated at 160 characters)"
+        return NotifyOutcome(True, False, detail)
     if result.returncode == 0:
         return NotifyOutcome(True, True, "delivered")
     # Preserve notify.sh's bounded one-line reason so the recorded failure

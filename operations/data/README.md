@@ -13,7 +13,10 @@ the files a sealed submission record names, SHA-256-checked before and after
 volume and fetches each into `<local root>/<id>/`, then checks it the way the run tree
 checks itself: a blob must hash to its own name, a receipt to its own name, an artifact to
 the digest its stage manifest records, `run.json` to its own self-hash, and every stage
-manifest must equal the one the fetched artifacts rebuild. An object no stage accounts
+manifest must equal the one the fetched artifacts rebuild. A stage that never reached a
+`manifest.json` cannot be checked against a stored manifest at all; its artifacts are
+checked by envelope alone, and the receipt records `"state": "verified-partial"` instead
+of `"verified"` — a partial run never appears complete. An object no stage accounts
 for is a refusal by name; a publication temporary is skipped and its name recorded; a
 local file that already exists is compared, never replaced. Zero GPU-hours; the listing
 and `GetObject` path has never run against a real endpoint

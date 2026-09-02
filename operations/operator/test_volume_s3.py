@@ -18,6 +18,7 @@ from operations.pod.transfer import ChecksummedTransfer
 from .errors import ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
+    MAX_LISTED_PAGES,
     SHA256_METADATA_KEY,
     S3VolumeObjectReader,
     S3VolumeReadChannel,
@@ -627,6 +628,39 @@ def test_a_truncated_listing_without_a_continuation_token_is_a_refusal() -> None
 
     with pytest.raises(VolumeTransferRefusal, match="without a continuation token"):
         _reader(client).list_keys("runs/r1/")
+
+
+def test_a_listing_with_a_repeated_continuation_token_is_a_refusal_not_a_hang() -> None:
+    """A page that answers empty + truncated + the same token again is not progress."""
+
+    class StuckTokenClient(FakeListingClient):
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.listings.append({"Prefix": Prefix})
+            return {"Contents": [], "IsTruncated": True, "NextContinuationToken": "STUCK"}
+
+    with pytest.raises(VolumeTransferRefusal, match="repeated a continuation token"):
+        _reader(StuckTokenClient({})).list_keys("runs/r1/")
+
+
+def test_a_listing_with_a_fresh_token_every_page_is_bounded_by_page_count() -> None:
+    """A stuck token is refused by name; a never-repeating one is bounded by page count."""
+
+    class NeverEndingClient(FakeListingClient):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.calls = 0
+
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.calls += 1
+            self.listings.append({"Prefix": Prefix})
+            return {"Contents": [], "IsTruncated": True, "NextContinuationToken": f"t{self.calls}"}
+
+    client = NeverEndingClient()
+    with pytest.raises(VolumeTransferRefusal, match="pages listing"):
+        _reader(client).list_keys("runs/r1/")
+    assert client.calls == MAX_LISTED_PAGES
 
 
 def test_a_listing_the_volume_refuses_is_a_refusal_not_an_empty_run() -> None:

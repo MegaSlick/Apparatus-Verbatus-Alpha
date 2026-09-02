@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
+from datetime import datetime, timedelta
+from decimal import ROUND_UP, Decimal
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from .boot_a_request import (
     pod_request,
     render_boot_a_request,
 )
+from .cli import _request
 from .models import PodCreateRequest, utc_now
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
@@ -78,9 +80,13 @@ def test_a_configured_policy_renders_the_drill_from_its_own_numbers() -> None:
     assert rendered.card is card
     assert card.hourly_usd == min(profile.hourly_usd for profile in placement.card_profiles)
     assert rendered.hard_lifetime_seconds == BOOT_A_HARD_LIFETIME_SECONDS == 900
-    # 900 s at the cheapest reviewed rate, rounded up to the cent.
-    expected = (card.hourly_usd * Decimal(900) / Decimal(3600)).quantize(Decimal("0.01"))
-    assert rendered.estimated_pod_cost_usd >= expected
+    # 900 s at the cheapest reviewed rate, rounded up to the cent -- matching
+    # production's own explicit ROUND_UP (`_cents`), so an inflated quote is
+    # caught rather than waved through by a `>=` that any overcharge satisfies.
+    expected = (card.hourly_usd * Decimal(900) / Decimal(3600)).quantize(
+        Decimal("0.01"), rounding=ROUND_UP
+    )
+    assert rendered.estimated_pod_cost_usd == expected
     text = rendered.text
     for phrase in (
         card.name,
@@ -118,17 +124,32 @@ def test_a_card_above_the_hourly_ceiling_is_named_as_a_coming_refusal() -> None:
     assert "above max_hourly_usd $0.10" in rendered.text
 
 
-def test_the_pod_request_validates_once_tyrel_supplies_his_three_values() -> None:
+def test_the_pod_request_validates_once_tyrel_supplies_his_four_values() -> None:
+    """``hard_deadline`` is a value Tyrel supplies too -- ``pod_request``
+
+    carries no runtime that fills it in, unlike ``metadata``'s billing-cutoff
+    margin, which the launch seals from the spend policy on its own. This
+    supplies all four (image, volume id, repository commit, hard deadline)
+    exactly the way the rendered request asks for them, rather than patching
+    hard_deadline and metadata past the placeholders the rendering leaves.
+    """
+
     card = cheapest_card(load_placement_table(PLACEMENT))
+    hard_deadline = (utc_now().replace(microsecond=0)).isoformat().replace("+00:00", "Z")
     raw = pod_request(
         card,
         image="registry.example/verbatus@sha256:" + "a" * 64,
         volume_id="volume-1",
         repository_commit="b" * 40,
+        hard_deadline=hard_deadline,
     )
-    raw["hard_deadline"] = utc_now()
     raw["metadata"] = {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600"}
+    assert raw["hard_deadline"] == hard_deadline
     raw["docker_start_cmd"] = tuple(raw["docker_start_cmd"])  # type: ignore[arg-type]
+    # `pod_request` renders the RFC3339 string the JSON file carries;
+    # `PodCreateRequest` itself takes a parsed `datetime`, exactly as
+    # `cli._request` parses it before construction.
+    raw["hard_deadline"] = datetime.fromisoformat(hard_deadline.replace("Z", "+00:00"))
 
     request = PodCreateRequest(**raw)  # type: ignore[arg-type]
 
@@ -138,6 +159,72 @@ def test_the_pod_request_validates_once_tyrel_supplies_his_three_values() -> Non
     )
     assert bootstrap[:4] == ["python", "-m", "operations.pod.bootstrap_main", "--hold-only"]
     assert "--volume-mount-path" in bootstrap and "--report-path" in bootstrap
+
+
+def test_the_rendered_request_loads_through_cli_request_once_every_value_is_supplied(
+    tmp_path: Path,
+) -> None:
+    """The document `README.md` and the printed command both promise is
+
+    runnable as printed must actually load through the exact loader the
+    printed command invokes -- not just construct ``PodCreateRequest``
+    directly, which would miss a field ``cli._request`` refuses (e.g. the
+    ``hard_deadline`` placeholder that used to reach `PodCreateRequest`
+    unfilled and unrefused-by-name)."""
+
+    placement = load_placement_table(PLACEMENT)
+    now = utc_now()
+    deadline = (now + timedelta(seconds=BOOT_A_HARD_LIFETIME_SECONDS + 100)).replace(microsecond=0)
+    hard_deadline = deadline.isoformat().replace("+00:00", "Z")
+    rendered = render_boot_a_request(
+        configured(),
+        placement,
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="volume-1",
+        repository_commit="b" * 40,
+        hard_deadline=hard_deadline,
+        now=now,
+    )
+    assert not rendered.refused
+
+    raw = pod_request(
+        rendered.card,
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="volume-1",
+        repository_commit="b" * 40,
+        hard_deadline=hard_deadline,
+    )
+    raw["metadata"] = {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600"}
+    path = tmp_path / "boot-a.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    request = _request(path)
+
+    assert isinstance(request, PodCreateRequest)
+    assert request.hard_deadline.isoformat().replace("+00:00", "Z") == hard_deadline
+
+
+def test_a_hard_deadline_shorter_than_the_drills_own_lifetime_is_refused() -> None:
+    now = utc_now()
+    too_soon = (now + timedelta(seconds=10)).isoformat().replace("+00:00", "Z")
+
+    with pytest.raises(ValueError, match="at least .* seconds from now"):
+        render_boot_a_request(
+            configured(),
+            load_placement_table(PLACEMENT),
+            hard_deadline=too_soon,
+            now=now,
+        )
+
+
+def test_a_past_hard_deadline_is_refused() -> None:
+    now = utc_now()
+    past = (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z")
+
+    with pytest.raises(ValueError, match="must be in the future"):
+        render_boot_a_request(
+            configured(), load_placement_table(PLACEMENT), hard_deadline=past, now=now
+        )
 
 
 def test_placeholders_stay_visible_until_supplied() -> None:

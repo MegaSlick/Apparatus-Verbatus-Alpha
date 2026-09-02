@@ -498,6 +498,13 @@ this record.
   `--report-path` to carry the launch token and stay inside the volume — now requires
   the same of a nested one, in either argparse spelling, when one is present; a nested
   argv naming none is left alone, as before.
+  A later audit found the binder itself only recognized the separate-value spelling, so
+  an `--report-path=value` nested flag reached this validator unbound and was refused
+  by name for a launch token an operator cannot pre-write (it is minted inside
+  `create`) — that request shape was permanently unlaunchable. `_bind_nested_report_path`
+  now shares its argv-reading with the validator through `models.rebind_nested_flag`, so
+  the binder covers both spellings and the validator remains the belt to its braces
+  rather than the only net for one of them.
 
 **Verification.** `ruff format` and `ruff check` clean on every `.py` touched. Tests
 through the shared test lock only, iterated per this unit's own budget; the full

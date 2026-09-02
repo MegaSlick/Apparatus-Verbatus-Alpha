@@ -371,9 +371,12 @@ check.
   run root or submission outside the volume, a submission folder or manifest
   that is not there, a policy outside the repository, a bad run id — and **the
   data gate is asked first**, before a model is fetched on a billing card:
-  the shipped `config/data_handling_policy.json` names no storage root on any
-  volume, so a launch whose submission folder is on one is refused here with
-  the reason that listing it is Tyrel's disclosure decision (hard rule 1).
+  `config/data_handling_policy.json` now names the pod volume mount path
+  (`operations/pod/boot_a_request.py`'s sealed `volume_mount_path`) beside the
+  local `private/` root — that listing was a disclosure decision, Tyrel's
+  under hard rule 1, made once rather than per-launch — so a submission
+  folder under either listed root is approved and one outside every listed
+  root is refused here, by name, before a model is fetched on a billing card.
   **There is no `--placement-tier` flag.** The consult that asked for this
   entrypoint named one; the orchestrator and the stage parser accept none and
   no stage reads a tier as the code stands, so `pod_run` records the tier the
@@ -518,8 +521,12 @@ table, the plain-language request Tyrel reads before the drill: what it does, th
 cheapest reviewed card and its rate, the hard lifetime (900 seconds, or the policy's
 ceiling if shorter), the ceilings the launch will enforce, the cost if it ran the full
 lifetime, the expected immediate close, the exact command with `--record-fixture` on,
-and the pod request JSON with his three values marked not yet supplied until passed as
-`--image`, `--volume-id`, `--repository-commit`. An unconfigured policy renders a
+and the pod request JSON with his four values marked not yet supplied until passed as
+`--image`, `--volume-id`, `--repository-commit`, `--hard-deadline`. `cli.py create`
+refuses to load the JSON until `hard_deadline` is filled in by hand; the
+`VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS` placeholder alongside it needs no hand edit,
+since the launch seals that value from the spend policy on every create or adopt. An
+unconfigured policy renders a
 **refusal** naming what is missing — no command, no request — and exits 2. The text
 authorizes nothing; it is what the per-session gate needs in order to be given. A preview that is itself refused prints its price
 and every reason but withholds the phrase, because a refusal spends no challenge and the

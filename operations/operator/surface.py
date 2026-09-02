@@ -68,6 +68,7 @@ from operations.pod.models import (
     require_utc,
 )
 from operations.pod.notify_bridge import NotifyOutcome as PodNotifyOutcome
+from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.preflight import (
     CacheMismatch,
     GpuProfile,
@@ -95,6 +96,7 @@ from operations.pod.transfer import ChecksummedTransfer, TransferFailure, Transf
 from operations.submit import submit as submission_door
 
 from . import notify_bridge
+from ._run_tree_paths import is_publication_temporary
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
@@ -130,7 +132,7 @@ DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 # credential stayed in a stage's environment.
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
-FETCH_RUN_PREFIX = "runs"
+FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
 """Where `pod_run` writes run trees on the volume, relative to its mount:
 `<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
 MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
@@ -2994,7 +2996,7 @@ def _fetch_run_tree(
     excluded: list[str] = []
     for key in keys:
         relative = key[len(prefix) :]
-        if _is_publication_temporary(relative, scope):
+        if is_publication_temporary(relative, scope):
             excluded.append(relative)
             continue
         if (
@@ -3193,19 +3195,6 @@ def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
         ):
             raise FetchRunRefusal(f"{relative} lists an artifact with no path and digest.")
     return manifest
-
-
-def _is_publication_temporary(relative: str, scope: tuple[str, ...]) -> bool:
-    """RunTree's same-directory `.<target>.tmp-*` residue, and nothing else."""
-
-    path = PurePosixPath(relative)
-    if not path.name.startswith("."):
-        return False
-    target_name, separator, unique = path.name[1:].partition(".tmp-")
-    if not separator or not target_name or not unique:
-        return False
-    target = path.with_name(target_name).as_posix()
-    return any(target.startswith(item) if item.endswith("/") else target == item for item in scope)
 
 
 def _sha256_of(path: Path) -> str:

@@ -894,8 +894,15 @@ profile whose dtype is not exactly the measured one, so ``float16`` here --
 what this file used to pass -- made every real smoke red before it launched."""
 
 
-def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str]:
-    """The page the smoke sends and the witness it must read back, as one pair."""
+def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
+    """The page the smoke sends and the witness it must read back, as one triple.
+
+    The bytes are returned alongside the path so a caller that needs a
+    digest before any chair has smoked the page (the ``no-chair-verified``
+    fallback in ``_build_preflight``) reads it once, here, rather than
+    taking a later, separate read of a file a live run's volume could have
+    changed underneath it in the meantime.
+    """
 
     if plan.fixture is not None:
         witness_file = plan.page_witness_file
@@ -913,17 +920,53 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str]:
                 f"the page witness file {witness_file} could not be read: {error}",
                 "Restore the witness file beside the golden page it names, then resume.",
             ) from error
-        if not plan.fixture.is_file():
+        try:
+            page_bytes = plan.fixture.read_bytes()
+        except OSError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,
                 f"the supplied golden page {plan.fixture} is missing",
                 "Restore the named golden page, then resume this journal.",
-            )
-        return plan.fixture, witness
+            ) from error
+        return plan.fixture, witness, page_bytes
     witness = seams.page_witness()
     page = plan.preflight_root / "golden-page.png"
-    render_golden_page(page, witness)
-    return page, witness
+    page_bytes = render_golden_page(page, witness)
+    return page, witness, page_bytes
+
+
+def _golden_page_digest(
+    smoke_receipts: tuple[dict[str, object], ...], page_bytes_at_render: bytes
+) -> str:
+    """The digest of the bytes a chair actually read, not a later re-read of the file.
+
+    Every smoke receipt's ``supplied_fixture_sha256`` is the digest of the
+    exact bytes that chair was sent -- ``ServingManager`` re-digests the
+    payload at request time and refuses if it does not match what
+    ``preflight`` sealed. Taking the digest from there, instead of reading
+    the page again after every chair has already read it, closes the window
+    where a swap on the volume between the last smoke and this read could
+    seal a digest naming bytes no chair ever saw. When every receipt agrees,
+    that shared digest is the record's own. More than one distinct digest
+    means this single preflight smoked more than one golden page -- refused
+    by name rather than reported green, since one preflight must prove one
+    page. No smoke receipts at all means ``no-chair-verified`` has already
+    put this report red; the digest taken at page-render time still names a
+    page in that failure's detail.
+    """
+
+    digests = {receipt["supplied_fixture_sha256"] for receipt in smoke_receipts}
+    if len(digests) > 1:
+        raise BootstrapStepFailure(
+            BootstrapStep.PREFLIGHT,
+            "preflight's own smoke receipts disagree on the golden page's digest: "
+            + ", ".join(sorted(str(digest) for digest in digests)),
+            "One preflight run must smoke exactly one golden page. A page that changed "
+            "mid-run is refused rather than reported green.",
+        )
+    if digests:
+        return str(next(iter(digests)))
+    return digest_bytes(page_bytes_at_render)
 
 
 def _build_preflight(
@@ -980,7 +1023,7 @@ def _build_preflight(
         publisher = PodPreflightReceiptPublisher(preflight_root, context)
         probe = chosen.gpu_probe or SystemGpuProbe(disk_path=plan.volume_mount_path)
         profile = probe.profile(PREFLIGHT_DTYPE)
-        fixture, witness = _golden_page(plan, chosen)
+        fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
         smoke_call = VisionSmokeCall(
             witness, utilization=chosen.utilization or NvidiaSmiUtilization()
         )
@@ -1009,8 +1052,22 @@ def _build_preflight(
         report = runner.run(profile)
         record = report.to_record()
         record["serving_config_inputs"] = config_inputs.to_record()
-        record["golden_page_sha256"] = digest_bytes(fixture.read_bytes())
         record["preflight_root"] = str(preflight_root)
+        try:
+            record["golden_page_sha256"] = _golden_page_digest(
+                report.smoke_receipts, page_bytes_at_render
+            )
+        except BootstrapStepFailure as digest_failure:
+            # A digest disagreement can coincide with a genuinely red report --
+            # embed the same full record the red path below reports, so this
+            # refusal adds evidence rather than replacing the richer one.
+            raise BootstrapStepFailure(
+                digest_failure.step,
+                digest_failure.detail
+                + " -- record: "
+                + json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+                digest_failure.remediation,
+            ) from digest_failure
         if report.color != "green":
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,

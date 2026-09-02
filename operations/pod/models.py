@@ -343,20 +343,49 @@ def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
             raise ValueError("docker_start_cmd must not invoke a shell before the pod timer module")
 
 
-def _nested_flag_value(argv: list[str], flag: str) -> str | None:
-    """A flag's value from a decoded nested argv, in either argparse spelling.
+def _nested_flag_values(argv: list[str], flag: str) -> list[str | None]:
+    """Every occurrence of a flag's value in a decoded nested argv.
 
     ``bootstrap_main``'s own parser accepts both ``--report-path value`` and
     ``--report-path=value``; a validator that only recognized one spelling
-    would wave the other through unbound and uninspected.
+    would wave the other through unbound and uninspected. This collects
+    every occurrence -- rather than returning on the first match -- so a
+    caller can tell "flag absent" (empty list), "flag present but carries
+    no value" (a ``None`` entry, e.g. the flag is the argv's last item),
+    and "flag present more than once" (more than one entry) apart. Merging
+    those cases, as a function that returns a single value would, lets a
+    truncated or duplicated flag reach the pod unbound and uninspected.
     """
 
+    values: list[str | None] = []
     for index, item in enumerate(argv):
         if item == flag:
-            return argv[index + 1] if index + 1 < len(argv) else None
-        if item.startswith(f"{flag}="):
-            return item.split("=", 1)[1]
-    return None
+            values.append(argv[index + 1] if index + 1 < len(argv) else None)
+        elif item.startswith(f"{flag}="):
+            values.append(item.split("=", 1)[1])
+    return values
+
+
+def rebind_nested_flag(argv: list[str], flag: str, transform) -> list[str]:
+    """Rewrite a flag's value in a decoded nested argv, in either spelling.
+
+    Shares its reading of ``argv`` with :func:`_nested_flag_values` on
+    purpose -- a binder and its validator that each parsed the flag their
+    own way is exactly how ``--report-path=value`` was left unbound while
+    ``--report-path value`` was bound (the binder recognized only the
+    separate-value spelling). The flag's absence is left alone rather than
+    invented: a nested argv naming no ``--report-path`` at all -- the
+    library-module placeholder the tests use -- is not this function's to
+    fill in.
+    """
+
+    bound = list(argv)
+    for index, item in enumerate(bound):
+        if item == flag and index + 1 < len(bound):
+            bound[index + 1] = transform(bound[index + 1])
+        elif item.startswith(f"{flag}="):
+            bound[index] = f"{flag}={transform(item.split('=', 1)[1])}"
+    return bound
 
 
 def _required_timer_arguments(
@@ -424,8 +453,13 @@ def _required_timer_arguments(
     # time, after billing had already started. Re-validated here, at the same
     # money-path gate as the outer path, so that gap is closed before create
     # rather than found on the pod.
-    nested_report_path = _nested_flag_value(bootstrap, "--report-path")
-    if nested_report_path is not None:
+    nested_report_paths = _nested_flag_values(bootstrap, "--report-path")
+    if len(nested_report_paths) > 1:
+        raise ValueError("pod bootstrap command must carry at most one nested --report-path value")
+    if nested_report_paths and nested_report_paths[0] is None:
+        raise ValueError("pod bootstrap command's nested --report-path flag carries no value")
+    if nested_report_paths:
+        nested_report_path = nested_report_paths[0]
         nested_path = PurePosixPath(nested_report_path)
         if (
             ".." in nested_report_path.split("/")

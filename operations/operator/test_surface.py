@@ -4592,6 +4592,8 @@ class DirectoryRunReader:
 def _volume_run(tmp_path: Path, run_id: str = "brought-home") -> tuple[Path, DirectoryRunReader]:
     """A real, sealed run tree under `runs/<id>` on a directory standing in for the volume."""
 
+    from common.chairs.models import ChairIdentity, ServingDetails
+    from common.chairs.receipts import build_receipt
     from common.contracts.envelope import build_envelope
     from common.contracts.identities import artifact_id as make_artifact_id
     from common.contracts.stages import DESIGNATOR
@@ -4625,6 +4627,33 @@ def _volume_run(tmp_path: Path, run_id: str = "brought-home") -> tuple[Path, Dir
         )
     )
     tree.write_manifest(DESIGNATOR)
+    # A real serving receipt, so a fetch's never-entered digest arm for
+    # `receipts/sha256/` is exercised the same as the blob and artifact arms.
+    identity = ChairIdentity(
+        role="attestator_1",
+        source="local-repository",
+        repo=None,
+        path="fixture/attestator_1",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/attestator_1.json",
+        adapter_of=None,
+        serving_recipe="fake-attestator-v0",
+        license_note="fixture only",
+    )
+    details = ServingDetails(
+        tokenizer_revision="a" * 64,
+        seed=0,
+        context_cap=4096,
+        pixel_cap=1_000_000,
+        engine="fixture-engine",
+        engine_version="v0",
+        dtype="float32",
+        adapter_identity=None,
+        endpoint="http://fixture.invalid/seat",
+        started_at="2026-08-03T00:00:00Z",
+    )
+    tree.write_run_receipt(build_receipt(identity, details))
     # Publication residue a crashed pod leaves beside the manifest: skipped by
     # name, never fetched as evidence.
     (tree.root / "2_designator" / ".manifest.json.tmp-residue").write_bytes(b"half")
@@ -4675,6 +4704,28 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+
+
+def test_fetch_run_refuses_a_receipt_that_does_not_hash_to_its_name(tmp_path: Path) -> None:
+    """The receipt arm of the content-addressed digest check, not just the blob arm."""
+
+    volume, reader = _volume_run(tmp_path)
+    receipts_dir = volume / "runs" / "brought-home" / "receipts" / "sha256"
+    [receipt] = [path for path in receipts_dir.iterdir() if path.is_file()]
+    relative = receipt.relative_to(volume / "runs" / "brought-home").as_posix()
+    reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert relative in str(refusal.value.detail)
+    assert "content-addressed" in str(refusal.value.detail)
+    # The forged bytes were fetched fresh (no local copy existed) before the
+    # digest check ran; the refusal must not leave them under their real name.
+    assert not (into / "brought-home" / relative).exists()
 
 
 def test_fetch_run_refuses_an_object_no_stage_accounts_for(tmp_path: Path) -> None:

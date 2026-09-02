@@ -308,8 +308,8 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.FETCH_RUN_FAILED: ErrorCopy(
         "The run tree was not brought back from the network volume as one verified whole.",
-        "Files already verified stay where they landed; an existing local file that differed was not touched, and no pod was started or billed.",
-        "Keep the saved detail, repair the named object, digest, or local-copy conflict, then run `verbatus fetch-run` again; it safely reuses verified files.",
+        "Nothing this attempt fetched was kept; files verified by an earlier fetch stay where they landed, an existing local file that differed was not touched, and no pod was started or billed.",
+        "Keep the saved detail, repair the named object, digest, or local-copy conflict, then run `verbatus fetch-run` again; it safely reuses files an earlier fetch already verified.",
     ),
     ErrorCode.INGEST_REFUSED: ErrorCopy(
         "The submission could not be prepared for the Door.",
