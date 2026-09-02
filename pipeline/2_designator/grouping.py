@@ -60,6 +60,10 @@ class ActGroup(TypedDict):
 # the precedent: "refused loudly rather than defaulted".
 
 
+def _plain_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _y_range(component: dict) -> tuple[int, int]:
     bounds = component["bounds"]
     return bounds["y"], bounds["y"] + bounds["h"]
@@ -95,20 +99,20 @@ def assign_columns(
     puts it there even when its right edge slightly overhangs the boundary.
     `margin_px` is resolved from the page's own width before this is called,
     never a fraction computed here -- the margin is a fixed lane the page's
-    layout defines, not a property of what happens to be printed in it, and
-    the last float left this module when the resolution moved to the caller.
+    layout defines, not a property of what happens to be printed in it. The
+    comparison itself stays integer: `x0 + x1 < 2 * margin_px` decides the
+    same side as `(x0 + x1) / 2 < margin_px` for integer bounds, without ever
+    producing a float (GLOSSARY / canonical-integer rule).
     """
     if page_w <= 0:
         raise ContractError(f"page width {page_w} is not positive")
     if not (0 < margin_px < page_w):
         raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
-    boundary = margin_px
     margin: list[dict] = []
     body: list[dict] = []
     for component in components:
         x0, x1 = _x_range(component)
-        centre = (x0 + x1) / 2
-        (margin if centre < boundary else body).append(component)
+        (margin if x0 + x1 < 2 * margin_px else body).append(component)
     return margin, body
 
 
@@ -208,6 +212,13 @@ def group_page(
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to group within")
+    for name, value in (
+        ("chain gap", chain_gap_px),
+        ("anchor reach", anchor_reach_px),
+        ("brace minimum height", brace_min_height_px),
+    ):
+        if not _plain_int(value) or value < 0:
+            raise ContractError(f"{name} {value}px is not a non-negative integer")
     if not components:
         return []
 
