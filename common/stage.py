@@ -1893,11 +1893,14 @@ def run_config_bindings(
     # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
     # holds to the same rule across stage directories — would buy a bind-time
     # refusal by breaking two live guards, so the refusal for a *malformed* file
-    # sits where the loader already is: the Designator loads it in `initial_pass`
-    # and proves it against this digest through
-    # `require_sealed_config("designator-grouping", ...)`, and `load_grouping_config`
-    # refuses loudly there, before the stage marks anything out. An *unreadable*
-    # file still refuses right here, at run creation, exactly as geometry's does.
+    # is meant to sit where the loader already is: the Designator's structure
+    # pass, loading it in `initial_pass` and proving it against this digest
+    # through `require_sealed_config("designator-grouping", ...)`, with
+    # `load_grouping_config` refusing loudly there, before the stage marks
+    # anything out. That call has not landed yet — see the note beside
+    # `sealed_config_digests` below — so today a malformed file is only hashed,
+    # never parsed. An *unreadable* file still refuses right here, at run
+    # creation, exactly as geometry's does.
     try:
         grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
     except OSError as error:
@@ -2003,13 +2006,19 @@ def run_config_bindings(
         #
         # Every name here is bound into `config_digest` above, and every name here
         # has a point of use that requires it: padding and geometry at the
-        # Designator's crop, grouping at the same stage's structure pass one step
-        # before it, alignment at the Attestatores, the shard limit at run
+        # Designator's crop, alignment at the Attestatores, the shard limit at run
         # creation, the two Perlector policies at the reading, `recovery` at the
         # Recensor, the Designator recovery pass and the orchestrator's dispatch,
         # `pdf-render` at the Door that parsed it, and `hard-failure` at the
         # orchestrator's own checkpoint. A name sealed with no point of use would
         # read as a closed window that nothing actually shuts.
+        #
+        # `grouping` is the one entry ahead of its point of use today: it is
+        # bound and sealed here so the digest exists to prove against, but
+        # `pipeline/2_designator/run.py::initial_pass` does not yet call
+        # `require_sealed_config("designator-grouping", ...)` — that call, and the
+        # malformed-policy refusal it guards, arrive with the Designator's
+        # structure pass, not with this binding.
         #
         # `hard-failure` is the family's fourth member and the last to be sealed.
         # It is the one the orchestrator reads BEFORE the run exists — the tally

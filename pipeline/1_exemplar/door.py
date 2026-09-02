@@ -2227,11 +2227,12 @@ def _geometry_config_digest(path: str) -> str:
 def _grouping_config_digest(path: str) -> str:
     """The Designator grouping/reconciliation thresholds' digest, sealed at the door.
 
-    Load-bearing on the same terms as geometry: `pipeline/2_designator/run.py`
-    re-reads these thresholds at point of use and proves it read what was bound
+    Meant to be load-bearing on the same terms as geometry — `pipeline/2_designator/run.py`
+    re-reading these thresholds at point of use and proving it read what was bound
     via `context.require_sealed_config("designator-grouping", ...)`, so a real run
     whose door never sealed this name would refuse at the Designator
-    unconditionally — the defect F-S5 named for padding.
+    unconditionally, the defect F-S5 named for padding — but that point of use has
+    not landed yet: today this name is sealed here and nowhere required.
 
     Hashed here and parsed there, never both: the schema lives in
     `pipeline/2_designator/grouping_config.py`, and a stage may not import another

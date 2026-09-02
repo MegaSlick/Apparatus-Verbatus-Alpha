@@ -214,8 +214,9 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
 `alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
 `pdf-render`, `recovery`, `hard-failure`, and — on real ingress only, because the
-fixture route is not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's
-pre-door producer/door seam must call `require_triage_modes` before using its vocabulary.
+fixture route is not gated — `data-handling`. `triage-modes` is likewise sealed into
+every run; Unit 6's pre-door producer/door seam must call `require_triage_modes` before
+using its vocabulary.
 
 ### `designator_grouping.toml`
 
@@ -246,16 +247,19 @@ source literal against the Recensor's own contrast constant. A per-run value for
 would make that cross-stage invariant unenforceable statically, so the file's closed
 schema refuses both names outright.
 
-Unlike `recovery.toml` and `formats.toml` above, this policy is re-read at its point of
-use rather than carried already parsed, exactly as `designator-padding` and
-`designator-geometry` are. Its schema lives in `pipeline/2_designator/grouping_config.py`,
-and `common/` may never import a stage module (`common/README.md`, enforced through
-`ast` by `common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across
-stage directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation
-hashes the bytes and refuses an unreadable file; the Designator loads and validates
-them in `initial_pass` and proves it read the bound bytes through
+Unlike `recovery.toml` and `formats.toml` above, this policy is meant to be re-read at
+its point of use rather than carried already parsed, exactly as `designator-padding`
+and `designator-geometry` are. Its schema lives in
+`pipeline/2_designator/grouping_config.py`, and `common/` may never import a stage
+module (`common/README.md`, enforced through `ast` by
+`common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across stage
+directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation hashes
+the bytes and refuses an unreadable file; the Designator's structure pass, once it
+loads and validates them in `initial_pass`, will prove it read the bound bytes through
 `require_sealed_config("designator-grouping", …)`, which is where a malformed policy is
-refused — before the stage marks anything out.
+meant to be refused — before the stage marks anything out. That call has not landed on
+this branch: today a malformed policy is only hashed, never parsed, and seals a run
+without being caught.
 
 ## Pre-door triage instrument
 
