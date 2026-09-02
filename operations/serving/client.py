@@ -49,6 +49,12 @@ _FORBIDDEN_GENERATION_SENT_KEYS = frozenset({"model", "stream", "temperature", "
 # Python values whose `==` is looser than the wire's.
 _JSON = {"sort_keys": True, "separators": (",", ":"), "ensure_ascii": False}
 
+# A sentinel distinct from every legitimate decoded generation value (always a
+# JSON-native dict, list, string, number, bool, or None), so the malformed-
+# decimal branch below can force a mismatch without risking a coincidental
+# equality against `None`.
+_UNRECORDABLE = object()
+
 
 def _recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
     """The generation view in a form the canonical writer can hold, losslessly.
@@ -82,12 +88,27 @@ def _recorded_value(value: object) -> object:
     return value
 
 
+class _UnrecordableWireDecimal(Exception):
+    """A tagged ``wire-decimal.v1`` form whose ``decimal`` text is not a number.
+
+    Raised inside :func:`_decoded_generation`, never let escape past
+    :func:`_refuse_generation_that_cannot_be_recorded_as_sent`: a malformed
+    tagged form is vendor-carried evidence the client does not control, and it
+    must surface as the same named ``CHAIR_REQUEST_INVALID`` refusal every
+    other unrecordable generation value gets, not as a bare exception out of
+    the client's own decoding check.
+    """
+
+
 def _decoded_generation(value: object) -> object:
     """The inverse of :func:`_recorded_generation`, used to check it, not to trust it."""
 
     if isinstance(value, dict):
         if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
-            return float(value["decimal"])
+            try:
+                return float(value["decimal"])
+            except (TypeError, ValueError) as error:
+                raise _UnrecordableWireDecimal(repr(value["decimal"])) from error
         return {key: _decoded_generation(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_decoded_generation(item) for item in value]
@@ -106,7 +127,16 @@ def _refuse_generation_that_cannot_be_recorded_as_sent(
     account for byte-for-byte.
     """
 
-    if json.dumps(_decoded_generation(recorded), **_JSON) != json.dumps(dict(view), **_JSON):  # type: ignore[arg-type]
+    try:
+        decoded: object = _decoded_generation(recorded)
+    except _UnrecordableWireDecimal:
+        # A decimal text that cannot be parsed back is unrecordable outright:
+        # there is no decoded form to compare, so the sentinel below never
+        # equals a real view and the refusal below always fires.
+        decoded = _UNRECORDABLE
+    if decoded is _UNRECORDABLE or json.dumps(decoded, **_JSON) != json.dumps(  # type: ignore[arg-type]
+        dict(view), **_JSON
+    ):
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
             f"{field} cannot be recorded as the values that were sent; the call record would "

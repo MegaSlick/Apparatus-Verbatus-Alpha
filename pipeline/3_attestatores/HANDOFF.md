@@ -216,12 +216,36 @@ own construction site are pure no-ops as a result. This stage's own is left in
 place for its owner to remove, and `pipeline/4_perlector/run.py`'s
 `_read_receipt_through` is not a pure no-op removal either — `test_live_perlector.py`
 names it — so removing both is one small follow-on, not a change made from
-outside their files.
+outside their files. The comment beside this stage's own lambda
+(`run.py` around `read_receipt=lambda reference: ...`) still says the bare
+wiring "refuses every live start on the reference the manager itself just
+published" — true when it was written, false now that `ChairClient.__enter__`
+normalizes the reference itself (`operations/serving/client.py`); whoever
+removes the lambda should drop the stale claim with it, or correct it first
+if the lambda is kept a while longer. `pipeline/4_perlector/run.py:1772`
+carries the identical stale claim in `_read_receipt_through`'s comment.
 
 One smaller note still open for whoever comes next: a page Testimonium cannot
 name its `serving_call_ref` (the shared page contract's optional fields do not
 admit it), so a continuation-page response's call record is an inventoried blob
 no record links.
+
+**A duplicate-inputs fix on this side is not yet mirrored on the Perlector's.**
+`run.py::_named_once` de-duplicates a page act record's published `inputs` by
+`relative_path` before the envelope writer runs, because a live Chandra page
+whose `native_capture.raw_response_ref` names the same blob the page already
+lists under `raw_response_refs` would otherwise be refused outright by
+`common/contracts/envelope.validate_input_refs`, which refuses any repeated
+path. That is genuinely required here. But
+`pipeline/4_perlector/run.py::validate_page_testimonium_record` reconstructs
+the same record's *expected* `inputs` by concatenating `raw_response_refs` and
+the capture's `raw_response_ref` with no de-duplication, then compares the two
+lists for exact equality — so the one record `_named_once` makes publishable at
+this stage is refused one stage downstream, on the very live-Chandra-page case
+the de-duplication exists for. The fix belongs on the Perlector's side (outside
+this stage's ownership): build its `expected_inputs` keeping one entry per
+`relative_path`, the same rule `validate_input_refs` enforces, before the sorted
+comparison.
 
 ## Testimonium schema
 
