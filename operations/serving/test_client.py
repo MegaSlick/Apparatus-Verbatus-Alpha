@@ -593,7 +593,184 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert response.call_record_ref["sha256"] == digest_bytes(record_bytes)
 
 
+# --- a vendor's float decoding values, recorded exactly as they were sent -----
+
+
+# DAI's carried `generation_config.json`, the values `pipeline/3_attestatores/
+# feeding.py::dai_generation` returns. Retyped here rather than imported: a
+# stage's carried vendor evidence is not this module's to depend on, and what
+# is being proven is that *these numbers* survive the record, whoever declares
+# them.
+_DAI_GENERATION: dict[str, object] = {
+    "bos_token_id": 151643,
+    "do_sample": True,
+    "eos_token_id": [151645, 151643],
+    "pad_token_id": 151643,
+    "repetition_penalty": 1.05,
+    "temperature": 0.1,
+    "top_k": 1,
+    "top_p": 0.001,
+    "transformers_version": "5.2.0",
+}
+
+
+def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them(
+    tmp_path: Path,
+) -> None:
+    """The whole of the Attestatores HANDOFF's first owed gap, closed and proven.
+
+    A live `dai.v1` request could not be recorded at all: the call record goes
+    through `canonical_bytes`, which refuses floats outright, so writing it
+    raised and the request was therefore never made. The record now carries
+    each float as the exact decimal text the request body itself contains,
+    tagged `wire-decimal.v1`, and this test reads that text back out of the
+    *bytes the endpoint actually received* rather than out of the client's own
+    Python values.
+    """
+
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    sent = {"repetition_penalty": 1.05, "top_k": 1, "top_p": 0.001}
+    with client:
+        endpoint.script(ScriptedAnswer(content="texte transcrit", finish_reason="stop"))
+        response = client.read(_request(generation_sent=sent, generation_declared=_DAI_GENERATION))
+
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    record = json.loads(record_bytes)
+    # Canonical bytes at all — the refusal that used to stop this request.
+    assert canonical_bytes(record) == record_bytes
+
+    # The body the fake endpoint received, re-serialized exactly as
+    # `test_request_sha256_is_the_digest_of_the_body_actually_posted` does, so
+    # the comparison below is against the wire and not against the client.
+    posted = endpoint.requests[0]
+    posted_body = json.dumps(
+        posted, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    assert digest_bytes(posted_body) == record["request_sha256"]
+
+    for key, wire_value in (("repetition_penalty", 1.05), ("top_p", 0.001)):
+        recorded = record["generation_sent"][key]
+        assert recorded == {"schema": "wire-decimal.v1", "decimal": json.dumps(wire_value)}
+        # The recorded text is literally in the bytes that were posted, as the
+        # value of that key — not merely a number that reads back equal.
+        assert f'"{key}":{recorded["decimal"]}'.encode("utf-8") in posted_body
+        assert float(recorded["decimal"]) == wire_value
+        assert posted[key] == wire_value
+    # Integers, booleans, strings and lists are untouched: only a float needs
+    # the decimal form, and dressing the rest in it would lose the distinction.
+    assert record["generation_sent"]["top_k"] == 1
+    assert record["generation_declared"]["do_sample"] is True
+    assert record["generation_declared"]["eos_token_id"] == [151645, 151643]
+    assert record["generation_declared"]["transformers_version"] == "5.2.0"
+    assert record["generation_declared"]["temperature"] == {
+        "schema": "wire-decimal.v1",
+        "decimal": "0.1",
+    }
+
+
+def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path: Path) -> None:
+    """`generation_declared` is evidence, not traffic, and gets the same care.
+
+    DAI's `temperature` 0.1 never reaches the wire — the sealed reading-of-
+    record posture is 0 and the client refuses to be built against anything
+    else — but the record must still say what the vendor declared, to the
+    digit, or the two halves of GOVERNANCE 7's account disagree.
+    """
+
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="x", finish_reason="stop"))
+        response = client.read(_request(generation_declared={"temperature": 0.1}))
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert record["generation_declared"] == {
+        "temperature": {"schema": "wire-decimal.v1", "decimal": "0.1"}
+    }
+    assert "temperature" not in endpoint.requests[0] or endpoint.requests[0]["temperature"] == 0
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_nonfinite_generation_value_is_refused_before_anything_is_sent(
+    tmp_path: Path, value: float
+) -> None:
+    """NaN and Infinity are not JSON; Python's encoder emits them anyway.
+
+    A request carrying one would put a body on the wire no conforming reader
+    can parse, and no honest record could transcribe it. Refused before the
+    body exists, rather than rounded to some finite number nobody declared.
+    """
+
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        with pytest.raises(ChairRequestRefusal) as excinfo:
+            client.read(_request(generation_sent={"top_p": value}))
+        assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+def test_a_declared_view_that_collides_with_the_decimal_form_is_refused_not_mangled(
+    tmp_path: Path,
+) -> None:
+    """The one shape the tagged form cannot represent, named rather than lost.
+
+    A vendor that genuinely declared `{"schema": "wire-decimal.v1", "decimal":
+    "1.05"}` as a *value* would be indistinguishable, on read-back, from a
+    float this client encoded. The client proves its own transcription round
+    trips on every call, so this collision surfaces as a named refusal before
+    the record is written instead of as a silently retyped vendor value.
+    """
+
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        with pytest.raises(ChairRequestRefusal) as excinfo:
+            client.read(
+                _request(
+                    generation_declared={
+                        "vendor_note": {"schema": "wire-decimal.v1", "decimal": "1.05"}
+                    }
+                )
+            )
+        assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
 # --- receipt re-verification on __enter__ -------------------------------------
+
+
+def test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter(
+    tmp_path: Path,
+) -> None:
+    """`RunTree.read_run_receipt`'s own rule, satisfied by the client itself.
+
+    `ServiceHandle.receipt_reference` is a read-only mapping proxy — a
+    published provenance reference nothing may edit — and the tree's reader
+    accepts its own reference type or a plain `dict` and refuses anything else
+    by name. Both boundaries are right, and neither is loosened: the client
+    copies on the way in. Before it did, every stage that wired a real tree had
+    to carry a private converter, and the wiring the serving README describes
+    (`read_receipt=context.tree.read_run_receipt`) refused every live start.
+
+    The reader below refuses exactly what the real one refuses, so passing it
+    bare is the assertion.
+    """
+
+    chair = _identity()
+    seen: list[object] = []
+
+    def tree_shaped_read_receipt(reference: object) -> dict[str, object]:
+        seen.append(reference)
+        if type(reference) is not dict or set(reference) != {"relative_path", "sha256"}:
+            raise TypeError(
+                "run receipt reference must contain exactly relative_path and sha256, "
+                f"as a plain dict; got {type(reference).__name__}"
+            )
+        return {"chair": chair.role, "revision": chair.receipt_revision}
+
+    client, _, _, _ = _built(tmp_path, chair=chair, read_receipt=tree_shaped_read_receipt)
+    with client as entered:
+        assert entered.handle is not None
+    assert seen and type(seen[0]) is dict
 
 
 def test_receipt_drift_on_enter_refuses_and_sends_nothing(tmp_path: Path) -> None:

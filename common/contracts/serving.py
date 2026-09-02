@@ -50,3 +50,27 @@ ENGINE_STOP_CUT_OFF: Final = frozenset({"length"})
 # `finish_reason` at all — never a default for a value that has meaning; a
 # label for its literal absence.
 STOP_REASON_UNREPORTED: Final = "unreported"
+
+# A vendor's decoding value is sometimes a float: DAI's carried
+# `generation_config.json` names `repetition_penalty` 1.05 and `top_p` 0.001,
+# and those exact numbers go on the wire. The canonical writer refuses floats
+# outright, deliberately — their JSON form is not stable enough to hash
+# against — so a call record cannot carry the Python float and must not carry a
+# rounded stand-in for it either. What it carries instead is the *exact decimal
+# text the request body itself contains*, tagged so a reader can tell a number
+# recorded this way from a string the vendor really declared. `json.dumps`
+# emits the shortest text that reads back as the identical double, so nothing
+# is lost and nothing is invented: the record is a transcription of the bytes
+# sent, not a re-measurement of them.
+WIRE_DECIMAL_SCHEMA: Final = "wire-decimal.v1"
+WIRE_DECIMAL_FIELDS: Final = frozenset({"schema", "decimal"})
+
+# What kind of bytes a live Testimonium's `raw_response_ref` names. A live act
+# record reaches its retained blob by two different routes — the adapter's own
+# output bytes when a parser ran over them, and the whole transport body when
+# no adapter ever saw a reading — and the two are not interchangeable evidence.
+# The record names which one it holds rather than leaving a later reader to
+# infer it from which other fields happen to be present.
+RAW_RESPONSE_MODEL_OUTPUT: Final = "model-output"
+RAW_RESPONSE_TRANSPORT_BODY: Final = "transport-response-body"
+RAW_RESPONSE_KINDS: Final = frozenset({RAW_RESPONSE_MODEL_OUTPUT, RAW_RESPONSE_TRANSPORT_BODY})

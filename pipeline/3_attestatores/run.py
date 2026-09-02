@@ -40,7 +40,11 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
-from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.contracts.serving import (  # noqa: E402
+    RAW_RESPONSE_KINDS,
+    RAW_RESPONSE_MODEL_OUTPUT,
+    STOP_REASON_UNREPORTED,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
@@ -986,10 +990,17 @@ TESTIMONIUM_FIELDS = frozenset(
 # `native_capture` was already admitted on a page record by the shared contract
 # (`common/native_witness.PAGE_TESTIMONIUM_OPTIONAL_FIELDS`); this admits it on an
 # act record too, where a live attempt's own retained model view belongs.
+# `raw_response_kind` says what sort of bytes `raw_response_ref` names, because
+# on a live record it is two different things: the adapter's own output, when a
+# parser read it, and the whole transport body, when no adapter ever saw a
+# reading. Both are retained evidence and neither is the other, so the record
+# says which rather than leaving a reader to infer it from whether some other
+# optional field happens to be present.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
     {
         "adapter_metadata",
         "raw_response_ref",
+        "raw_response_kind",
         "reason",
         "page_witness",
         "native_capture",
@@ -1023,6 +1034,7 @@ def testimonium_payload(
     reason: str | None = None,
     page_witness: bool = False,
     raw_response_ref: dict[str, str] | None = None,
+    raw_response_kind: str | None = None,
     adapter_metadata: dict[str, Any] | None = None,
     native_capture: dict[str, Any] | None = None,
     serving_call_ref: dict[str, str] | None = None,
@@ -1050,6 +1062,8 @@ def testimonium_payload(
         record["page_witness"] = True
     if raw_response_ref is not None:
         record["raw_response_ref"] = raw_response_ref
+    if raw_response_kind is not None:
+        record["raw_response_kind"] = raw_response_kind
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
     if native_capture is not None:
@@ -1117,6 +1131,27 @@ def validate_adapter_metadata(payload: Any) -> None:
             )
 
 
+def _named_once(references: list[Any]) -> list[Any]:
+    """Keep the first mention of each input reference, in the order given.
+
+    Order is the record's own account of how it was derived, so it is
+    preserved; a repeat is not a second response and must not read as one.
+    """
+    seen: list[str] = []
+    kept: list[Any] = []
+    for reference in references:
+        key = (
+            json.dumps(reference, sort_keys=True)
+            if isinstance(reference, dict)
+            else repr(reference)
+        )
+        if key in seen:
+            continue
+        seen.append(key)
+        kept.append(reference)
+    return kept
+
+
 def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
     """Require retained bytes and their adapter rule to describe one record."""
     has_references = (
@@ -1146,13 +1181,41 @@ def validate_live_serving_fields(payload: dict[str, Any]) -> None:
     say what it read. The call record (`serving_call_ref`) is the request half of
     the same moment, and it is meaningless without a retained response beside it
     -- a chair that answered nothing has no reading to account for.
+
+    `raw_response_kind` is the third: a live record's retained blob is the
+    adapter's own output on every branch where a parser ran, and the whole
+    transport body on the one branch where none could. Those are different
+    evidence -- one is the model's answer, the other is an envelope around a
+    body that was never a reading -- and a reader that guessed between them
+    from the presence of some other field would be reading a record that never
+    said. So a record that names a serving call and retains a response must
+    name which kind it retained, and a retained model view must agree that it
+    is the adapter's own output, because that is the only thing a capture can
+    describe.
     """
+    kind = payload.get("raw_response_kind")
+    if kind is not None:
+        if kind not in RAW_RESPONSE_KINDS:
+            raise SchemaRefusal(
+                f"a Testimonium names raw response kind {kind!r}, which is not one of "
+                f"{sorted(RAW_RESPONSE_KINDS)}"
+            )
+        if "raw_response_ref" not in payload:
+            raise SchemaRefusal(
+                "a Testimonium says what kind of response bytes it holds while retaining none"
+            )
     if "serving_call_ref" in payload:
         validate_stage_blob_ref(payload["serving_call_ref"], "serving_call_ref")
         if "raw_response_ref" not in payload:
             raise SchemaRefusal(
                 "a Testimonium names the serving call that produced it but retains no response; "
                 "a request with no retained answer is not evidence of a reading"
+            )
+        if kind is None:
+            raise SchemaRefusal(
+                "a live Testimonium retains a response without saying which kind of bytes it "
+                "is; the adapter's own output and the transport body are not interchangeable "
+                "evidence, and a record that does not say cannot be read as either"
             )
     if "native_capture" not in payload:
         return
@@ -1161,6 +1224,11 @@ def validate_live_serving_fields(payload: dict[str, Any]) -> None:
         raise SchemaRefusal(
             "a Testimonium's retained model view names a different response blob than the "
             "record itself; one attempt reads one response"
+        )
+    if kind is not None and kind != RAW_RESPONSE_MODEL_OUTPUT:
+        raise SchemaRefusal(
+            f"a Testimonium carries an adapter's retained model view over bytes it calls "
+            f"{kind!r}; a capture describes the model's own output and nothing else"
         )
 
 
@@ -1960,6 +2028,10 @@ class Attempt(NamedTuple):
     native_capture: dict[str, Any] | None = None
     serving_call_ref: dict[str, str] | None = None
     receipt_ref: dict[str, str] | None = None
+    # Which sort of bytes `raw_response_ref` names. `None` on the fixture path,
+    # which retains one kind of declared bytes and has no branch that could
+    # mean the other.
+    raw_response_kind: str | None = None
 
 
 class _PendingLiveAttempt:
@@ -2059,6 +2131,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
         native_capture=payload.get("native_capture"),
         serving_call_ref=payload.get("serving_call_ref"),
         receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
+        raw_response_kind=payload.get("raw_response_kind"),
     )
 
 
@@ -2664,6 +2737,7 @@ def publish_attempt(
         page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
         raw_response_ref=attempt.raw_response_ref,
+        raw_response_kind=attempt.raw_response_kind,
         adapter_metadata=declared_adapter_metadata(
             resolved, has_raw_response=attempt.raw_response_ref is not None
         ),
@@ -3372,7 +3446,11 @@ def publish_page_testimonia_and_attachments(
                 # the payload is a blob no ordinary consumer re-hashes. The
                 # order is the payload's own -- presented image, then the
                 # partition's responses in partition order, then the capture.
-                inputs=(
+                # Named once each: a page whose partition was derived from the
+                # very bytes its capture describes -- a live Chandra page that
+                # parsed -- reaches the same reference twice, and one response
+                # listed twice is not two responses.
+                inputs=_named_once(
                     inputs
                     + page_response_refs
                     + ([native_capture["raw_response_ref"]] if native_capture is not None else [])
@@ -3994,13 +4072,10 @@ def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
         reason=live.reason,
         raw_response_ref=dict(live.raw_response_ref) if live.raw_response_ref else None,
         observation_payload=live.observation_payload,
-        native_capture=(
-            dict(capture)
-            if (capture := publishable_native_capture(live.native_capture)) is not None
-            else None
-        ),
+        native_capture=dict(live.native_capture) if live.native_capture is not None else None,
         serving_call_ref=dict(live.call_record_ref) if live.call_record_ref else None,
         receipt_ref=dict(live.receipt_ref) if live.receipt_ref else None,
+        raw_response_kind=live.raw_response_kind,
     )
 
 
@@ -4069,6 +4144,12 @@ def _page_capture_from_record(
             raw_response_ref=capture["raw_response_ref"] if capture is not None else None,
             native_capture=capture,
             receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
+            # Derived from the capture rather than read off the record: the
+            # sealed record here may be a *page* Testimonium, whose own closed
+            # schema has no place for this field, and a capture's retained
+            # reference is by definition the adapter's own output bytes. There
+            # is nothing to guess.
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT if capture is not None else None,
         ),
         capture,
     )
@@ -4356,68 +4437,32 @@ def live_attempt_pass(
 # else is a word this system has never measured a meaning for.
 _LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
 
-# The parse states the shared capture contract
-# (`common/native_witness.validate_native_capture`) admits. Chandra's
-# `unrecognized-shape` is not among them, which is the one state a live Chandra
-# response reaches today.
-_PUBLISHABLE_CAPTURE_STATES: Final = frozenset({"not-requested", "pending", "parsed", "failed"})
 
-
-def publishable_native_capture(capture: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The retained model view, when the shared contract can hold it.
-
-    A live Chandra response parses to `unrecognized-shape` -- there is no
-    verified Chandra wire schema, which is exactly the honest outcome
-    `SPEC_A.md` section 2.2 asks for -- and the shared capture contract admits
-    no such parse state, so attaching that view would refuse the whole record.
-    Nothing is lost by leaving it off: the response bytes stay retained and
-    named by `raw_response_ref`, the reason says the shape was not recognized,
-    and the engine's own stop word travels verbatim in the
-    `chair-call-record.v1` blob this record names in `serving_call_ref`.
-    Admitting `unrecognized-shape` to the shared contract is
-    `common/native_witness.py`'s change; the HANDOFF records it as owed.
-    """
-    if capture is None or capture["parse"]["state"] not in _PUBLISHABLE_CAPTURE_STATES:
-        return None
-    return capture
-
-
-def refuse_unpublishable_stop_word(
-    adapter_name: str,
-    transport_stop_reason: str,
-    capture: dict[str, Any] | None,
-    what: str,
-) -> None:
+def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
     """Refuse a live response whose engine stop word cannot be recorded honestly.
-
-    Two different refusals, because two different things are wrong.
 
     An engine word outside `_LIVE_ENGINE_STOP_WORDS` has no measured meaning
     here: recording it would put a word into a truncation channel nothing can
     read, and mapping it to either "complete" or "cut off" would be a
     measurement nobody made (GOVERNANCE 10, and the same rule
     `pipeline/4_perlector/truncation.py` applies by refusing an unknown engine
-    string by name). This check runs on `transport_stop_reason` alone, before
-    `capture` is even consulted, so it also catches an unmeasured word on a
-    response `ChairClient` could not parse into a reading at all: a wire body
-    no adapter parsed still names its engine word verbatim inside the retained
-    `chair-call-record.v1` blob, and a word this pipeline has never measured a
-    meaning for is exactly as unpublishable there as on a parsed capture.
+    string by name). The check runs on `transport_stop_reason` alone, so it
+    also catches an unmeasured word on a response `ChairClient` could not parse
+    into a reading at all: a wire body no adapter parsed still names its engine
+    word verbatim inside the retained `chair-call-record.v1` blob, and a word
+    this pipeline has never measured a meaning for is exactly as unpublishable
+    there as on a parsed capture.
 
-    A *Churro* response that reports no stop word at all is refused for a
-    narrower reason: the shared page contract re-derives a Churro page record's
-    health from its capture and asks the two-valued question "is this word a
-    cut-off word", so an unreported boundary would have to be published as
-    `truncated: false`. The live boundary measures three states
-    (`SPEC_A.md` section 2.3), and the third one has nowhere to go until that
-    shared reconciliation is widened -- `common/native_witness.py`'s change,
-    recorded as owed in the HANDOFF. This second refusal only fires once a
-    capture exists (a response an adapter actually parsed): a response with no
-    capture at all has no page-Testimonium truncation field to contradict,
-    because `content_health.recordable` is already `False` for it.
-
-    Both refuse before the response's own record is published, with its bytes
+    It refuses before the response's own record is published, with its bytes
     already retained by the client (GOVERNANCE 2).
+
+    A *reported-nothing* boundary used to be refused here as well, for Churro
+    alone, because the shared page contract asked a two-valued question of a
+    three-state fact and would have published `truncated: false` over a
+    boundary nothing observed. `common/native_witness.py` now measures the
+    third state, so that refusal is gone rather than merely relaxed: an
+    unreported word publishes `truncated: null` with basis `not-recorded`, on
+    the page record and the act record alike.
     """
     if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
         raise ContractError(
@@ -4425,19 +4470,6 @@ def refuse_unpublishable_stop_word(
             "pipeline has never measured a meaning for; recording it as complete or as cut "
             "off would assert a boundary nobody observed. The response bytes are retained "
             "and nothing was published for it"
-        )
-    if (
-        capture is not None
-        and adapter_name == "churro.v1"
-        and transport_stop_reason == STOP_REASON_UNREPORTED
-    ):
-        raise ContractError(
-            f"{what} reports no engine stop word, and the shared page-Testimonium contract "
-            "cannot reconcile that against a truncation state: it would have to record 'not "
-            "truncated' for a boundary nothing observed. The response bytes are retained; "
-            "nothing was published for this page. Widen the shared reconciliation in "
-            "common/native_witness.py to the unknown-truncation state before a live Churro "
-            "chair can report one"
         )
 
 
@@ -4472,9 +4504,7 @@ def _serve_act_unit(
         response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
     )
     refuse_unpublishable_stop_word(
-        resolved.witness_adapter,
         transport_stop_reason,
-        live.native_capture,
         f"the {resolved.witness_adapter} response for act {act['act_id']}",
     )
     attempt = attempt_from_live(live)
@@ -4568,9 +4598,7 @@ def _serve_page_unit(
         response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
     )
     refuse_unpublishable_stop_word(
-        resolved.witness_adapter,
         transport_stop_reason,
-        live.native_capture,
         f"the {resolved.witness_adapter} response for page {page_ordinal}",
     )
     attempt = attempt_from_live(live)

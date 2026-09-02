@@ -391,6 +391,53 @@ def _dai_presented(*, image_bytes: bytes = b"dai-model-image") -> dict[str, Any]
     }
 
 
+def _dai_identity_view_kwargs(*, crop_bytes: bytes = b"the designator's own act crop"):
+    """A DAI act small enough that no resize runs -- the case U8 unblocks.
+
+    `feeding.dai_dimensions(100, 50)` is `(100, 50)`, so the adapter's crop is
+    the Designator's crop, byte for byte. The two references therefore carry
+    one digest under two stage-owned paths, which is what a content-addressed
+    store means by "the same retained blob": every image a witness is shown is
+    inventoried under `3_attestatores/`, while the proposal crop it was cut
+    from lives under `2_designator/`. Held to the whole reference dict, as
+    `dai_model_view` once was, this act was refused after its response had
+    already come back.
+    """
+
+    digest = digest_bytes(crop_bytes)
+    bounds = {"x": 0, "y": 0, "w": 100, "h": 50}
+    return {
+        "presentation": {
+            "kind": "region",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "image_path": f"2_designator/blobs/sha256/{digest}",
+            "image_sha256": digest,
+            "transform": {
+                "operation": "crop",
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": dict(bounds),
+            },
+            "region_ref": {"region_id": "act-1-region-0"},
+        },
+        "presented": {
+            "kind": "adapter-crop",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "image_path": f"3_attestatores/blobs/sha256/{digest}",
+            "image_sha256": digest,
+            "transform": {
+                "operation": "crop",
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": dict(bounds),
+            },
+        },
+        "prompt": feeding.dai_prompt(),
+    }
+
+
 def _dai_view_kwargs() -> dict[str, Any]:
     return {
         "presentation": _dai_presentation(),
@@ -677,6 +724,125 @@ def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):
     assert blob_store.has(response.response_sha256)
 
 
+def test_a_no_resize_dai_act_is_carried_rather_than_refused_after_its_answer(tmp_path: Path):
+    """U8, the HANDOFF's second owed gap: the identity transform, closed.
+
+    Every act crop in the reference fixture is small enough that DAI needs no
+    resize, so this was not an edge case -- it was the ordinary DAI act, and
+    it was refused *after* the chair had already answered it, by
+    `dai_model_view`'s identity rule comparing whole reference dicts across two
+    stages' blob namespaces. The invariant that mattered (the model was shown
+    exactly the source bytes) is kept, and checked here on the digest the two
+    references share.
+    """
+
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="texte transcrit", finish_reason="stop")
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("dai.v1")
+    view_kwargs = _dai_identity_view_kwargs()
+    assert view_kwargs["presentation"]["image_sha256"] == view_kwargs["presented"]["image_sha256"]
+    assert view_kwargs["presentation"]["image_path"] != view_kwargs["presented"]["image_path"]
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared=feeding.dai_generation(),
+        parser="text",
+        **view_kwargs,
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == "texte transcrit"
+    transform = attempt.native_capture["view"]["transform"]
+    assert transform["kind"] == "identity"
+    assert transform["resampler"] is None
+    # Both references name the same bytes, each in the store its own stage owns.
+    view = attempt.native_capture["view"]
+    assert view["source_image_ref"]["sha256"] == view["model_image_ref"]["sha256"]
+    assert view["source_image_ref"]["relative_path"].startswith("2_designator/")
+    assert view["model_image_ref"]["relative_path"].startswith("3_attestatores/")
+
+
+def test_a_no_resize_dai_act_whose_model_image_is_other_bytes_is_still_refused(tmp_path: Path):
+    """The invariant the digest comparison keeps: same bytes, or refusal.
+
+    Relaxing the identity rule from "the same reference" to "the same content"
+    must not relax it to "any two references": a model shown something other
+    than the source crop, on a path that claims no resize ran, is exactly the
+    lie the rule exists to catch.
+    """
+
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="texte transcrit", finish_reason="stop")
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("dai.v1")
+    view_kwargs = _dai_identity_view_kwargs()
+    other = digest_bytes(b"some other image entirely")
+    view_kwargs["presented"] = {
+        **view_kwargs["presented"],
+        "image_path": f"3_attestatores/blobs/sha256/{other}",
+        "image_sha256": other,
+    }
+
+    with pytest.raises(SchemaRefusal, match="identity transform does not retain the source"):
+        live_witness.live_attempt_from_response(
+            SimpleNamespace(tree=_FakeTree()),
+            adapter,
+            "dai.v1",
+            response,
+            generation_declared=feeding.dai_generation(),
+            parser="text",
+            **view_kwargs,
+        )
+
+
+def test_a_live_act_says_which_kind_of_bytes_it_retained(tmp_path: Path):
+    """U8's sixth gap, at the seam that decides it.
+
+    `raw_response_ref` means the adapter's own output on every branch where a
+    parser ran, and the whole transport body on the one branch where none
+    could. Two kinds of evidence under one field name, and nothing said which.
+    """
+
+    parsed_response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="texte transcrit", finish_reason="stop")
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("dai.v1")
+    parsed = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        parsed_response,
+        generation_declared=feeding.dai_generation(),
+        parser="text",
+        **_dai_identity_view_kwargs(),
+    )
+    assert parsed.raw_response_kind == "model-output"
+    assert parsed.raw_response_ref == dict(parsed.native_capture["raw_response_ref"])
+
+    malformed_response, _, _ = _read_one(
+        tmp_path / "second", script=ScriptedAnswer(body=b"not json at all")
+    )
+    assert malformed_response.parse_problem is not None
+    malformed = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        malformed_response,
+        generation_declared=feeding.dai_generation(),
+        parser="text",
+        **_dai_identity_view_kwargs(),
+    )
+    assert malformed.raw_response_kind == "transport-response-body"
+    assert malformed.native_capture is None
+    # The two really are different bytes: the envelope, and the model's output.
+    assert malformed.raw_response_ref == dict(malformed_response.raw_response_ref)
+    assert parsed.raw_response_ref != dict(parsed_response.raw_response_ref)
+
+
 # =========================== captured_page_attempt =============================
 
 
@@ -802,6 +968,22 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_the_unverifi
     assert attempt.outcome == "failed"
     assert "unverified-response-schema" in attempt.reason
     assert blob_store.has(response.response_sha256)
+    # U8's fourth gap: the adapter's own account of those bytes is now
+    # attachable. It reached `unrecognized-shape` -- the parser ran, read the
+    # whole body, and could place no shape it knows -- which the shared capture
+    # contract admits, so the retained model view stays beside the blob it
+    # describes instead of being dropped for want of a state name.
+    assert attempt.native_capture["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "json",
+        "outcome": "unverified-response-schema",
+    }
+    # Whether the shared contract accepts this capture is proven against a real
+    # run tree in `test_attestatores_live_pass.py`, not here: this module's
+    # `_FakeTree` addresses blobs by its own path scheme, which
+    # `validate_native_capture`'s content-addressed check would refuse for
+    # reasons that have nothing to do with the parse state.
+    assert attempt.raw_response_kind == "model-output"
 
 
 def test_captured_page_attempt_real_chandra_adapter_reads_the_fixture_placeholder_schema(

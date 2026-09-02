@@ -102,24 +102,26 @@ could supply a page's resumed capture, every one of them is checked to agree
 sorts first; a disagreement is a named refusal, not a silent choice.
 
 **What a live record gains.** `native_capture` (the adapter's retained model
-view) and `serving_call_ref` (the `chair-call-record.v1` blob for the one
-request) are admitted on an act Testimonium and written only in live mode, so a
-fixture record is byte-for-byte what it was. `provenance.receipt_ref` names the
-receipt the chair's own client re-read at start, never a declared `fixture://`
+view), `serving_call_ref` (the `chair-call-record.v1` blob for the one request)
+and `raw_response_kind` (which sort of bytes `raw_response_ref` names) are
+admitted on an act Testimonium and written only in live mode, so a fixture
+record is byte-for-byte what it was. `provenance.receipt_ref` names the receipt
+the chair's own client re-read at start, never a declared `fixture://`
 stand-in. `content_health.truncated` comes from the engine's stop word:
 `"stop"` → `false`, `"length"` → `true`, and an unreported word → `null` with
-`truncation_basis = "not-recorded"`. Both retained blobs are re-read and
-digest-checked by the attempt tally rather than carried as envelope inputs,
-because the tally re-derives an act record's inputs from its regions and
-presentation alone.
+`truncation_basis = "not-recorded"`, on the act record and the page record
+alike. Both retained blobs are re-read and digest-checked by the attempt tally
+rather than carried as envelope inputs, because the tally re-derives an act
+record's inputs from its regions and presentation alone.
 
 **Chandra is live in transport only.** Its request is built, sent, retained and
 recorded like any other, and `chandra.parse` recognizes only
 `fixture-chandra-response.v1`, so a real Chandra body lands as `failed` with
 `unverified-response-schema` and its bytes retained. That is honest and visible,
 and it stays that way until a real Chandra wire schema is evidence rather than
-invention. Its retained model view is not attached to the record: the shared
-capture contract admits no `unrecognized-shape` parse state (see below).
+invention. Its retained model view rides on the record beside those bytes: the
+parser ran and could place no shape it knows, which is the `unrecognized-shape`
+state the shared capture contract now admits, naming the shape in `outcome`.
 
 **Fixture declarations a live pass does not read.** A live pass reads the
 fixture's pages, acts, continuations and proposals — that is the corpus — and
@@ -143,41 +145,83 @@ residency, its own per-response publication, and its own answer to what an
 act-scoped reread of a page witness means. Run the whole pass at the next
 ordinal, or reread under the fixture catalogue.
 
-### Owed before a live pass can carry every chair
+### The cross-file seams that let a live pass carry every chair
 
-Four gaps sit in files this unit does not own. Each is a named refusal or an
-explicit omission in the code, never a silent default.
+Four gaps once stood between the live boundary and the committed roster, each
+of them a named refusal rather than a silent default, and each in a file the
+unit that found it did not own. All four are closed, and how they were closed
+is part of the record because each turned on a choice about what a record may
+say.
 
-1. **A live `dai.v1` chair cannot be served at all.** `feeding.dai_generation()`
-   carries floats, and `ChairClient.read` writes its call record with the shared
-   canonical writer, which refuses floats — so the request cannot be recorded and
-   therefore is not made. Fixing it means deciding how a vendor's float decoding
-   value is recorded canonically (`operations/serving/client.py`, or the shared
-   canonical contract), not dropping the value.
-2. **A no-resize DAI act is refused after its response returns.**
-   `witness_adapters._dai_present` republishes its own crop even when no resize
-   is needed, while `feeding.dai_model_view`'s identity-transform rule requires
-   the source and model image references to be the same retained blob. Closing it
-   means `_dai_present` reusing the Designator's own blob on that path.
-3. **A Churro page response with no engine stop word is refused by name.** The
-   shared page contract re-derives a Churro page record's health from its capture
-   and asks a two-valued question — "is this a cut-off word" — so an unreported
-   boundary would have to be published as `truncated: false`. Widening that
-   reconciliation in `common/native_witness.py` to the same three states the
-   live boundary measures is what unblocks it.
-4. **A Chandra capture cannot be attached to any record.** The shared capture
-   contract's parse states do not include `unrecognized-shape`, which is the one
-   state a live Chandra response reaches today. Admitting it, also in
-   `common/native_witness.py`, would let the page and act records carry the
-   retained view beside the bytes they already name.
+1. **A vendor's float decoding value is recorded as the exact decimal the wire
+   carried.** `feeding.dai_generation()` carries floats — DAI's shipped
+   `repetition_penalty` 1.05 and `top_p` 0.001 — and the shared canonical
+   writer refuses floats outright, so a live `dai.v1` request could not be
+   recorded and was therefore never made. The canonical refusal stands: a
+   float's JSON form is not stable enough to hash against. What the call record
+   holds instead is the decimal *text* the request body itself contains, tagged
+   `wire-decimal.v1` so it cannot be confused with a string the vendor really
+   declared, and `ChairClient.read` proves on every call that the recorded view
+   re-encodes to exactly the JSON that went on the wire before it writes the
+   record. Nothing is rounded, and a value that could not be transcribed —
+   `NaN`, `Infinity`, or a vendor value shaped like the tagged form itself — is
+   a named refusal before the request is built, not a discovery afterwards.
+2. **The DAI identity transform is a claim about bytes, not about paths.** When
+   an act crop needs no resize — which is every act crop in the reference
+   fixture — the model must be shown exactly the source image, and
+   `feeding.dai_model_view` now requires the two references to name the same
+   SHA-256 rather than to be the same reference dict. They legitimately differ:
+   the source is the Designator's proposal crop under `2_designator/`, and every
+   image a witness is shown is inventoried under `3_attestatores/`. Both are
+   `crop_png` of the same sealed page at the same bounds, and
+   `verify_exemplar_crop_lineage` already proves the first of them is, so equal
+   digests are equal pixels. Held to the whole dict, the rule refused a genuine
+   DAI act *after* its response had already come back.
+3. **The truncation the page contract re-derives has three states.** A Churro
+   page record's health is re-derived from its capture, and the question asked
+   was two-valued — "is this a cut-off word" — so an engine that reported
+   nothing answered "no" and the record published `truncated: false` over a
+   boundary nobody observed. `common/native_witness.py` measures the third
+   state: unknown, with `truncation_basis = "not-recorded"`, the same shape the
+   live boundary already derived. The two measured states reconcile exactly as
+   before. An empty reading is a confirmed blank only when the boundary
+   positively said the model finished, so "cut off" and "never said" both owe
+   the record a failed-attempt reason.
+4. **A parser may say it read the whole body and could place no shape it
+   knows.** `unrecognized-shape` is a distinct state from a parse failure — the
+   parser ran and refused nothing — and `chandra.py` has produced it since it
+   was written, because the vendor publishes no response specimen. The shared
+   capture contract admits it now, naming the shape in `outcome`, so a live
+   Chandra record carries the adapter's own account of its bytes beside the
+   bytes themselves instead of dropping the view for want of a state name.
 
-Two smaller notes for whoever comes next: a page Testimonium cannot yet name its
-`serving_call_ref` (the shared page contract's optional fields do not admit it),
-so a continuation-page response's call record is an inventoried blob no record
-links; and `RunTree.read_run_receipt` accepts its own reference type or a plain
-`dict` and refuses the read-only mapping a `ServiceHandle` carries, so the client
-is wired with a one-line copy rather than the bare method the serving README
+Two further seams closed with them:
+
+**A live record says which kind of bytes it retained.** `raw_response_ref` means
+the adapter's own output on every branch where a parser ran, and the whole
+transport body on the one branch where none could; those are different evidence,
+and until `raw_response_kind` was added to the act Testimonium the record said
+neither and a reader had to infer it from which other optional field happened to
+be present. The field is written only in live mode, its vocabulary is closed
+(`common/contracts/serving.py`), a retained model view must agree it describes
+model output, and the attempt tally still re-reads and digest-checks the blob it
 names.
+
+**The client normalizes the receipt reference.** `ServiceHandle.receipt_reference`
+is a read-only mapping proxy and `RunTree.read_run_receipt` requires its own
+reference type or a plain `dict`; both boundaries are right and neither is
+loosened, so `ChairClient.__enter__` copies on the way in and both stages can
+now pass the tree's reader bare. The converters already wired at each stage's
+own construction site are pure no-ops as a result. This stage's own is left in
+place for its owner to remove, and `pipeline/4_perlector/run.py`'s
+`_read_receipt_through` is not a pure no-op removal either — `test_live_perlector.py`
+names it — so removing both is one small follow-on, not a change made from
+outside their files.
+
+One smaller note still open for whoever comes next: a page Testimonium cannot
+name its `serving_call_ref` (the shared page contract's optional fields do not
+admit it), so a continuation-page response's call record is an inventoried blob
+no record links.
 
 ## Testimonium schema
 

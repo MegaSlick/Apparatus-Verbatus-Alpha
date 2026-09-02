@@ -39,7 +39,11 @@ schedules a chair, and never touches ``run.py`` -- that is U6's job.
    ``adapter.retain``), and the envelope instead survives only through
    ``LiveAttempt.call_record_ref`` -> the call record's own ``raw_response_ref``
    field (``operations/serving/client.py``). Landed code wins over the sketch;
-   this is the seam where they disagreed.
+   this is the seam where they disagreed. Every branch therefore also sets
+   ``LiveAttempt.raw_response_kind``, so the published record *says* which of
+   the two it holds rather than leaving a reader to infer it from whether some
+   other optional field happens to be present
+   (``common.contracts.serving.RAW_RESPONSE_KINDS``).
 3. A wire body ``ChairClient`` could not parse at all (``response.parse_problem``
    is not ``None``) produces ``LiveAttempt.native_capture = None``: no adapter
    ever ran, so there is no adapter-shaped capture to retain, only the envelope
@@ -48,7 +52,9 @@ schedules a chair, and never touches ``run.py`` -- that is U6's job.
    attempted record" reads, at this boundary, as "every live attempted record
    whose bytes reached an adapter parser" -- a malformed body never did. U6 must
    carry this reading forward rather than treat a bare ``None`` here as a bug to
-   paper over with a fabricated capture.
+   paper over with a fabricated capture. It is also the only branch whose
+   ``raw_response_kind`` is ``transport-response-body``, which is the record's
+   own way of saying the same thing.
 
 **The generation split** (DAI, act-scoped): ``feeding.dai_generation()`` is
 DAI's *carried* HuggingFace ``generation_config.json`` -- ``do_sample``,
@@ -72,17 +78,14 @@ Chandra, ``feeding.retain_model_view`` closes its ``view`` to DAI's own schema
 uses -- from the act's presentation, the adapter's published crop, its exact
 prompt text, and its declared generation config, retaining the prompt and
 generation-config bytes as blobs so every reference in the closed view names
-real, digest-checked bytes. One invariant of that builder is not fully
-satisfiable from this seam alone: when DAI needs no resize,
-``dai_model_view``'s identity-transform rule requires ``source_image_ref`` and
-``model_image_ref`` to be the *same* retained blob, but
-``witness_adapters._dai_present`` always republishes its own ``crop_png``
-output as a fresh blob rather than reusing the Designator's presentation
-bytes, so a genuine no-resize DAI act can still be refused by that rule after
-this fix. Closing that gap means ``_dai_present`` reusing (or re-pointing at)
-the Designator's own blob when its crop needs no resize; that is
-``witness_adapters.py``'s file, not this module's, and is recorded here rather
-than worked around by loosening ``dai_model_view``'s own invariant.
+real, digest-checked bytes. The no-resize case is what that builder's
+identity-transform rule governs, and it is satisfied here by *content*: DAI's
+``adapter-crop`` on that path is ``crop_png`` of the same sealed page at the
+same bounds as the Designator's own proposal crop, so the two references carry
+one digest under two stage-owned paths. ``feeding.dai_model_view`` compares
+the digest for exactly that reason (see its docstring); held to the whole
+reference dict, as it once was, it refused every genuine no-resize DAI act
+after the response had already come back.
 
 **Confirming a blank response**: ``genuinely-empty`` is the one completed
 outcome whose whole content is an absence (`run.py`'s own history names why
@@ -111,6 +114,8 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
     ENGINE_STOP_COMPLETE,
     ENGINE_STOP_CUT_OFF,
+    RAW_RESPONSE_MODEL_OUTPUT,
+    RAW_RESPONSE_TRANSPORT_BODY,
     STOP_REASON_UNREPORTED,
 )
 from common.contracts.stages import ATTESTATORES
@@ -165,6 +170,11 @@ class LiveAttempt:
     native_capture: Mapping[str, Any] | None
     call_record_ref: Mapping[str, str] | None
     receipt_ref: Mapping[str, str] | None
+    # Which sort of bytes ``raw_response_ref`` names on this branch --
+    # ``model-output`` wherever an adapter parsed, ``transport-response-body``
+    # on the one branch where none could. ``None`` only when nothing was
+    # retained at all.
+    raw_response_kind: str | None = None
     observation_payload: Any = None
 
 
@@ -467,6 +477,7 @@ def _malformed_response_attempt(response: ChairResponse) -> LiveAttempt:
         native_capture=None,
         call_record_ref=dict(response.call_record_ref),
         receipt_ref=dict(response.receipt_ref),
+        raw_response_kind=RAW_RESPONSE_TRANSPORT_BODY,
     )
 
 
@@ -531,6 +542,7 @@ def live_attempt_from_response(
             native_capture=capture,
             call_record_ref=dict(response.call_record_ref),
             receipt_ref=dict(response.receipt_ref),
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
         )
     if parsed["state"] == "parsed":
         # An interrupted or unconfirmed empty response is not evidence of a
@@ -547,6 +559,7 @@ def live_attempt_from_response(
             native_capture=capture,
             call_record_ref=dict(response.call_record_ref),
             receipt_ref=dict(response.receipt_ref),
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
         )
     # "failed" (dai.v1's only other parse state) lands here: it produced no
     # text this attempt can call a reading.
@@ -562,6 +575,7 @@ def live_attempt_from_response(
         native_capture=capture,
         call_record_ref=dict(response.call_record_ref),
         receipt_ref=dict(response.receipt_ref),
+        raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
     )
 
 
@@ -633,6 +647,7 @@ def captured_page_attempt(
             native_capture=capture,
             call_record_ref=dict(response.call_record_ref),
             receipt_ref=dict(response.receipt_ref),
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
             observation_payload=(
                 response.content.encode("utf-8") if adapter_name == "chandra.v1" else None
             ),
@@ -652,6 +667,7 @@ def captured_page_attempt(
             native_capture=capture,
             call_record_ref=dict(response.call_record_ref),
             receipt_ref=dict(response.receipt_ref),
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
         )
     parse_reason = (
         parsed["reason"]
@@ -680,4 +696,5 @@ def captured_page_attempt(
         native_capture=capture,
         call_record_ref=dict(response.call_record_ref),
         receipt_ref=dict(response.receipt_ref),
+        raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
     )
