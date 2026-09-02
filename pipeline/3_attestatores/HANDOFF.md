@@ -130,14 +130,24 @@ alike. Both retained blobs are re-read and digest-checked by the attempt tally
 rather than carried as envelope inputs, because the tally re-derives an act
 record's inputs from its regions and presentation alone.
 
-**Chandra is live in transport only.** Its request is built, sent, retained and
-recorded like any other, and `chandra.parse` recognizes only
-`fixture-chandra-response.v1`, so a real Chandra body lands as `failed` with
-`unverified-response-schema` and its bytes retained. That is honest and visible,
-and it stays that way until a real Chandra wire schema is evidence rather than
-invention. Its retained model view rides on the record beside those bytes: the
-parser ran and could place no shape it knows, which is the `unrecognized-shape`
-state the shared capture contract now admits, naming the shape in `outcome`.
+**Chandra is a served witness like the others, under a closed response
+contract.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
+Chandra reads the page for the Designator and separately as Attestator 1, and
+nothing is captured from one call into another. The capture-as-Testimonium
+intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
+the `chandra-capture.v1` name) is removed rather than left as dead surface.
+What the served chair parses is `chandra_response.py`, described in its own
+section below: the closed JSON shape `chandra.prompt` asks for, exactly as the
+Designator's structure pass asks its Chandra call for
+`verbatus-structure-answer.v1`. A body in that shape is a reading -- page text,
+and block geometry in sealed-page pixels with a span per block into that text.
+A body in any other shape lands as `failed` with its bytes retained and its
+shape named (`unverified-response-schema` and the rest of that module's closed
+set); the retained model view rides on the record beside those bytes in the
+`unrecognized-shape` state, naming the shape in `outcome`. Chandra's *native*
+output mode is still unverified -- the vendor publishes no specimen -- and this
+contract does not pretend otherwise: it is the repository's question, and the
+first real response either answers it or arrives as a named surprise.
 
 **Fixture declarations a live pass does not read.** A live pass reads the
 fixture's pages, acts, continuations and proposals — that is the corpus — and
@@ -146,14 +156,148 @@ reads none of its declared witness responses (`testimony`, `witness_failure`,
 `native_observation` geometry, which are the offline posture's stand-in for a
 model. The pass names on stderr how many such rows it passed over, so an
 operator cannot mistake one posture's record for the other's. Fixture-declared
-Chandra anchors are not read either, so a live page witness's act attachment
-comes back `unaligned: missing-chandra-page-anchor` until R4 owns live
-alignment: aligning real witness text against declared act spans would place a
-reading on geometry nobody measured. `chandra_anchor` rows are counted on that
+Chandra anchors are not read either: aligning real witness text against
+declared act spans would place a reading on geometry nobody measured. The live
+anchor is instead derived from the Chandra chair's own served page response
+(the derived anchor, below), and a page that chair did not read as text has no
+anchor, which its page witnesses say by name (`missing-chandra-page-anchor`).
+`chandra_anchor` rows are counted on that
 same stderr line, separately from the chair-keyed families above: an anchor
 keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
 live_chairs` filter the others share, and every anchor the scenario declares is
 one the live pass discards regardless of which chair would have used it.
+
+### The Chandra response contract
+
+`chandra_response.py` closes what a served Chandra page response parses into.
+Exactly two forms are accepted, both under `schema =
+"verbatus-chandra-page-response.v1"`: a `blocks` list, each block `{box_1000,
+text}` with the rectangle in normalized integer coordinates 0..1000 (text per
+layout block with geometry), or a single `text` string (page text with no
+geometry, for a model that can transcribe but not place). Exactly one of the
+two is present; `blocks` may be empty. Every other body -- an unknown or
+missing schema, an extra key at either level, a duplicate member, a malformed
+box or text, either form's absence or both forms together, the byte and block
+ceilings -- is refused by a name from that module's closed `PARSE_OUTCOMES`,
+whole, with nothing repaired (GOVERNANCE 7) and its bytes already retained.
+`chandra.parse` dispatches on the declared schema: the wire contract to that
+module, the committed fixture's `fixture-chandra-response.v1` placeholder to
+the validation it always had, and anything else to `unverified-response-schema`.
+The placeholder stays accepted on the live path too, because one parser
+derives the retained model view in both postures and the fixture's pinned
+bytes depend on it; a served chair answering in that shape is answering a
+question its prompt never asked, and `test_live_witness.py` pins that reach
+deliberately rather than inheriting it silently.
+
+**The prompt is split by posture.** `chandra.prompt()` asks the served chair
+for the contract shape, in the repository's own words, stating no preference
+and no confidence budget (GOVERNANCE 10). The fixture posture records
+`chandra.FIXTURE_PROMPT` in its retained model view instead
+(`run.py::resolve_attempt`): that view is sealed into the fixture's pinned
+bytes, the fixture never asks a chair anything, and rewording the live
+instruction may not move a fixture byte. Both are this repository's wording;
+neither is a vendor line.
+
+**Geometry converts once, the Designator's way.** A block's `box_1000` is
+quantized low-edges-floor / far-edges-ceil in normalized space and converted to
+sealed-page pixels by `common.structure_answer.to_page_bounds`, the same
+conversion the Designator's structure pass applies to its own Chandra call, so
+the two Chandra readings of one page share one page-pixel mapping. That
+conversion clamps to the page, so a normalized box can never overshoot the
+sealed page. `chandra.observe` takes a keyword `page_size` for it: a page
+witness's act view presents one crop while restating page-level geometry, so
+the presentation's bounds are never the denominator, and a body that needs the
+size without one is refused rather than placed in the wrong space. Each
+observed box carries the block's span into the retained page text, which is
+the block texts joined with a newline between delivered (non-empty) blocks and
+nowhere else -- `common/structure_answer.py`'s own join rule. A body that
+reports no block geometry (the page-text form, or an empty blocks list)
+derives none; the page record then carries the presentation echo `run.py`
+gives every page with no reported geometry -- the same fact the fixture's
+genuinely-empty rows record, excluded from routing and coverage by its
+`bounds_source` -- and the adapter never hands an echo to the shared
+page-edge check, which admits reported geometry only. The adapter's one
+declared `geometry_quantization` rule covers both accepted shapes, each in its
+own coordinate space.
+
+**A live page's partition is derived from the page response itself.** The
+fixture walks one declared response per compatibility act; a live page has one
+response that every act view on the page also carries, so
+`publish_page_testimonia_and_attachments` derives the live partition from the
+page capture's bytes once rather than once per act (which appended the same
+blocks per act). A resumed page capture rehydrates those bytes from the sealed
+record's capture, read back and digest-checked (`_page_capture_from_record`),
+so the republished page record derives the same geometry the interrupted pass
+did.
+
+### The derived anchor (R4 on the live path)
+
+The fixture route aligns page-witness text against the fixture's declared
+`[[chandra_anchor]]` rows. The live route aligns against an anchor derived from
+the Chandra chair's OWN served response for the page
+(`run.py::derived_chandra_anchor`): the anchor text is that chair's retained
+page text, and an act's anchor lines are the reported blocks whose geometry
+overlaps one of the act's sealed proposal regions on this page -- the same
+positive-area rule attachment uses, applied per block -- so alignment attaches
+text to acts by geometry and never by choosing among witnesses (hard rule 8).
+The act's `anchor_span` is the hull, in the markup-stripped normalized view
+`align_to_anchor` measures in, of those blocks' spans translated through
+`markup_text_view`'s offset map; `line_geometry` carries every overlapping
+block in reading order. Everything after that is the machinery the fixture
+route already had, unchanged: one `align_to_anchor` per `(page, chair)`, the
+clip to the act's range, the translation back to raw offsets, the trivial
+zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignments`
+for two acts one chair cannot tell apart (which is also what a block
+overlapping two acts produces, named rather than resolved).
+
+Only acts whose primary page is this one are anchored; a continuation's tail
+has no anchor line by design. An act no reported block overlaps, or whose
+overlapping blocks carry no normalizable text, is `act-anchor-line-not-located`:
+the page's anchor exists and locates no line for it. A page the Chandra chair
+did not read as text -- an unrecognized body, or a genuinely-empty page, which
+has no text to anchor to -- derives no anchor, and its page witnesses come back
+`missing-chandra-page-anchor` (or, for a genuinely-empty witness, the trivial
+attach's `no-page-anchor`, the blank-confirmation path the fixture already
+exercises). `declared_chandra_anchor_chair` names the anchor chair on both
+routes.
+
+**What the live alignment does not do, and why the e2e export is still held.**
+Alignment supplies a span inside a witness's own text; attachment is the page
+geometry that chair reported against the sealed proposal, and a chair with no
+reported geometry is not attached. Churro publishes no native layout, so on
+the live path its page text aligns to the derived anchor and it stays
+`attached: false`, `comparable: false`, with its `aligned` alignment retained
+beside it and no span -- the record says both facts. The fixture attaches
+Churro only through a declared `[[native_observation]]` row, which a live pass
+does not read. Deriving Churro's geometry from Chandra's anchor lines would be
+one chair's geometry attributed to another (the "never chair against chair"
+rule of the adapter contract below), so it is not done here; a Churro layout
+channel is Unit 12's obligation, and until it lands a live run counts two
+witnesses of a floor of three and holds for review.
+
+**A page witness's geometry on a continuation page is a record the Perlector
+cannot read today.** `attached` is derived from geometry alone on every
+contributing page, so a served Chandra whose page-2 block overlaps an act's
+continuation region publishes that act's page-2 entry as `attached: true`,
+`attachment_basis: geometric-overlap`, alignment
+`continuation-page-no-act-anchor`, `comparable: false`, no span
+(`test_attestatores_live_pass.py` pins it). `pipeline/4_perlector/run.py::act_attachment_view`
+then refuses it twice over: it requires `attached` to equal the witness's
+geometric overlap with the act's sealed regions on that page (so `false` is
+refused as not derived from geometry) and separately refuses any
+continuation-page entry that is attached (so `true` is refused as claiming an
+anchor). No record satisfies both, so a page witness reporting geometry over a
+continuation region cannot pass the Perlector in either state. The
+contradiction was unreachable until a served Chandra parsed -- the fixture
+declares no geometry on a continuation page -- and the fix is the Perlector's
+(outside this stage's ownership): decide which of its two rules the
+continuation entry obeys, most plausibly dropping the second, since
+`attached` says only that the chair's ink overlaps the act's and the
+`continuation-page-no-act-anchor` alignment beside it already says no
+comparison view exists. Until then `pipeline/test_live_reading_seam_e2e.py`
+scripts Chandra's continuation-page answer in the contract's page-text form,
+which is a legitimate answer and the one the Perlector reads, and says so
+where it does.
 
 **No live reread.** `--operation reread` is refused by name under a live roster.
 A reread asks one chair for one act again at a new ordinal; it needs its own
@@ -205,11 +349,12 @@ say.
    the record a failed-attempt reason.
 4. **A parser may say it read the whole body and could place no shape it
    knows.** `unrecognized-shape` is a distinct state from a parse failure — the
-   parser ran and refused nothing — and `chandra.py` has produced it since it
-   was written, because the vendor publishes no response specimen. The shared
-   capture contract admits it now, naming the shape in `outcome`, so a live
-   Chandra record carries the adapter's own account of its bytes beside the
-   bytes themselves instead of dropping the view for want of a state name.
+   parser ran and refused nothing — and `chandra.py` produces it for every body
+   outside its two declared shapes, because the vendor publishes no response
+   specimen to parse a native mode against. The shared capture contract admits
+   it, naming the shape in `outcome`, so a live Chandra record carries the
+   adapter's own account of its bytes beside the bytes themselves instead of
+   dropping the view for want of a state name.
 
 Two further seams closed with them:
 
@@ -246,27 +391,30 @@ name its `serving_call_ref` (the shared page contract's optional fields do not
 admit it), so a continuation-page response's call record is an inventoried blob
 no record links.
 
-**A duplicate-inputs fix on this side is not yet mirrored on the Perlector's.**
-`run.py::_named_once` de-duplicates a page act record's published `inputs` by
-`relative_path` before the envelope writer runs, because a live Chandra page
-whose `native_capture.raw_response_ref` names the same blob the page already
-lists under `raw_response_refs` would otherwise be refused outright by
-`common/contracts/envelope.validate_input_refs`, which refuses any repeated
-path. That is genuinely required here. But
+**A live Chandra page record names its response once, through its capture.**
+`run.py::_named_once` de-duplicates a page record's published `inputs` by
+`relative_path` before the envelope writer runs, because
+`common/contracts/envelope.validate_input_refs` refuses any repeated path. But
 `pipeline/4_perlector/run.py::validate_page_testimonium_record` reconstructs
 the same record's *expected* `inputs` by concatenating `raw_response_refs` and
 the capture's `raw_response_ref` with no de-duplication, then compares the two
-lists for exact equality — so the one record `_named_once` makes publishable at
-this stage is refused one stage downstream, on the very live-Chandra-page case
-the de-duplication exists for. The fix belongs on the Perlector's side (outside
-this stage's ownership): build its `expected_inputs` keeping one entry per
-`relative_path`, the same rule `validate_input_refs` enforces, before the sorted
-comparison. Measured since: that refusal does not fire end to end today,
-because a live Chandra page never parses into an observation payload, so
-`page_response_refs` stays empty and the page record names its capture once.
-The day a Chandra wire schema lands, the page partition starts naming the very
-blob the capture names and the mismatch becomes reachable — so the fix is owed
-before that, not after.
+lists for exact equality — so a page record that listed the capture's own
+response under `raw_response_refs` as well would be publishable here and
+refused one stage downstream. Now that a live Chandra page parses and its
+partition is derived from the very bytes the capture names, this stage keeps
+the two fields disjoint on the live path by construction: the partition list
+stays empty, the capture names the bytes, the geometry is derived from them,
+and the act views carry the quantization rule beside their own retained
+reference (`adapter_metadata` is absent from the live page record because the
+shared contract ties it to `raw_response_refs`). The one exception is a
+page-edge overshoot finding, which the shared contract requires to be traceable
+through `raw_response_refs`; there the reference is added and the Perlector's
+arithmetic would refuse the record. That branch is unreachable for the wire
+contract -- its page-pixel conversion clamps to the page -- and reachable only
+for a live body wearing the fixture placeholder's pixel boxes, so the
+Perlector-side fix (one entry per `relative_path` before the sorted comparison,
+outside this stage's ownership) is still owed, but nothing a served chair
+answering its prompt can produce reaches it.
 
 **Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
 stage's live pass as one link in a whole run: the real stage programs to the
@@ -274,12 +422,16 @@ Designator, this stage's three live witness chairs, a live Perlector, and then
 the Recensor, Archetypus and Armarium over what both wrote — the first time any
 stage after the Perlector has read a live tree. They read it: the run seals a
 terminal export. It is **held for review, not delivered**, and the reason is
-this stage's own two named limits rather than anything downstream. Each act
-counts one witness of a floor of three, because `chandra.v1` lands `failed` with
-`unverified-response-schema` and both page-scoped chairs' act attachments come
-back unaligned while a live pass reads no declared Chandra anchor. That is the
-honest current measurement of a live roster, and closing either limit is what
-will move it.
+one named limit of this stage's rather than anything downstream. Each act
+counts two witnesses of a floor of three: Chandra reads under its contract, is
+attached by its own block geometry and aligned against the anchor derived from
+its own response; DAI reads its crops; Churro's page text aligns to that same
+anchor but Churro publishes no native layout, so on the live path its only
+geometry is the presented echo, which routing excludes, and it stays
+geometrically unattached with its alignment retained beside it. The fixture
+posture attaches Churro through a declared `[[native_observation]]` row, and a
+live pass reads none. That is the honest current measurement of a live roster,
+and a Churro layout channel (Unit 12's obligation) is what will move it.
 
 ## Real ingress
 
@@ -568,12 +720,14 @@ remains explicitly synthetic.
 **Named obligations after Unit 10.** These are adapter/integration work, not
 unfinished choices in this contract:
 
-* **Unit 11 (Chandra)** adds Chandra's exact shared name and local runnable
-  binding, plus the shared adapter-metadata field that records an explicit
-  float-to-integer quantization rule beside `raw_response_ref` in the retained
-  model view. Its `observe` applies that declared rule to native layout; its
-  `parse` returns text or integer-only data. The unit carries one published
-  specimen response with source and licence.
+* **Unit 11 (Chandra)** — landed as the closed response contract
+  (`chandra_response.py`, its own section above): the served chair is asked
+  for a declared JSON shape, `parse` returns its page text, `observe` converts
+  its normalized boxes to sealed-page pixels with spans into that text, and
+  the adapter-metadata rule rides beside `raw_response_ref`. What the unit
+  could not carry is a published vendor specimen, because none exists; the
+  contract is this repository's question, and the first pod reading's retained
+  bytes are the specimen.
 * **Unit 12 (Churro)** replaces the fixture-only Churro serve with the real
   full-page XML boundary while keeping raw bytes, parse failure, truncation and
   post-capture repetition visible. It declares whether it has any native
@@ -914,15 +1068,19 @@ claim a page the ink does not support, or drop one the ink does.
 
 - aligned: the closed key set `{status, anchor_basis, anchor_chair,
   anchor_span, witness_span, line_geometry, loss, offset_maps}`, with
-  `anchor_chair` naming the sole configured Chandra witness associated with the
-  fixture's sealed Chandra anchor declaration — a string exactly when
-  `anchor_basis` is `act-anchor`, and null otherwise, refused either way round
-  by both readers. The field identifies that configured association; it does
-  not claim the anchor declaration was re-derived from this run's retained
-  Testimonium. The Designator is structurally out of reach because it is not a
-  witness role. Whether the anchor should instead be taken from live testimony
-  or the lectio prior is NOT settled by this field: the prior is written after
-  this stage runs, so nothing here could read it. `anchor_basis` is one of
+  `anchor_chair` naming the sole configured Chandra witness
+  (`declared_chandra_anchor_chair`) — a string exactly when `anchor_basis` is
+  `act-anchor`, and null otherwise, refused either way round by both readers.
+  On the live path the anchor IS that chair's retained page Testimonium: its
+  page text, and the block spans its reported geometry carries into that text
+  (the derived anchor, below). On the fixture path the anchor is the
+  fixture's declared `[[chandra_anchor]]` stand-in, and the field identifies
+  the configured association without claiming the declaration was re-derived
+  from a retained Testimonium. The Designator is structurally out of reach
+  because it is not a witness role, and the lectio prior is written after this
+  stage runs, so nothing here could read it. `line_geometry` carries one
+  rectangle per anchor line -- exactly one on the fixture path, and on the
+  live path every reported block that overlaps the act. `anchor_basis` is one of
   `act-anchor` (computed through Chandra's located anchor line),
   `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
   a page with no Chandra anchor at all — the ink-free/fallback path; blank

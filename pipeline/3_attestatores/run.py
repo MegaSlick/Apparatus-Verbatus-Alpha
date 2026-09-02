@@ -30,6 +30,7 @@ from typing import Any, Final, NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import chandra  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
@@ -2577,8 +2578,12 @@ def resolve_attempt(
                 retained = adapter.retain(
                     context.tree,
                     # No adapter argument: Chandra's retain wrapper pins its own
-                    # registry identity, as Churro's and DAI's do.
-                    view={"prompt": adapter.prompt()},
+                    # registry identity, as Churro's and DAI's do. The prompt
+                    # is the fixture's frozen declaration, not `adapter.prompt()`:
+                    # this view is sealed into the pinned fixture bytes, the
+                    # fixture never asks a chair anything, and the served
+                    # instruction must be free to change without moving them.
+                    view={"prompt": dict(chandra.FIXTURE_PROMPT)},
                     raw_response=raw_response,
                     transport_stop_reason="fixture-complete",
                     parser="json",
@@ -2703,8 +2708,95 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+def _line_geometry(act_anchor: dict[str, Any]) -> list[dict[str, dict[str, int]]]:
+    """A fresh copy of the anchor's line rectangles, in the closed `line_geometry` shape."""
+    return [
+        {"bbox": {key: line["bbox"][key] for key in ("x", "y", "w", "h")}}
+        for line in act_anchor["line_geometry"]
+    ]
+
+
+def derived_chandra_anchor(
+    *,
+    page_text: str,
+    observed: list[dict[str, Any]],
+    page_ordinal: int,
+    page_acts: list[dict[str, Any]],
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+) -> dict[str, dict[str, Any]]:
+    """Each act's anchor range on one page, from the anchor chair's own served response.
+
+    The live counterpart of the fixture's declared `[[chandra_anchor]]` rows,
+    built from two facts the retained page Testimonium already carries: the
+    chair's page text, and its reported blocks with their spans into that
+    text. An act's anchor lines are the reported blocks whose geometry overlaps
+    one of the act's sealed proposal regions on this page -- the same
+    positive-area rule attachment uses (`reported_geometry_overlaps`), applied
+    per block -- so alignment attaches text to acts by geometry and never by
+    choosing among witnesses (hard rule 8). The range is the hull, in the
+    markup-stripped normalized view `align_to_anchor` measures in, of those
+    blocks' spans: when an act's blocks are not adjacent in reading order the
+    hull carries a neighbour's characters too, which overstates disagreement
+    and never hides it -- the same deliberate direction the clipped witness
+    hull below takes. `line_geometry` carries every overlapping block, in
+    reading order, including one whose text normalizes to nothing.
+
+    An act no reported block overlaps, or whose overlapping blocks carry no
+    normalizable text, gets no range and is `act-anchor-line-not-located`: the
+    page's anchor exists and locates no line for it. Only acts whose primary
+    page is this one are anchored here; a continuation's tail has no anchor
+    line by design (`continuation-page-no-act-anchor`). A block overlapping two
+    acts gives both the same range, which `refuse_ambiguous_act_alignments`
+    then names rather than resolves.
+    """
+    offset_map = markup_text_view(page_text)["offset_map"]
+    normalized_by_raw: dict[int, list[int]] = {}
+    for normalized_index, raw_index in enumerate(offset_map):
+        if raw_index is not None:
+            normalized_by_raw.setdefault(raw_index, []).append(normalized_index)
+    anchors: dict[str, dict[str, Any]] = {}
+    for act in page_acts:
+        if act["page_ordinal"] != page_ordinal:
+            continue
+        act_bounds = [
+            region["payload"]["transform"]["bounds"]
+            for region in regions_by_act[act["act_id"]][0]
+            if region["payload"]["transform"]["source_page_ordinal"] == page_ordinal
+        ]
+        starts: list[int] = []
+        ends: list[int] = []
+        line_geometry: list[dict[str, Any]] = []
+        for block in observed:
+            span = block.get("span")
+            if span is None or not any(
+                reported_geometry_overlaps([block], bounds) for bounds in act_bounds
+            ):
+                continue
+            line_geometry.append({"bbox": dict(block["bounds"])})
+            normalized = [
+                index
+                for raw_index in range(span["start"], span["end"])
+                for index in normalized_by_raw.get(raw_index, [])
+            ]
+            if normalized:
+                starts.append(min(normalized))
+                ends.append(max(normalized) + 1)
+        if starts:
+            anchors[act["act_id"]] = {
+                "start": min(starts),
+                "end": max(ends),
+                "line_geometry": line_geometry,
+            }
+    return anchors
+
+
 def declared_chandra_anchor_chair(context) -> str:
-    """The sole configured Chandra chair named as the alignment anchor."""
+    """The sole configured Chandra chair named as the alignment anchor.
+
+    Both routes use it: the fixture route to name the chair the declared
+    anchor stands in for, the live route to pick whose served page response
+    the anchor is derived from (`derived_chandra_anchor`).
+    """
     chairs = [
         chair
         for chair in context.witness_chairs
@@ -2771,10 +2863,22 @@ def publish_attempt(
         if presented and not live
         else None
     )
+    is_chandra = isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1"
     if not presented:
         observed: list[dict[str, Any]] = []
     elif fixture_observed is not None:
         observed = fixture_observed
+    elif adapter is not None and is_chandra:
+        # A page witness's act view restates page-level geometry, so the
+        # wire contract's normalized boxes convert against the sealed page's
+        # size, never this one crop's (`chandra.observe`).
+        observed = adapter.observe(
+            presented,
+            attempt.observation_payload
+            if attempt.observation_payload is not None
+            else attempt.native_payload,
+            page_size=_sealed_source_page(context, presented)[2],
+        )
     elif adapter is not None:
         observed = adapter.observe(
             presented,
@@ -2784,11 +2888,7 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
-    if (
-        presented
-        and isinstance(resolved, ChairIdentity)
-        and resolved.witness_adapter == "chandra.v1"
-    ):
+    if presented and is_chandra:
         # The act view cannot retain partition findings, but it must exclude an
         # overshoot so one bad block does not prevent the page record retaining it.
         observed, _ = split_page_edge_overshoots(
@@ -3419,29 +3519,69 @@ def publish_page_testimonia_and_attachments(
                 observed = []
                 captured_geometry = False
                 needs_default_observation = False
-                for act in page_acts:
-                    if act["page_ordinal"] != page_ordinal:
-                        continue
-                    source_attempt = attempts_by_pair[(act["act_id"], chair)]
-                    raw = source_attempt.observation_payload
-                    if raw is None and source_attempt.outcome == "genuinely-empty":
-                        needs_default_observation = True
-                    if raw is None:
-                        continue
+                page_size = _sealed_source_page(context, presented)[2]
+                # Which retained responses this page's partition derives from.
+                # Under a live capture there is exactly one: the page response
+                # the chair really returned, which every act view on the page
+                # also carries -- deriving from each act view in turn would
+                # append the same blocks once per act. The fixture executes one
+                # declared response per compatibility act, so it walks them.
+                sources: list[tuple[bytes, dict[str, str] | None, bool]] = []
+                if page_captures is not None:
+                    raw = page_attempt_result.observation_payload
+                    if raw is not None:
+                        # `False`: the capture already names these bytes on this
+                        # record (`native_capture.raw_response_ref`, bound as an
+                        # input below), and the partition list may not name them
+                        # a second time -- the Perlector reconstructs a page
+                        # record's expected inputs by concatenating the two
+                        # without de-duplication and refuses the record when
+                        # they disagree, so one response listed under both
+                        # fields is a live Chandra page no later stage can read.
+                        sources.append((raw, page_attempt_result.raw_response_ref, False))
+                else:
+                    for act in page_acts:
+                        if act["page_ordinal"] != page_ordinal:
+                            continue
+                        source_attempt = attempts_by_pair[(act["act_id"], chair)]
+                        raw = source_attempt.observation_payload
+                        if raw is None and source_attempt.outcome == "genuinely-empty":
+                            needs_default_observation = True
+                        if raw is None:
+                            continue
+                        sources.append((raw, source_attempt.raw_response_ref, True))
+                for raw, reference, name_in_partition in sources:
                     captured_geometry = True
                     # Keep the reference to the bytes this page's geometry was
                     # quantized from, in the record that carries the geometry.
                     # Retained once per distinct blob and in the order the
                     # partition was built, so the record answers "derived from
                     # what?" without rejoining act-scoped compatibility records.
-                    reference = source_attempt.raw_response_ref
-                    if reference is not None and reference not in page_response_refs:
+                    if (
+                        name_in_partition
+                        and reference is not None
+                        and reference not in page_response_refs
+                    ):
                         page_response_refs.append(reference)
                     source_observed, overshoots = chandra_page_partition_entries(
-                        adapter.observe(presented, raw),
-                        page_size=_sealed_source_page(context, presented)[2],
+                        adapter.observe(presented, raw, page_size=page_size),
+                        page_size=page_size,
                         raw_response_ref=reference,
                     )
+                    if (
+                        overshoots
+                        and not name_in_partition
+                        and reference is not None
+                        and reference not in page_response_refs
+                    ):
+                        # A page-edge finding must be traceable to bytes the
+                        # record names in its partition list; that traceability
+                        # outranks the Perlector's over-strict input arithmetic
+                        # above. Unreachable for the wire contract -- its
+                        # page-pixel conversion clamps to the page -- so only a
+                        # live body wearing the fixture placeholder's pixel
+                        # boxes could take this branch.
+                        page_response_refs.append(reference)
                     for overshoot in overshoots:
                         overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
                         if overshoot_key not in seen_page_edge_overshoots:
@@ -3449,6 +3589,13 @@ def publish_page_testimonia_and_attachments(
                             page_edge_overshoots.append(overshoot)
                     for item in source_observed:
                         observed.append({**item, "ordinal": len(observed)})
+                if page_captures is not None and captured_geometry and not observed:
+                    # A live response that parsed but reported no block geometry
+                    # (the contract's page-text form, or an empty blocks list)
+                    # is a page with no reported geometry, the same fact the
+                    # fixture's genuinely-empty rows record: the presentation
+                    # echo stands in, excluded from routing and coverage.
+                    needs_default_observation = True
                 if needs_default_observation or not captured_geometry:
                     observed.extend(
                         {**item, "ordinal": len(observed)}
@@ -3564,22 +3711,34 @@ def publish_page_testimonia_and_attachments(
                 page_artifact_id,
             )
             page_observations[(page_ordinal, chair)] = observed
-        # A declared anchor is the fixture posture's stand-in for the anchor
-        # chair's own page text, and its per-act `lines` carry act geometry no
-        # live run has measured. Aligning a live page reading against it would
-        # place real witness text on declared spans -- a measurement nobody made
-        # (GOVERNANCE 10) -- so a live pass reads no anchor at all and its page
-        # witnesses come back `unaligned: missing-chandra-page-anchor`, which is
-        # what this run honestly holds until R4 owns live alignment.
-        anchors = (
-            [
+        if page_captures is not None:
+            # The live anchor is derived from the anchor chair's OWN served
+            # response for this page -- its retained page text, and the block
+            # geometry it reported with spans into that text -- never from the
+            # fixture's declared `[[chandra_anchor]]` rows, which are the
+            # offline posture's stand-in and carry geometry no live run
+            # measured (GOVERNANCE 10). A page the anchor chair did not read as
+            # text derives no anchor, and its page witnesses say so by name.
+            anchor_page_text = page_texts.get((page_ordinal, anchor_chair))
+            if page_outcomes.get((page_ordinal, anchor_chair)) == "read" and isinstance(
+                anchor_page_text, str
+            ):
+                anchor_texts[page_ordinal] = anchor_page_text
+                for act_id, act_anchor in derived_chandra_anchor(
+                    page_text=anchor_page_text,
+                    observed=page_observations[(page_ordinal, anchor_chair)],
+                    page_ordinal=page_ordinal,
+                    page_acts=page_acts,
+                    regions_by_act=regions_by_act,
+                ).items():
+                    anchor_ranges[(page_ordinal, act_id)] = act_anchor
+            anchors = []
+        else:
+            anchors = [
                 row
                 for row in context.fixture.get("chandra_anchor", [])
                 if row.get("page_ordinal") == page_ordinal
             ]
-            if page_captures is None
-            else []
-        )
         if len(anchors) > 1:
             # Skipping a malformed declaration is not the same fact as an absent
             # one: it would detach every page witness on the page from every act
@@ -3687,7 +3846,7 @@ def publish_page_testimonia_and_attachments(
                         anchor_ranges[(page_ordinal, act["act_id"])] = {
                             "start": start,
                             "end": start + len(needle),
-                            "bbox": bbox,
+                            "line_geometry": [{"bbox": bbox}],
                         }
                     # A located line advances the cursor whether or not it maps
                     # to a proposed act on this page -- an anchor line for an
@@ -3781,15 +3940,7 @@ def publish_page_testimonia_and_attachments(
                         ),
                         "witness_span": {"start": 0, "end": 0},
                         "line_geometry": (
-                            [
-                                {
-                                    "bbox": {
-                                        key: act_anchor["bbox"][key] for key in ("x", "y", "w", "h")
-                                    }
-                                }
-                            ]
-                            if act_anchor is not None
-                            else []
+                            _line_geometry(act_anchor) if act_anchor is not None else []
                         ),
                         "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
                         "offset_maps": {"witness": [], "anchor": []},
@@ -3869,14 +4020,7 @@ def publish_page_testimonia_and_attachments(
                                         key: act_anchor[key] for key in ("start", "end")
                                     },
                                     "witness_span": {"start": witness_start, "end": witness_end},
-                                    "line_geometry": [
-                                        {
-                                            "bbox": {
-                                                key: act_anchor["bbox"][key]
-                                                for key in ("x", "y", "w", "h")
-                                            }
-                                        }
-                                    ],
+                                    "line_geometry": _line_geometry(act_anchor),
                                     "loss": {
                                         "witness": result["witness"]["loss"],
                                         "anchor": result["anchor"]["loss"],
@@ -4260,6 +4404,29 @@ def _page_capture_from_record(
             "would replace immutable evidence with different bytes"
         )
     capture = payload.get("native_capture")
+    observation_payload = None
+    if (
+        capture is not None
+        and capture.get("adapter") == "chandra.v1"
+        and capture["parse"]["state"] == "parsed"
+    ):
+        # The page record's geometry is re-derived from the response bytes on
+        # republish (`publish_page_testimonia_and_attachments`), so a resumed
+        # page capture must carry them exactly as the interrupted pass did --
+        # read back and digest-checked, the same rehydration
+        # `_attempt_from_retained_testimonium` performs for a parsed act view.
+        reference = validate_raw_response_ref(capture["raw_response_ref"])
+        try:
+            observation_payload = context.tree.read_bytes(reference["relative_path"])
+        except OSError as error:
+            raise SchemaRefusal(
+                f"{what} names a retained raw response that could not be read: "
+                f"{reference['relative_path']}: {error}"
+            ) from error
+        if digest_bytes(observation_payload) != reference["sha256"]:
+            raise SchemaRefusal(
+                f"{what} names a retained raw response whose digest differs from its reference"
+            )
     return (
         Attempt(
             outcome=record["outcome"],
@@ -4269,6 +4436,7 @@ def _page_capture_from_record(
             health=payload["content_health"],
             reason=payload.get("reason"),
             raw_response_ref=capture["raw_response_ref"] if capture is not None else None,
+            observation_payload=observation_payload,
             native_capture=capture,
             receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
             # Derived from the capture rather than read off the record: the

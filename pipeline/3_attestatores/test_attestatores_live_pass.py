@@ -78,11 +78,26 @@ LIVE_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 CATALOGUE_CHAIRS = LIVE_CHAIRS
 FIXTURE_ROOT = ROOT / "proof"
 
-# A body shaped like something a real Chandra service would return, and
-# deliberately *not* `fixture-chandra-response.v1`: `chandra.parse` recognizes
-# only that fixture schema, so this is what "live in transport only" looks like
-# on the wire (SPEC_A section 2.2).
-CHANDRA_BODY = '{"pages": [{"markdown": "a real Chandra body, not the fixture schema"}]}'
+# Chandra answers in the closed shape its own prompt asks for
+# (`chandra_response.py`): block text with normalized `box_1000` geometry. The
+# boxes below convert, on this fixture's 200x260 pages, to exactly the sealed
+# proposal rectangles of `a1` (20,20 160x80), `a2` (20,120 160x100) and a2's
+# page-2 continuation (20,20 160x60), so the served witness's own geometry
+# overlaps the acts it reports on.
+CHANDRA_PAGE_ONE = (
+    '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
+    '{"box_1000": [100, 77, 900, 385], "text": "SYNTHETIC ACT ONE alpha beta gamma"}, '
+    '{"box_1000": [100, 462, 900, 846], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
+)
+CHANDRA_PAGE_TWO = (
+    '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
+    '{"box_1000": [100, 77, 900, 308], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
+)
+CHANDRA_BODY = CHANDRA_PAGE_ONE
+# A body in neither declared shape -- what a model answering in its own native
+# mode rather than the asked-for contract would look like on the wire. It is
+# retained and refused by name, never read.
+CHANDRA_UNRECOGNIZED_BODY = '{"pages": [{"markdown": "a real Chandra body, not the contract"}]}'
 CHURRO_PAGE_ONE = (
     "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 )
@@ -319,8 +334,8 @@ def default_scripts() -> dict[str, list[ScriptedAnswer]]:
     """
     return {
         "attestator_1": [
-            ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop"),
-            ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop"),
+            ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
+            ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
         ],
         "attestator_2": [
             ScriptedAnswer(content=DAI_ACT_ONE, finish_reason="stop"),
@@ -514,6 +529,26 @@ def page_records(tree: RunTree) -> dict[tuple[int, str], dict[str, Any]]:
         )
         records[key] = record
     return records
+
+
+def attachment_entries(tree: RunTree) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Every act-attachment entry, by the act's fixture key and then by chair.
+
+    A page witness contributes one entry per contributing page, so each chair
+    maps to a list; an act-scoped chair's list has exactly one entry.
+    """
+    key_of_act = {
+        record["subject_id"]: record["payload"]["act_key"] for record in act_records(tree).values()
+    }
+    entries: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "act-attachment":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        by_chair = entries.setdefault(key_of_act[record["subject_id"]], {})
+        for attachment in record["payload"]["attachments"]:
+            by_chair.setdefault(attachment["chair"], []).append(attachment)
+    return entries
 
 
 # ================================ the live pass ===============================
@@ -751,10 +786,76 @@ def test_the_engine_stop_word_decides_the_truncation_a_live_record_publishes(
     assert page_health["truncated"] is truncated
 
 
-def test_chandra_goes_live_in_transport_only_and_the_record_says_so(live_run, tmp_path):
-    """Transported, retained, and honestly unreadable: no wire schema exists."""
+def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometry(
+    live_run, tmp_path
+):
+    """Attestator 1 is a served Chandra witness like the others (Tyrel, 2026-09-02).
+
+    Its page response parses under the contract its own prompt asks for, so
+    the page record is a reading whose text is the block texts joined and whose
+    observed geometry is the blocks converted to sealed-page pixels -- each with
+    a span into that text. The act views carry the same page-level geometry
+    over their one-crop presentation. The page record names the response once,
+    through its capture, and does not repeat it in the partition list.
+    """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    page = page_records(tree)[(1, "attestator_1")]
+    payload = page["payload"]
+    assert page["outcome"] == "read"
+    assert payload["payload"] == (
+        "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
+    )
+    assert payload["native_capture"]["parse"]["state"] == "parsed"
+    assert payload["native_capture"]["view"] == {"prompt": attestatores.chandra.prompt()}
+    assert payload["observed"] == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 20, "y": 20, "w": 160, "h": 81},
+            "bounds_source": "native",
+            "span": {"start": 0, "end": 34},
+        },
+        {
+            "ordinal": 1,
+            "bounds": {"x": 20, "y": 120, "w": 160, "h": 100},
+            "bounds_source": "native",
+            "span": {"start": 35, "end": 75},
+        },
+    ]
+    assert "raw_response_refs" not in payload
+    assert payload["native_capture"]["raw_response_ref"] in page["inputs"]
+    assert tree.read_bytes(payload["native_capture"]["raw_response_ref"]["relative_path"]) == (
+        CHANDRA_PAGE_ONE.encode("utf-8")
+    )
+
+    for key in ("a1", "a2"):
+        record = act_records(tree)[(key, "attestator_1")]
+        assert record["outcome"] == "read"
+        assert record["payload"]["payload"] == payload["payload"]
+        assert record["payload"]["page_witness"] is True
+        assert record["payload"]["observed"] == payload["observed"]
+        assert record["payload"]["adapter_metadata"] == {
+            "geometry_quantization": attestatores.chandra.QUANTIZATION_RULE
+        }
+        assert (
+            record["payload"]["raw_response_ref"] == payload["native_capture"]["raw_response_ref"]
+        )
+
+
+def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_name(
+    live_run, tmp_path
+):
+    """Transported, retained, and honestly unreadable: not the asked-for contract."""
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content=CHANDRA_UNRECOGNIZED_BODY, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_UNRECOGNIZED_BODY, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
 
     tree = RunTree(run_root, RUN_ID)
@@ -764,14 +865,16 @@ def test_chandra_goes_live_in_transport_only_and_the_record_says_so(live_run, tm
     assert "unverified-response-schema" in payload["reason"]
     assert payload["content_health"]["recordable"] is False
     # The bytes are retained and the request is accounted for even though no
-    # parser could read them -- GOVERNANCE 2, and the whole point of
-    # transporting Chandra before its schema is known.
-    assert tree.read_bytes(payload["raw_response_ref"]["relative_path"]).decode() == CHANDRA_BODY
+    # parser could read them -- GOVERNANCE 2.
+    assert (
+        tree.read_bytes(payload["raw_response_ref"]["relative_path"]).decode()
+        == CHANDRA_UNRECOGNIZED_BODY
+    )
     assert "serving_call_ref" in payload
     # The adapter's own account of those bytes rides along. It reached
     # `unrecognized-shape` -- the parser ran, read the whole body, and could
     # place no shape it knows -- which is a different fact from a parse
-    # failure, and the shared capture contract now has room for it, so the
+    # failure, and the shared capture contract has room for it, so the
     # retained model view stays beside the blob it describes.
     assert payload["native_capture"]["parse"] == {
         "state": "unrecognized-shape",
@@ -780,6 +883,13 @@ def test_chandra_goes_live_in_transport_only_and_the_record_says_so(live_run, tm
     }
     assert payload["native_capture"]["raw_response_ref"] == payload["raw_response_ref"]
     assert payload["raw_response_kind"] == "model-output"
+    # No anchor can be derived from a page the anchor chair did not read, and
+    # the other page witness says exactly that.
+    a1 = attachment_entries(tree)["a1"]
+    assert a1["attestator_3"][0]["alignment"] == {
+        "status": "unaligned",
+        "reason": "missing-chandra-page-anchor",
+    }
 
 
 def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
@@ -1438,9 +1548,9 @@ def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_paylo
 ):
     """The defect-fix guard `_attempt_from_retained_testimonium` relies on.
 
-    A live Chandra response never parses into a payload (SPEC_A section 2.2:
-    Chandra is live in transport only), so a resumed act-scoped compatibility
-    record for it names a serving call, retains its raw bytes, and reports
+    A live Chandra response in neither declared shape never parses into a
+    payload, so a resumed act-scoped compatibility record for it names a
+    serving call, retains its raw bytes, and reports
     `content_health.recordable=False`. Rehydrating those bytes as
     `observation_payload` would feed page geometry from bytes no parser ever
     recognized -- exactly the measurement nobody made the guard exists to
@@ -1450,7 +1560,9 @@ def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_paylo
     """
     run_root = fresh_tree(live_run, tmp_path)
     context = open_live_context(live_run, run_root)
-    raw_response_ref = attestatores.retained_blob_ref(context, CHANDRA_BODY.encode("utf-8"))
+    raw_response_ref = attestatores.retained_blob_ref(
+        context, CHANDRA_UNRECOGNIZED_BODY.encode("utf-8")
+    )
     record = {
         "outcome": "failed",
         "payload": {
@@ -1500,3 +1612,165 @@ def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tm
 
     reported = capsys.readouterr().err
     assert "chandra_anchor" in reported
+
+
+# =========================== the derived anchor (R4) ==========================
+
+
+def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_response(
+    live_run, tmp_path
+):
+    """R4 on the live path: the anchor is Chandra's served page text and block
+    geometry, never the fixture's declared `[[chandra_anchor]]` rows.
+
+    Each act's anchor line is the reported block whose geometry overlaps the
+    act's sealed proposal, and both page witnesses align their page text
+    against that anchor. Chandra itself is attached (its own blocks overlap
+    the acts) and aligned, so it is comparable. Churro's text aligns to the
+    same anchor, but Churro publishes no native layout -- its only geometry is
+    the presented echo, excluded from routing -- so on the live path it stays
+    geometrically unattached with its alignment retained beside it, and no
+    span: a fixture run attaches it only through a declared
+    `[[native_observation]]` row a live pass does not read.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    entries = attachment_entries(tree)
+    page_text = page_records(tree)[(1, "attestator_1")]["payload"]["payload"]
+
+    [chandra_a1] = entries["a1"]["attestator_1"]
+    assert chandra_a1["attached"] is True
+    assert chandra_a1["comparable"] is True
+    assert chandra_a1["attachment_basis"] == "geometric-overlap"
+    alignment = chandra_a1["alignment"]
+    assert alignment["status"] == "aligned"
+    assert alignment["anchor_basis"] == "act-anchor"
+    assert alignment["anchor_chair"] == "attestator_1"
+    assert alignment["line_geometry"] == [{"bbox": {"x": 20, "y": 20, "w": 160, "h": 81}}]
+    assert alignment["anchor_span"] == {"start": 0, "end": 34}
+    assert page_text[alignment["witness_span"]["start"] : alignment["witness_span"]["end"]] == (
+        "SYNTHETIC ACT ONE alpha beta gamma"
+    )
+    assert chandra_a1["span"] == alignment["witness_span"]
+
+    # a2 runs onto page 2: its primary page carries the comparison view, its
+    # continuation page is explicitly unaligned for the reason the schema names.
+    primary, continuation = sorted(
+        entries["a2"]["attestator_1"], key=lambda entry: entry["page_ordinal"]
+    )
+    assert primary["page_ordinal"] == 1 and continuation["page_ordinal"] == 2
+    assert primary["alignment"]["anchor_span"] == {"start": 35, "end": 75}
+    assert primary["alignment"]["line_geometry"] == [
+        {"bbox": {"x": 20, "y": 120, "w": 160, "h": 100}}
+    ]
+    assert (
+        page_text[
+            primary["alignment"]["witness_span"]["start"] : primary["alignment"]["witness_span"][
+                "end"
+            ]
+        ]
+        == "SYNTHETIC ACT TWO delta epsilon zeta eta"
+    )
+    assert continuation["alignment"] == {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    # `attached` is geometry alone, on every contributing page: Chandra's page-2
+    # block overlaps a2's continuation region, so the tail is attached while
+    # its alignment says no anchor line exists for it. This is the state this
+    # stage's contract describes and the Perlector today cannot read (its
+    # `act_attachment_view` requires `attached` to equal the geometric overlap
+    # and refuses an attached continuation-page entry -- HANDOFF.md names the
+    # contradiction); it is pinned here so the fix lands against a measured
+    # record rather than a described one.
+    assert continuation["attached"] is True
+    assert continuation["attachment_basis"] == "geometric-overlap"
+    assert continuation["comparable"] is False and continuation["span"] is None
+
+    [churro_a1] = entries["a1"]["attestator_3"]
+    assert churro_a1["attached"] is False
+    assert churro_a1["comparable"] is False
+    assert churro_a1["attachment_basis"] == "unattached"
+    assert churro_a1["span"] is None
+    churro_alignment = churro_a1["alignment"]
+    assert churro_alignment["status"] == "aligned"
+    assert churro_alignment["anchor_chair"] == "attestator_1"
+    assert churro_alignment["anchor_span"] == {"start": 0, "end": 34}
+    churro_text = page_records(tree)[(1, "attestator_3")]["payload"]["payload"]
+    assert churro_text[
+        churro_alignment["witness_span"]["start"] : churro_alignment["witness_span"]["end"]
+    ].startswith("SYNTHETIC ACT ONE alpha beta")
+
+    # The act-scoped chair is untouched by any of this.
+    [dai_a1] = entries["a1"]["attestator_2"]
+    assert dai_a1["alignment"] is None and dai_a1["attached"] is True
+
+
+def test_derived_chandra_anchor_locates_lines_by_geometry_and_names_what_it_cannot():
+    """The derivation itself, over hand-built facts: geometry decides, text
+    follows, and an act no block overlaps -- or whose blocks carry no
+    normalizable text -- gets no range rather than a guessed one."""
+    page_text = "<p>first  line</p>\n<p>second line</p>   "
+    assert page_text[3:14] == "first  line"
+    assert page_text[22:33] == "second line"
+    assert page_text[37:40] == "   "
+
+    def block(ordinal, y, span, source="native", h=50):
+        return {
+            "ordinal": ordinal,
+            "bounds": {"x": 0, "y": y, "w": 100, "h": h},
+            "bounds_source": source,
+            "span": {"start": span[0], "end": span[1]},
+        }
+
+    observed = [
+        block(0, 0, (3, 14)),
+        block(1, 60, (22, 33)),
+        block(2, 120, (37, 40)),
+        # A presented echo is not reported geometry and anchors nothing.
+        block(3, 0, (0, 40), source="presented", h=260),
+    ]
+
+    def region(page_ordinal, bounds):
+        return {"payload": {"transform": {"source_page_ordinal": page_ordinal, "bounds": bounds}}}
+
+    acts = [
+        {"act_id": "first", "page_ordinal": 1},
+        {"act_id": "second", "page_ordinal": 1},
+        {"act_id": "blank", "page_ordinal": 1},
+        {"act_id": "elsewhere", "page_ordinal": 1},
+        {"act_id": "continued-here", "page_ordinal": 7},
+    ]
+    regions_by_act = {
+        "first": ([region(1, {"x": 10, "y": 10, "w": 20, "h": 20})], None),
+        "second": ([region(1, {"x": 10, "y": 70, "w": 20, "h": 20})], None),
+        "blank": ([region(1, {"x": 10, "y": 130, "w": 20, "h": 20})], None),
+        "elsewhere": ([region(1, {"x": 150, "y": 10, "w": 20, "h": 20})], None),
+        "continued-here": ([region(1, {"x": 10, "y": 10, "w": 20, "h": 20})], None),
+    }
+
+    anchors = attestatores.derived_chandra_anchor(
+        page_text=page_text,
+        observed=observed,
+        page_ordinal=1,
+        page_acts=acts,
+        regions_by_act=regions_by_act,
+    )
+
+    # Ranges are in the markup-stripped, whitespace-collapsed view:
+    # "first line second line".
+    assert anchors == {
+        "first": {
+            "start": 0,
+            "end": len("first line"),
+            "line_geometry": [{"bbox": {"x": 0, "y": 0, "w": 100, "h": 50}}],
+        },
+        "second": {
+            "start": len("first line "),
+            "end": len("first line second line"),
+            "line_geometry": [{"bbox": {"x": 0, "y": 60, "w": 100, "h": 50}}],
+        },
+    }
