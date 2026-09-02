@@ -830,7 +830,9 @@ def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(liv
         ],
     )
     args = perlector.stage_parser(perlector.__doc__.splitlines()[0]).parse_args()
-    context = perlector.open_context(args, PERLECTOR, registry_factory=ChairRegistry.from_toml)
+    context = perlector.open_stage_context(
+        args, PERLECTOR, registry_factory=ChairRegistry.from_toml
+    )
     decoding_policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
     recipes = load_serving_recipes(catalogue)
     factory = perlector.default_serving_factory(

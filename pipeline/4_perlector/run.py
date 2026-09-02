@@ -23,7 +23,10 @@ Which reader answers is the sealed serving-recipe row's business, not this file'
 behind one `ChairClient`, and every other catalogue selects the fixture reader above.
 Nothing downstream of the reader call changes with that choice — the record shape, the
 truncation instrument and the Recensor's routing are the same either way. HANDOFF.md's
-"Live reader" section carries the mapping, the refusals and the resume rule.
+"Live reader" section carries the mapping, the refusals and the resume rule. On a real
+submission there is no declaration for the fixture reader to read from, so a non-live
+row there refuses by name (`fixture_reader_for`), and a declared reading failure has no
+counterpart: a real reading's non-completion is the engine's own stop reason.
 
 Dissent is structural, not evaluative: it records where the reading departed from
 each witness, which makes parroting measurable without new instrumentation. It is
@@ -63,8 +66,10 @@ from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
+    REAL_INGRESS,
     ApprovalRecordBinding,
     ApprovalRecordReference,
+    parse_ingress_record,
     validate_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
@@ -115,7 +120,7 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     latest_attempt,
     latest_per_chair,
-    open_context,
+    open_stage_context,
     reading_basis_regions,
     recovery_region_count,
     run_stage,
@@ -1526,6 +1531,19 @@ def verify_region(context, region: dict) -> dict:
 witnessed_region_ids = dossier_module.witnessed_region_ids
 
 
+def real_ingress(context) -> bool:
+    """Whether this context's run authority names the real route.
+
+    The same reading `common.stage` makes for `expected_acts` and the shared
+    constructor: an absent record is the synthetic walking skeleton (the
+    hand-built trees in this stage's own tests predate the record), and a
+    present one must parse or it refuses. Read off `context.run`, which the
+    constructor read once, never off a second read of `run.json`.
+    """
+    run = context.run
+    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+
+
 def declared_reading_failure(context, act_key: str) -> str | None:
     """The non-completed outcome this scenario declares for an act, if any.
 
@@ -1533,11 +1551,47 @@ def declared_reading_failure(context, act_key: str) -> str | None:
     witness failure. A reading that did not succeed still carries whatever text
     it managed, which is the shape that matters: it is what let a `truncated`
     reading be established as the one text.
+
+    A real submission declares nothing, so this is `None` there by name rather
+    than by an empty table: a real reading's non-completion is the engine's own
+    stop reason, carried through `truncation.classify`, and no declaration
+    stands in for it. The branch lives here so the call site does not have to
+    know which route it is on.
     """
+    if real_ingress(context):
+        return None
     for row in context.fixture.get("reading_failure", []):
         if row["scenario"] == context.scenario and row["act_key"] == act_key:
             return row["outcome"]
     return None
+
+
+def fixture_reader_for(context, chair: ChairIdentity | AbsentChair, serving_mode: str):
+    """The reader a non-live pass reads through, or `None` when there is nothing to read with.
+
+    Live mode is `None` here on both routes: the loop starts the chair on first
+    use (`_live_reader`), so a resumed pass whose acts are all sealed never
+    loads a model to read nothing. On the fixture route the reader exists from
+    this line, exactly as before. On a real submission there is no declaration
+    for it to read from: a configured chair whose sealed serving-recipe row is
+    not live refuses by name, because a declared text cannot stand in for a
+    reading of real ink; an absent chair reads nothing and needs no reader --
+    every act publishes the same explicit `not-run` record it does on the
+    fixture route -- so it gets `None` rather than a refusal about a reader it
+    would never have consulted.
+    """
+    if serving_mode == "live":
+        return None
+    if not real_ingress(context):
+        return FixtureReader(context.fixture, context.scenario)
+    if isinstance(chair, AbsentChair):
+        return None
+    raise ContractError(
+        f"the Perlector cannot read a real submission through the fixture reader: the sealed "
+        f"serving-recipe row for chair {chair.role!r} is not a live row, and a declared text "
+        "cannot stand in for a reading of real ink. Start a new run sealed under a catalogue "
+        "whose Perlector row is live; a sealed run's catalogue cannot be changed"
+    )
 
 
 def perlector_chair(context) -> ChairIdentity | AbsentChair:
@@ -3163,7 +3217,9 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
 def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every requested act read once and published once."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, PERLECTOR, registry_factory=registry_factory)
+    # Either ingress route, decided from one read of the run authority; the
+    # real route carries the registry and sealed digests the lines below need.
+    context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
     # Resolved here, before the run partition is published and long before a
@@ -3230,8 +3286,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     # loop below starts one the first time an act actually needs a reading, so a
     # resumed pass whose acts are all already sealed never loads a 27B model onto
     # a card that bills by the hour to read nothing. `service` owns the shutdown
-    # from the moment the client exists.
-    reader = None if serving_mode == "live" else FixtureReader(context.fixture, context.scenario)
+    # from the moment the client exists. A real submission with a non-live row
+    # refuses here, by name, before any act is touched.
+    reader = fixture_reader_for(context, chair, serving_mode)
     receipt_ref: dict[str, str] | None = None
 
     for act in wanted:
