@@ -1791,6 +1791,21 @@ def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[di
     )
 
 
+_FALLBACK_REASON_FIXTURE = (
+    "the structure pass found no ink to group on this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; blankness is proved by the witnesses and the Perlector, which "
+    "only get a say if the crops reach them"
+)
+
+_FALLBACK_REASON_LIVE = (
+    "the structure chair returned no act for this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; this page's own ink scan is recorded separately on its "
+    "conservation record"
+)
+
+
 def _publish_page_fallback(
     context,
     ordinal: int,
@@ -1799,6 +1814,8 @@ def _publish_page_fallback(
     status_ref: dict[str, str],
     claimed: list[dict],
     provenance: dict,
+    *,
+    reason: str = _FALLBACK_REASON_FIXTURE,
 ) -> dict | None:
     """Cut the predetermined crops over a page the structure pass found nothing on.
 
@@ -1860,12 +1877,7 @@ def _publish_page_fallback(
         "tiles": [
             {"bounds": dict(tile["bounds"]), "rationale": tile["rationale"]} for tile in tiles
         ],
-        "reason": (
-            "the structure pass found no ink to group on this page, so the page is cut into "
-            "predetermined overlapping crops and sent downstream to be read rather than being "
-            "called blank here; blankness is proved by the witnesses and the Perlector, which "
-            "only get a say if the crops reach them"
-        ),
+        "reason": reason,
         "provenance": provenance,
     }
     _refuse_text_fields(fallback_payload)
@@ -2717,6 +2729,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             status_refs[ordinal],
             claimed_by_page.get(ordinal, []),
             provenance,
+            reason=_FALLBACK_REASON_LIVE,
         )
         if row is not None:
             expected.append(row)
@@ -2973,6 +2986,17 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context, real_input = _open(args, registry_factory)
 
+    if args.operation == "recover" and real_input:
+        # `recovery_pass` reads a recrop's geometry from `context.fixture["act"]`
+        # (the fixture's own declared rectangle) because that is the only
+        # geometry the recovery contract carries today; a real submission has
+        # no fixture and this stage has no other source for a recrop's bounds.
+        # Refuse by name here rather than let the generic fixture accessor's
+        # message stand in for it.
+        raise ContractError(
+            "bounded recovery from a real submission is not built; a recovery still reads "
+            "the fixture's declared rectangle, which a real submission does not carry"
+        )
     if args.operation == "recover":
         if not args.act:
             raise ContractError("a recovery operation must name the act it is recovering")

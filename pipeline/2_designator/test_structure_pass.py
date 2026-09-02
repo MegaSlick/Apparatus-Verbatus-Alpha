@@ -704,6 +704,11 @@ def test_a_zero_act_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_path,
     (fallback,) = _artifacts(root, DESIGNATOR, "page-fallback")
     assert fallback["payload"]["page_ordinal"] == 2
     assert fallback["payload"]["page_bounds"] == {"x": 0, "y": 0, "w": 200, "h": 260}
+    # Live wording, not the fixture sentence: page 2's own ink scan grouped
+    # ink (proven above by "detected" on the happy path), so the record must
+    # name what actually happened here -- the chair returned no act -- rather
+    # than claim the scan found nothing.
+    assert fallback["payload"]["reason"] == designator._FALLBACK_REASON_LIVE
     rows = {row["act_key"]: row for row in _seal(root)["payload"]["expected_acts"]}
     assert rows["page-fallback:2"]["outcome"] == "proposed"
     assert len(rows["page-fallback:2"]["evidence"]) == fallback["payload"]["tile_count"]
@@ -798,6 +803,59 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_its_outcome(
     assert payload["parse_state"] == "refused"
     assert payload["parse_outcome"] == code.removeprefix("structure-answer-")
     assert payload["acts"] == [] and payload["act_count"] == 0
+
+
+def test_a_truncated_body_that_does_not_parse_holds_as_cut_off_not_a_parse_refusal(
+    live_run, tmp_path, monkeypatch
+):
+    """The cut-off stop word wins over the parse outcome: SPEC_D S1.4 places
+
+    the `finish_reason in ENGINE_STOP_CUT_OFF` row above the parse-refusal
+    rows, and it applies "parsed or not". A body the engine truncated
+    mid-object is exactly the failure this measurement exists to name --
+    the small `max_model_len` a whole-page transcription can overrun -- and
+    it must not be recorded as `structure-answer-invalid-json`, which would
+    blame the chair's JSON rather than the context window.
+    """
+    root, catalogue = live_run
+    truncated = '{"schema": "verbatus-structure-answer.v1", "acts": [{"box_1000"'
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_ONE_ACTS), ScriptedAnswer(content=truncated, finish_reason="length")],
+    )
+    assert exit_code == EXIT_HELD
+    _assert_page_two_held(root, "structure-answer-cut-off")
+    answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    payload = answers[2]["payload"]
+    assert payload["parse_state"] == "refused"
+    assert payload["finish_reason"] == "length"
+    assert payload["act_count"] == 0
+
+
+def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refused_by_name(
+    live_run, tmp_path, monkeypatch
+):
+    """The unnameable stop word is fatal whether or not the body parsed --
+
+    not folded silently into `structure-answer-invalid-json` just because
+    the JSON also happened to be unreadable.
+    """
+    root, catalogue = live_run
+    with pytest.raises(ContractError, match="finish_reason 'abort'"):
+        _run_designator(
+            root,
+            catalogue,
+            tmp_path,
+            monkeypatch,
+            [
+                _answer(PAGE_ONE_ACTS),
+                ScriptedAnswer(content="not json at all", finish_reason="abort"),
+            ],
+        )
+    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
 
 
 def test_a_body_the_client_cannot_read_holds_the_page_as_unusable(live_run, tmp_path, monkeypatch):
@@ -948,6 +1006,36 @@ def test_a_real_submission_under_the_fixture_catalogue_is_refused_by_name(
         ],
     )
     with pytest.raises(ContractError, match="may not be marked out by the fixture structure chair"):
+        designator.main()
+    assert not (root / RUN_ID / "2_designator").exists()
+
+
+def test_a_recovery_from_a_real_submission_is_refused_by_name(real_template, tmp_path, monkeypatch):
+    """A real ingress has no fixture, and `recovery_pass` reads a recrop's
+
+    geometry from the fixture's declared rectangle. Refuse before that read
+    is ever attempted, by this stage's own named reason, rather than let the
+    generic fixture accessor's real-submission refusal (common/stage.py)
+    stand in for it. Checked ahead of `--act`/`--recovery-request` validation
+    so this refusal fires even when neither flag is given.
+    """
+    root = tmp_path / "runs"
+    shutil.copytree(real_template, root)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "2_designator" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            RUN_ID,
+            "--operation",
+            "recover",
+        ],
+    )
+    with pytest.raises(ContractError, match="bounded recovery from a real submission is not built"):
         designator.main()
     assert not (root / RUN_ID / "2_designator").exists()
 

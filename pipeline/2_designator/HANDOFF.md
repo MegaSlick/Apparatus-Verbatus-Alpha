@@ -199,8 +199,18 @@ below; this record is corroboration, never the relation itself.
 
 ## `kind="page-fallback"`
 
-One record per sealed page the structure pass found **no ink at all** on,
-subject-keyed to the one act that page's predetermined crops belong to. Where a
+One record per sealed page the structure pass is cutting into predetermined
+crops rather than a chair-drawn rectangle. On the fixture path (`initial`, a
+fixture catalogue) that page is one the declared fixture rows say has **no ink
+at all**, and the payload's `reason` names that premise. On the live path
+(`structure_pass.ask_page`) it is one the *chair* answered with zero acts —
+which is not the same fact as a blank page: the page's own ink scan may well
+have found and grouped ink, and that measurement is recorded independently on
+the page's `structure-status`, not asserted or denied by this record. The two
+call sites pass different `reason` text (`_publish_page_fallback`'s `reason`
+keyword in `run.py`) so the record never claims a measurement the live path
+did not make. Subject-keyed to the one act that page's predetermined crops
+belong to. Where a
 declared act or continuation already has a proposal crop on that page, the
 fallback bands are clipped around its final padded bounds before they are cut:
 the union still sends the whole page downstream, but no pixel reaches readers
@@ -865,7 +875,14 @@ page-pixel re-check above, and closed the same way.
 ## Recovery boundary
 
 `--operation recover --act <id> --recovery-request <id>` is the only recovery
-entry point. The request must be the exact current, digest-checked Recensor
+entry point, and it is real-ingress-blind by construction: a recrop's geometry
+comes from the fixture's own declared rectangle (`context.fixture["act"]`),
+which a real submission does not carry. `main` refuses `--operation recover`
+against a real submission by name, before touching `--act` or
+`--recovery-request`, rather than let the generic fixture-accessor refusal
+(`common/stage.py`) stand in for it. Bounded recovery from a real submission
+is not built; when it is, this stage will need a source for a recrop's
+geometry that a real page can supply. The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
 run-bound `config/recovery.toml` policy, including its reconciled total and
 per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
@@ -1059,9 +1076,10 @@ reads the act, never a gate here.
 **RecordGold cannot close padding calibration, and `calibrated_for_this_corpus`
 stays `false` regardless of how many of its pages are fetched.**
 `padding_calibration.py` needs `(detected, true_content)` pairs on this
-project's own material; RecordGold supplies `true_content` only, because the
-Designator refuses real ingress and nothing in this stage runs over fetched
-RecordGold pages to produce a `detected` half. Running `structure.py` /
+project's own material; RecordGold supplies `true_content` only: the live
+structure pass below can now mark out a real page, but no structure chair has
+been served over fetched RecordGold pages, so no `detected` half of this
+project's own exists to pair with it. Running `structure.py` /
 `grouping.py` offline over those pages and calibrating against that output is
 an honest route, but the result it would produce describes the walking
 skeleton's ink-scan stand-in, not this project's own structure model, and
@@ -1075,6 +1093,15 @@ rectangles across 113 pages (784 records less the 15 refused for
 rectangle pairs, not pages, so sample size clears it comfortably. Sample size
 was never the obstacle here, provenance is, and provenance is not a number a
 larger sample can fix.
+
+**A page-fallback tile's per-tile `rationale` still says "no ink to group"
+even on the live path.** The record-level `reason` on `page-fallback` now
+tells the live and fixture premises apart (see `kind="page-fallback"` above),
+but each tile's own `rationale` string is a `grouping.fallback_tiles`
+constant (`grouping.py:395-399`) written for the fixture premise and unaware
+of which call site produced it. `grouping.py` is not this unit's owned path.
+Whoever owns it should give `fallback_tiles` (or its caller) the same
+live/fixture distinction this unit gave `_publish_page_fallback`'s `reason`.
 
 **An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
 limitation.** The Recensor reconciles only continuations this stage *proposed*, so
