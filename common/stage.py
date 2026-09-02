@@ -37,7 +37,7 @@ from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
-from common.contracts.envelope import build_envelope
+from common.contracts.envelope import build_envelope, verify_input_bytes
 from common.contracts.errors import (
     ContractError,
     FatalAccounting,
@@ -55,7 +55,11 @@ from common.contracts.outcomes import (
 from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
-from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_SCHEMA,
+    SERVING_CONFIG_INPUTS_FIELDS,
+    SERVING_CONFIG_INPUTS_SCHEMA,
+)
 from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
@@ -3092,7 +3096,23 @@ def _verify_proposal_act_row(
     """
     _verify_structural_act_row(act_id, row, regions, far_regions, page_ordinals)
     if structure_call is None:
-        return
+        # A structural proposal with no served chair is only reachable here on
+        # real ingress (`expected_acts` takes this route on a fixture run only
+        # when the seal itself names a call; without one, a fixture run falls
+        # to the stronger fixture floor instead). Omitting `engine_call` must
+        # not buy a real proposal an easier check than the one its own
+        # docstring above promises: staying silent skips not just the answer
+        # hop but the geometry recompute's only counterparty, so a forger's
+        # self-consistent rectangle would be admitted on its own say-so.
+        if _is_real_ingress(context.run):
+            raise FatalAccounting(
+                f"act {act_id} is a structural proposal on real ingress, but the proposal "
+                "seal's own provenance names no engine_call; a real submission's structural "
+                "proposal is minted from a served structure chair's answer, and a seal that "
+                "omits the call it was served under may not be admitted on a recomputed "
+                "rectangle alone"
+            )
+        return None
     bounds = regions[0]["payload"]["raw_bounds"]
     status = context.tree.read_artifact(
         DESIGNATOR,
@@ -3151,6 +3171,13 @@ def _verify_proposal_act_row(
     answer_provenance = (
         payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
     )
+    # The answer's own provenance is the premise the minted act rests on, and it
+    # is held to the same closed schema, registry, sealed recipe and
+    # digest-checked receipt the seal's provenance is -- not compared only on
+    # the one field (`engine_call`) this hop happens to need next.
+    validate_serving_provenance(
+        context, dict(answer_provenance), producer_stage=DESIGNATOR, require_receipt=True
+    )
     if answer_provenance.get("engine_call") != dict(structure_call):
         raise FatalAccounting(
             f"act {act_id}'s structure answer was produced under a different structure-chair "
@@ -3158,12 +3185,45 @@ def _verify_proposal_act_row(
             "minted from name one serving posture"
         )
     try:
-        _serving_evidence_reference(payload.get("call_record_ref"), "structure answer call record")
+        call_record_reference = _serving_evidence_reference(
+            payload.get("call_record_ref"), "structure answer call record"
+        )
     except SchemaRefusal as error:
         raise FatalAccounting(
             f"act {act_id}'s structure answer parsed but names no usable call record to have "
             f"parsed: {error}"
         ) from error
+    try:
+        call_record_bytes = context.tree.read_bytes(call_record_reference["relative_path"])
+    except OSError as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that could not be read: {error}"
+        ) from error
+    try:
+        verify_input_bytes(call_record_reference, call_record_bytes)
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record reference whose bytes have "
+            f"changed since it was cited: {error}"
+        ) from error
+    try:
+        call_record = json.loads(call_record_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that is not valid JSON: {error}"
+        ) from error
+    if (
+        not isinstance(call_record, Mapping)
+        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
+        or call_record.get("chair") != DESIGNATOR_CHAIR
+        or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that is not a "
+            f"{CHAIR_CALL_RECORD_SCHEMA!r} record for chair {DESIGNATOR_CHAIR!r} under the "
+            "seal's own sealed decoding digest; a parsed answer naming a call record with no "
+            "genuine reading behind it is a reading of nothing"
+        )
     answered = payload.get("acts")
     if not isinstance(answered, list):
         raise FatalAccounting(
