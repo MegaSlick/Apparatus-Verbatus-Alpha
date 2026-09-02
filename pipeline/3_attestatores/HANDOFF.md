@@ -288,7 +288,7 @@ not a second posture but a chair nothing can ask. The mixed-posture refusal in
 `witness_serving_modes` stays as a guard for the fixture-live seam; it does not
 fire on the shipped `config/serving_recipes_real.toml`, whose witness rows are
 live at every tier in `config/pod_placement.toml`, and
-`test_real_ingress.py` holds that.
+`test_attestatores_real_ingress.py` holds that.
 
 **`page_identity` is the Exemplar page index on both routes.** Every "which
 page is ordinal N" -- the whole-page presentation, the page Testimonium's
@@ -348,7 +348,7 @@ means is that the region existed and was refused at the crop boundary, and the
 one thing that addresses the far page is the Designator's own region record for
 it.
 
-**What is proven offline.** `test_real_ingress.py` carries a real submission
+**What is proven offline.** `test_attestatores_real_ingress.py` carries a real submission
 of the synthetic fixture's own two pages through the Door, the Exemplar and the
 Ink Map as programs, hand-builds the Designator's regions and seal in the shape
 `cut_minted_region` publishes them (because no real Designator exists), and

@@ -212,7 +212,7 @@ own sealed evidence, and nothing in this stage believes a count it has not recom
 from sealed records. What the real route buys today is bounded and said so: no real
 Perlector seal exists, so a real run refuses at `predecessor perlector has no
 stage-seal` with its context already opened -- no "sealed no digest", no fixture
-accessor, no traceback, nothing written. `test_real_ingress.py` pins that for this
+accessor, no traceback, nothing written. `test_recensor_real_ingress.py` pins that for this
 stage, the Perlector and the Archetypus.
 
 ## Cross-capture visibility: `payload["cross_capture_coverage"]`
