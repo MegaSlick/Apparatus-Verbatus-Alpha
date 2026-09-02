@@ -1818,6 +1818,20 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
     """
     if engine_call is None:
         return []
+    if not isinstance(engine_call, dict) or set(engine_call) != {
+        "call_record_ref",
+        "raw_response_ref",
+        "response_sha256",
+        "finish_reason",
+        "served_model_id",
+    }:
+        raise SchemaRefusal(f"a live reading's engine_call has the wrong shape: {engine_call!r}")
+    if engine_call["response_sha256"] != engine_call["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal(
+            "a live reading's engine_call names two different digests for one response: "
+            f"response_sha256={engine_call['response_sha256']!r}, "
+            f"raw_response_ref sha256={engine_call['raw_response_ref']['sha256']!r}"
+        )
     references = []
     for name in ("raw_response_ref", "call_record_ref"):
         claimed = engine_call[name]
@@ -3494,7 +3508,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # engine's own report and, when present, decides `reading` and
         # `outcome` together: a declared `no-readable-text` means nothing was
         # read, not that the fixture's normal act text happens to still apply.
+        # That stand-in is only honest when there is no real report to stand
+        # in for. A live chair has already answered by this point in the
+        # loop, so a fixture-declared outcome here would be a declared value
+        # overriding a measurement -- GOVERNANCE 10 names exactly this.
         declared_failure = declared_reading_failure(context, act["act_key"])
+        if serving_mode == "live" and declared_failure is not None:
+            raise ContractError(
+                f"the fixture declares reading outcome {declared_failure!r} for "
+                f"act {act['act_key']!r} while a live chair is answering; a "
+                "declared stand-in cannot override an engine that reported"
+            )
         reading = "" if declared_failure == "no-readable-text" else result["text"]
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,
@@ -3858,10 +3882,25 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # carry.
             "request_digest": request_digest,
         }
-        reading_inputs = _distinct_inputs(row["inputs"] + reproof_inputs) + [
-            draft_ref,
-            finding_ref,
-        ]
+        # Dedup is scoped to the re-proof's own references: those are the only
+        # ones a live engine can legitimately repeat, when a re-proof answers
+        # with the same bytes as the establishing call and the content-addressed
+        # store names the same path twice. `row["inputs"]` (the image, testimonia,
+        # attachment and prior references) can never legitimately repeat, so a
+        # duplicate there stays under the envelope's own double-count refusal
+        # instead of being silently absorbed here.
+        reading_inputs = (
+            row["inputs"]
+            + [
+                reference
+                for reference in _distinct_inputs(reproof_inputs)
+                if reference not in row["inputs"]
+            ]
+            + [
+                draft_ref,
+                finding_ref,
+            ]
+        )
         # The producer and every later consumer use the same cross-record
         # validation. Run it before the Perlectio is published so a drifted
         # draft/finding relationship never becomes an unreadable artifact.
