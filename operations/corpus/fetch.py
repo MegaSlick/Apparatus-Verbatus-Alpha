@@ -69,7 +69,7 @@ FETCH_REFUSAL_REASONS = frozenset(
 # it still identifies the traffic honestly.
 DEFAULT_USER_AGENT = (
     "ApparatusVerbatus-RecordGold-Fetcher/1.0 "
-    "(+https://github.com/apparatus-verbatus/verbatus_alpha; research use, non-commercial)"
+    "(+https://github.com/MegaSlick/Apparatus-Verbatus-Alpha; research use, non-commercial)"
 )
 
 # `pipeline/1_exemplar/image_formats.py` caps a source at 64 MiB; the fetcher
