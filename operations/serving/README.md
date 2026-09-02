@@ -396,3 +396,25 @@ parsing succeeds. `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
 after its bound process is told to exit, the exact ambiguity
 `ServingManager._assert_endpoint_absent` exists to catch, for a test that
 needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+
+## End to end
+
+`pipeline/test_live_reading_seam_e2e.py` is the only place the whole seam runs
+as one run: the real stage programs carry a tree to the Designator, the
+Attestatores reads it through three live witness chairs, the Perlector reads it
+through a live chair, and the Recensor, Archetypus and Armarium then consume
+what those two wrote. Every chair answers through `fakes.py`; nothing starts a
+pod. What makes the run live there is the same thing that makes it live on a
+card — a tmp catalogue whose rows say `kind = "vllm"` for all four servable
+chairs at all three tiers — so the selector under test is the sealed one, not a
+test-only switch.
+
+Two facts that suite establishes and no single-stage suite can. First, a live
+run reaches a **sealed terminal export that is held for review, not delivered**:
+both acts are read and every reading names the exact bytes its engine sent, but
+only one witness of a floor of three counts, because `chandra.v1` has no
+verifiable wire schema and a live page witness's act attachment is unaligned
+until R4 owns live alignment. Second, the identical driver pointed at the
+committed fixture catalogue reproduces the orchestrator's own fixture tree
+byte for byte — with `--placement-tier` supplied and both stage `main`s called
+in-process — which is what says this seam, and the flag, moved no fixture byte.
