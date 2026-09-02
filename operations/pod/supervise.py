@@ -819,17 +819,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return exit_code
     except SuperviseRefusal as refusal:
-        _write_final_record(
-            leases_root,
-            lease_id,
-            exit_code=refusal.exit_code,
-            state="refused",
-            detail=refusal.detail,
-            now=utc_now(),
-        )
+        detail = refusal.detail
+        try:
+            _write_final_record(
+                leases_root,
+                lease_id,
+                exit_code=refusal.exit_code,
+                state="refused",
+                detail=detail,
+                now=utc_now(),
+            )
+        except Exception as record_error:
+            # A failing record write must not escape as a bare traceback --
+            # the refusal itself is still the reason to return, not raise,
+            # and the printed detail must say the record did not land too
+            # (GOVERNANCE 2, mirrored from the crash handler below).
+            detail = f"{detail}; final record also failed to write: {record_error}"
         print(
             json.dumps(
-                {"lease_id": lease_id, "state": "refused", "detail": refusal.detail},
+                {"lease_id": lease_id, "state": "refused", "detail": detail},
                 sort_keys=True,
                 indent=2,
             ),
@@ -853,10 +861,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 detail=detail,
                 now=utc_now(),
             )
-        except Exception:
+        except Exception as record_error:
             # A failing record write must not mask the original fault, and
-            # must not stop the crash from being reported below either.
-            pass
+            # must not stop the crash from being reported below either --
+            # but it must not be swallowed silently either: an operator
+            # reading only the printed detail could not otherwise tell a
+            # write that failed from one that never ran (GOVERNANCE 2).
+            detail = f"{detail}; final record also failed to write: {record_error}"
         print(
             json.dumps(
                 {"lease_id": lease_id, "state": "crashed", "detail": detail},

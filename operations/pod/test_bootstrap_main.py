@@ -1,9 +1,13 @@
 """Fakes-only proof of bootstrap_main's hold loop, refusals, and env scrub.
 
-No git, uv, Hugging Face, or GPU probe is ever invoked here: every test injects
-``actions_factory`` in place of :func:`operations.pod.bootstrap_main.build_actions`,
-matching the house style in ``test_pod_runtime.py`` of driving the supervisor,
-armer, and timer with fakes and an injected clock.
+No git, uv, Hugging Face network call, or GPU probe is ever invoked here: every
+test injects ``actions_factory`` in place of
+:func:`operations.pod.bootstrap_main.build_actions`, matching the house style
+in ``test_pod_runtime.py`` of driving the supervisor, armer, and timer with
+fakes and an injected clock. The one exception is the lazy-chair-cache drill
+below, which does construct the real Hugging Face adapter (no network call,
+just the import and object construction) to prove ``build_actions`` defers
+reading ``models.toml``.
 """
 
 from __future__ import annotations
@@ -508,6 +512,82 @@ def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
         resolve_plan(hold_only_with_plan_arg)
 
 
+# --- containment survives a symlink, not just a lexical prefix -------------
+#
+# ``_require_contained`` used to be purely lexical: it built ``PurePosixPath``
+# from the argument string and never touched the filesystem, so a symlinked
+# directory component (or a symlinked leaf) under the volume could point the
+# actual write at container-local disk while the lexical check still called
+# it contained. A green run would then report success and leave nothing on
+# the retained volume. These drills point ``--report-path`` and ``--journal``
+# through such a symlink and confirm the write is refused before it happens.
+
+
+def test_report_path_through_a_symlinked_directory_component_is_refused(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    container_local = tmp_path / "container-local"
+    container_local.mkdir()
+    (ws.volume / "evidence").symlink_to(container_local, target_is_directory=True)
+    ws.report_path = ws.volume / "evidence" / "bootstrap-report.json"
+    parser = build_parser()
+    args = parser.parse_args(_argv(ws))
+
+    with pytest.raises(PlanRefusal, match="--report-path .* must be inside the mounted volume"):
+        resolve_plan(args)
+
+    assert not any(container_local.iterdir())
+
+
+def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    container_local = tmp_path / "container-local"
+    container_local.mkdir()
+    off_volume_journal = container_local / "journal.json"
+    ws.journal.symlink_to(off_volume_journal)
+    parser = build_parser()
+    args = parser.parse_args(_argv(ws))
+
+    with pytest.raises(PlanRefusal, match="--journal .* must be inside the mounted volume"):
+        resolve_plan(args)
+
+    assert not off_volume_journal.exists()
+
+
+def test_a_symlink_escape_through_main_exits_refused_with_nothing_off_the_volume(
+    tmp_path: Path,
+) -> None:
+    """The end-to-end shape: a green exit here used to leave the volume empty."""
+
+    ws = _workspace(tmp_path)
+    container_local = tmp_path / "container-local"
+    container_local.mkdir()
+    (ws.volume / "evidence").symlink_to(container_local, target_is_directory=True)
+    ws.report_path = ws.volume / "evidence" / "bootstrap-report.json"
+    ws.journal = ws.volume / "evidence" / "bootstrap-journal.json"
+    clock = Clock()
+
+    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert not any(container_local.iterdir())
+    assert not list(ws.volume.glob("*.json"))
+
+
+def test_a_clean_workspace_with_no_symlink_still_resolves(tmp_path: Path) -> None:
+    """The containment fix must not turn into refusing everything."""
+
+    ws = _workspace(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(_argv(ws))
+
+    plan = resolve_plan(args)
+
+    assert plan.report_path == ws.report_path.resolve()
+    assert plan.journal == ws.journal.resolve()
+
+
 # --- environment scrubbing ---------------------------------------------------
 
 
@@ -663,7 +743,17 @@ def test_build_actions_does_not_read_models_config_before_chair_cache_runs(
     (GOVERNANCE 6). ``--models-config`` is deliberately left absent here: were
     ``build_actions`` still eager, constructing the real actions would already
     raise trying to read it.
+
+    The refusal must be the configuration one specifically, not just any
+    ``ChairRefusal``: ``ChairRegistry.from_toml``'s ``fetcher=`` argument is
+    evaluated before it opens ``models.toml``, and constructs the real
+    ``HuggingFaceFetcher`` adapter, which raises ``UnresolvedChairRefusal``
+    (itself a ``ChairRefusal``) if ``huggingface_hub`` is not importable -- a
+    bare ``pytest.raises(ChairRefusal)`` would pass on that unrelated fault
+    too and prove nothing about lazy config reading.
     """
+
+    from common.chairs.errors import ConfigurationRefusal
 
     from .bootstrap_main import Plan, build_actions
 
@@ -689,13 +779,13 @@ def test_build_actions_does_not_read_models_config_before_chair_cache_runs(
         transfer_source_root=ws.volume,
     )
 
-    from common.chairs.errors import ChairRefusal
-
     actions = build_actions(plan)  # must not touch ws.models_config at all
 
     assert not ws.models_config.exists()
-    with pytest.raises(ChairRefusal):
+    with pytest.raises(ConfigurationRefusal) as refusal:
         actions.verify_chair_cache()  # only *now* does it try to read the config
+    assert refusal.value.chair == "models.toml"
+    assert str(ws.models_config) in refusal.value.difference
 
 
 def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:

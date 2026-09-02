@@ -374,17 +374,17 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         )
 
     store_root = _require_contained(
-        args.store_root.resolve(), volume_mount_path, "--store-root", report_path=report_path
+        args.store_root, volume_mount_path, "--store-root", report_path=report_path
     )
     models_config = _require_contained(
-        args.models_config.resolve(),
+        args.models_config,
         repository,
         "--models-config",
         base_label="the checked-out repository",
         report_path=report_path,
     )
     placement_config = _require_contained(
-        args.placement_config.resolve(),
+        args.placement_config,
         repository,
         "--placement-config",
         base_label="the checked-out repository",
@@ -452,22 +452,36 @@ def _require_contained(
     established wording unchanged. ``report_path`` is passed through to the
     refusal wherever it is already known, so a durable reason can be left on
     the volume even for this refusal (see ``PlanRefusal.report_path``).
+
+    The lexical check below refuses what ``argv`` literally says. That alone
+    is not enough inside the pod: a symlinked directory component (or a
+    symlinked leaf) can point a path that reads as contained at a location
+    that is not, letting evidence land on container-local disk instead of the
+    retained volume with the run still reporting success. So this also
+    resolves both the candidate and the base and refuses again on where the
+    path actually points, returning the resolved path so later writes go
+    where the refusal was checked. ``Path.resolve()`` is non-strict, so this
+    still works for a report or journal file that does not exist yet.
     """
 
     label = base_label if base_label is not None else "the mounted volume"
     raw = str(path)
     posix_path = PurePosixPath(raw)
     posix_base = PurePosixPath(str(base_path))
+    resolved = path.resolve()
+    resolved_base = base_path.resolve()
     if (
         ".." in raw.split("/")
         or not posix_path.is_absolute()
         or posix_path == posix_base
         or not posix_path.is_relative_to(posix_base)
+        or resolved == resolved_base
+        or not resolved.is_relative_to(resolved_base)
     ):
         raise PlanRefusal(
             f"{flag} {raw!r} must be inside {label} {base_path}", report_path=report_path
         )
-    return path
+    return resolved
 
 
 def _require_launch_token_named(

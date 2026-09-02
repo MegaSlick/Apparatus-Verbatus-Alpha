@@ -163,9 +163,10 @@ check.
   lease this run confirmed active going missing or unreadable exits 3, not 2,
   since the pod it guarded may still be billing. `main()` catches
   `BaseException`, not only its own refusal type, so a bad `--provider-factory`
-  reference or a malformed `spend.toml` still writes a durable final record
-  before exiting — a detached process's traceback on stderr goes unwatched
-  otherwise. Seven offline drills against `FakeProvider` and an injected clock
+  reference or a malformed `spend.toml` still attempts a durable final record
+  before exiting, and names a failed record write in its printed exit record
+  rather than letting it vanish — a detached process's traceback on stderr
+  goes unwatched otherwise. Seven offline drills against `FakeProvider` and an injected clock
   prove it: a crash mid-heartbeat resuming ownership with no close; a lost
   identity file reporting `BUSY` inside the timeout and closing after it,
   naming which; a provider unreachable on `status`/`verify_absent`/
@@ -451,7 +452,13 @@ They include deliberately broken confirmation, ceiling, status, billing, transfe
 cache, smoke-read, laptop-controller, and pod-timer paths, plus (as of `supervise.py`,
 `controller_armer.py`, and `bootstrap_main.py` landing) the seven `supervise` drills named
 above, the arming states in `test_controller_armer.py`, and the hold/refusal/scrub paths
-in `test_bootstrap_main.py`. A full real-chair preflight
+in `test_bootstrap_main.py`. `test_launch_drill.py` adds seven further offline drills that
+run one real `PodRuntime.create` through the real armer, the pod's own report, and the
+`supervise` driver together: a green launch, a launcher that dies mid-poll, a report that
+never appears, an `EXITED` pod under a fresh heartbeat, both close-ordering directions
+(supervisor-first and launch-side-first), and the observing armer -- against
+`FakeProvider`, a directory standing in for the volume's network view, a fake clock, and
+an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
@@ -517,9 +524,9 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Before the first real response, prove the durable laptop supervisor, controller
   armer, acknowledgement channel, and long-running bootstrap/service entrypoint work
   together. The tracked Stage 04 tree now supplies `supervise.py`, `controller_armer.py`,
-  and `bootstrap_main.py`; what remains unproven is whether the channel they share
-  behaves the way `TimerReportChannel` requires against a real pod — Boot A above is
-  that proof.
+  and `bootstrap_main.py`, and `test_launch_drill.py` now drives all three together
+  offline; what remains unproven is whether the channel they share behaves the way
+  `TimerReportChannel` requires against a real pod — Boot A above is that proof.
 - [ ] Verify the pod-side timer receives the real pod identity, its ephemeral termination
   capability, and the sealed billing-cutoff margin; verify it writes an acknowledgement to
   the token-bound report path. The laptop controller must retain a receipt bound to the

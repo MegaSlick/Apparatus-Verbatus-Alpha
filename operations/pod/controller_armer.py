@@ -178,9 +178,11 @@ def detached_supervisor(argv: Sequence[str]) -> SupervisorProcess:
     """Start `supervise.py` in its own session, outliving this launcher.
 
     The child's streams go nowhere on purpose: it is detached, nobody is
-    watching its terminal, and `supervise` writes a durable final record for
-    every exit path (GOVERNANCE 2) precisely so its evidence does not depend on
-    a pipe somebody has to be reading.
+    watching its terminal, and `supervise` attempts a durable final record on
+    every exit path (GOVERNANCE 2) and names a failed attempt in its printed
+    exit record -- though with stdout here going to `DEVNULL`, a volume that
+    refuses the write itself leaves nothing behind for this detached child to
+    hand back.
     """
 
     return subprocess.Popen(  # noqa: S603 - argv is built here, never shell-interpolated

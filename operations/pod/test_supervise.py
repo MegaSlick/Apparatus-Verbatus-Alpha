@@ -770,6 +770,110 @@ def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_err
     assert "ModuleNotFoundError" in payload["detail"]
 
 
+def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A write failure on top of a crash used to vanish -- exit 3, no record,
+
+    and a printed detail that named only the original fault. Both faults
+    must now be visible.
+    """
+
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(
+        "\n".join(
+            [
+                'schema = "pod-spend.v3"',
+                'state = "configured"',
+                'currency = "USD"',
+                'max_hourly_usd = "1.00"',
+                'max_estimated_metered_cost_usd = "2.00"',
+                'account_balance_floor_usd = "50.00"',
+                'account_balance_alert_usd = "75.00"',
+                "hard_lifetime_seconds = 3600",
+                "laptop_heartbeat_timeout_seconds = 30",
+                "shutdown_poll_interval_seconds = 1",
+                "shutdown_deadline_seconds = 8",
+                "billing_cutoff_margin_seconds = 3600",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _boom(reference: str):
+        raise ModuleNotFoundError(f"no such module: {reference}")
+
+    def _write_boom(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(supervise, "_load_provider", _boom)
+    monkeypatch.setattr(supervise, "_write_final_record", _write_boom)
+
+    exit_code = supervise.main(
+        [
+            "--provider-factory",
+            "no_such_module_at_all:factory",
+            "--leases",
+            str(tmp_path / "leases"),
+            "--lease",
+            LEASE_ID,
+            "--spend",
+            str(spend_path),
+        ]
+    )
+
+    assert exit_code == 3
+    assert not (tmp_path / "leases" / "supervisors").exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "crashed"
+    assert "ModuleNotFoundError" in payload["detail"]
+    assert "final record also failed to write" in payload["detail"]
+    assert "no space left on device" in payload["detail"]
+
+
+def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The refusal handler used to wrap its write in nothing at all, so a
+
+    failed write escaped ``main()`` as a bare traceback instead of returning
+    the refusal's own exit code.
+    """
+
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(
+        "\n".join(['schema = "pod-spend.v3"', 'state = "unconfigured"', ""]),
+        encoding="utf-8",
+    )
+
+    def _write_boom(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(supervise, "_write_final_record", _write_boom)
+
+    exit_code = supervise.main(
+        [
+            "--provider-factory",
+            "no_such_module_at_all:factory",
+            "--leases",
+            str(tmp_path / "leases"),
+            "--lease",
+            LEASE_ID,
+            "--spend",
+            str(spend_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert not (tmp_path / "leases" / "supervisors").exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "refused"
+    assert "is unconfigured; cannot supervise without ceilings" in payload["detail"]
+    assert "final record also failed to write" in payload["detail"]
+    assert "no space left on device" in payload["detail"]
+
+
 # -- finding 3: an UNVERIFIED close's phone-notification outcome is durable
 
 
