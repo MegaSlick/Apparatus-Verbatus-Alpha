@@ -103,6 +103,22 @@ def test_assign_columns_refuses_a_missing_margin_px():
         assign_columns([], PAGE_W)
 
 
+def test_assign_columns_pins_margin_px_at_its_own_boundary():
+    """MARGIN_PX must actually decide the partition, not just describe it.
+
+    Every other fixture in this file puts margin components at centre-x 9.5
+    and body components at centre-x 100, so any boundary in (10, 100] gives
+    the identical split -- MARGIN_PX == 30 could silently drift and every
+    other test would still pass. This pins it directly: one component sits
+    just inside the 30px boundary, one just outside.
+    """
+    inside = component(MARGIN_PX - 11, 0, 20, 5)  # centre 29, < MARGIN_PX
+    outside = component(MARGIN_PX - 9, 0, 20, 5)  # centre 31, >= MARGIN_PX
+    margin, body = assign_columns([inside, outside], PAGE_W, margin_px=MARGIN_PX)
+    assert margin == [inside]
+    assert body == [outside]
+
+
 # --- basic grouping -------------------------------------------------------------
 
 
@@ -224,9 +240,10 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
     `run.py::_analyze_page`'s real chain (`primary_scan` -> `group_page`). This
     is the one place that chain runs over real decoded pixels: a solid margin
     brace and two solid body blocks, painted onto a page, ink-scanned at
-    `structure`'s own default sensitivity and gap tolerance, and handed to
-    `group_page` with no overrides -- exactly as `run.py::_analyze_page` calls
-    it. If `primary_scan` ever produced components `group_page` did not read as
+    PRIMARY_MARGIN sensitivity with the explicit gap tolerance and grouping
+    thresholds equal to the retired defaults -- the same values
+    run.py::_analyze_page will resolve per page from
+    config/designator_grouping.toml. If `primary_scan` ever produced components `group_page` did not read as
     a brace (a scan that over-merges the anchor into a body run, or splits the
     brace itself into two pieces below `BRACE_MIN_HEIGHT_PX`), this is
     the test that would catch it; hand-built component dicts cannot.
@@ -456,6 +473,29 @@ def test_group_page_refuses_a_missing_required_keyword(missing):
         group_page([component(0, 0, 5, 5)], PAGE_W, PAGE_H, **kwargs)
 
 
+@pytest.mark.parametrize(
+    "name,bad_value",
+    [
+        ("chain_gap_px", -1),
+        ("chain_gap_px", 1.5),
+        ("anchor_reach_px", -1),
+        ("anchor_reach_px", 1.5),
+        ("brace_min_height_px", -1),
+        ("brace_min_height_px", 1.5),
+    ],
+)
+def test_group_page_refuses_a_negative_or_non_integer_threshold(name, bad_value):
+    kwargs = {
+        "margin_px": MARGIN_PX,
+        "chain_gap_px": CHAIN_GAP_PX,
+        "anchor_reach_px": ANCHOR_REACH_PX,
+        "brace_min_height_px": BRACE_MIN_HEIGHT_PX,
+    }
+    kwargs[name] = bad_value
+    with pytest.raises(ContractError, match="is not a non-negative integer"):
+        group_page([component(0, 0, 5, 5)], PAGE_W, PAGE_H, **kwargs)
+
+
 def test_find_continuation_candidate_refuses_a_missing_edge_reach_keyword():
     trailing = body_component(280, 20)
     leading = body_component(0, 30)
@@ -507,3 +547,18 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
     assert candidate is not None
     assert candidate["page_a_group"]["body_members"] == [trailing]
     assert candidate["page_b_group"]["body_members"] == [leading]
+
+    # Page A must be checked against its *own* reach, not page B's. Page A's
+    # 3px gap exceeds a 2px reach of its own even though page B's 5px gap
+    # passes at edge_reach_b_px=5 -- a mutant that used edge_reach_b_px for
+    # both pages would wrongly return a candidate here.
+    assert (
+        find_continuation_candidate(
+            page_a_groups,
+            page_a_h,
+            page_b_groups,
+            edge_reach_a_px=2,
+            edge_reach_b_px=5,
+        )
+        is None
+    )
