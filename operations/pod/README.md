@@ -290,11 +290,31 @@ check.
   target stays optional: no submission manifest on the volume is a vacuous
   success and this process needs no object-store client at all; a manifest
   present with no configured target is a refusal, never a silently skipped
-  upload. `PREFLIGHT` stays honestly red: no production `ChairCacheVerifier` or
-  `SmokeReader` exists anywhere in this repository, only fixture adapters in
-  tests and the operator's offline surface — Spec 05 owns that real assembly,
-  and this file wires named stand-ins rather than borrow a fixture pass into a
-  live pod's preflight. Both the ordinary hold and the `--hold-only` drill
+  upload. `PREFLIGHT` is wired to the real things now: `RegistryChairCacheVerifier`
+  runs `ChairRegistry.ensure` over the plan's roster for the cache half, and the
+  smoke half is the serving package's own production seam
+  (`assemble_serving_smoke_reader` around `ServingManager`), fed
+  `operations/serving/smoke.py::VisionSmokeCall` with a witness the pod draws
+  from the CSPRNG and renders onto a golden page under
+  `<volume>/preflight/<report stem>/` moments before the read — so the value a
+  chair must read back was never in a committed file or a prompt. The serving
+  receipt, launch audit and evidence manifest each smoke publishes land
+  content-addressed in that same directory (`PodPreflightReceiptPublisher`),
+  because no run tree exists yet for a `StageContext` to own them; the
+  catalogue is `--serving-recipes-config` (default the fixture-only
+  `config/serving_recipes.toml`; a real launch names
+  `config/serving_recipes_real.toml`), and `--fixture` with
+  `--page-witness-file` lets an operator supply a rendered page instead.
+  `test_bootstrap_main.py` proves the wiring green through the real registry
+  over the committed model fixtures and the serving package's fakes, and red
+  by chair name when a row is unproven. **Two things keep the first real
+  `PREFLIGHT` red, and neither is a wiring fault:** every vLLM row in
+  `config/serving_recipes_real.toml` is `preflight_state = "unproven"`, which
+  `ServingManager.start` refuses by name before it launches anything, so a
+  reviewer must stamp rows proven first (the serving README says that happens
+  after a real-silicon preflight — a circle this unit names rather than cuts);
+  and the real roster's serving stack cannot be installed at all, see
+  "The serving stack cannot be locked yet" below. Both the ordinary hold and the `--hold-only` drill
   hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer
   factory reads), so this process's own end approximately coincides with the
   pod-side timer closing the pod regardless. Refusals precede any action: a
@@ -327,6 +347,46 @@ check.
   predicted this unit's tests would close three of deferral 04-5's five
   untested seams; verified against the code as it stands, they do not. See
   the rewritten 04-5 row below for what is and is not actually covered.
+- `pod_run.py`, run as `python -m operations.pod.pod_run <run flags> -- <bootstrap_main
+  argv>`, is the one tracked entrypoint that runs the pipeline on a pod. It is
+  composed from `bootstrap_main` rather than beside it: the argv after `--` is
+  prepared and run through that module's own `prepare`/`run_bootstrap`, so every
+  refusal, the write probe, the credential scrub and the hard deadline are the
+  same ones a plain bootstrap gets. After a green journal it starts
+  `pipeline/orchestrator/run.py` as a subprocess of the pod's own interpreter
+  over the volume — run root `<volume>/runs` (or `--run-root`, inside the
+  volume), `--submission-folder`/`--submission-manifest` inside the volume,
+  `--models-config` and `--serving-recipes-config` taken from the bootstrap plan
+  (the roster `PREFLIGHT` measured is the roster the run serves; naming a
+  different pair here is not offered), `--data-gate-policy` inside the
+  repository — and writes a `pod-run-report.v1` at its launch-bound
+  `--report-path` before, during and after: `bootstrapping`, `running`, then
+  `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`. **Exit
+  codes never read complete for a partial run:** 0 only when the orchestrator
+  returned `EXIT_COMPLETE`; 3 held and 4 halted mirror the orchestrator's own;
+  2 a named refusal before anything ran; 5 a red bootstrap step; 6 an
+  orchestrator that could not start or exited outside its vocabulary. Refusals
+  are by name for every missing input — no `--`, a `--hold-only` bootstrap
+  plan, a run report path that is the bootstrap's or lacks the launch token, a
+  run root or submission outside the volume, a submission folder or manifest
+  that is not there, a policy outside the repository, a bad run id — and **the
+  data gate is asked first**, before a model is fetched on a billing card:
+  the shipped `config/data_handling_policy.json` names no storage root on any
+  volume, so a launch whose submission folder is on one is refused here with
+  the reason that listing it is Tyrel's disclosure decision (hard rule 1).
+  **There is no `--placement-tier` flag.** The consult that asked for this
+  entrypoint named one; the orchestrator and the stage parser accept none and
+  no stage reads a tier as the code stands, so `pod_run` records the tier the
+  green `PREFLIGHT` receipt measured in its run report and refuses a green
+  bootstrap whose receipt carries none. After the run it holds to the shared
+  hard deadline exactly as `bootstrap_main` does (a liveness line beside the
+  run report, never over it), because `pod_timer.run_with_bootstrap` treats any
+  child exit before the deadline as `completed-early` and closes the pod with a
+  non-green timer report; that hold is paid idle time between a finished run
+  and the deadline, and closing early on a complete run would be a `pod_timer`
+  contract change this unit does not make. `test_pod_run.py` drives all of it
+  against a fakes-only bootstrap and a recorded orchestrator: no chair is
+  served, no model is called, no provider is reached.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use
@@ -506,6 +566,43 @@ an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
+## The serving stack cannot be locked yet
+
+Nothing in `pyproject.toml` or `uv.lock` names vLLM. `bootstrap.py` runs
+`uv sync --locked --frozen`, `operations/serving/manager.py` launches
+`sys.executable -m vllm` and checks `importlib.metadata` for every
+`required_packages` pin in the chosen row, and `config/serving_recipes_real.toml`
+pins `vllm 0.10.1`, `transformers 4.57.1`, `qwen-vl-utils 0.0.14` and, for the
+Perlector, `flash-attn 2.7.4.post1`. The pod-run seam unit tried to add a `pod`
+dependency group carrying exactly those pins under
+`sys_platform == 'linux' and platform_machine == 'x86_64'` markers, and `uv lock`
+refused it:
+
+> Because transformers==4.57.1 depends on huggingface-hub>=0.34.0,<1.0 and
+> verbatus:pod depends on transformers==4.57.1, we can conclude that verbatus:pod
+> depends on huggingface-hub>=0.34.0,<1.0. And because your project depends on
+> huggingface-hub==1.26.0, we can conclude that your project and verbatus:pod are
+> incompatible.
+
+Probed further, off-tree: no `transformers` 4.57.x accepts `huggingface-hub` 1.x,
+and with `transformers` left free beside `vllm==0.10.1` the resolver picks
+`transformers 5.16.1` — a pairing `vllm 0.10.1` was never built against, which
+would lock, install several gigabytes of wheels on a billing card, and then be
+refused by the manager's own pin check (or fail to import) for every chair.
+`flash-attn 2.7.4.post1` does lock from its sdist, so that pin is not the
+obstacle. **The recipe's `vllm`/`transformers` pair has to be re-planned
+against a `huggingface_hub` 1.x-compatible stack before any `pod` group can
+exist**; that is a reviewed edit to `config/serving_recipes_real.toml` (and, once
+the pins change, a fresh real-silicon preflight before any row is stamped
+proven), which this unit does not own. Until then `bootstrap.py`'s sync is
+unchanged and installs no serving stack; `operations/pod/test_pod_run.py` carries
+the group-to-recipe reconciliation as a strict expected failure that turns red the
+day the group lands, so it goes live instead of lapsing. When it does land, the
+wheel download (vLLM, torch and the CUDA libraries — on the order of ten
+gigabytes) happens inside `UV_ENVIRONMENT` on the billing card, into the
+container-local `UV_CACHE_DIR` `bootstrap.py` already names and warns about; it
+is paid once per pod and never survives one.
+
 ## First gated live-pod checklist
 
 This is a checklist for one authorized live demonstration, not authorization to create a
@@ -588,7 +685,16 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   unobserved.
 - [ ] Run the actual GPU, driver, capability, VRAM, disk, chair-cache, and chair smoke-read
   preflight. The committed preflight and roster are fixture and planning evidence, not a
-  measured assembly.
+  measured assembly. `bootstrap_main`'s `PREFLIGHT` is now the real wiring (registry
+  cache verification and a served golden-page smoke through `ServingManager`); before
+  it can go green on real silicon the serving stack must be installable (see "The
+  serving stack cannot be locked yet") and each real row must be stamped proven.
+  Record, per chair, whether the pod-rendered golden page's witness was read back and
+  what `nvidia-smi` reported around the read.
+- [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
+  <local root> --network-volume DATACENTER:VOLUME_ID` and record whether every object
+  under `runs/<id>/` listed, fetched and reconciled with the tree's own manifests. The
+  listing and `GetObject` path has never run against a real endpoint.
 - [ ] At the first real response, require Spec 05's harness to publish an immutable
   run-tree artifact on the attached network volume before requesting the next response;
   interrupt the harness and read it back. Stage 04 does not own this response path. Repeat
@@ -604,9 +710,10 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 
 ## Stage 04 deferrals
 
-Nine rows in all: six items Tyrel accepted as deferred on the express condition that the
+Ten rows in all: six items Tyrel accepted as deferred on the express condition that the
 record survives to the pull request, then two disclosed by the pre-push review, then one
-disclosed by the 2026-08-12 independent audit. The first six are accepted deferrals
+disclosed by the 2026-08-12 independent audit, then one found while wiring the pod run
+seam. The first six are accepted deferrals
 carried by his ruling, not oversights — each closes on the named condition, not on being
 noticed again. **This table now records this branch's work against them; rows are kept
 even once closed, marked, so the history of what closed each one is not lost.**
@@ -635,6 +742,12 @@ Tyrel's to accept or send back:
 | # | What is deferred | Status |
 |---|---|---|
 | 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | Open. Closes when: the first authorised live run observes real bucket posting, then the coverage check is written against observations. `V2_MIGRATION.md` §2.4 records that v2's billing envelope names the window the provider *resolved* (`metadata.query`) and the record count, so under v2 the "declared window" half stops being the runtime's own echo; whether buckets fill it is still the live observation. |
+
+One more, found while wiring the pod run seam. Tyrel's to accept or send back:
+
+| # | What is deferred | Status |
+|---|---|---|
+| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (see "The serving stack cannot be locked yet") | Open. Closes when: the recipe's `vllm`/`transformers` pair is re-planned against a `huggingface_hub` 1.x-compatible stack by a reviewed config edit, the `pod` group is added with those exact pins, and `test_pod_run.py`'s strict expected failure flips. |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
 

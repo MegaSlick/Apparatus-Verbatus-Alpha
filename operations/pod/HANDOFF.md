@@ -334,6 +334,87 @@ review pass.
    route, so the migration does not rebuild it.
 4. The nested bootstrap report path (above) must be token-bound before Boot B.
 
+## U-A — the pod run seam (on `work/pod-run-seam`, over this branch)
+
+Built from the Fable consult's finding that nothing could serve on a pod and nothing ran
+the pipeline on one. What landed, and what the code as it stands made impossible:
+
+**`PREFLIGHT` is wired, not stubbed.** `bootstrap_main.py` replaces
+`_UnimplementedChairCacheVerifier`/`_UnimplementedSmokeReader` with
+`RegistryChairCacheVerifier` (`ChairRegistry.ensure` per chair) and the serving package's
+own `assemble_serving_smoke_reader` around `ServingManager`, fed
+`operations/serving/smoke.py::VisionSmokeCall`. The pod is its own fixture author:
+`fresh_page_witness` (CSPRNG) and `render_golden_page` put the witness into pixels under
+`<volume>/preflight/<report stem>/` right before the read; `NvidiaSmiUtilization` is the
+sampler; `PodPreflightReceiptPublisher` writes the receipt, launch audit and evidence
+manifest content-addressed in that directory because no run tree exists at bootstrap.
+`PreflightSeams` is the injection point every effect has, and `test_bootstrap_main.py`
+proves green through the real registry over the committed model fixtures and the serving
+fakes, and red by chair name for an unproven row. The measured dtype is `bfloat16` now —
+every vLLM row is bfloat16 and the reader refuses a dtype mismatch, so the old `float16`
+made every real smoke red before it launched. `main` is split into `prepare` /
+`run_bootstrap` / `hold` with behaviour unchanged, so `pod_run` composes it.
+
+**`pod_run.py` runs the pipeline on the pod.** Bootstrap through `bootstrap_main`'s own
+steps, then the orchestrator as a subprocess of the pod's interpreter over the volume,
+a `pod-run-report.v1` before/during/after, exit codes that never read complete for a
+partial run, and the hold to the deadline unchanged. `test_pod_run.py` covers the green
+run, held/halted/failed, a red bootstrap, every refusal by name, and the data gate asked
+before any spend.
+
+**`fetch-run` brings the tree home.** `S3VolumeObjectReader` (list + streamed
+`GetObject`, fail-closed) beside the existing reads in `volume_s3.py`;
+`surface.fetch_run` does the run-tree reconciliation (blob and receipt names, artifact
+digests against manifests, `run.json` self-hash, manifests rebuilt and compared) and
+never overwrites a differing local file; `verbatus fetch-run` and its interactive prompt.
+
+**`run` accepts the roster pair.** `--models-config` and `--serving-recipes-config`,
+forwarded together to the orchestrator (and to the crash drill's Door, which seals them);
+one without the other is refused.
+
+**What was not built, and why — rule-13 decisions and one finding:**
+
+- **No `pod` dependency group, and `bootstrap.py`'s sync is unchanged.** `uv lock`
+  refuses the recipe's pins beside the project's `huggingface_hub==1.26.0` (the README's
+  "The serving stack cannot be locked yet" quotes it). Locking with `transformers` left
+  free pairs `vllm 0.10.1` with `transformers 5.16.1`, which would install gigabytes on a
+  billing card and then refuse at the manager's pin check. Overriding the constraint would
+  be a lie on a money path. The honest deliverable is the finding, deferral 04-10, and a
+  strict expected failure in `test_pod_run.py` that goes live when the group lands. The
+  re-pin is a reviewed edit to `config/serving_recipes_real.toml`, outside this unit.
+- **No `--placement-tier` anywhere.** The consult named it; the orchestrator and the
+  stage parser accept no such flag and no stage reads a tier. `pod_run` records the tier
+  the green `PREFLIGHT` receipt measured and refuses a receipt without one; the console's
+  `run` verb takes the two flags that exist.
+- **The run tree is bound by run id, not by launch token.** The consult said "under the
+  launch-bound name"; the run *report* is launch-bound (a second launch on a retained
+  volume must not overwrite the first's evidence), but the tree itself is `runs/<run_id>`
+  because the orchestrator's resume is by run id and the tree already refuses different
+  bytes at the same identity. A token in the tree's path would make every resume across
+  pods a fresh run.
+- **The roster pair comes from the bootstrap plan.** `pod_run` takes `--models-config`
+  and `--serving-recipes-config` from the bootstrap argv rather than accepting them
+  again: `PREFLIGHT` measured that roster against that catalogue.
+- **The data gate is asked before the bootstrap.** The shipped policy names no volume
+  root; refusing before a model is fetched saves the fetch. Listing the volume root is
+  Tyrel's (hard rule 1); the refusal says so.
+- **`ErrorCode.FETCH_RUN_FAILED` was added to `errors.py`**, which the unit did not own:
+  the table is closed and `test_errors.py` requires every code to be raised somewhere,
+  so a new verb cannot register its failure state anywhere else.
+- **The hold after a complete run stays.** `pod_timer` treats any early exit as
+  `completed-early` with a non-green report; closing early on a complete run is a timer
+  contract change, named in the README rather than made.
+- **Unproven rows still refuse.** Every real row is `unproven`, and the manager refuses
+  unproven rows before launch, so the first real `PREFLIGHT` is red by construction until
+  a reviewer stamps rows proven — a circle the serving README describes and this unit
+  names rather than cuts.
+
+**Verification.** `ruff format` and `ruff check` on every touched `.py`;
+`sh .githooks/check-documents.sh` for the `.md` files; the named test files through the
+serialized test lock, then `operations/pod operations/operator` once. No acceptance pin was
+run: nothing here touches a fixture path. `uv lock --check` is clean because the lock is
+untouched.
+
 ## Provenance correction
 
 Four commits on this branch — `ffc9d4ebc9` (the U4 armer build),
