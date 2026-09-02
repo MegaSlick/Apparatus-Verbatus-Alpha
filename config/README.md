@@ -231,8 +231,11 @@ Six of its thresholds are integer basis points of the page's own dimension —
 round-half-up rule `designator_padding.toml` already uses, because an absolute pixel
 policy cannot be one policy for both a 200×260 fixture and a 2480×3508 scan, and two
 files would mean fixture runs prove bytes that real runs never seal. Every one resolves
-bit-identically to the constant it replaces at fixture size, so this file changes what
-is *recorded*, not yet what is *read*.
+bit-identically to the constant it replaces at fixture size, so the file changed what
+is *recorded* without changing what a fixture page *measures* — and each page's own
+resolved integers are published on its `structure-status` record, so a reader of a
+finished run can say what geometry that page actually executed at rather than
+re-deriving it.
 
 A seventh threshold, `gap_tolerance_px`, sits in the file but never scales with the
 page: it is a stroke-connectivity radius rather than a page proportion, scaling it would
@@ -254,12 +257,14 @@ and `designator-geometry` are. Its schema lives in
 module (`common/README.md`, enforced through `ast` by
 `common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across stage
 directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation hashes
-the bytes and refuses an unreadable file; the Designator's structure pass, once it
-loads and validates them in `initial_pass`, will prove it read the bound bytes through
-`require_sealed_config("designator-grouping", …)`, which is where a malformed policy is
-meant to be refused — before the stage marks anything out. That call has not landed on
-this branch: today a malformed policy is only hashed, never parsed, and seals a run
-without being caught.
+the bytes and refuses an unreadable file, and the Designator does the parsing where the
+loader already is: `initial_pass` calls `grouping_config.load_grouping_config` on the
+run's own `--designator-grouping-config`, validates it against the closed schema, and
+then proves it read the bound bytes through
+`require_sealed_config("designator-grouping", …)` — before the stage marks anything
+out. A malformed policy is refused there by name, and a policy rewritten after the door
+bound it refuses as drift naming both digests. The sealed name has a reader, so it is
+no longer a closed window that nothing shuts.
 
 ## Pre-door triage instrument
 

@@ -1644,6 +1644,60 @@ def publish_cluster_report(context: StageContext) -> str | None:
     return published.relative_path
 
 
+def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) -> None:
+    """Refuse a submission in which two submitted files derive one page identity.
+
+    Identity binds the bytes, not the manifest row, so two byte-identical files
+    under different names derive one `page_id`; the Exemplar seals one page
+    citing both submission rows, and every stage behind it still works one page
+    per submitted row. Until they process a merged page once per identity, that
+    submission cannot be read correctly, and this is where it is stopped.
+
+    **The whole submission is refused, and never a file.** Dropping the second
+    copy is an automated exclusion, and GOVERNANCE reserves exclusions to Tyrel
+    — `ArmariumCategory.EXCLUDED_WITH_APPROVAL` exists because exclusion is
+    approval-bound. Nor may the door choose the other way and read the merged
+    page once: identical bytes are one page shot twice *or* an export that wrote
+    one scan under two names, and nothing in the bytes tells the two apart. The
+    operator is asked instead, which is what GOVERNANCE 2 is for.
+
+    Ordinals only, never filenames. `run_stage` prints every `ContractError` to
+    stderr, and the data-handling logging rule excludes a declared path from
+    exactly that channel — the same reason `common/exemplar_boundary.py` and
+    `require_some_admitted` name their refusals by ordinal. The duplicate report
+    is sealed *before* this refusal precisely so the per-filename detail exists
+    in the tree: nothing is lost, and the run stops after the evidence is
+    written and before anything else seals.
+
+    There is deliberately no `--allow-duplicate-sources`. A flag that opts past
+    this would let a session wave through a refusal that exists to stop a
+    downstream lie about how many pages were read; if that escape hatch is
+    wanted, it is Tyrel's to add.
+    """
+    if duplicate_report is None:
+        return
+    record = tree.read_artifact(
+        DOOR,
+        "duplicate-report",
+        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
+    )
+    groups = record["payload"]["groups"]
+    named = "; ".join(
+        " and ".join(str(source["ordinals"]) for source in group["sources"]) for group in groups
+    )
+    raise ContractError(
+        "this submission derives one page identity from more than one submitted file: "
+        f"submitted ordinal(s) {named} carry identical bytes. Byte-identical sources "
+        "derive one page_id, so the Exemplar would seal one page citing every one of "
+        "them while every stage behind it still works one page per submitted row, and "
+        "the run would read one page where two files were submitted. Nothing is "
+        "excluded here and nothing is dropped: the submission is refused whole, and "
+        f"the sealed duplicate report at {duplicate_report or 'unavailable'} names each "
+        "filename. Re-submit with a --submission-manifest naming each distinct scan "
+        "once, or ask Tyrel if a repeated scan is genuinely two pages"
+    )
+
+
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure (harvest #3).
 
@@ -1820,12 +1874,18 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
 
 
 def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
-    """The one shared close for both entry points: reports, then the loud check."""
+    """The one shared close for both entry points: reports, then the loud checks.
+
+    Order is load-bearing. Every report is sealed and announced first, so a run
+    refused below still leaves the operator the whole evidence in the tree; then
+    the two refusals fire, before `seal_boundary` writes anything else.
+    """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
     publish_cluster_report(context)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
+    require_no_duplicate_sources(tree, duplicate_report)
     require_some_admitted(admitted, tree, refusal_report)
     context.seal_boundary()
     context.finish(DOOR)
