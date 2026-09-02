@@ -183,12 +183,23 @@ walking skeleton the witnesses' empty reports are declared fixture receipts,
 while the Perlector now observes the delivered pixels before it reports empty.
 
 ```text
-act_key ("page-fallback:<ordinal>"), page_id, page_ordinal, page_bounds
-fallback_ordinal (the reserved FALLBACK_PAGE_ACT_ORDINAL)
+subject_id = act_bindings(page_id, "page-fallback", page_bounds)
+act_key ("page-fallback:<ordinal>" — a label, never the identity)
+page_id, page_ordinal, page_bounds
 tile_count, tiles = [{bounds, rationale}]
 reason
 provenance (the resolved Designator chair)
 ```
+
+The subject line is not a payload field: it is what the record is keyed to, and
+it is written here because the payload's `act_key` is the one field that looks
+like an identity and is not. `_verify_page_fallback_act_row` recomputes the
+subject from `page_id` and `page_bounds` and *separately* requires `act_key` to
+equal `fallback_page_act_key(page_ordinal)`, so an implementation that derived
+either one from the other refuses there. Before this branch the block carried
+`fallback_ordinal`, the reserved ordinal the identity was then built from;
+removing it with the ordinal identity left the block with no identity ingredient
+at all, which is the gap this line closes.
 
 `grouping.fallback_tiles` computed this grid before, and nothing cut it: the
 tiles were handed to `_match_structural_group` as match candidates only, so the
@@ -208,11 +219,11 @@ delivers the page whole, and N acts would be an act count invented from a grid.
 The act is **`proposed`, not `held`**. A held act is terminal and is never read
 (`recovery_pass`; and `_publish_residual_holds`'s own "never witnessed and never
 read"), and crops nobody reads are precisely what the ruling forbids producing.
-Its identity is `act_bindings(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)`,
-using the one ordinal reserved in `common/stage.py` beside the residual space —
-which is now bounded below (`RESIDUAL_ACT_ORDINAL_FLOOR`) so the two minted-act
-ordinal spaces are disjoint by construction rather than by an argument about
-which values are unlikely to be reached. `common/stage.py::_verify_page_fallback_act_row`
+Its identity is `act_bindings(page_id, "page-fallback", page_bounds)` — the
+`"page-fallback"` act class is its own namespace in the identity ladder, beside
+the `"residual"` class, so the two minted-act identity spaces are disjoint by
+construction rather than by an argument about which values are unlikely to be
+reached. `common/stage.py::_verify_page_fallback_act_row`
 recomputes that identity and then reads this record's single input — the page's
 own `structure-status`, through the digest-checked reference hop — to confirm
 that page really does record `structure_evidence == "fallback-tiles"`. A
@@ -238,13 +249,19 @@ no attempt binding. The independent coverage proof: every ink pixel at the
 stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconciled
 against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
-found, which is the gap an independent second read of the old pipeline's own
-conservation logic named precisely (`/stage/70_gpt_review/ASSESSMENT.md:172-173`
-in the window: it "proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink entirely." An earlier
-draft of this sentence cited `MISSING.md`, which carries the same idea in
-different words at line 319 but is not where this exact sentence lives;
-corrected here after a second window read).
+found. The cut rectangles are what is passed as `claimed_bounds`
+(`pipeline/2_designator/run.py:1535`), and the counts and residual components are
+published from that scan (`:1546-1572`). Ink that no crop covers is not merely counted:
+on a successful pass every residual component becomes its own held act
+(`_publish_residual_holds`, `pipeline/2_designator/run.py:1279-1332`), so a mark
+structural grouping never proposed is visible rather than absent. If two components
+share a bounding box and therefore cannot receive distinct act identities, the stage
+refuses before minting either instead of collapsing their evidence (`:1302-1313`).
+
+The accounting cannot detect ink fainter than `background - SECONDARY_MARGIN` or a mark
+with no contrast against its background; neither enters the denominator. A page whose
+background cannot be inferred is recorded
+`ink_measurable: false` with its reason rather than counted at a substituted divider.
 
 ```text
 page_ordinal, background_source, background_value | null
@@ -284,15 +301,16 @@ first and never decides whether one is recorded at all — deleting the priority
 threshold would only reorder the list, never shorten it.
 
 **Every residual is also now minted as its own held act**
-(`_publish_residual_holds`, `common/stage.py::residual_act_ordinal` and
-`_verify_residual_act_rows`), closing the gap this section used to name as
-unimplemented. `expected_acts` no longer requires the seal's denominator to
+(`pipeline/2_designator/run.py::hold_residual_act` via `_publish_residual_holds`,
+verified by `common/stage.py::_verify_every_conservation_residual_is_accounted`),
+closing the gap this section used to name as unimplemented. `expected_acts` no longer requires the seal's denominator to
 equal the fixture's declared acts exactly — every fixture act is still a floor
 that must appear, but the seal may also carry additional rows a residual
 minted, each `held` from the moment it exists (never `proposed`: nothing
 witnessed or read ink no structural pass claimed), each independently
-recomputable from its own hold record's `residual_ordinal` and
-`residual_bounds` rather than trusted because the seal names it. This
+recomputable from its own hold record's `residual_bounds` through
+`act_id(page_id, "residual", bounds)` rather than trusted because the seal
+names it. This
 additive denominator path is not evidence that prior artifact digests remain
 unchanged: `run_config_bindings` now seals
 `designator_padding_config_sha256` into every run's `config_digest`, and later
@@ -311,9 +329,10 @@ restructure needed no changes at all: a held act's outcome, whichever stage
 minted it, already flows through them generically.
 
 The identity a residual receives is disjoint from every real proposal's by
-construction: `residual_act_ordinal(index) = -(index + 1)`, and a structure
-pass's own proposal ordinal is always non-negative, so the two act-identity
-spaces can never collide, present fixture or real one.
+construction: it derives from `act_id(page_id, "residual", bounds)` -- the
+`"residual"` act class is its own namespace in the identity ladder -- so a
+structure pass's `"proposal"`-class identities can never collide with it,
+present fixture or real one.
 
 ## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
@@ -626,12 +645,11 @@ limit rather than a bug to close by dropping regions: whatever bounds it must
 bound the *page* (refuse a page this speckled, visibly and as a hold) rather
 than the accounting over one. Named here rather than discovered at scale.
 
-There is now one bound on it, and it is not that one: `residual_act_ordinal`
-refuses an index past `RESIDUAL_ACT_ORDINAL_FLOOR` (-2^31), which exists so the
-page-fallback act's reserved ordinal sits below the residual space and the two
-are disjoint by construction. It is nine orders of magnitude past the ~60,000
-above, so it bounds nothing anyone will reach; it is a proof of disjointness,
-not an operating limit, and the paragraph above is still the real one.
+There is no ordinal arithmetic left to bound: residual identities are
+class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
+proposals and the page-fallback act is by construction rather than by a
+reserved ordinal floor, and the paragraph above is still the real operating
+limit.
 
 ## Continuation ownership
 

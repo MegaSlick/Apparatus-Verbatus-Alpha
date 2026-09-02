@@ -5,9 +5,11 @@ civil registers, using imperfect witnesses. Several vision models report on each
 second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
 the text.
 
-**Status:** alpha. Governance and architectural *direction* settled; the Spec 01 walking
-skeleton is landed and is not yet proven, and agents build inside a sealed container
-rather than on this machine. Implementation is discovered during alpha. **GitHub enforces
+**Status:** alpha. Governance and architectural *direction* are settled; the staged
+fixture pipeline, its accounting boundaries, and the Armarium product export are
+implemented and exercised by local checks, but the pipeline has not been proven on a
+Tyrel-approved small real-material trial. Agents build inside a sealed container rather
+than on this machine. Implementation continues to be discovered during alpha. **GitHub enforces
 four things on `main`**, and only these four: a change arrives by pull request, the
 automated checks must pass before it can be merged, `main` cannot be force-pushed or
 deleted, and these apply to the owner as well. Everything else in this repository is a

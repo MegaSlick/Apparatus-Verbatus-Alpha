@@ -358,6 +358,80 @@ def test_unhashable_artifact_values_are_refused_by_cause(validator, schema, subj
         validator(payload)
 
 
+def test_a_deeply_nested_local_act_becomes_a_refusal_not_a_recursion_crash():
+    """`_refuse_preference` walks `local_acts`/`components` before `_act` proves
+    their shape (module docstring), so an unvalidated caller can nest either
+    past Python's recursion limit. That must become a `SchemaRefusal`, never an
+    uncaught `RecursionError` that would crash the whole stage process."""
+    nested: object = "leaf"
+    for _ in range(5000):
+        nested = {"acts": nested}
+    # The composed register's preference screen walks iteratively (14A), so a
+    # deep nest is either named by the recursion guard (a recursive walk) or
+    # walked whole and refused at the closed-shape check -- never an uncaught
+    # RecursionError. Both named refusals prove the boundary.
+    with pytest.raises(SchemaRefusal, match="nests too deeply|closed lineage shape"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[nested],
+            capture_alignments=[],
+            source_ledger=set(),
+        )
+    nested = "leaf"
+    for _ in range(5000):
+        nested = {"components": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply|lacks page or local acts|component"):
+        build_correspondence_proposal(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            discovery_run_id="d",
+            components=[nested],
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"act_key": "act:e\u0301"}, "printable NFC"),
+        ({"page_ordinal": True}, "page ordinal is negative, boolean"),
+        ({"page_ordinal": -1}, "page ordinal is negative, boolean"),
+    ],
+)
+def test_partition_constructor_refuses_unstable_keys_and_invalid_boundary_ordinals(
+    mutation, message
+):
+    local = {**_local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"), **mutation}
+    with pytest.raises(SchemaRefusal, match=message):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[local],
+            capture_alignments=[],
+            source_ledger={SOURCE_A},
+        )
+
+
+def test_two_local_acts_cannot_share_one_export_key():
+    with pytest.raises(SchemaRefusal, match="act key occurs more than once.*partition is refused"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[
+                _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "same-key"),
+                _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "same-key"),
+            ],
+            capture_alignments=[],
+            source_ledger={SOURCE_A, SOURCE_B},
+        )
+
+
+# --- Sonnet audit seat: driving the identity-totality edges ---------------------
+
+
 def test_an_alignment_naming_a_capture_outside_the_cluster_is_a_named_finding(tmp_path):
     """The register declares SOURCE_A and SOURCE_B for PAGE; a caller alignment
 
@@ -937,6 +1011,74 @@ def test_partition_validator_refuses_a_dropped_required_capture_presentation(tmp
     partition["logical_acts"][0]["capture_presentations"].pop()
     partition["self_hash"] = self_hash(partition)
     with pytest.raises(SchemaRefusal, match="presentation set"):
+        validate_physical_act_partition(partition)
+
+
+def test_a_mixed_type_capture_list_is_refused_by_name_not_a_sort_typeerror(tmp_path):
+    """`sorted(set(...))` cannot order a str against an int: a resealed payload
+
+    with one non-string entry must become a named `SchemaRefusal`, never a raw
+    `TypeError` out of the validator.
+    """
+    path = _register(tmp_path)
+    _mint(
+        path,
+        PAGE,
+        [
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+    )
+    partition = build_physical_act_partition(
+        register=path.read_bytes(),
+        register_digest=register_digest(path.read_bytes()),
+        proposal_seal_ref=SEAL,
+        local_acts=[
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+        capture_alignments=[
+            _align("pg_" + "1" * 16, SOURCE_A, PAGE, "align:a-b"),
+            _align("pg_" + "2" * 16, SOURCE_B, PAGE, "align:a-b"),
+        ],
+        source_ledger={SOURCE_A, SOURCE_B},
+    )
+    component = partition["logical_acts"][0]["physical_page_components"][0]
+    component["required_capture_sha256s"] = [SOURCE_A, 5]
+    partition["self_hash"] = self_hash(partition)
+    with pytest.raises(SchemaRefusal, match="malformed identity"):
+        validate_physical_act_partition(partition)
+
+
+def test_a_mixed_type_page_id_list_is_refused_by_name_not_a_sort_typeerror(tmp_path):
+    """The same canonical-order check on `page_ids` must refuse by name too."""
+    path = _register(tmp_path)
+    _mint(
+        path,
+        PAGE,
+        [
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+    )
+    partition = build_physical_act_partition(
+        register=path.read_bytes(),
+        register_digest=register_digest(path.read_bytes()),
+        proposal_seal_ref=SEAL,
+        local_acts=[
+            _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"),
+            _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "b"),
+        ],
+        capture_alignments=[
+            _align("pg_" + "1" * 16, SOURCE_A, PAGE, "align:a-b"),
+            _align("pg_" + "2" * 16, SOURCE_B, PAGE, "align:a-b"),
+        ],
+        source_ledger={SOURCE_A, SOURCE_B},
+    )
+    presentation = partition["logical_acts"][0]["capture_presentations"][0]
+    presentation["page_ids"] = [presentation["page_ids"][0], 5]
+    partition["self_hash"] = self_hash(partition)
+    with pytest.raises(SchemaRefusal, match="capture presentation is malformed"):
         validate_physical_act_partition(partition)
 
 

@@ -8,6 +8,7 @@ its views into capture-local readings and reconcile those strings afterwards.
 from __future__ import annotations
 
 import copy
+import unicodedata
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import digest_bytes, digest_of
@@ -41,6 +42,16 @@ def _sha(value: Any, what: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or set(value) - set("0123456789abcdef"):
         raise SchemaRefusal(f"cross-capture autopsia: {what} is not a lowercase SHA-256")
     return value
+
+
+def _is_printable_nfc(value: str) -> bool:
+    """A structural key one spelling of which cannot become two.
+
+    NFC and NFD spellings of one accented key are different bytes to
+    `canonical_bytes`, so an unnormalized key names a second view, physical
+    page, or logical act that nothing else in the run can see.
+    """
+    return value.isprintable() and unicodedata.normalize("NFC", value) == value
 
 
 def _ref(value: Any, what: str) -> dict[str, str]:
@@ -116,6 +127,12 @@ def _view(row: Any) -> dict[str, Any]:
         for field in ("view_id", "physical_page_id", "alignment_ref")
     ):
         raise SchemaRefusal("cross-capture autopsia: view has incomplete immutable identity")
+    if not _is_printable_nfc(row["view_id"]) or not _is_printable_nfc(row["physical_page_id"]):
+        raise SchemaRefusal(
+            "cross-capture autopsia: a view or physical-page key is not printable NFC; the "
+            "presentation is refused because normalization variants cannot name different "
+            "evidence"
+        )
     source = _sha(row["source_sha256"], "view source_sha256")
     page_ids = row["page_ids"]
     local_ids = row["local_act_ids"]
@@ -158,6 +175,15 @@ def build_autopsia(
         )
     if not isinstance(views, list):
         raise SchemaRefusal("cross-capture autopsia: views is not a presentation list")
+    if not _is_printable_nfc(logical_act_id):
+        raise SchemaRefusal(
+            "cross-capture autopsia: logical_act_id is not printable NFC; the presentation "
+            "is refused because normalization variants cannot name different logical acts"
+        )
+    # `views` is walked here before `_view` ever proves its shape, and the
+    # screen is iterative (its depth is the walk's own list), so a deep
+    # unvalidated nest is walked to the bottom and then refused by the shape
+    # checks below rather than crashing the interpreter stack.
     _reject_preference({"logical_act_id": logical_act_id, "views": views})
     required = sorted({_sha(item, "required capture sha256") for item in required_capture_sha256s})
     if not required:

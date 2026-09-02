@@ -1,8 +1,10 @@
 # operations
 
-**Status:** offline rehearsal; no pod is started, adopted, or billed. The one path that
-leaves the computer is `verbatus upload --network-volume`, which must be named explicitly
-and moves files only.
+This directory defines the offline operator rehearsal and its operational boundaries.
+No rehearsal verb starts, adopts, or bills a pod. `verbatus upload --network-volume` is
+an explicitly named transfer to a real RunPod volume, and `notify/notify.sh` can post a
+JSON notification to `https://ntfy.sh/` when invoked with its opt-in bearer topic
+(`operations/notify/notify.sh:172-191`).
 
 Anything with a human, a machine, or money on the other end.
 
@@ -32,9 +34,10 @@ The words are:
   call.
 - `boot` — checks the saved fixture setup and ends with a plainly labelled green or red
   report.
-- `upload` — transfers a sealed submission record to the fixture volume. It does not
-  need a pod and uses zero GPU-hours. Naming `--network-volume DATACENTER:VOLUME_ID`
-  sends to a real RunPod network volume instead; see the caveat below.
+- `upload` — transfers only the files named by a sealed submission record to the fixture
+  volume. It needs no pod and uses zero GPU-hours. Naming
+  `--network-volume DATACENTER:VOLUME_ID` sends to a real RunPod network volume instead;
+  see the caveat below.
 - `run` — resumes the named fixture run and says which pages and acts it is working on.
 - `export` — makes a local evidence bundle and prints the Armarium reconciliation table.
 - `close` — asks for its own exact confirmation, then shows the captured cost through its
@@ -52,16 +55,25 @@ bootstrap checks and billing records are local fixtures, so the whole flow can b
 practised without a credential and without a cloud charge, and the surface refuses any
 pod provider that is not the in-memory fake.
 
-**One exception, and it is off unless you name it.** `upload --network-volume` sends the
-sealed submission record to a real RunPod network volume. Storage transfer needs no pod
-and starts no GPU meter — that is the point of running `upload` first — but it does leave
-this computer, which is why the operator has to name the volume and is told exactly what
-will be contacted before a byte moves. Its credentials are read from the environment
-only. **That adapter has never been run against a real endpoint**: its logic is tested
-against an injected client and its network behaviour is untested.
+**One exception, and it is off unless you name it.** `upload --network-volume` sends only
+the files named by the sealed submission record to a real RunPod network volume. Storage
+transfer needs no pod and starts no GPU meter, but it does leave this computer. The
+operator must name the volume and is told exactly what will be contacted before a byte
+moves. Its credentials are read from the environment only. **That adapter has never been
+run against a real endpoint**:
+its logic is tested against an injected client and its network behaviour is untested.
 
-The current tree also has base Armarium evidence but not Spec 11's product export;
-`export` labels that distinction instead of presenting a substitute as the final product.
+The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
+manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
+(`pipeline/7_armarium/run.py:1497-1523`), and `bundle.py` publishes that sealed blob to a
+chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:97-137`).
+The remaining Spec 11 semantic-annotation contract has no producer, so its refusal cannot
+yet be recorded (`pipeline/7_armarium/HANDOFF.md:279-283`).
+
+**The operator's `export` verb is not that bundle.** It copies `run.json` and the
+`7_armarium` directory out of the run tree as a base Armarium evidence bundle
+(`operations/operator/surface.py:963-1042`), prints the reconciliation table, and says on
+screen that what it made is not the Spec 11 product bundle.
 
 Every problem is shown in three short parts: what happened, what it means, and what to
 do next. Save the receipt path Verbatus prints. Indexed receipts appear in `status`

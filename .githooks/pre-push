@@ -147,8 +147,10 @@ while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
       block "direct push to main." "Use a branch and merge a pull request."
     if [ "${ALLOW_ANY_BRANCH:-}" != 1 ]; then
       case $name in
-        work/*|audit/*|infra/*) : ;;
-        *) block "branch '$name' is outside work/, audit/, or infra/." \
+        # pr/ carries the stacked, review-ready branches ruling 13 defines;
+        # they are cut by the composing session and consumed as pull requests.
+        work/*|audit/*|infra/*|pr/*) : ;;
+        *) block "branch '$name' is outside work/, audit/, infra/, or pr/." \
           "Set ALLOW_ANY_BRANCH=1 only for an explicitly confirmed exception." ;;
       esac
     fi

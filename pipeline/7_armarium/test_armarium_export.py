@@ -2383,6 +2383,28 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
         )
 
 
+def test_a_deeply_nested_salvage_item_becomes_a_refusal_not_a_recursion_crash(tmp_path):
+    """`_reject_salvage_act_namespace` walks a harvested salvage item whole, before
+    any of its own field checks (`_validate_salvage_items`), so unvalidated
+    provenance can nest past Python's recursion limit. That must become a
+    `SchemaRefusal`, never an uncaught `RecursionError` that would crash the
+    whole export and take every other act down with it."""
+    nested: object = "leaf"
+    for _ in range(5000):
+        nested = {"nested": nested}
+    item = {**_salvage_item("scrap"), "provenance": {"collection": "tier", "detail": nested}}
+    base = _projection()
+    # The salvage walk's own wording, not the shared "nests too deeply" prefix:
+    # the retained-reference walk and the sources.json parser raise refusals
+    # carrying that prefix too, so a bare match could not prove which guard held.
+    with pytest.raises(SchemaRefusal, match="salvage-tier .* nests too deeply for this machine"):
+        build_armarium_bundle(
+            replace(base, salvage_items=(item,)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
     tmp_path,
 ):
@@ -3079,3 +3101,185 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
 
     with pytest.raises(SchemaRefusal, match="more than one established-text status"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_the_clean_machine_check_refuses_a_member_key_shared_across_logical_acts():
+    """The verifier's twin of the producer's key screen, at the unit seam.
+
+    Ids are the counted unit, so a rebuilt package repeating one
+    `member_act_keys` entry under two logical acts -- every id still unique --
+    balances the row arithmetic while asserting that two logical acts descend
+    from one proposal row. The clean-machine recompute must refuse it exactly
+    as the producer does.
+    """
+    import armarium_export as _module  # noqa: PLC0415
+
+    logical_denominator = "physical-act-partition logical acts"
+    memberships = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["shared-key"],
+            "member_source_page_ordinals": [1],
+        },
+        "pac_bbbbbbbbbbbbbbbb": {
+            "member_local_act_ids": ["act_2222222222222222"],
+            "member_act_keys": ["shared-key"],
+            "member_source_page_ordinals": [2],
+        },
+    }
+    manifest = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 2,
+                "logical_membership": memberships,
+            }
+        }
+    }
+    categories = {
+        "pac_aaaaaaaaaaaaaaaa": "delivered",
+        "pac_bbbbbbbbbbbbbbbb": "delivered",
+    }
+    act_keys = {
+        "pac_aaaaaaaaaaaaaaaa": "logical:pac_aaaaaaaaaaaaaaaa",
+        "pac_bbbbbbbbbbbbbbbb": "logical:pac_bbbbbbbbbbbbbbbb",
+    }
+    sources = {
+        "logical_accounting": {"local_proposal_rows": 2, "memberships": memberships},
+        "aggregate_basis": {
+            "act_pages": {
+                "logical:pac_aaaaaaaaaaaaaaaa": [1],
+                "logical:pac_bbbbbbbbbbbbbbbb": [2],
+            }
+        },
+    }
+    with pytest.raises(SchemaRefusal, match="repeats a member"):
+        _module._verify_logical_partition_claim(manifest, categories, act_keys, sources)
+
+    # One proposal row exported twice under two identities -- a member key that
+    # also names an exported act row -- balances the arithmetic and must still
+    # refuse.
+    disguised = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["logical:pac_bbbbbbbbbbbbbbbb"],
+            "member_source_page_ordinals": [1],
+        }
+    }
+    manifest_disguised = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 2,
+                "logical_membership": disguised,
+            }
+        }
+    }
+    sources_disguised = {
+        "logical_accounting": {"local_proposal_rows": 2, "memberships": disguised},
+        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
+    }
+    with pytest.raises(SchemaRefusal, match="repeats a member"):
+        _module._verify_logical_partition_claim(
+            manifest_disguised, categories, act_keys, sources_disguised
+        )
+
+    # And a member page ordinal missing from the act's own attribution is a
+    # dropped page, not an accepted package.
+    unattributed = {
+        "pac_aaaaaaaaaaaaaaaa": {
+            "member_local_act_ids": ["act_1111111111111111", "act_3333333333333333"],
+            "member_act_keys": ["key-one", "key-two"],
+            "member_source_page_ordinals": [1, 7],
+        }
+    }
+    manifest_unattributed = {
+        "claims": {
+            "act_partition": {
+                "denominator": logical_denominator,
+                "local_proposal_rows": 3,
+                "logical_membership": unattributed,
+            }
+        }
+    }
+    sources_unattributed = {
+        "logical_accounting": {"local_proposal_rows": 3, "memberships": unattributed},
+        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
+    }
+    with pytest.raises(SchemaRefusal, match="page attribution does not carry"):
+        _module._verify_logical_partition_claim(
+            manifest_unattributed, categories, act_keys, sources_unattributed
+        )
+
+
+def _logical_conservation_projection(attribution) -> ArmariumProjection:
+    """One logical act row, with `act_pages` set to whatever is under test."""
+    entry = {
+        "act_id": "pac_aaaaaaaaaaaaaaaa",
+        "act_key": "logical:pac_aaaaaaaaaaaaaaaa",
+        "category": "delivered",
+        "canonical_clean_text": "one text",
+        "source_regions": [],
+        "reason": None,
+        "logical_membership": {
+            "member_local_act_ids": ["act_1111111111111111"],
+            "member_act_keys": ["member-key"],
+            "member_source_page_ordinals": [1],
+            "physical_page_components": [
+                {
+                    "physical_page_id": "ppg_0123456789abcdef",
+                    "required_capture_sha256s": ["a" * 64],
+                }
+            ],
+        },
+    }
+    return ArmariumProjection(
+        fixture_id="armarium-logical-attribution-v1",
+        scenario="adversarial",
+        config_digest="a" * 64,
+        aggregate={},
+        acts=(entry,),
+        pages=(),
+        source_manifest=(),
+        expected_acts=1,
+        witness_chairs=(),
+        witness_floor=0,
+        aggregate_basis={"act_pages": {entry["act_key"]: attribution}},
+        local_proposal_rows=1,
+    )
+
+
+def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_it():
+    """`_validate_logical_act_conservation` runs before the basis is validated.
+
+    `_aggregate_from_basis` is what proves `act_pages` is well formed, and it
+    runs afterwards (`_validate_projection` calls the conservation check first).
+    So this check reads a caller's assertion nothing has shaped yet: a number
+    raises `TypeError` out of `set(...)` and ends the export with no named
+    refusal at all, and a string dedupes into its own characters and reports a
+    member page missing that was never missing -- a guard failing for a reason
+    other than the one it names.
+    """
+    import armarium_export as _module  # noqa: PLC0415
+
+    for attribution in (1, "1", ["1"], [True], [1, None]):
+        with pytest.raises(SchemaRefusal, match="not a list of page ordinals"):
+            _module._validate_logical_act_conservation(
+                _logical_conservation_projection(attribution),
+                {"pac_aaaaaaaaaaaaaaaa"},
+                {"logical:pac_aaaaaaaaaaaaaaaa"},
+            )
+
+    # The well-formed attribution still passes, and a genuinely missing page is
+    # still reported as the missing page it is, not as a malformed attribution.
+    _module._validate_logical_act_conservation(
+        _logical_conservation_projection([1]),
+        {"pac_aaaaaaaaaaaaaaaa"},
+        {"logical:pac_aaaaaaaaaaaaaaaa"},
+    )
+    with pytest.raises(SchemaRefusal, match="page attribution does not name"):
+        _module._validate_logical_act_conservation(
+            _logical_conservation_projection([7]),
+            {"pac_aaaaaaaaaaaaaaaa"},
+            {"logical:pac_aaaaaaaaaaaaaaaa"},
+        )

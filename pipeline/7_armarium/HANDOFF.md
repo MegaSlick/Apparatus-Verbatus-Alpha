@@ -108,9 +108,15 @@ projection configuration. The bundle may contain these plainly specified formats
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v3`: v2
-  renamed the annotation claims apart, and v3 adds the required `ink_map`
-  claim to the closed claim set.
+  reader's question at all. The manifest is `armarium-export-manifest.v3` for
+  an image-local run and `armarium-export-manifest.v4` for a clustered one: v2
+  renamed the annotation claims apart, v3 adds the required `ink_map` claim to
+  the closed claim set, and v4 is the clustered act-partition claim — the
+  denominator names logical acts and `local_proposal_rows`/`logical_membership`
+  join the claim, so a v3 reader can never misread `expected_count` as
+  proposal-seal rows. A clustered bundle also carries a `logical_accounting`
+  block in `sources.json`, and `verify_export_bundle` recomputes the clustered
+  claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
@@ -208,25 +214,28 @@ every act on it was, and `held-for-review` otherwise — including when no act w
 marked out on it at all, because silence cannot tell a blank page from a detection
 failure and nothing here can prove one blank.
 
-**Two of the five categories cannot be produced by any run today, said rather than
-left for a reader to discover.** `excluded-with-approval` arises only from a
+**`excluded-with-approval` remains projection-only.** It arises only from a
 Designator `excluded` outcome, which no stage emits — the Recensor refuses an
 unhandled Designator terminal before the Armarium is ever reached, so `run.py`'s own
-`exclusion_approval_ref` guard, whose docstring says plainly "this refuses every
+`exclusion_approval_ref` guard, whose docstring states "this refuses every
 exclusion today, approved or not," is unreachable rather than merely strict.
-`confirmed-blank` arises only from a Recensor `confirmed-blank` outcome, which no
-stage emits either. Both categories are exercised correctly and adversarially at this
-projection layer (`test_excluded_act_requires_and_carries_its_approval_reference`,
-`test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`),
-so spec 11 test 1's five-category accounting is proven at the export boundary; it is
-not yet proven end to end through a real run, because the two upstream outcomes do
-not exist yet.
+Recensor produces `confirmed-blank` only when the Perlector found `no-readable-text` and
+each eligible witness independently corroborates that absence against the configured
+witness floor. The gate also requires no continuation shortfall, flagged pages, or
+findings route
+(`pipeline/5_recensor/run.py:2891-2920`, over `blank_corroboration` at `:830-949`) — a
+`confirmed-blank` is COMPLETED-class and terminal, so its gate checks every ordinary hold
+cause before sealing. Both categories are exercised correctly and
+adversarially at this projection layer
+(`test_excluded_act_requires_and_carries_its_approval_reference`,
+`test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`);
+the exclusion path remains projection-only, while confirmed blank is available end to
+end when its evidence conditions are met.
 
-**What the denominator does not cover, said rather than implied.** `run.json` binds one
-ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF container is
-represented by one unit per page and not by one unit for the file. Every submitted file
-is therefore represented, but a reader counting files off this ledger would be counting
-pages. `claims.submission_inventory.limit` says exactly that.
+**The denominator counts pages or frames, not source containers.** `run.json` binds one
+ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF has one unit per
+page rather than one for the file. Every submitted file is represented, but this ledger's
+units are pages. `claims.submission_inventory.limit` says exactly that.
 
 `claims.status` is the ledger's own measured status, not a constant: a run that loses
 nothing says `complete`, and every unresolved unit appears by name in
@@ -241,10 +250,9 @@ not, so it is never the less partial of the two — and it is the more partial o
 sealed page whose acts all reached a completed category but disagree about which
 (`_page_ledger_category` errs toward "a human must look"). Reporting the aggregate
 there would exit 0 and record `delivered` over a bundle whose own face said `partial`
-and named the held page. The aggregate remains a separate published measurement; the
-two disagreeing is a state no run this repository can produce today, because it needs
-the same two upstream outcomes no stage emits, and it is proven whole at the
-projection boundary where spec 11's five-category accounting is proven at all.
+and named the held page. The aggregate remains a separate published measurement. Its
+disagreement with the ledger requires the Designator `excluded` path, which no current
+stage emits; the projection boundary nevertheless proves that accounting path.
 
 Non-pixel references to receipts, Testimonia, and intermediate artifacts are
 labelled `requires-retained-run-access`; the product carries their paths and

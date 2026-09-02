@@ -294,8 +294,10 @@ def test_an_os_error_from_the_upload_names_source_or_network_without_guessing(
             )
 
 
-def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path) -> None:
-    """The verb's own contract over a real-shaped target, still with no network."""
+def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
+    tmp_path: Path,
+) -> None:
+    """The injected client exercises the real target adapter without network access."""
 
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
@@ -309,6 +311,8 @@ def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path)
 
     assert receipt.is_file()
     assert sorted(client.uploads) == ["volume/page-one.bin", "volume/page-two.bin"]
+    assert client.objects["volume/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
+    assert client.objects["volume/page-two.bin"][0] == (source / "page-two.bin").read_bytes()
     assert any("zero GPU-hours" in line for line in messages)
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "complete"
@@ -331,8 +335,6 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
     monkeypatch.delenv("RUNPOD_S3_SECRET_KEY", raising=False)
 
     with pytest.raises(OperatorError) as refusal:
-        # No credentials here, so building the real client refuses — which is the
-        # point: the operator is told what it was about to reach first.
         surface.upload(source, sealed_manifest=manifest, volume=_spec())
 
     assert refusal.value.code is ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
