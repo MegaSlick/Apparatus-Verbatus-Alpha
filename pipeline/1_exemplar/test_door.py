@@ -1673,6 +1673,10 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -1749,6 +1753,10 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -1800,6 +1808,10 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1854,6 +1866,10 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3175,6 +3191,10 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -3244,6 +3264,60 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
     )
     require_triage_modes(sealed, triage_modes)
+    # The three real-only names. On the fixture path these facts sit inside
+    # `config_digest`, which every later stage recomputes whole; the real digest
+    # cannot be recomputed downstream, so `common.stage._open_real_context`'s
+    # name-by-name recheck is the only thing that catches a resumed real run
+    # under a moved roster, format projection or witness regime.
+    assert sealed.get("models") == Models().models_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'models' entry bound to the roster digest; without it a real run resumed under a "
+        "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
+        "dossiers naming another (GOVERNANCE 6)"
+    )
+    formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
+    assert sealed.get("armarium-formats") == formats_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing an "
+        "'armarium-formats' entry bound to the format projection the Armarium exports under"
+    )
+    expected_policy = door.real_run_policy_digest(
+        witness_context="named",
+        witness_context_declaration_sha256=digest_bytes(
+            Path(door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH).read_bytes()
+        ),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
+        perlector_instrument_per_mille=0,
+        perlector_instrument_approval_ref="",
+        draft_fed=True,
+    )
+    assert sealed.get("run-policy") == expected_policy, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'run-policy' entry over the seven run-level reading knobs; without it "
+        "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
+    )
+    blinded = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+        witness_context="blinded",
+        **supplied,
+    )
+    assert blinded["sealed_config_digests"]["run-policy"] != expected_policy, (
+        "a moved witness regime must move the run-policy name, or the recheck cannot see it"
+    )
+    # Named only, never folded into the real `config_digest`: a run in flight
+    # keeps its identity across this build.
+    assert blinded["config_digest"] != bindings["config_digest"], (
+        "the witness regime was already inside the real config_digest and must stay there"
+    )
+    unchanged = door._real_bindings(
+        Models(), ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
+    )
+    assert unchanged["config_digest"] == bindings["config_digest"]
 
 
 def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
@@ -3270,6 +3344,10 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3349,6 +3427,10 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3647,6 +3729,10 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
@@ -4452,6 +4538,10 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
