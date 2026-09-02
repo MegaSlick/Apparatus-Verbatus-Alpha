@@ -1692,7 +1692,7 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
         "them while every stage behind it still works one page per submitted row, and "
         "the run would read one page where two files were submitted. Nothing is "
         "excluded here and nothing is dropped: the submission is refused whole, and "
-        f"the sealed duplicate report at {duplicate_report or 'unavailable'} names each "
+        f"the sealed duplicate report at {duplicate_report} names each "
         "filename. Re-submit with a --submission-manifest naming each distinct scan "
         "once, or ask Tyrel if a repeated scan is genuinely two pages"
     )
