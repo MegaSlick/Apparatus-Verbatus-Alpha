@@ -2086,14 +2086,20 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     carry ("exited 2"), so the run stops at the stage that still had the
     filenames in hand.
 
-    **A hand-driven Exemplar is barred too.** This used to be the one place a
-    caller who ran the programs one by one, past the door's non-zero exit,
-    still got a sealed merged page — `run.py::_open`'s real-ingress branch
-    built its `StageContext` directly instead of going through
-    `common.stage.open_context`, so it never called `verify_predecessor_seal`.
-    Closed: the real-ingress branch now calls it itself, so the Exemplar
-    refuses by name on the door's missing `stage-seal`, before publishing
-    anything — the same boundary `open_context` gives every other stage.
+    **A hand-driven Exemplar is barred too, and this is the one place that is
+    proved over the real Door's own refusal.** It used to be the one route by
+    which a caller running the programs one by one, past the door's non-zero
+    exit, still got a sealed merged page: the Exemplar built its real-ingress
+    `StageContext` by hand and so never called `verify_predecessor_seal`. The
+    shared constructor now asks for the door's completion seal on both ingress
+    routes before anything is written, so the Exemplar refuses by name here.
+    `test_exemplar_seal.py::
+    test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
+    pins the same check over a hand-built refused door, and
+    `test_exemplar_seal.py::
+    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
+    keeps the second-line-of-defence coverage the retired
+    `verify_exemplar_corpus_seal` call used to exercise here.
     """
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(

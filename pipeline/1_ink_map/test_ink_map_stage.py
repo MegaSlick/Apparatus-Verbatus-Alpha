@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
@@ -249,8 +249,9 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
 # nobody updates keeps testing the old `publish`/`seal_boundary` contract
 # while still passing.
 class _PublishingContext:
-    def __init__(self):
+    def __init__(self, run=None):
         self.tree = object()
+        self.run = run if run is not None else {"ingress": {"mode": "synthetic-fixture"}}
         self.published = []
         self.sealed = False
         self.finished = False
@@ -311,6 +312,33 @@ def test_the_ink_map_opens_both_ingress_routes_through_the_shared_constructor(mo
     assert INK_MAP_RUN.main(registry_factory=registry_factory) == INK_MAP_RUN.EXIT_COMPLETE
     assert opened == [(args, INK_MAP, registry_factory)]
     assert not hasattr(INK_MAP_RUN, "_open"), "a stage-private opener is the drift this closes"
+
+
+def test_the_ink_map_refuses_a_run_whose_ingress_evidence_names_no_route(monkeypatch):
+    """An absent `ingress` key must still stop this stage, as it did before the
+    shared constructor.
+
+    `open_stage_context`'s own route test, `_is_real_ingress`, treats a missing
+    `ingress` key as synthetic by design -- it has to, to decide which route to
+    build -- and does not raise. This stage never branches on the route, so
+    nothing else in `main` re-parses the record; before both routes shared one
+    constructor, this stage's own opener re-parsed it unconditionally and
+    refused exactly this run. That refusal is re-created here, deliberately,
+    rather than dropped as a side effect of sharing the constructor.
+    """
+    context = _PublishingContext(run={})
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
+
+    with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
+        INK_MAP_RUN.main(registry_factory=None)
+    assert context.published == [], "no record may be published before the route is proved"
 
 
 def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):

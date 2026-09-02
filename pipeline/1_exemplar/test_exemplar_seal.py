@@ -95,7 +95,6 @@ def real_sealed_bindings() -> dict:
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import real_run_bindings, stage_parser
-
     from operations.submit import gate
 
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))

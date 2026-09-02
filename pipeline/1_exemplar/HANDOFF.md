@@ -64,6 +64,15 @@ argv value it used to store, and its context carries the roster and the sealed
 digest map like every later stage's, checked name by name against the run before
 the seal check.
 
+**A second, unpinned ordering moved with the same commit.** The deleted real-route
+`_open` verified the corpus register and read the sealed snapshot before doing
+anything else — ahead of the fixture/scenario/registry/binding work `open_context`
+does first on the fixture route. `open_context` runs those two checks last, so
+opening through the shared constructor moved that ordering onto the real route too:
+a run with both register drift and an unloadable fixture now names the fixture
+first. Nothing pinned depends on the old order — the drift test's fixture is sound —
+so this is recorded rather than reverted.
+
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
 other's stored deleted-seal trigger.

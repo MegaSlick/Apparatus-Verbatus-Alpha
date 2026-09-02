@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.approval import parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
@@ -124,6 +125,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # direct-entry guard -- register drift, the sealed snapshot, the Exemplar's
     # completion seal, the run-level cap -- on the real route as well.
     context = open_stage_context(args, INK_MAP, registry_factory=registry_factory)
+    # The shared constructor's route test treats an absent `ingress` key as
+    # synthetic by design, so it decides the route without refusing a run that
+    # simply never recorded one. This stage does not branch on the route -- it
+    # maps every sealed page the same way either way -- so nothing else here
+    # would catch that gap. Re-parse for the refusal effect alone: a run whose
+    # ingress evidence is not a closed fixture-or-real record must still stop
+    # here, as it did before both routes shared one constructor.
+    parse_ingress_record(context.run.get("ingress"))
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:

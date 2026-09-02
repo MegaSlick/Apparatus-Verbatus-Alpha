@@ -109,6 +109,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     REAL_DOOR_ADAPTER_REVISION,
+    REAL_SCENARIO,
     StageContext,
     adapter_recipe_for,
     load_corpus_frame_policy,
@@ -2218,8 +2219,8 @@ def real_submission(args, registry) -> int:
 
     context = _door_context(
         tree,
-        {},
-        "real-submission",
+        None,
+        REAL_SCENARIO,
         args,
         registry,
         sealed_config_digests=bindings["sealed_config_digests"],
@@ -2614,7 +2615,7 @@ def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
 
 def _door_context(
     tree: RunTree,
-    fixture: dict,
+    fixture: dict | None,
     scenario: str,
     args,
     registry,
