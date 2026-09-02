@@ -42,15 +42,18 @@ exact substring the server itself produced is the only way to guarantee the URL
 this plan hands to the fetcher is the one that actually worked.
 """
 
+import json
 import urllib.parse
+from pathlib import Path
 from re import compile as _compile
 from typing import Any, NamedTuple
 
-from common.contracts.canonical import self_hash, verify_self_hash
+from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, verify_self_hash
+from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
 
 from . import CorpusRefusal
-from .rows import CORPUS_ID, SPLITS
+from .rows import CORPUS_ID, SPLITS, validate_snapshot
 
 SCHEMA = "recordgold-fetch-plan.v1"
 
@@ -64,7 +67,7 @@ EXPECTED_FORMAT = "jpg"
 _URL_RE = _compile(
     r"^https://(?P<host>[^/]+)/iiif/2/(?P<identifier>.+)/"
     r"(?P<x>-?\d+),(?P<y>-?\d+),(?P<w>\d+),(?P<h>\d+)/"
-    r"(?P<size>[^/]+)/(?P<rotation>[^/]+)/(?P<quality>[^./]+)\.(?P<format>[A-Za-z0-9]+)$"
+    r"(?P<size>[^/]+)/(?P<rotation>[^/]+)/(?P<quality>[^./]+)\.(?P<format>[A-Za-z0-9]+)\Z"
 )
 
 PLAN_REFUSAL_REASONS = frozenset(
@@ -76,7 +79,10 @@ PLAN_REFUSAL_REASONS = frozenset(
         "unsupported-quality-parameter",
         "unsupported-format-parameter",
         "non-positive-region",
+        "unsafe-identifier-segment",
+        "unmintable-page-identity",
         "inconsistent-source-for-identifier",
+        "inconsistent-encoding-for-identifier",
         "malformed-record",
         "wrong-schema",
         "wrong-corpus",
@@ -94,6 +100,22 @@ class ParsedRecordUrl(NamedTuple):
 
     host: str
     region: dict[str, int]
+
+
+def _unsafe_segment(segment: str) -> bool:
+    """Whether a decoded identifier path segment is unsafe to carry into a filesystem path.
+
+    `SPEC.md` §5.1 turns `volume`/`designation` directly into a submission path in
+    U3; this parser's contract is to refuse anything it does not recognise rather
+    than normalise it, so a traversal or control-character segment is refused here
+    rather than passed through.
+    """
+    return (
+        not segment
+        or segment in (".", "..")
+        or "\\" in segment
+        or any(ord(character) < 32 for character in segment)
+    )
 
 
 def parse_record_url(record_url: Any) -> ParsedRecordUrl:
@@ -149,6 +171,13 @@ def parse_record_url(record_url: Any) -> ParsedRecordUrl:
             f"unparseable-record-url: identifier {identifier!r} carries no volume/page "
             f"structure in {record_url!r}"
         )
+    for segment in identifier.split("/"):
+        if _unsafe_segment(segment):
+            raise CorpusRefusal(
+                f"unsafe-identifier-segment: identifier {identifier!r} carries the "
+                f"unsafe path segment {segment!r} in {record_url!r} — this parser "
+                "refuses anything it does not recognise rather than normalising it"
+            )
     return ParsedRecordUrl(
         identifier=identifier,
         identifier_encoded=identifier_encoded,
@@ -182,9 +211,12 @@ def _measure(pages: list[dict[str, Any]], refusals: list[dict[str, Any]]) -> dic
         count = str(len(page["records"]))
         records_per_page[count] = records_per_page.get(count, 0) + 1
     refused_count_by_reason: dict[str, int] = {}
+    refused_count_by_split: dict[str, int] = {}
     for refusal in refusals:
         reason = refusal["reason"]
         refused_count_by_reason[reason] = refused_count_by_reason.get(reason, 0) + 1
+        split = refusal["split"] or "unknown"
+        refused_count_by_split[split] = refused_count_by_split.get(split, 0) + 1
     return {
         "distinct_pages_total": len(pages),
         "pages_per_split": pages_per_split,
@@ -194,6 +226,7 @@ def _measure(pages: list[dict[str, Any]], refusals: list[dict[str, Any]]) -> dic
         "cross_split_page_count": cross_split_page_count,
         "refused_row_count": len(refusals),
         "refused_count_by_reason": dict(sorted(refused_count_by_reason.items())),
+        "refused_count_by_split": dict(sorted(refused_count_by_split.items())),
     }
 
 
@@ -205,12 +238,30 @@ def build_fetch_plan(
     Refuses a row's `record_url` by name and records the refusal rather than
     stopping the whole plan — one malformed row must not hide every other page's
     plan (rule 7: nothing is lost silently, refusals are recorded, not escalated
-    into a blanket failure). A row whose identifier collides with an existing
-    page under a *different* `source` is a data inconsistency this parser cannot
-    silently resolve, so that one does stop the build.
+    into a blanket failure). Minting a row's physical identity is refused the same
+    way: `physical_page_id`/`physical_act_id` raise `IdentityRefusal`, not
+    `CorpusRefusal`, so that is caught here too and recorded under
+    `unmintable-page-identity` rather than escaping this package's vocabulary and
+    aborting the whole build. A row whose identifier collides with an existing
+    page under a *different* `source` or encoding is a data inconsistency this
+    parser cannot silently resolve, so that one does stop the build.
     """
     pages: dict[str, dict[str, Any]] = {}
     refusals: list[dict[str, Any]] = []
+
+    def _refuse(
+        reason: str, detail: str, record_id: Any, record_url: Any, split: Any, source: Any
+    ) -> None:
+        refusals.append(
+            {
+                "record_id": record_id,
+                "record_url": record_url,
+                "reason": reason,
+                "detail": detail,
+                "split": split,
+                "source": source,
+            }
+        )
 
     for row in rows:
         record_id = row.get("record_id")
@@ -221,22 +272,46 @@ def build_fetch_plan(
             parsed = parse_record_url(record_url)
         except CorpusRefusal as error:
             reason = str(error).split(":", 1)[0]
-            refusals.append(
-                {
-                    "record_id": record_id,
-                    "record_url": record_url,
-                    "reason": reason,
-                    "detail": str(error),
-                }
-            )
+            _refuse(reason, str(error), record_id, record_url, split, source)
             continue
 
         volume, designation = _volume_and_designation(parsed.identifier)
-        page = pages.get(parsed.identifier)
-        if page is None:
-            page_physical_id = physical_page_id(CORPUS_ID, f"{source}/{volume}", designation)
+        existing_page = pages.get(parsed.identifier)
+        if existing_page is not None:
+            if existing_page["source"] != source:
+                raise CorpusRefusal(
+                    f"inconsistent-source-for-identifier: {parsed.identifier!r} carries "
+                    f"source {source!r} on record {record_id!r} but {existing_page['source']!r} "
+                    "on an earlier record for the same page"
+                )
+            if existing_page["identifier_encoded"] != parsed.identifier_encoded:
+                raise CorpusRefusal(
+                    f"inconsistent-encoding-for-identifier: {parsed.identifier!r} was seen "
+                    f"encoded as {existing_page['identifier_encoded']!r} but record "
+                    f"{record_id!r} carries it encoded as {parsed.identifier_encoded!r}"
+                )
+
+        try:
+            if existing_page is None:
+                page_physical_id = physical_page_id(CORPUS_ID, f"{source}/{volume}", designation)
+            else:
+                page_physical_id = existing_page["physical_page_id"]
+            record_physical_act_id = physical_act_id(page_physical_id, record_id)
+        except IdentityRefusal as error:
+            _refuse(
+                "unmintable-page-identity",
+                f"unmintable-page-identity: {error}",
+                record_id,
+                record_url,
+                split,
+                source,
+            )
+            continue
+
+        if existing_page is None:
             page = {
                 "identifier": parsed.identifier,
+                "identifier_encoded": parsed.identifier_encoded,
                 "info_url": f"https://{parsed.host}/iiif/2/{parsed.identifier_encoded}/info.json",
                 "image_url_candidates": _image_urls(parsed.host, parsed.identifier_encoded),
                 "source": source,
@@ -247,18 +322,14 @@ def build_fetch_plan(
                 "records": [],
             }
             pages[parsed.identifier] = page
-        elif page["source"] != source:
-            raise CorpusRefusal(
-                f"inconsistent-source-for-identifier: {parsed.identifier!r} carries "
-                f"source {source!r} on record {record_id!r} but {page['source']!r} "
-                "on an earlier record for the same page"
-            )
+        else:
+            page = existing_page
 
         page["splits_present"].add(split)
         page["records"].append(
             {
                 "record_id": record_id,
-                "physical_act_id": physical_act_id(page["physical_page_id"], record_id),
+                "physical_act_id": record_physical_act_id,
                 "region": parsed.region,
                 "split": split,
             }
@@ -286,6 +357,7 @@ def build_fetch_plan(
 _PAGE_FIELDS = frozenset(
     {
         "identifier",
+        "identifier_encoded",
         "info_url",
         "image_url_candidates",
         "source",
@@ -297,7 +369,7 @@ _PAGE_FIELDS = frozenset(
     }
 )
 _RECORD_FIELDS = frozenset({"record_id", "physical_act_id", "region", "split"})
-_REFUSAL_FIELDS = frozenset({"record_id", "record_url", "reason", "detail"})
+_REFUSAL_FIELDS = frozenset({"record_id", "record_url", "reason", "detail", "split", "source"})
 _TOP_FIELDS = frozenset(
     {
         "schema",
@@ -324,6 +396,10 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {plan['schema']!r}")
     if plan["corpus_id"] != CORPUS_ID:
         raise CorpusRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {plan['corpus_id']!r}")
+    if not is_sha256(plan["source_row_snapshot_self_hash"]):
+        raise CorpusRefusal(
+            "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
+        )
 
     for page in plan["pages"]:
         page = _closed(page, _PAGE_FIELDS, f"page {page.get('identifier')!r}")
@@ -351,3 +427,33 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             "self-hash-mismatch: fetch plan self_hash does not verify against its own content"
         )
     return plan
+
+
+def load_plan(path: str | Path) -> dict[str, Any]:
+    """Read a fetch plan written by `main`, refusing one that fails to validate.
+
+    U2 must never read an unverified ledger: this is the only tracked way to load
+    a `recordgold-fetch-plan.v1` file back, and it runs the plan through
+    `validate_plan` before returning it.
+    """
+    return validate_plan(json.loads(Path(path).read_bytes()))
+
+
+def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
+    """Build the fetch plan from a validated row snapshot on disk and write it out.
+
+    The only tracked producer of `fetch-plan.json`: without this, the artifact can
+    only be regenerated by a throwaway script outside the repository. Writes
+    `canonical_bytes`, not `json.dumps`, so the file on disk is a stable function
+    of the plan's content.
+    """
+    snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    Path(output_path).write_bytes(canonical_bytes(plan))
+    return plan
+
+
+if __name__ == "__main__":
+    import sys
+
+    main(sys.argv[1], sys.argv[2])

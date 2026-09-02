@@ -4,13 +4,21 @@ Every row is an inline dict shaped like a `recordgold-rows.v1` row.
 """
 
 import copy
+import json
 
 import pytest
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.canonical import self_hash as _self_hash
 from operations.corpus import CorpusRefusal
-from operations.corpus.holdout import build_holdout, refuse_held_out_page, validate_holdout
+from operations.corpus.holdout import (
+    build_holdout,
+    load_holdout,
+    main,
+    refuse_held_out_page,
+    validate_holdout,
+)
+from operations.corpus.rows import build_snapshot
 
 SNAPSHOT_HASH = "0" * 64
 
@@ -154,3 +162,56 @@ def test_validate_holdout_refuses_held_record_ids_out_of_sync_with_entries():
     tampered["self_hash"] = _self_hash(tampered)
     with pytest.raises(CorpusRefusal, match="^malformed-record:"):
         validate_holdout(tampered)
+
+
+def test_validate_holdout_refuses_a_non_digest_source_row_snapshot_self_hash():
+    rows = [_row("s1", "test", TEST_ONLY_PAGE_URL)]
+    holdout = build_holdout(rows, SNAPSHOT_HASH)
+    tampered = dict(holdout)
+    tampered["source_row_snapshot_self_hash"] = ""
+    with pytest.raises(CorpusRefusal, match="^malformed-record: source_row_snapshot_self_hash"):
+        validate_holdout(tampered)
+
+
+# --- main / load_holdout: the tracked emitter and loader ------------------------
+
+
+def _write_snapshot(tmp_path, rows):
+    source_facts = {
+        "dataset": "Teklia/DAI-CReTDHI-RecordGold-ATR",
+        "parquet_sha256": {
+            split: digest_bytes(split.encode("utf-8")) for split in ("train", "val", "test")
+        },
+        "converted_at_utc": "2026-01-01T00:00:00Z",
+    }
+    snapshot = build_snapshot(source_facts, rows)
+    snapshot_path = tmp_path / "rows.json"
+    snapshot_path.write_text(json.dumps(snapshot))
+    return snapshot_path
+
+
+def test_main_builds_and_writes_a_validated_holdout(tmp_path):
+    snapshot_path = _write_snapshot(tmp_path, [_row("s1", "test", TEST_ONLY_PAGE_URL)])
+    output_path = tmp_path / "holdout.json"
+    holdout = main(snapshot_path, output_path)
+    assert holdout["schema"] == "recordgold-holdout.v1"
+    assert output_path.exists()
+
+
+def test_load_holdout_returns_a_byte_identical_validated_holdout(tmp_path):
+    snapshot_path = _write_snapshot(tmp_path, [_row("s1", "test", TEST_ONLY_PAGE_URL)])
+    output_path = tmp_path / "holdout.json"
+    built = main(snapshot_path, output_path)
+    loaded = load_holdout(output_path)
+    assert loaded == built
+
+
+def test_load_holdout_refuses_a_tampered_file(tmp_path):
+    snapshot_path = _write_snapshot(tmp_path, [_row("s1", "test", TEST_ONLY_PAGE_URL)])
+    output_path = tmp_path / "holdout.json"
+    main(snapshot_path, output_path)
+    tampered = json.loads(output_path.read_text())
+    tampered["source_row_snapshot_self_hash"] = digest_bytes(b"a different snapshot entirely")
+    output_path.write_text(json.dumps(tampered))
+    with pytest.raises(CorpusRefusal, match="^self-hash-mismatch:"):
+        load_holdout(output_path)
