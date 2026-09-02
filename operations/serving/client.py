@@ -193,18 +193,26 @@ class ChairClient:
             or receipt.get("chair") != self._identity.role
             or receipt.get("revision") != self._identity.receipt_revision
         ):
-            handle.stop()
             observed = (
                 f"chair={receipt.get('chair')!r}, revision={receipt.get('revision')!r}"
                 if isinstance(receipt, Mapping)
                 else f"a non-mapping receipt read: {receipt!r}"
             )
-            raise ReceiptDriftRefusal(
+            drift = ReceiptDriftRefusal(
                 "CHAIR_RECEIPT_DRIFT",
                 "the receipt re-read after start no longer names this chair and revision: "
                 f"observed {observed}; expected chair={self._identity.role!r}, "
                 f"revision={self._identity.receipt_revision!r}",
             )
+            # The drift diagnosis is the thing GOVERNANCE 2 asks not to lose
+            # here. Stop the handle so a refused start never leaks the
+            # process, but if the shutdown itself is unverifiable, chain it
+            # onto the drift refusal rather than letting it replace it.
+            try:
+                handle.stop()
+            except BaseException as stop_error:
+                raise drift from stop_error
+            raise drift
         self._handle = handle
         return self
 
@@ -252,6 +260,18 @@ class ChairClient:
         except ChairResponseRefusal as error:
             content = None
             parse_problem = error.code
+            if (
+                parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
+                and _peek_model(response.body) is None
+            ):
+                # `_refuse_bytes_from_the_wrong_source` already let this body
+                # through retention because it names no model at all — that is
+                # a malformed body, not evidence of a foreign source, and the
+                # parser's own comparison (`payload.get("model") !=
+                # expected_model_id`) cannot tell the two apart. Recorded
+                # verbatim, "model mismatch" would assert a foreign-model
+                # observation that was never made (GOVERNANCE 10).
+                parse_problem = "CHAIR_RESPONSE_INVALID"
         else:
             content = result.outputs[0]
             finish_reason = result.finish_reasons[0]
@@ -398,7 +418,15 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
             "SERVING_MODE_UNRESOLVED",
             "a live serving profile needs the measured placement tier; pass --placement-tier",
         )
-    profile = recipes.for_identity(identity, tier)
+    try:
+        profile = recipes.for_identity(identity, tier)
+    except ServingConfigurationError as error:
+        # A chair that is live somewhere but has no row at exactly this tier
+        # (a mistyped or unmeasured --placement-tier) is still this
+        # function's own refusal vocabulary, not a bare configuration error
+        # leaking past it — the docstring and README both promise
+        # ServingModeRefusal as the caller-facing contract here.
+        raise ServingModeRefusal("SERVING_MODE_UNRESOLVED", str(error)) from error
     if isinstance(profile, ServingProfile):
         return "live"
     if isinstance(profile, FixtureProfile):
