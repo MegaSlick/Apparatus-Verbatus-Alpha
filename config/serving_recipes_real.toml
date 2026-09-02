@@ -6,11 +6,8 @@
 # It deliberately leaves the default fixture catalogue unchanged.  Every vLLM
 # row is a complete, locked launch shape but `preflight_state = "unproven"`:
 # these are planning inputs, not a claim that any listed model has started,
-# fitted, or answered on real silicon.  Attestator 1 instead has a `captured`
-# row at every tier: Chandra is asked once, by the Designator structure chair,
-# and that retained response is filed as Attestator 1's Testimonium rather
-# than served a second time.  A serving manager refuses to launch a captured
-# row by that name before it opens a process.
+# fitted, or answered on real silicon.  A serving manager refuses an unproven
+# row before it opens a process.
 #
 # Rows cover every configured chair in models-real.toml at every tier in
 # pod_placement.toml.  The secondary proposer has no row because it is absent
@@ -27,7 +24,7 @@ schema = "serving-recipes.v1"
 
 # Chandra fills the Designator structure chair and Attestator 1.  They have
 # separate rows because a chair, not merely a model repository, is the serving
-# contract and receipt identity; only the structure chair is launched.
+# contract and receipt identity.
 [[profiles]]
 kind = "vllm"
 recipe = "unproven-real-designator"
@@ -116,25 +113,91 @@ request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has 
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
-kind = "captured"
+kind = "vllm"
 recipe = "unproven-real-attestatores"
 chair = "attestator_1"
 tier = "generic-24gb"
-captured_from = "designator_structure"
+host = "127.0.0.1"
+port = 8102
+served_model_id = "attestator-1-chandra"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+max_model_len = 2048
+max_num_seqs = 1
+max_num_batched_tokens = 512
+gpu_memory_utilization = "0.58"
+min_pixels = 3136
+max_pixels = 1806336
+enable_prefix_caching = true
+enforce_eager = false
+trust_remote_code = true
+enable_tower_connector_lora = false
+max_lora_rank = 64
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 300
+poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
-kind = "captured"
+kind = "vllm"
 recipe = "unproven-real-attestatores"
 chair = "attestator_1"
 tier = "generic-48gb"
-captured_from = "designator_structure"
+host = "127.0.0.1"
+port = 8102
+served_model_id = "attestator-1-chandra"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+max_model_len = 4096
+max_num_seqs = 2
+max_num_batched_tokens = 1024
+gpu_memory_utilization = "0.78"
+min_pixels = 3136
+max_pixels = 3211264
+enable_prefix_caching = true
+enforce_eager = false
+trust_remote_code = true
+enable_tower_connector_lora = false
+max_lora_rank = 64
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 300
+poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
-kind = "captured"
+kind = "vllm"
 recipe = "unproven-real-attestatores"
 chair = "attestator_1"
 tier = "generic-80gb-plus"
-captured_from = "designator_structure"
+host = "127.0.0.1"
+port = 8102
+served_model_id = "attestator-1-chandra"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+max_model_len = 8192
+max_num_seqs = 4
+max_num_batched_tokens = 2048
+gpu_memory_utilization = "0.88"
+min_pixels = 3136
+max_pixels = 5299200
+enable_prefix_caching = true
+enforce_eager = false
+trust_remote_code = true
+enable_tower_connector_lora = false
+max_lora_rank = 64
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 300
+poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # DAI and Churro each have a dedicated stage-side chair and may not inherit
 # Chandra's profile merely because the witness block is sequential.

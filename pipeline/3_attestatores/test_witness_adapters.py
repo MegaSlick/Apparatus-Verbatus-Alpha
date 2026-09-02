@@ -17,7 +17,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import encode_grayscale_png_deterministic
 from common.native_witness import validate_presented_page_binding
-from common.witness_adapters import CAPTURE_WITNESS_ADAPTER_NAMES, KNOWN_WITNESS_ADAPTER_NAMES
+from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
 STAGE = Path(__file__).resolve().parent
 
@@ -43,18 +43,7 @@ def _load_local_adapters():
 
 def test_every_declared_adapter_has_a_runnable_fixture_shape():
     adapters = _load_local_adapters()
-    # `chandra-capture.v1` is declared (`common/witness_adapters.py`,
-    # `CAPTURE_WITNESS_ADAPTER_NAMES`) but has no runnable binding here yet: a
-    # captured witness reads a retained response, never runs a fixture shape of
-    # its own. Every non-capture declared name must be exactly the runnable
-    # set -- a bare subset would let a future declared, non-capture adapter
-    # with no runnable binding pass silently. The reverse (capture names
-    # becoming runnable too) is D5's to close -- proven separately below so
-    # it is not lost.
-    assert (
-        set(adapters.RUNNABLE_ADAPTERS)
-        == KNOWN_WITNESS_ADAPTER_NAMES - CAPTURE_WITNESS_ADAPTER_NAMES
-    )
+    assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
     assert set(spec.prompt()) == {"system", "user"}
@@ -71,25 +60,6 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
         == "text"
     )
     assert chandra.retain is adapters.chandra.retain
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="D5 (capture intake) has not yet registered a runnable binding for "
-    "'chandra-capture.v1'; when it does, this equality starts holding and this "
-    "xfail must be removed, folding the check back into "
-    "test_every_declared_adapter_has_a_runnable_fixture_shape's subset assertion",
-)
-def test_every_declared_adapter_is_also_runnable():
-    """Named gap for D5: today one declared adapter has no runnable binding.
-
-    `test_every_declared_adapter_has_a_runnable_fixture_shape` proves the
-    direction that must hold right now (runnable ⊆ declared). This proves the
-    other direction fails today for the one named reason, so the gap stays
-    visible and measured rather than silently tolerated by a loosened assert.
-    """
-    adapters = _load_local_adapters()
-    assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
 
 
 @pytest.mark.parametrize("name", ("churro.v1", "chandra.v1", "dai.v1"))

@@ -15,16 +15,7 @@ from common.chairs.models import AbsentChair, ModelsConfig
 from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page", "act"})
-# A capture adapter reads a response another chair already gave -- the
-# Designator structure chair's retained answer, filed as Attestator 1's
-# Testimonium -- and frames no request of its own.  A chair naming one is
-# served by a `captured` serving-recipe row, never launched; the catalogue and
-# the roster are reconciled on exactly that pairing
-# (`operations/serving/config.py::verify_recipes_cover_chairs`).
-CAPTURE_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra-capture.v1"})
-KNOWN_WITNESS_ADAPTER_NAMES: Final = (
-    frozenset({"chandra.v1", "churro.v1", "dai.v1"}) | CAPTURE_WITNESS_ADAPTER_NAMES
-)
+KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1", "dai.v1"})
 # Adapter names are configuration keys, not model output.  The current names are
 # short, and a longer spelling cannot resolve exactly; bounding it before
 # whitespace scanning or set hashing keeps a malformed config from multiplying a
