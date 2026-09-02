@@ -8,6 +8,7 @@ from PIL import Image
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.imaging import crop_png
 from common.native_witness import (
     partition_disagreement,
@@ -791,6 +792,27 @@ def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_byte
     value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
     with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
         verify_native_capture_bytes(value["native_capture"], raw)
+
+
+def test_a_churro_capture_admits_the_live_unreported_stop_reason():
+    """U5: a live page-scoped chair (Churro) whose wire response carried no
+    `finish_reason` at all retains `STOP_REASON_UNREPORTED`
+    (`common/contracts/serving.py`) as its transport word -- distinct from
+    every fixture/engine word already in `_CHURRO_STOP_REASONS`, and it must
+    be admitted here or every such live response would fail this check by
+    name alone, indistinguishably from a genuinely unknown transport word."""
+    value = _native_capture()
+    value["transport_stop_reason"] = STOP_REASON_UNREPORTED
+    value["stop_reason"] = STOP_REASON_UNREPORTED
+    assert validate_native_capture(value) is value
+
+
+def test_a_churro_capture_still_refuses_a_genuinely_unknown_stop_reason():
+    value = _native_capture()
+    value["transport_stop_reason"] = "abort"
+    value["stop_reason"] = "abort"
+    with pytest.raises(SchemaRefusal, match="unknown transport stop reason"):
+        validate_native_capture(value)
 
 
 def _page_payload(**changes):
