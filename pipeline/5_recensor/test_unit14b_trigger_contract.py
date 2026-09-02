@@ -29,6 +29,13 @@ def _recensor():
     return module
 
 
+# The live trigger expression calls `declared_recovery` -- a named function, not
+# a bare subscript, since it must also answer `False` with no scenario at all
+# (`declared_scenario` is `None` on a real submission). The isolated `eval`
+# below needs that one name resolvable, exactly as it needs `bool`.
+_RECENSOR_MODULE = _recensor()
+
+
 def _tree(source: str | None = None) -> ast.Module:
     return ast.parse((RECENSOR.read_text(encoding="utf-8") if source is None else source))
 
@@ -106,7 +113,7 @@ def _wants_recovery(
     return bool(
         eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
             _live_recovery_trigger(source),
-            {"bool": bool},
+            {"bool": bool, "declared_recovery": _RECENSOR_MODULE.declared_recovery},
             {
                 "act_key": "a",
                 "act": {"page_ordinal": page_ordinal},
@@ -405,7 +412,7 @@ def test_the_declared_route_is_not_bounded_by_another_pages_observation():
     assert bool(
         eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
             trigger,
-            {"bool": bool},
+            {"bool": bool, "declared_recovery": _RECENSOR_MODULE.declared_recovery},
             {
                 "act_key": "a",
                 "act": {"page_ordinal": 1},

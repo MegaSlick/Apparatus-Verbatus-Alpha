@@ -2657,7 +2657,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
     # so a real Designator's ordinary structural act was refused with a sentence
     # about a fixture the run never had. Real mode classifies each row from its
     # own Designator evidence instead (`_verify_real_act_denominator`).
-    if _is_real_ingress(context.run):
+    if is_real_ingress(context.run):
         by_subject = _proposal_evidence_by_subject(context, act_ids)
         _verify_real_act_denominator(context, acts, by_subject)
         _verify_proposal_seal_evidence(context, seal, acts, by_subject=by_subject)
@@ -2667,12 +2667,16 @@ def expected_acts(context) -> list[dict[str, Any]]:
     return acts
 
 
-def _is_real_ingress(run: Mapping[str, Any]) -> bool:
+def is_real_ingress(run: Mapping[str, Any]) -> bool:
     """Whether a run authority names the real route.
 
     An absent ingress record reads as the synthetic walking skeleton, exactly as
     `refuse_halted_run` reads it: the hand-built trees in this module's own unit
     tests predate the record, and a present one must still parse or it refuses.
+
+    The single reader behind this check: each stage's own `real_ingress(context)`
+    calls straight through to this function rather than restating the read, so a
+    change to how the ingress record is parsed lands once.
     """
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
 
@@ -3782,7 +3786,7 @@ def open_stage_context(
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
-    if not _is_real_ingress(run):
+    if not is_real_ingress(run):
         return open_context(args, stage, registry_factory=registry_factory, tree=tree, run=run)
     return _open_real_context(args, stage, tree, run, registry_factory)
 
@@ -3898,7 +3902,7 @@ def submission_identity(run: Mapping[str, Any]) -> str | None:
     the fixture route, which has a fixture id instead; the two are different
     concepts and are never written under one name.
     """
-    if not _is_real_ingress(run):
+    if not is_real_ingress(run):
         return None
     rows = run.get("source_manifest")
     if not isinstance(rows, list) or not rows:

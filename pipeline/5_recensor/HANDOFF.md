@@ -196,6 +196,16 @@ the synthetic walking skeleton, a present one must parse -- so the two cannot di
 about which route a run is on. `open_context` stays importable from this module because
 this stage's own tests open fixture trees through it directly; `main` does not call it.
 
+The declared-crop half of `wants_recovery` reads the same way: `declared_scenario`
+returns `None` on a real submission, and `declared_recovery(None, act_key)` answers
+`False` for every act, the same "nothing fed it" reading `declared_unreconciled` gives
+`hold_acts`. **On a real submission the declared-crop origin has no producer at all.**
+`recovery_request_origin` and `recovery_request_reason` still receive `declared=False`
+on every call, so the sole real-mode funder of a recovery request is measured ink
+outside the live crop union (`COVERAGE_OBSERVATION_ORIGIN`, via
+`unclaimed_ink_observations`) -- exactly the account the "Cross-page ink" section above
+already describes.
+
 The nine `expected_acts` readers in this file are unchanged: on a real run the shared
 reader skips the fixture floor by name and recomputes every row from the Designator's
 own sealed evidence, and nothing in this stage believes a count it has not recomputed

@@ -66,10 +66,8 @@ from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
-    REAL_INGRESS,
     ApprovalRecordBinding,
     ApprovalRecordReference,
-    parse_ingress_record,
     validate_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
@@ -118,6 +116,7 @@ from common.stage import (  # noqa: E402
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    is_real_ingress,
     latest_attempt,
     latest_per_chair,
     open_stage_context,
@@ -1550,14 +1549,11 @@ witnessed_region_ids = dossier_module.witnessed_region_ids
 def real_ingress(context) -> bool:
     """Whether this context's run authority names the real route.
 
-    The same reading `common.stage` makes for `expected_acts` and the shared
-    constructor: an absent record is the synthetic walking skeleton (the
-    hand-built trees in this stage's own tests predate the record), and a
-    present one must parse or it refuses. Read off `context.run`, which the
-    constructor read once, never off a second read of `run.json`.
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use, so the two cannot disagree about
+    which route a run is on.
     """
-    run = context.run
-    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+    return is_real_ingress(context.run)
 
 
 def declared_reading_failure(context, act_key: str) -> str | None:
@@ -1730,7 +1726,8 @@ def bound_serving_recipes(context, recipes_path: str):
     if inputs is None:
         raise ContractError(
             "this run authority seals no serving configuration inputs, so the catalogue that "
-            "decides whether a chair is live cannot be proven; open the run with `open_context`"
+            "decides whether a chair is live cannot be proven; open the run with "
+            "`open_stage_context`"
         )
     expected = ServingConfigInputs.from_record(inputs)
     recipes = load_serving_recipes(recipes_path)

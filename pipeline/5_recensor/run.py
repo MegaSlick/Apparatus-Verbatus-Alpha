@@ -31,7 +31,6 @@ from common.act_visibility_geometry import (  # noqa: E402
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
@@ -83,6 +82,7 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATIONS,
     WITNESS_READING_OUTCOMES,
     expected_acts,
+    is_real_ingress,
     latest_attempt,
     latest_per_chair,
     open_context,  # noqa: F401  (re-export: this stage's tests open fixture trees through it)
@@ -3014,14 +3014,11 @@ def write_partition_receipt(context, budget: dict) -> None:
 def real_ingress(context) -> bool:
     """Whether this context's run authority names the real route.
 
-    The same reading `common.stage` makes for `expected_acts` and the shared
-    constructor: an absent record is the synthetic walking skeleton (the
-    hand-built trees in this stage's own tests predate the record), and a
-    present one must parse or it refuses. Read off `context.run`, which the
-    constructor read once, never off a second read of `run.json`.
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use, so the two cannot disagree about
+    which route a run is on.
     """
-    run = context.run
-    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+    return is_real_ingress(context.run)
 
 
 def declared_scenario(context) -> dict | None:
@@ -3053,6 +3050,19 @@ def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
     return act_key in scenario["hold_acts"]
 
 
+def declared_recovery(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario asks a recrop for this act.
+
+    `False` with no scenario, because nothing fed it -- not because the act
+    was measured as needing none. On a real submission the only producer of
+    a recovery request is ink measured outside the live crop union, which
+    reaches `recovery_request_origin` as COVERAGE_OBSERVATION_ORIGIN.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["recover_acts"]
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
@@ -3074,7 +3084,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context.require_sealed_config("recovery", budget["config_sha256"])
 
     # The declared scenario on the fixture route; nothing on a real submission.
-    # The one thing read from it is `hold_acts`, below.
+    # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
     floor = context.witness_floor
 
@@ -3247,7 +3257,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cut_regions,
         )
         wants_recovery = (
-            act_key in scenario["recover_acts"]
+            declared_recovery(scenario, act_key)
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
@@ -3281,7 +3291,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # because a request the orchestrator can only refuse turns a graceful
             # hold into a hard failure for no gain.
             request_origin = recovery_request_origin(
-                declared=act_key in scenario["recover_acts"],
+                declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
             )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
@@ -3352,7 +3362,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # the two coincide.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
-                    declared_crop=act_key in scenario["recover_acts"],
+                    declared_crop=declared_recovery(scenario, act_key),
                     unclaimed_observation=len(outside_ink_requests) > 0,
                 ),
                 "budget_allowed": budget["allowed"],

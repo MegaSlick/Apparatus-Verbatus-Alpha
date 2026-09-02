@@ -318,7 +318,7 @@ def test_the_ink_map_refuses_a_run_whose_ingress_evidence_names_no_route(monkeyp
     """An absent `ingress` key must still stop this stage, as it did before the
     shared constructor.
 
-    `open_stage_context`'s own route test, `_is_real_ingress`, treats a missing
+    `open_stage_context`'s own route test, `is_real_ingress`, treats a missing
     `ingress` key as synthetic by design -- it has to, to decide which route to
     build -- and does not raise. This stage never branches on the route, so
     nothing else in `main` re-parses the record; before both routes shared one
