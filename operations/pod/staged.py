@@ -112,8 +112,11 @@ class ScheduledChair:
 
     The key rather than the prose, because the prose is for the operator and the
     key is what ``config/models-real.toml`` can be reconciled against. A chair
-    the roster configures and this schedule does not name is a boot nobody was
+    the roster configures, that the sealed catalogue resolves to a launchable
+    (non-captured) row, and this schedule does not name is a boot nobody was
     asked to authorize, and that is a test failure, not a documentation lapse.
+    A configured chair the catalogue resolves to `captured` boots nothing of
+    its own and is rightly absent from every stage.
     """
 
     chair: str

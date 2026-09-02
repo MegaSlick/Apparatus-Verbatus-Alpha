@@ -618,14 +618,13 @@ def test_the_shipped_real_catalogue_mixes_postures_across_witness_chairs() -> No
         for role, chair in models.chairs.items()
         if role in models.witness_chairs and isinstance(chair, ChairIdentity)
     }
-    assert modes["attestator_1"] == "captured"
-    assert set(modes.values()) - {"captured"} == {"live"}
-    postures = {mode for mode in modes.values()}
-    assert len(postures) > 1, (
-        "if this now holds, the D5 mixed-posture reconciliation has landed and "
+    d5_note = (
+        "if this no longer holds, the D5 mixed-posture reconciliation has landed and "
         "pipeline/3_attestatores/run.py::witness_serving_modes should be re-checked "
         "for whether it still refuses this catalogue"
     )
+    assert modes["attestator_1"] == "captured", d5_note
+    assert set(modes.values()) - {"captured"} == {"live"}, d5_note
 
 
 def test_the_fixture_catalogue_is_untouched_by_the_captured_kind() -> None:

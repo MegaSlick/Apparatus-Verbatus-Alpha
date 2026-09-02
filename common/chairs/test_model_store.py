@@ -756,6 +756,23 @@ def test_require_complete_store_refuses_a_partial_store_by_name(tmp_path):
         require_complete_store(tmp_path)
 
 
+def test_a_store_built_for_the_real_roster_alone_stays_incomplete(tmp_path):
+    """`require_complete_store` is the general store's door, not the real roster's.
+
+    The real roster names `secondary_proposer` absent (Tyrel's ruling of
+    2026-08-12); a store fetched to satisfy that roster and nothing more never
+    lands `yolo26-detection`, and this inventory -- keyed by
+    `REQUIRED_ARTIFACTS`, not by any one roster -- reports it pending forever.
+    Nothing in the real-roster activation path calls `require_complete_store`
+    today; this pins that a caller who did would be refused, not silently
+    satisfied.
+    """
+    _mark_pending(tmp_path, _store(tmp_path), "yolo26-detection", "absent from the real roster")
+
+    with pytest.raises(DigestMismatchRefusal, match="yolo26-detection"):
+        require_complete_store(tmp_path)
+
+
 def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_path):
     _store(tmp_path)
 

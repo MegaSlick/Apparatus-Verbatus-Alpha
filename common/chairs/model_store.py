@@ -1029,10 +1029,17 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
 
     ``verify_store`` proves the bytes that exist; it never invents the ones that
     do not, so it returns a partial inventory rather than refusing outright.
-    This is the door for a consumer that genuinely needs every roster artifact
-    on disk — activating the real roster, or a pod materialization plan. It accepts the
-    store root rather than an inventory-shaped mapping so a caller cannot flip a
-    derived ``complete`` flag while bytes are pending or missing.
+    This is the door for a consumer that genuinely needs every artifact
+    :data:`REQUIRED_ARTIFACTS` names on disk — a pod materialization plan, or
+    any future caller that wants the whole store, not one roster's subset of
+    it. ``REQUIRED_ARTIFACTS`` is the store's own general policy and is not
+    filtered by any one roster's absences, so it is *not* the door for
+    "activating the real roster": the real roster names `secondary_proposer`
+    absent (Tyrel's ruling of 2026-08-12), and a store built for that roster
+    alone is expected to stay incomplete against this inventory until some
+    future roster configures that chair again. It accepts the store root
+    rather than an inventory-shaped mapping so a caller cannot flip a derived
+    ``complete`` flag while bytes are pending or missing.
     """
 
     if isinstance(store_root, Mapping):
