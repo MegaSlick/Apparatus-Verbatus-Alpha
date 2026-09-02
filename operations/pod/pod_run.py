@@ -26,9 +26,13 @@ preflight had looked at.
 orchestrator's own held and halted exits; ``EXIT_REFUSED`` (2) is a named
 refusal before anything ran; ``EXIT_BOOTSTRAP_RED`` (5) is a red bootstrap
 step, the orchestrator never started; ``EXIT_FAILED`` (6) is an orchestrator
-that could not start or exited outside its own vocabulary.  Whatever the
-outcome, the report at ``--report-path`` says the same thing durably, under
-the launch-bound name, before the exit code says it.
+that could not start or exited outside its own vocabulary; ``EXIT_DRY_RUN``
+(7) is a drill -- both plans printed, nothing run, no report written -- and is
+never 0, so a dry run launched as ``pod_timer``'s bootstrap child by mistake
+cannot be mistaken for a completed run.  Whatever the outcome, the report at
+``--report-path`` says the same thing durably, under the launch-bound name,
+before the exit code says it -- except the dry run, which writes no report at
+all (see below).
 
 **The bootstrap-and-hold contract is unchanged.**  ``pod_timer.run_with_bootstrap``
 treats any child exit before the hard deadline -- exit 0 included -- as
@@ -100,6 +104,7 @@ EXIT_HELD = 3
 EXIT_HALTED = 4
 EXIT_BOOTSTRAP_RED = 5
 EXIT_FAILED = 6
+EXIT_DRY_RUN = 7
 
 _STATE_FOR_EXIT = {
     EXIT_COMPLETE: "complete",
@@ -108,6 +113,7 @@ _STATE_FOR_EXIT = {
     EXIT_HALTED: "halted",
     EXIT_BOOTSTRAP_RED: "bootstrap-red",
     EXIT_FAILED: "failed",
+    EXIT_DRY_RUN: "dry-run",
 }
 
 _ORCHESTRATOR_EXITS = {
@@ -431,7 +437,7 @@ def main(
 
     if plan.dry_run:
         print(json.dumps(plan.to_record(), sort_keys=True, indent=2))
-        return EXIT_COMPLETE
+        return EXIT_DRY_RUN
 
     started_at = _stamp(now())
     base: dict[str, object] = {

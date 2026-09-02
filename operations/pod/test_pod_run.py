@@ -30,6 +30,7 @@ from .bootstrap import BootstrapStep
 from .pod_run import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
+    EXIT_DRY_RUN,
     EXIT_FAILED,
     EXIT_HALTED,
     EXIT_HELD,
@@ -349,7 +350,8 @@ def test_dry_run_prints_both_plans_and_runs_nothing(
         runner=runner,
     )
 
-    assert exit_code == EXIT_COMPLETE
+    assert exit_code == EXIT_DRY_RUN
+    assert exit_code != EXIT_COMPLETE
     assert runner.calls == []
     printed = json.loads(capsys.readouterr().out)
     assert printed["run_id"] == "first-real-run"
@@ -641,11 +643,15 @@ def test_the_real_catalogue_pins_one_serving_stack() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=KeyError,
     reason=(
         "no `pod` dependency group can be locked today: transformers==4.57.1 requires "
         "huggingface-hub<1.0 while the project pins huggingface_hub==1.26.0 (uv's own "
         "resolution, recorded in operations/pod/README.md). Strict, so the day the group "
-        "lands this reconciliation goes live instead of lapsing."
+        "lands this reconciliation goes live instead of lapsing. `raises=KeyError` narrows "
+        "the expected failure to the group's absence: once a `pod` group exists with the "
+        "wrong pins the assertion below fails loudly instead of being absorbed, and once it "
+        "carries exactly the recipe's pins the marker XPASSes strictly, forcing removal."
     ),
 )
 def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:

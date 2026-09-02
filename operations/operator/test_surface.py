@@ -4706,6 +4706,55 @@ def test_fetch_run_refuses_an_artifact_whose_bytes_differ_from_its_manifest(
 
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
     assert "its stage manifest records" in str(refusal.value.detail)
+    # The forged bytes were fetched fresh (no local copy existed) before the
+    # digest check ran; the refusal must not leave them under their real name.
+    assert not (tmp_path / "local" / "brought-home" / entry["relative_path"]).exists()
+
+
+def test_fetch_run_brings_home_a_stage_that_never_reached_finish(tmp_path: Path) -> None:
+    """A stage whose last write never reached ``StageContext.finish()`` -- a crash,
+
+    an ``EXIT_FATAL``, a ``SIGKILL``, or the pod timer destroying the pod at the
+    hard deadline -- writes artifacts with no ``manifest.json``. Such a stage is
+    still brought home, its artifacts verified through their own envelope
+    (the same checks a stored manifest would apply), and the outcome is named
+    ``verified-partial``, never ``verified``.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified-partial"
+    assert payload["unmanifested_stages"] == ["designator"]
+    assert payload["stages_verified"] == []
+    assert len(payload["envelope_only_artifacts"]) == 1
+    assert (into / "brought-home" / "2_designator" / "artifacts").exists()
+    assert not (into / "brought-home" / "2_designator" / "manifest.json").exists()
+
+
+def test_fetch_run_still_refuses_a_forged_artifact_in_an_unmanifested_stage(
+    tmp_path: Path,
+) -> None:
+    """No manifest to check a forged artifact against does not mean no check at all."""
+
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
+    artifacts_dir = volume / "runs" / "brought-home" / "2_designator" / "artifacts"
+    [artifact_path] = [path for path in artifacts_dir.rglob("*.json") if path.is_file()]
+    relative = artifact_path.relative_to(volume / "runs" / "brought-home").as_posix()
+    reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert not (tmp_path / "local" / "brought-home" / relative).exists()
 
 
 def test_fetch_run_refuses_a_blob_that_does_not_hash_to_its_name(tmp_path: Path) -> None:

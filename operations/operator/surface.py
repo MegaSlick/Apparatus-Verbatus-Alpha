@@ -32,7 +32,7 @@ from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, validate_run_id
-from common.contracts.stages import ARMARIUM
+from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
 from common.runtree.store import (
     DOOR_MANIFEST_FILE,
     MANIFEST_FILE,
@@ -842,14 +842,22 @@ class OperatorSurface:
             raise OperatorError(
                 ErrorCode.FETCH_RUN_FAILED, detail=f"{error} Saved receipt: {receipt}"
             ) from error
+        partial = bool(outcome.unmanifested_stages)
+        summary = (
+            f"Run {checked_id} was brought back and verified: "
+            f"{outcome.fetched} object(s) fetched, {outcome.reused} reused."
+        )
+        if partial:
+            summary += (
+                f" {', '.join(outcome.unmanifested_stages)} reached no manifest.json -- its "
+                f"artifact(s) were verified only by their own envelope, never by a stored "
+                "manifest; this run tree is verified-partial, not verified."
+            )
         receipt = self._write_action(
             "fetch-run",
             {
-                "summary": (
-                    f"Run {checked_id} was brought back and verified: "
-                    f"{outcome.fetched} object(s) fetched, {outcome.reused} reused."
-                ),
-                "state": "verified",
+                "summary": summary,
+                "state": "verified-partial" if partial else "verified",
                 "run_id": checked_id,
                 "prefix": prefix,
                 "into": str(destination_root),
@@ -857,16 +865,27 @@ class OperatorSurface:
                 "reused": outcome.reused,
                 "bytes": outcome.bytes,
                 "stages_verified": list(outcome.stages),
+                "unmanifested_stages": list(outcome.unmanifested_stages),
+                "envelope_only_artifacts": list(outcome.envelope_only_artifacts),
                 "excluded_publication_temporaries": list(outcome.excluded),
                 "zero_gpu_hours": True,
             },
             descriptor_action="fetch-run",
         )
-        self.present(
-            f"Run {checked_id} is at {destination_root / checked_id}: "
-            f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-            f"identical, every one checked against the run tree's own digests."
-        )
+        if partial:
+            self.present(
+                f"Run {checked_id} is at {destination_root / checked_id}: "
+                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
+                "identical, every one checked -- but "
+                f"{', '.join(outcome.unmanifested_stages)} never reached a manifest.json, so "
+                "this run is verified-partial: its artifacts are trusted by envelope alone."
+            )
+        else:
+            self.present(
+                f"Run {checked_id} is at {destination_root / checked_id}: "
+                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
+                f"identical, every one checked against the run tree's own digests."
+            )
         if outcome.excluded:
             self.present(
                 f"{len(outcome.excluded)} publication temporar{'y' if len(outcome.excluded) == 1 else 'ies'} "
@@ -2946,6 +2965,16 @@ class FetchRunOutcome:
     bytes: int
     stages: tuple[str, ...]
     excluded: tuple[str, ...]
+    # A stage whose last write reached no `manifest.json` -- a crash, an
+    # EXIT_FATAL, a SIGKILL, or the pod timer destroying the pod at the hard
+    # deadline can all leave artifacts with no manifest recording them. Such a
+    # stage's artifacts are still verified, individually, through the run
+    # tree's own envelope reader (`RunTree.build_manifest(..., verify_inputs
+    # =False)`, the same checks a stored manifest would have applied) rather
+    # than refused as a whole. Non-empty here means the outcome is
+    # "verified-partial", never "verified".
+    unmanifested_stages: tuple[str, ...] = ()
+    envelope_only_artifacts: tuple[str, ...] = ()
 
 
 def _fetch_run_tree(
@@ -3001,60 +3030,119 @@ def _fetch_run_tree(
     fetched = reused = total = 0
     expected: dict[str, str] = {}
     manifests: dict[str, dict[str, Any]] = {}
+    unresolved: dict[str, str] = {}  # relative artifact path -> its fetched digest
+    # Every target this call itself wrote fresh (never one already on disk that
+    # was only compared). A refusal anywhere below -- including one raised well
+    # after the object that turned out bad was fetched, such as the stage
+    # reconciliation at the end -- unwinds every one of them, so a forged
+    # artifact, blob, or receipt this call fetched never survives under its
+    # real name once the fetch as a whole is refused.
+    staged: list[Path] = []
     root = tree.root
-    for relative in ordered:
-        target = root / relative
-        data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
-        total += data_size
-        fetched += not was_reused
-        reused += was_reused
-        name = PurePosixPath(relative).name
-        if relative == RUN_FILE:
-            tree.read_run()  # self-hash, schema, and run id, or a ContractError
-        elif name in _MANIFEST_NAMES:
-            manifest = _fetched_manifest(tree, relative)
-            manifests[relative] = manifest
-            for entry in manifest["artifacts"]:
-                expected[entry["relative_path"]] = entry["sha256"]
-        elif "/artifacts/" in relative:
-            digest = _sha256_of(target)
-            recorded = expected.get(relative)
-            if recorded is None:
-                raise FetchRunRefusal(
-                    f"{relative} arrived from the volume but no stage manifest records it; an "
-                    "artifact nobody inventoried is not evidence."
+    try:
+        for relative in ordered:
+            target = root / relative
+            data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
+            if not was_reused:
+                staged.append(target)
+            total += data_size
+            fetched += not was_reused
+            reused += was_reused
+            name = PurePosixPath(relative).name
+            if relative == RUN_FILE:
+                tree.read_run()  # self-hash, schema, and run id, or a ContractError
+            elif name in _MANIFEST_NAMES:
+                manifest = _fetched_manifest(tree, relative)
+                manifests[relative] = manifest
+                for entry in manifest["artifacts"]:
+                    expected[entry["relative_path"]] = entry["sha256"]
+            elif "/artifacts/" in relative:
+                # Manifests sort before artifacts (see `ordered` above), so every
+                # manifest that exists on the volume is already in `expected`.
+                # An artifact this loop cannot yet place is either the last write
+                # of a stage that never reached `finish()` -- resolved below,
+                # through the tree's own envelope reader, never refused outright
+                # -- or genuinely orphaned, which the resolution pass still refuses.
+                unresolved[relative] = _sha256_of(target)
+            elif "/blobs/sha256/" in relative or relative.startswith(f"{RECEIPTS_DIR}/"):
+                digest = _sha256_of(target)
+                if PurePosixPath(relative).stem != digest:
+                    raise FetchRunRefusal(
+                        f"{relative} is content-addressed but its bytes digest to {digest}; "
+                        "the object on the volume is not the one its name claims."
+                    )
+            else:
+                # A rebuildable index or the derived Recensor receipt: readable
+                # JSON, digested into the receipt, verified by the tree's own
+                # readers when a verb next opens it.
+                try:
+                    json.loads(target.read_bytes().decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
+        # An artifact with no manifest entry is not necessarily orphaned: the
+        # stage that wrote it last may never have reached `finish()` (a crash,
+        # an EXIT_FATAL, a SIGKILL, or the pod timer destroying the pod at the
+        # hard deadline all skip the manifest write). Resolve each such
+        # artifact against the manifest its own writing directory's stage
+        # would derive -- the same envelope, run, and path checks
+        # `build_manifest` always applies -- rather than refusing the whole
+        # tree for a manifest a genuine crash never got to write.
+        manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
+        unmanifested_stages: set[str] = set()
+        if unresolved:
+            directories_needed = {relative.partition("/artifacts/")[0] for relative in unresolved}
+            for directory in sorted(directories_needed):
+                candidates = sorted(
+                    stage
+                    for stage, stage_directory in WRITING_DIRECTORIES.items()
+                    if stage_directory == directory and stage not in manifested_stage_names
                 )
-            if recorded != digest:
+                for stage in candidates:
+                    derived = tree.build_manifest(stage, verify_inputs=False)
+                    if not derived["artifacts"]:
+                        continue
+                    unmanifested_stages.add(stage)
+                    for entry in derived["artifacts"]:
+                        expected.setdefault(entry["relative_path"], entry["sha256"])
+            for relative, digest in unresolved.items():
+                recorded = expected.get(relative)
+                if recorded is None:
+                    raise FetchRunRefusal(
+                        f"{relative} arrived from the volume but no stage manifest -- stored "
+                        "or derived from its own envelope -- records it; an artifact nobody "
+                        "inventoried is not evidence."
+                    )
+                if recorded != digest:
+                    raise FetchRunRefusal(
+                        f"{relative} digests to {digest}, not the {recorded} its stage "
+                        "manifest records; the fetched tree does not reconcile with itself."
+                    )
+        stages: list[str] = []
+        for relative, manifest in manifests.items():
+            stage = manifest["stage"]
+            rebuilt = tree.build_manifest(stage, verify_inputs=False)
+            if (
+                rebuilt["artifacts"] != manifest["artifacts"]
+                or rebuilt["blobs"] != manifest["blobs"]
+            ):
                 raise FetchRunRefusal(
-                    f"{relative} digests to {digest}, not the {recorded} its stage manifest "
-                    "records; the fetched tree does not reconcile with itself."
+                    f"{relative} does not match the manifest the fetched artifacts rebuild "
+                    f"for stage {stage!r}; the tree on the volume and the tree here disagree."
                 )
-        elif "/blobs/sha256/" in relative or relative.startswith(f"{RECEIPTS_DIR}/"):
-            digest = _sha256_of(target)
-            if PurePosixPath(relative).stem != digest:
-                raise FetchRunRefusal(
-                    f"{relative} is content-addressed but its bytes digest to {digest}; "
-                    "the object on the volume is not the one its name claims."
-                )
-        else:
-            # A rebuildable index or the derived Recensor receipt: readable
-            # JSON, digested into the receipt, verified by the tree's own
-            # readers when a verb next opens it.
-            try:
-                json.loads(target.read_bytes().decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as error:
-                raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
-    stages: list[str] = []
-    for relative, manifest in manifests.items():
-        stage = manifest["stage"]
-        rebuilt = tree.build_manifest(stage, verify_inputs=False)
-        if rebuilt["artifacts"] != manifest["artifacts"] or rebuilt["blobs"] != manifest["blobs"]:
-            raise FetchRunRefusal(
-                f"{relative} does not match the manifest the fetched artifacts rebuild for "
-                f"stage {stage!r}; the tree on the volume and the tree here disagree."
-            )
-        stages.append(stage)
-    return FetchRunOutcome(fetched, reused, total, tuple(sorted(stages)), tuple(excluded))
+            stages.append(stage)
+    except BaseException:
+        for path in staged:
+            path.unlink(missing_ok=True)
+        raise
+    return FetchRunOutcome(
+        fetched,
+        reused,
+        total,
+        tuple(sorted(stages)),
+        tuple(excluded),
+        tuple(sorted(unmanifested_stages)),
+        tuple(sorted(unresolved)),
+    )
 
 
 def _fetch_or_compare(reader: RunObjectReader, key: str, target: Path) -> tuple[int, bool]:
