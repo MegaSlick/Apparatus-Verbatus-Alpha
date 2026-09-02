@@ -1849,6 +1849,7 @@ def fixture_submission(args, registry) -> int:
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
@@ -2049,6 +2050,7 @@ def real_submission(args, registry) -> int:
         data_handling_config_sha256=data_policy_binding.config_sha256,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
+        designator_grouping_config_sha256=_grouping_config_digest(args.designator_grouping_config),
         alignment_config_path=args.alignment_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
@@ -2222,6 +2224,28 @@ def _geometry_config_digest(path: str) -> str:
         ) from error
 
 
+def _grouping_config_digest(path: str) -> str:
+    """The Designator grouping/reconciliation thresholds' digest, sealed at the door.
+
+    Load-bearing on the same terms as geometry: `pipeline/2_designator/run.py`
+    re-reads these thresholds at point of use and proves it read what was bound
+    via `context.require_sealed_config("designator-grouping", ...)`, so a real run
+    whose door never sealed this name would refuse at the Designator
+    unconditionally — the defect F-S5 named for padding.
+
+    Hashed here and parsed there, never both: the schema lives in
+    `pipeline/2_designator/grouping_config.py`, and a stage may not import another
+    stage's module (`pipeline/test_stage_import_boundaries.py`). The bytes this
+    digest names are the bytes that loader is held to.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Designator grouping configuration binding at {path} could not be read"
+        ) from error
+
+
 def _real_bindings(
     models,
     ledger,
@@ -2236,6 +2260,7 @@ def _real_bindings(
     data_handling_config_sha256: str,
     designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
+    designator_grouping_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
@@ -2368,6 +2393,7 @@ def _real_bindings(
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
+                "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Unit 5's decisions are geometry that shaped these pixels, so
@@ -2421,6 +2447,7 @@ def _real_bindings(
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
+            "designator-grouping": designator_grouping_config_sha256,
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "decoding": decoding_config_sha256,

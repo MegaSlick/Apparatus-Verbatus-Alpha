@@ -20,6 +20,7 @@ SEALED_CONFIG_FLAGS = (
     "--pdf-render-config",
     "--designator-padding-config",
     "--designator-geometry-config",
+    "--designator-grouping-config",
     "--alignment-config",
     "--perlector-protocol-config",
     "--perlector-audit-config",

@@ -52,8 +52,10 @@ from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     StageContext,
+    require_sealed_config,
     require_triage_modes,
     run_sealed_config_digests,
 )
@@ -100,6 +102,9 @@ def _sealed_binding_digests() -> dict[str, str]:
         ),
         "designator_geometry_config_sha256": door._geometry_config_digest(
             DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
+        "designator_grouping_config_sha256": door._grouping_config_digest(
+            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
         ),
     }
 
@@ -2943,6 +2948,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     supplied = _sealed_binding_digests()
     padding_digest = supplied["designator_padding_config_sha256"]
     geometry_digest = supplied["designator_geometry_config_sha256"]
+    grouping_digest = supplied["designator_grouping_config_sha256"]
     recovery = door.load_recovery_policy()
     bindings = door._real_bindings(
         Models(),
@@ -2964,6 +2970,12 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
         "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
         "run, so a real run without it refuses unconditionally (same class as F-S5)"
+    )
+    assert sealed.get("designator-grouping") == grouping_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'designator-grouping' entry bound to the exact digest passed in; the structure "
+        "pass resolves its thresholds from these bytes one step before the crop, so a "
+        "real run without the name refuses unconditionally (same class as F-S5)"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
@@ -2995,6 +3007,76 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
     )
     require_triage_modes(sealed, triage_modes)
+
+
+def test_a_rewritten_grouping_policy_is_refused_by_name_at_the_designators_point_of_use(tmp_path):
+    """The sealed grouping name must be able to fail, and to say which fault it is.
+
+    A name in `sealed_config_digests` earns its place by having a point of use
+    that requires it; a name nothing can refuse against "would read as a closed
+    window that nothing actually shuts" (`common/stage.py`). So this drives the
+    Door's own real-path map into the comparison the Designator makes, and proves
+    both refusals separately: a file rewritten after the door bound it, and an
+    authority that never sealed the name at all. They need different operator
+    actions — restore the policy, versus create the run again on a build that
+    seals it — so they must not collapse into one message.
+
+    Deliberately a rewritten *file*, not an invented hex string: the digest under
+    test is one the loader would really produce from bytes really on disk, which
+    is what the point of use will be handed on a real run.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    supplied = _sealed_binding_digests()
+    bindings = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
+        door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
+        **supplied,
+    )
+    # Read back the way a later stage reads it: out of a run authority, not off
+    # the bindings dict, so the name has to survive being recorded and re-read.
+    sealed = run_sealed_config_digests({"sealed_config_digests": bindings["sealed_config_digests"]})
+    bound = supplied["designator_grouping_config_sha256"]
+
+    # The run as sealed: the bytes the Designator re-reads are the bound bytes.
+    require_sealed_config(sealed, "designator-grouping", bound)
+
+    edited = tmp_path / "designator_grouping.toml"
+    edited.write_bytes(
+        DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_bytes()
+        + b"\n# a comment added after this run bound the file\n"
+    )
+    rewritten = door._grouping_config_digest(str(edited))
+    assert rewritten != bound, "the edited policy must actually differ, or this proves nothing"
+    with pytest.raises(ContractError, match="designator-grouping configuration changed") as drift:
+        require_sealed_config(sealed, "designator-grouping", rewritten)
+    assert bound in str(drift.value) and rewritten in str(drift.value), (
+        "the drift refusal must name both digests, so an operator can tell which file on "
+        f"disk is the one the run was bound to: {drift.value}"
+    )
+
+    unsealed = {name: digest for name, digest in sealed.items() if name != "designator-grouping"}
+    with pytest.raises(ContractError, match="sealed no digest for the designator-grouping") as gap:
+        require_sealed_config(unsealed, "designator-grouping", bound)
+    assert "changed between" not in str(gap.value), (
+        "a binding step that never sealed this name is a different fault from a file that "
+        f"moved under a run that did, and must not be reported as drift: {gap.value}"
+    )
 
 
 def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():

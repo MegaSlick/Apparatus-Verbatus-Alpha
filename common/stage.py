@@ -146,6 +146,15 @@ DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
 DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
 )
+# The grouping and reconciliation thresholds the Designator's structure pass runs
+# under: which marks join into one act, how far a chain reaches, and how many
+# residual components one page's conservation record may enumerate before the page
+# is held as a single review item. They decide what is marked out and what is held,
+# so two runs under different thresholds produce different acts from identical
+# pixels — the same reason padding is sealed, one step earlier in the same stage.
+DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
+)
 DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
 )
@@ -1528,6 +1537,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--designator-geometry-config", default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
     )
     parser.add_argument(
+        "--designator-grouping-config",
+        default=str(DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH),
+        help=(
+            "the sealed grouping, structure and conservation thresholds the Designator's "
+            "pass resolves per page"
+        ),
+    )
+    parser.add_argument(
         "--perlector-instrument-per-mille",
         type=int,
         default=0,
@@ -1753,6 +1770,7 @@ def run_config_bindings(
     pdf_render_config_sha256: str | None = None,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -1779,7 +1797,7 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding and geometry policy, Armarium projection configuration,
+    Designator padding, geometry and grouping policy, Armarium projection configuration,
     recovery policy, decoding policy, the run-level hard-failure policy,
     serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
     declares byte-backed pages only, so
@@ -1848,6 +1866,29 @@ def run_config_bindings(
             "the Designator geometry configuration binding at "
             f"{designator_geometry_config_path} could not be read"
         ) from error
+    # Hashed here and parsed at the point of use — geometry's shape exactly, and
+    # deliberately not `triage_modes`', which is validated here as well.
+    #
+    # The schema this file has to satisfy lives in
+    # `pipeline/2_designator/grouping_config.py::load_grouping_config`, and
+    # `common/` may never import a stage module: `common/README.md` says "it never
+    # imports back" and `common/chairs/test_chairs_import_boundary.py` reads every
+    # file under `common/` through `ast` to enforce it. Reaching that loader from
+    # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
+    # holds to the same rule across stage directories — would buy a bind-time
+    # refusal by breaking two live guards, so the refusal for a *malformed* file
+    # sits where the loader already is: the Designator loads it in `initial_pass`
+    # and proves it against this digest through
+    # `require_sealed_config("designator-grouping", ...)`, and `load_grouping_config`
+    # refuses loudly there, before the stage marks anything out. An *unreadable*
+    # file still refuses right here, at run creation, exactly as geometry's does.
+    try:
+        grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator grouping configuration binding at "
+            f"{designator_grouping_config_path} could not be read"
+        ) from error
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -1905,6 +1946,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
                 "designator_geometry_config_sha256": geometry_config_digest,
+                "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
@@ -1945,7 +1987,8 @@ def run_config_bindings(
         #
         # Every name here is bound into `config_digest` above, and every name here
         # has a point of use that requires it: padding and geometry at the
-        # Designator's crop, alignment at the Attestatores, the shard limit at run
+        # Designator's crop, grouping at the same stage's structure pass one step
+        # before it, alignment at the Attestatores, the shard limit at run
         # creation, the two Perlector policies at the reading, `recovery` at the
         # Recensor, the Designator recovery pass and the orchestrator's dispatch,
         # `pdf-render` at the Door that parsed it, and `hard-failure` at the
@@ -1961,6 +2004,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
+            "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
@@ -2822,6 +2866,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,

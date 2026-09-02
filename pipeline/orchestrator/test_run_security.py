@@ -36,6 +36,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         pdf_render_config="config/pdf_render.toml",
         designator_padding_config="config/designator_padding.toml",
         designator_geometry_config="config/designator_geometry.toml",
+        designator_grouping_config="config/designator_grouping.toml",
         alignment_config="config/alignment.toml",
         formats_config="config/formats.toml",
         recovery_config="config/recovery.toml",
