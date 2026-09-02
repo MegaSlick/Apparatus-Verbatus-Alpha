@@ -345,8 +345,48 @@ _PROVENANCE_FIELDS = frozenset(
         "resolved_revision",
         "receipt_ref",
         "witness_regime",
+        "engine_call",
     }
 )
+
+# The structure chair's serving posture, carried on every artifact the
+# structural pass produces. It is the one provenance field that says a model was
+# *asked something* rather than that a chair was resolved: `receipt_ref` names
+# the serving moment a chair was launched under, and on the fixture path that
+# receipt is a declared value over a chair nothing called
+# (`fixture_serving_details`). A run whose Designator actually served
+# `designator_structure` says so here, once, in a closed shape.
+#
+# Not a per-page call record. The structure pass makes one call per sealed page
+# and each page's own `structure-answer` record names that call
+# (`call_record_ref`, SPEC_D §1.3); what travels on provenance is the posture
+# every one of those calls ran under, which is the part a consumer can check
+# without opening any of them.
+STRUCTURE_CALL_SCHEMA: Final = "structure-chair-call.v1"
+STRUCTURE_CALL_FIELDS: Final = frozenset(
+    {"schema", "call_kind", "decoding_policy", "decoding_config_sha256"}
+)
+# The one wire kind a vision chair is served through
+# (`operations/serving/client.py` refuses anything else by name). Recorded so a
+# later reader can tell what the chair was asked through without inferring it
+# from the shape of what came back.
+STRUCTURE_CALL_KIND: Final = "chat-completions"
+# The `config/decoding.toml` section the structure pass runs under. Tyrel ruled
+# on 2026-09-02 that the Designator's structure pass may run at a variable
+# temperature, sealed and recorded per run, so its re-run variance is a clue
+# beside the witnesses, while every Attestator keeps `reading_of_record`. The
+# two postures are different sealed sections, so naming the wrong one is a
+# posture reported rather than executed.
+STRUCTURE_DECODING_POLICY: Final = "structure"
+
+# The Designator's per-page record of what the structure chair answered, and the
+# two words a consumer needs to reach one: the artifact kind and the payload
+# schema. Named here, beside the verifier that recomputes against them, for the
+# reason `fallback_page_act_key` is — the producer writes them and this module
+# reads them back, so the two may not spell them differently.
+STRUCTURE_ANSWER_KIND: Final = "structure-answer"
+STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
+STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
 
 class StageChairProtocol(ChairProtocol, Protocol):
@@ -2486,6 +2526,40 @@ def validate_serving_provenance(
     chair = provenance.get("chair")
     if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no chair name")
+    # **Owned by one producer and one chair, checked from both directions.** The
+    # same reasoning `witness_regime` above is held to: a field validated only
+    # when it happens to be present is a field any stage may attach, and an
+    # unvalidated field inside a sealed reading is exactly what invariant #42
+    # exists to stop. Only the Designator's structure pass calls a chair to mark
+    # out structure (ARCHITECTURE: the Designator marks out; the Attestatores
+    # bear witness), and only `designator_structure` sits in that chair
+    # (`unaddressed_chairs` names the whole role set). A witness Testimonium
+    # carrying a structure-chair call, or a structure call attributed to a
+    # witness role, would be a reading claiming a serving moment that was not
+    # its own — GOVERNANCE 6, and the same fabricated-moment refusal spec D §7
+    # names.
+    if provenance.get("engine_call") is not None:
+        if producer_stage != DESIGNATOR:
+            raise SchemaRefusal(
+                "only the Designator's structure pass records an engine call; provenance "
+                f"produced by {producer_stage!r} carries one"
+            )
+        if chair != DESIGNATOR_CHAIR:
+            raise SchemaRefusal(
+                f"provenance for chair {chair!r} carries a structure-chair engine call; the "
+                f"structural pass is served by {DESIGNATOR_CHAIR!r} and by no other chair"
+            )
+        if state != "configured":
+            raise SchemaRefusal(
+                f"chair {chair!r} is recorded as {state!r} and still carries an engine call; a "
+                "chair that was not configured served nothing"
+            )
+        if not require_receipt:
+            raise SchemaRefusal(
+                f"chair {chair!r} carries an engine call but is recorded as not run; a call is a "
+                "serving moment, and it owes the receipt that moment was issued under"
+            )
+        _validate_structure_chair_call(context, provenance["engine_call"])
     if state == "absent":
         configured = context.registry.resolve(chair)
         if not isinstance(configured, AbsentChair):
@@ -2577,6 +2651,61 @@ def validate_serving_provenance(
     return identity
 
 
+def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
+    """The closed record of the posture the structure chair was served under.
+
+    Two facts, and only the two a consumer can check without opening a per-page
+    call record: the wire kind the chair was asked through, and the decoding
+    policy this run sealed for the structural pass.
+
+    `decoding_policy` is a *name*, not a value. The Designator's structure pass
+    runs under `config/decoding.toml`'s `[structure]` section while every
+    Attestator reads at `reading_of_record` (Tyrel, 2026-09-02), so provenance
+    naming the wrong section would report a posture the pass did not run under —
+    GOVERNANCE 10's confusion of a claim with a measurement, and the reason the
+    temperature itself is deliberately *not* copied here: a number beside the
+    name could disagree with the sealed bytes, and then two artifacts in one run
+    would say different things about one run's decoding.
+
+    `decoding_config_sha256` binds that name to the exact bytes. It is checked
+    through `require_sealed_config` against the digest this run bound at
+    `open_context`, so a `config/decoding.toml` edited between the binding read
+    and the structure call refuses here rather than travelling into a sealed
+    reading unnoticed — the point-of-use recheck the whole sealing family
+    exists for, applied to the one policy the structural pass is free to vary.
+    """
+    if not isinstance(call, Mapping) or set(call) != STRUCTURE_CALL_FIELDS:
+        named = sorted(call) if isinstance(call, Mapping) else type(call).__name__
+        raise SchemaRefusal(
+            "a structure-chair engine call carries exactly its schema, call kind, decoding "
+            f"policy name and sealed decoding digest; this one carries {named}"
+        )
+    if call["schema"] != STRUCTURE_CALL_SCHEMA:
+        raise SchemaRefusal(
+            f"a structure-chair engine call must declare schema {STRUCTURE_CALL_SCHEMA!r}, not "
+            f"{call['schema']!r}"
+        )
+    if call["call_kind"] != STRUCTURE_CALL_KIND:
+        raise SchemaRefusal(
+            f"the structure chair is served through {STRUCTURE_CALL_KIND!r}; this call names "
+            f"{call['call_kind']!r}"
+        )
+    if call["decoding_policy"] != STRUCTURE_DECODING_POLICY:
+        raise SchemaRefusal(
+            f"the structural pass runs under the sealed {STRUCTURE_DECODING_POLICY!r} decoding "
+            f"policy; this call names {call['decoding_policy']!r}, which is a posture it did "
+            "not run under"
+        )
+    if not is_sha256(call["decoding_config_sha256"]):
+        raise SchemaRefusal(
+            "a structure-chair engine call names its sealed decoding digest as a lowercase "
+            "SHA-256 value"
+        )
+    require_sealed_config(
+        run_sealed_config_digests(context.run), "decoding", call["decoding_config_sha256"]
+    )
+
+
 def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
     """The declared scenario, refused loudly when the fixture does not name it.
 
@@ -2665,14 +2794,63 @@ def expected_acts(context) -> list[dict[str, Any]]:
     # so a real Designator's ordinary structural act was refused with a sentence
     # about a fixture the run never had. Real mode classifies each row from its
     # own Designator evidence instead (`_verify_real_act_denominator`).
-    if is_real_ingress(context.run):
+    #
+    # Ingress is no longer the only thing that opens that route. Which pass
+    # produced this seal is a fact about the sealed serving catalogue, not about
+    # where the pages came from: the offline end-to-end run drives a *served*
+    # structure chair over fixture pages, and a real submission may be marked out
+    # by a fixture chair over no chair at all. The two questions are independent,
+    # so the seal's own provenance is asked as well as the run's ingress, and a
+    # seal produced by a served structure chair takes the recomputing route
+    # whichever ingress it ran under.
+    structure_call = _structure_chair_call(context, payload)
+    if structure_call is not None or is_real_ingress(context.run):
         by_subject = _proposal_evidence_by_subject(context, act_ids)
-        _verify_real_act_denominator(context, acts, by_subject)
+        _verify_real_act_denominator(context, acts, by_subject, structure_call=structure_call)
         _verify_proposal_seal_evidence(context, seal, acts, by_subject=by_subject)
     else:
         _verify_synthetic_act_denominator(context, acts)
         _verify_proposal_seal_evidence(context, seal, acts)
     return acts
+
+
+def _structure_chair_call(context, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The served structure chair's posture, or `None` when no chair was called.
+
+    **Why the artifact and not the catalogue.** `common/` may never import
+    `operations/` (`common/contracts/serving.py`'s own docstring says why: both
+    sides import the shared shapes, and neither may depend on the other), so
+    this module cannot call `serving_mode_for` over the bound recipes the way
+    the Designator's own `main` does when it chooses which pass to run. What it
+    reads instead is the decision that choice already wrote down: on the live
+    path the structure chair's provenance carries an `engine_call`, and
+    `validate_serving_provenance` binds that record to the run's registry, its
+    sealed adapter recipe, its sealed decoding digest and a digest-checked
+    serving receipt before a single row is admitted on the strength of it. The
+    catalogue decides; this reads what the catalogue decided, and refuses a
+    claim the run cannot support.
+
+    **What a seal cannot escape by staying silent.** Omitting `engine_call` does
+    not buy a forged seal an easier check. On real ingress the route is taken
+    anyway. On fixture ingress the fixture floor is the *stronger* check —
+    every act the sealed fixture declares must appear, with the identity the
+    fixture derives — so a seal that drops the field is measured against a
+    declaration instead of against its own evidence. The one seal both routes
+    would admit is one whose rectangles are exactly the fixture's own, which is
+    the same act at the same identity by either name.
+
+    The refusal is `validate_serving_provenance`'s own, deliberately not
+    rewrapped: it names which field of the provenance is wrong, and a
+    `FatalAccounting` about the denominator would hide that behind a sentence
+    about act counts.
+    """
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, Mapping) or provenance.get("engine_call") is None:
+        return None
+    validate_serving_provenance(
+        context, dict(provenance), producer_stage=DESIGNATOR, require_receipt=True
+    )
+    return dict(provenance["engine_call"])
 
 
 def is_real_ingress(run: Mapping[str, Any]) -> bool:
@@ -2690,7 +2868,11 @@ def is_real_ingress(run: Mapping[str, Any]) -> bool:
 
 
 def _verify_real_act_denominator(
-    context, acts: list[dict[str, Any]], by_subject: dict[str, list[dict[str, Any]]]
+    context,
+    acts: list[dict[str, Any]],
+    by_subject: dict[str, list[dict[str, Any]]],
+    *,
+    structure_call: Mapping[str, Any] | None = None,
 ) -> None:
     """Every expected-act row on a real run, proven against its own evidence.
 
@@ -2703,7 +2885,9 @@ def _verify_real_act_denominator(
     classes go through `_verify_minted_act_rows` unchanged. The fourth, the
     structural proposal, is the one class the fixture path never had to
     recompute (its declaration was the stronger check) and here is checked
-    against the producer's own crop rectangle (`_verify_structural_act_row`).
+    against the producer's own crop rectangle (`_verify_proposal_act_row`,
+    which adds the hop to the retained structure answer when a chair was
+    actually served).
 
     A row matching more than one minted class is refused as ambiguous, and a
     row matching none and carrying no region is refused as unevidenced. Nothing
@@ -2769,7 +2953,9 @@ def _verify_real_act_denominator(
                 "page-fallback record; real ingress carries no declaration to admit it on"
             )
         if classes == ["proposal"]:
-            _verify_structural_act_row(act_id, row, regions, far_regions)
+            _verify_proposal_act_row(
+                context, act_id, row, regions, far_regions, structure_call=structure_call
+            )
             continue
         minted_rows[act_id] = row
         if hold is not None:
@@ -2778,6 +2964,156 @@ def _verify_real_act_denominator(
         context, minted_rows, holds_by_subject, fallbacks_by_subject, beyond="the structural pass"
     )
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
+
+
+def _verify_proposal_act_row(
+    context,
+    act_id: str,
+    row: dict[str, Any],
+    regions: list[dict[str, Any]],
+    far_regions: list[dict[str, Any]],
+    *,
+    structure_call: Mapping[str, Any] | None,
+) -> None:
+    """A structural act, recomputed and then held to the answer it came from.
+
+    `_verify_structural_act_row` proves the row against the rectangle its own
+    region record was cut over: identity, act key, page ordinal, continuation.
+    That is everything a consumer can check when the rectangle has no earlier
+    author — the walking skeleton's crops come from the sealed fixture, and the
+    region record is the first place they exist as evidence.
+
+    When a chair was actually served, the rectangle *does* have an earlier
+    author, and one more thing becomes checkable: the answer that chair returned
+    was retained, parsed and published per page (`structure-answer`, SPEC_D
+    §1.3), so a rectangle no answer names is a crop this run cannot attribute to
+    the model it says marked it out. Without this hop a Designator — or a tree
+    edited after the fact — could mint a perfectly self-consistent act over any
+    rectangle at all: identity recomputes, the act key agrees with the region
+    that carries it, and every downstream stage reads, witnesses and establishes
+    text over ink no model ever proposed. GOVERNANCE 10 is the rule that
+    forbids it (the claim is "the structure chair marked this out"), and
+    GOVERNANCE 6 is the rule it would break next, since the reading would carry
+    the chair's provenance for a rectangle the chair never returned.
+
+    Three claims, and each is refused separately so the refusal says which one
+    failed. The **page** must have been scanned: the page's own
+    `structure-status` is read at its identity-derived address — a page id is
+    not a producer's choice of string but this act's own binding, already
+    recomputed above — and it must record `state="scanned"` for this row's page
+    and page **ordinal**. The **answer** is then reached through that record's
+    `structure_answer_ref` on the digest-checked hop rather than by address, the
+    same "prove its premise" step `_verify_page_fallback_act_row` makes, so a
+    status pointing at bytes that have since changed refuses instead of
+    resolving. And the **rectangle** must appear in that answer's own act list,
+    exactly — no nearest match, no containment, no tolerance (hard rule 8: a
+    "nearest" rectangle is a selection among candidates dressed as arithmetic).
+
+    Two smaller bindings sit alongside. The answer's own `engine_call` must be
+    the seal's, so a page answered under one sealed decoding posture cannot
+    supply rectangles for a seal that claims another. And the answer must name
+    the per-page `call_record_ref` it was derived from: a `parsed` answer citing
+    no call is a record of a reading with no reading behind it.
+
+    A rectangle may legitimately appear more than once. Two identical rectangles
+    on one page are one crop and mint one act (SPEC_D §2.2 — the class-and-bounds
+    identity has no ordinal namespace), with the second recorded as a
+    `duplicate-rectangle` finding rather than refused. So this asks that the
+    rectangle be *present*, never that it be unique; requiring uniqueness would
+    turn a recorded, deliberate merge into a fatal accounting error.
+    """
+    _verify_structural_act_row(act_id, row, regions, far_regions)
+    if structure_call is None:
+        return
+    bounds = regions[0]["payload"]["raw_bounds"]
+    status = context.tree.read_artifact(
+        DESIGNATOR,
+        "structure-status",
+        artifact_id(DESIGNATOR, "structure-status", row["page_id"]),
+    )
+    status_payload = status.get("payload") if isinstance(status.get("payload"), Mapping) else {}
+    if (
+        status_payload.get("state") != "scanned"
+        or status_payload.get("page_id") != row["page_id"]
+        or status_payload.get("page_ordinal") != row["page_ordinal"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id} is a structural proposal on page {row['page_id']} at page ordinal "
+            f"{row['page_ordinal']!r}, but that page's own structure-status records state "
+            f"{status_payload.get('state')!r} for page {status_payload.get('page_id')!r} at "
+            f"ordinal {status_payload.get('page_ordinal')!r}; a rectangle is not marked out on "
+            "a page the structure pass did not scan, nor under an ordinal that page never had"
+        )
+    reference = status_payload.get("structure_answer_ref")
+    if not isinstance(reference, Mapping):
+        raise FatalAccounting(
+            f"act {act_id}'s page {row['page_id']} was marked out by a served structure chair, "
+            "but its structure-status names no retained structure answer; the answer is the "
+            "only record of what the chair actually returned, and without it this rectangle "
+            "rests on nothing but the producer's own word"
+        )
+    answer = context.tree.read_artifact_reference(
+        dict(reference),
+        stage=DESIGNATOR,
+        kind=STRUCTURE_ANSWER_KIND,
+        subject_id=row["page_id"],
+    )
+    payload = answer.get("payload") if isinstance(answer.get("payload"), Mapping) else {}
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
+        raise FatalAccounting(
+            f"act {act_id}'s page names a structure answer whose schema is "
+            f"{payload.get('schema')!r}, not {STRUCTURE_ANSWER_RECORD_SCHEMA!r}"
+        )
+    if payload.get("parse_state") != STRUCTURE_ANSWER_PARSED:
+        raise FatalAccounting(
+            f"act {act_id} was minted from page {row['page_id']}'s structure answer, whose "
+            f"parse state is {payload.get('parse_state')!r} with outcome "
+            f"{payload.get('parse_outcome')!r}; a page whose answer did not parse is held, and "
+            "a held page proposes nothing"
+        )
+    if (
+        payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != row["page_ordinal"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names page {row['page_id']} at ordinal "
+            f"{row['page_ordinal']!r}, but the structure answer it rests on names page "
+            f"{payload.get('page_id')!r} at ordinal {payload.get('page_ordinal')!r}"
+        )
+    answer_provenance = (
+        payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+    )
+    if answer_provenance.get("engine_call") != dict(structure_call):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer was produced under a different structure-chair "
+            "call than the proposal seal records; one run's seal and the answers its acts were "
+            "minted from name one serving posture"
+        )
+    try:
+        _serving_evidence_reference(payload.get("call_record_ref"), "structure answer call record")
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer parsed but names no usable call record to have "
+            f"parsed: {error}"
+        ) from error
+    answered = payload.get("acts")
+    if not isinstance(answered, list):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer carries no act list to check its rectangle against"
+        )
+    if payload.get("act_count") != len(answered):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer counts {payload.get('act_count')!r} acts over a "
+            f"list of {len(answered)}; the record's own denominator does not reconcile"
+        )
+    if not any(
+        isinstance(entry, Mapping) and entry.get("raw_bounds") == bounds for entry in answered
+    ):
+        raise FatalAccounting(
+            f"act {act_id} was minted over rectangle {bounds}, which page {row['page_id']}'s "
+            "structure answer does not list at any ordinal; a crop the structure chair never "
+            "returned may not be attributed to it"
+        )
 
 
 def _verify_structural_act_row(
@@ -2861,8 +3197,13 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
 
     This check belongs only to the declared synthetic walking skeleton: its fake
     Designator derives every act from fixture data, and the run configuration
-    seals those fixture bytes.  Real ingress intentionally stops before any
-    proposal seal exists, so no unbuilt structural model is being prescribed.
+    seals those fixture bytes.  Two other routes exist now and neither reaches
+    here — a real submission, whose rows are classified from their own Designator
+    evidence (`_verify_real_act_denominator`), and a seal produced by a served
+    structure chair, whose rows are additionally held to the answers that chair
+    returned (`_verify_proposal_act_row`). What is prescribed below is therefore
+    the fixture path alone, and a run arriving here has a fixture to be measured
+    against.
 
     The fixture's own acts are a *floor*, never a ceiling: every one must
     appear, and the seal may also carry acts the fixture never declared. Three
