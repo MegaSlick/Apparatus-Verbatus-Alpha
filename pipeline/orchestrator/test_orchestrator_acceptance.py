@@ -1268,10 +1268,46 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # two independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
 # exited 3, and both roots agreed exactly.
+#
+# Section C re-pin (real-page robustness, units A-F on one tree). Three causes,
+# each named because each was measured rather than inferred:
+#
+#   1. `config/designator_grouping.toml` (unit A) now exists and is bound at run
+#      creation, so its digest is in every run's `config_digest` and in
+#      `sealed_config_digests` under `designator-grouping` (unit C).
+#   2. Every `conservation` artifact in every run gained
+#      `residual_component_count`, `residual_ink_fraction_bp`,
+#      `max_residual_components` and `residual_enumeration`, and its `reason` is
+#      three-valued rather than two (unit D, the page-residual bound).
+#   3. Every `structure-status` artifact gained `page_width`, `page_height` and
+#      the eight resolved `resolved_thresholds` integers its page executed under
+#      (unit F, SPEC_C 4.2).
+#
+# Causes 1 and 2 were measured on unit D's own tree at happy
+# 9c591cb105edf162bd69bd5112a59ec37ab10df14bd19893371001f6b0209e48, which this
+# section reproduced exactly here before adding cause 3 -- so the two halves of
+# this re-pin are attributable separately rather than as one lump. Cause 3 was
+# then isolated by running the fixture at that same tree and at this one and
+# diffing the two semantic inventories rather than predicting the difference:
+# happy changes exactly four entries (the two `structure-status` artifacts, the
+# Designator stage-seal that inventories them, and the Designator manifest) and
+# review exactly five (the same, plus review's second Designator stage-seal
+# attempt). No entry appears and none vanishes on either side.
+#
+# **The counts therefore hold, and were checked rather than assumed**: happy 96
+# and review 107, on the line above each digest assertion, in both roots. No
+# fixture page comes near `max_residual_components`, so no fixture run mints a
+# page-residual act and no artifact appears or disappears anywhere in this
+# section. Both digests below were measured twice, in two independent temporary
+# roots, at canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest`; happy exited 0 and review exited 3, and the two
+# roots agreed exactly. The review pin above was measured before unit A existed
+# and describes no tree in this section: it moved for cause 1 and 2 as well,
+# which unit D predicted and did not exercise.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "0db78cb02752dba8eb2cb205913ccfd6af71cbe35b689e3d57c400538754f4b2"
-REVIEW_RUN_TREE_DIGEST = "b5e2a1757bbd3915a09c607855f7c1a1958d49e9da81de1f4d2a78fb16d3976d"
+HAPPY_RUN_TREE_DIGEST = "8a34be4de34a6e8d1923f3592c3dd043bb2d07dfc4810f9ce366f95af07899f0"
+REVIEW_RUN_TREE_DIGEST = "e4705bc5062c1dd4b6d75035c3f3c9c5eacca89b8337dce5e00a034108e193d3"
 
 
 def orchestrate(
