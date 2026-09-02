@@ -37,7 +37,7 @@ from .controller_armer import (
 )
 from .fake_provider import FakeProvider
 from .launch import PodRuntime
-from .lease import LeaseStore, PodLease
+from .lease import LeaseOwnershipError, LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     POD_REPORT_SCHEMA,
@@ -695,13 +695,72 @@ def test_a_lease_the_launch_no_longer_owns_stops_the_poll(tmp_path: Path) -> Non
 
     class HijackedStore(LeaseStore):
         def heartbeat(self, *, owner_token: str, now=None):  # type: ignore[no-untyped-def]
-            raise RuntimeError("lease belongs to a different controller")
+            raise LeaseOwnershipError("lease belongs to a different controller")
 
     hijacked = HijackedStore(store.path)
     result = arm(armer(clock, channel, FakeStarter(channel)), ask, record, hijacked, lease)
 
     assert not result.armed
     assert "could not refresh its own lease heartbeat" in result.detail
+    assert result.receipt["state"] == "launch-owner-lost"
+
+
+def test_a_lease_store_fault_while_polling_is_named_as_a_store_fault_not_an_ownership_loss(
+    tmp_path: Path,
+) -> None:
+    """An `OSError` heartbeating the lease is not proof another controller
+
+    owns it -- it is proof the store could not be written to. Regression:
+    the old handler folded every heartbeat failure into "another controller
+    now owns or has closed this lease", which is false here.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel()
+
+    class UnwritableStore(LeaseStore):
+        def heartbeat(self, *, owner_token: str, now=None):  # type: ignore[no-untyped-def]
+            raise OSError(13, "Permission denied")
+
+    unwritable = UnwritableStore(store.path)
+    result = arm(armer(clock, channel, FakeStarter(channel)), ask, record, unwritable, lease)
+
+    assert not result.armed
+    assert "lease record could not be updated" in result.detail
+    assert "another controller now owns or has closed this lease" not in result.detail
+    assert result.receipt["state"] == "lease-store-failed"
+
+
+def test_a_handover_write_failure_is_named_as_a_store_fault_and_never_starts_the_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable-store fault writing the identity handover must not surface
+
+    as `SUPERVISOR_FAILED`: the supervisor command is never even run.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel()
+    starter = FakeStarter(channel)
+
+    real_write = durable.exclusive_write
+
+    def failing_write(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if path == supervise.identity_path(store.path.parent, lease.lease_id):
+            raise OSError(13, "Permission denied")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(durable, "exclusive_write", failing_write)
+    result = arm(armer(clock, channel, starter), ask, record, store, lease)
+
+    assert not result.armed
+    assert "identity file" in result.detail
+    assert "could not be written" in result.detail
+    assert "the supervisor command was never run" in result.detail
+    assert result.receipt["state"] == "supervisor-handover-store-failed"
+    assert starter.argv is None
 
 
 def test_a_request_and_lease_that_disagree_refuse_before_anything_starts(

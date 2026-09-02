@@ -11,7 +11,10 @@ non-zero at once, which is the correct immediate close for pod_timer to act on.
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, never an inferred default, so a request file that built
 this command names exactly what ran.  ``ChairCacheBootstrapAction`` is
-constructed here for the first time in the tracked tree, closing deferral 04-8.
+constructed here for the first time in the tracked tree, closing the
+"constructed nowhere" half of deferral 04-8.  The other half stays open: it is
+wired with ``refetch_same_pin=None`` (see the comment beside that call below),
+so the at-most-one same-pin re-fetch itself still does not ship.
 
 **What ``PREFLIGHT`` honestly cannot do yet.**  No production
 ``ChairCacheVerifier`` or ``SmokeReader`` exists anywhere in this repository --
@@ -56,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import secrets
 import sys
@@ -316,7 +320,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         return Plan(
             volume_mount_path=volume_mount_path,
             report_path=report_path,
-            interval_seconds=_positive_interval(args.interval_seconds),
+            interval_seconds=_positive_interval(args.interval_seconds, report_path=report_path),
             keep_env=tuple(args.keep_env),
             dry_run=args.dry_run,
             hold_only=True,
@@ -399,7 +403,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     return Plan(
         volume_mount_path=volume_mount_path,
         report_path=report_path,
-        interval_seconds=_positive_interval(args.interval_seconds),
+        interval_seconds=_positive_interval(args.interval_seconds, report_path=report_path),
         keep_env=tuple(args.keep_env),
         dry_run=args.dry_run,
         hold_only=False,
@@ -420,9 +424,16 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     )
 
 
-def _positive_interval(value: float) -> float:
-    if not isinstance(value, (int, float)) or value <= 0:
-        raise PlanRefusal("--interval-seconds must be a positive number")
+def _positive_interval(value: float, *, report_path: Path | None = None) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise PlanRefusal(
+            "--interval-seconds must be a positive finite number", report_path=report_path
+        )
     return float(value)
 
 
@@ -614,7 +625,16 @@ def write_probe(volume_mount_path: Path) -> None:
 
 def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
     manifest = plan.submission_manifest
-    assert manifest is not None  # a plan (not hold-only) always resolves this
+    # Not an assert: `assert` disappears under `python -O`, and the TRANSFER
+    # step would then journal a bare AttributeError instead of the missing
+    # manifest. The invariant is held by resolve_plan's default assignment
+    # (bootstrap_main.py, `submission_manifest = args.submission_manifest or
+    # ...`), not by any raise, so it needs one here.
+    if manifest is None:
+        raise PlanRefusal(
+            "bootstrap plan reached TRANSFER with no submission manifest; "
+            "--submission-manifest resolves for every non-hold-only plan"
+        )
 
     def _transfer() -> dict[str, object]:
         if not manifest.is_file():

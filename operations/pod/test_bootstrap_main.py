@@ -19,6 +19,7 @@ from .bootstrap import BootstrapStep, BootstrapStepFailure
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
+    REFUSAL_SCHEMA,
     PlanRefusal,
     build_parser,
     hold,
@@ -404,6 +405,53 @@ def test_hold_only_drills_to_the_deadline_with_no_plan_arguments(tmp_path: Path)
     assert record["tick"] == 2
 
 
+def test_hold_only_refuses_a_non_finite_interval_with_a_durable_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = [
+        "--volume-mount-path",
+        str(ws.volume),
+        "--report-path",
+        str(ws.report_path),
+        "--hold-only",
+        "--interval-seconds",
+        "nan",
+    ]
+
+    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
+    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert "positive finite number" in record["reason"]
+
+
+def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = [
+        "--volume-mount-path",
+        str(ws.volume),
+        "--report-path",
+        str(ws.report_path),
+        "--hold-only",
+        "--interval-seconds",
+        "0",
+    ]
+
+    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
+    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert record["schema"] == REFUSAL_SCHEMA
+    assert "positive finite number" in record["reason"]
+
+
 def test_refuses_missing_required_plan_arguments(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -648,6 +696,41 @@ def test_build_actions_does_not_read_models_config_before_chair_cache_runs(
     assert not ws.models_config.exists()
     with pytest.raises(ChairRefusal):
         actions.verify_chair_cache()  # only *now* does it try to read the config
+
+
+def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:
+    """A non-hold-only ``Plan`` with ``submission_manifest=None`` must be a named
+    refusal at build time, not a bare ``AttributeError`` inside the TRANSFER
+    step (or, under ``python -O``, a stripped ``assert`` that lets it through
+    silently). ``resolve_plan`` always fills this in for a real launch; this
+    drives the invariant guard directly the way a future caller of
+    ``build_actions`` might trip it.
+    """
+
+    from .bootstrap_main import Plan, build_actions
+
+    plan = Plan(
+        volume_mount_path=Path("/volume"),
+        report_path=Path("/volume/report.json"),
+        interval_seconds=1.0,
+        keep_env=(),
+        dry_run=False,
+        hold_only=False,
+        repository=Path("/repo"),
+        repository_commit="a" * 40,
+        lockfile=Path("/repo/uv.lock"),
+        journal=Path("/volume/journal.json"),
+        store_root=Path("/volume/store"),
+        models_config=Path("/repo/models.toml"),
+        placement_config=Path("/repo/placement.toml"),
+        cache_root=Path("/volume/chair-cache"),
+        fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
+        submission_manifest=None,
+        transfer_source_root=Path("/volume"),
+    )
+
+    with pytest.raises(PlanRefusal, match="no submission manifest"):
+        build_actions(plan)
 
 
 # --- a refusal leaves a durable, readable reason on the volume --------------

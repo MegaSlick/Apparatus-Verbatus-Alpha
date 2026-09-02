@@ -1608,12 +1608,25 @@ class OperatorSurface:
         # so the capability that closes this lease structurally cannot reach
         # a terminal (`ps` is public) through this read path.
         telemetry = identity.telemetry()
-        running = _supervisor_peek_running(leases_root, lease.lease_id)
+        try:
+            running = _supervisor_peek_running(leases_root, lease.lease_id)
+        except Exception as error:
+            # Never let a failure in the lock check swallow the lines below --
+            # "a pod may still be billing" must still be printed.
+            running = f"UNREADABLE ({error})"
         age = max((self.now() - telemetry["started_at"]).total_seconds(), 0.0)
-        lines = [
-            f"  supervisor: {'running' if running else 'absent (pid ' + str(telemetry['pid']) + ' not found)'}"
-            f", identity file age {age:.0f}s (pid {telemetry['pid']})."
-        ]
+        if running is True:
+            word = "running"
+        elif running is False:
+            word = "absent (pid " + str(telemetry["pid"]) + " not found)"
+        elif running is None:
+            word = (
+                "UNKNOWN -- the ownership lock could not be checked; "
+                "treat this pod as unsupervised and go look"
+            )
+        else:
+            word = str(running)
+        lines = [f"  supervisor: {word}, identity file age {age:.0f}s (pid {telemetry['pid']})."]
         if telemetry["last_tick_at"] is not None:
             lines.append(
                 f"  last tick: {telemetry['last_tick_state']} at "

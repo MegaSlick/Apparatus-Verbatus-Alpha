@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import subprocess
 import sys
 import time
@@ -136,8 +137,8 @@ def run_with_bootstrap(
 ) -> ControllerResult:
     """Keep the timer primary while monitoring mandatory bootstrap and close evidence."""
 
-    if interval_seconds <= 0:
-        raise ValueError("pod timer interval must be positive")
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        raise ValueError("pod timer interval must be a positive finite number")
     command = _bootstrap_argv(bootstrap_command_json)
     bootstrap_record: dict[str, object] = {"argv": command, "state": "running"}
     report = Path(report_path)

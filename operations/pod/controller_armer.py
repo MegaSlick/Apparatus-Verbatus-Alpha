@@ -79,7 +79,7 @@ from typing import Final, Protocol, Sequence
 
 from . import durable, supervise
 from .arming import ControllerArming, ControllerReadiness
-from .lease import LeaseStore, PodLease
+from .lease import LeaseOwnershipError, LeaseStore, PodLease
 from .models import (
     PodCreateRequest,
     PodRecord,
@@ -147,6 +147,8 @@ UNREADABLE_REPORT: Final = "report-unreadable"
 CHANNEL_FAILED: Final = "channel-failed"
 LAUNCH_OWNER_LOST: Final = "launch-owner-lost"
 CLOCK_DISAGREEMENT: Final = "clock-disagreement"
+HANDOVER_STORE_FAILED: Final = "supervisor-handover-store-failed"
+LEASE_STORE_FAILED: Final = "lease-store-failed"
 
 
 class TimerReportChannel(Protocol):
@@ -264,6 +266,18 @@ def report_key(request: PodCreateRequest) -> str:
     if not relative.parts or ".." in relative.parts:
         raise ValueError(f"the timer report path {raw!r} does not name an object on the volume")
     return str(relative)
+
+
+class _HandoverStoreFailure(Exception):
+    """The identity-file write (or the read that checks it) failed outright.
+
+    Distinct from a foreign owner already holding the handover (that is
+    ``FileExistsError`` naming another controller, refused separately) and
+    from the supervisor process itself failing to start: this is a durable-
+    store fault under the leases root, and it must be reported as that, not
+    folded into ``SUPERVISOR_FAILED`` -- see the ``operations/pod/**`` review
+    instruction this exists to satisfy.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +599,12 @@ class ChannelControllerArmer:
             supervisor = self._start_supervisor(
                 store=store, lease=lease, owner_token=owner_token, started_at=started_at
             )
+        except _HandoverStoreFailure as error:
+            return self._refuse(
+                base,
+                HANDOVER_STORE_FAILED,
+                f"{error}; the supervisor command was never run; no pod-report read was attempted",
+            )
         except Exception as error:
             return self._refuse(
                 base,
@@ -689,7 +709,10 @@ class ChannelControllerArmer:
             try:
                 existing = supervise.read_identity(handover)
             except ValueError as error:
-                raise RuntimeError(
+                # A read fault, not a foreign owner and not the supervisor
+                # process -- same store fault this method's other OSError
+                # branch names, just discovered one step later.
+                raise _HandoverStoreFailure(
                     f"this lease's identity file at {handover} could not be read to check "
                     f"which controller it names: {error}"
                 ) from error
@@ -699,6 +722,14 @@ class ChannelControllerArmer:
                     "supervisor started here would not own this lease"
                 ) from None
             detail = "an identity file already existed and was left untouched"
+        except OSError as error:
+            # Not a foreign owner (that is FileExistsError, caught above) and
+            # not the supervisor process failing: the identity file under the
+            # leases root itself could not be written. Filed as a store
+            # fault, not folded into SUPERVISOR_FAILED.
+            raise _HandoverStoreFailure(
+                f"the identity file {handover} under the leases root could not be written: {error}"
+            ) from error
         argv = [*self.supervisor_argv, "--leases", str(leases_root), "--lease", lease.lease_id]
         process = self.start_supervisor(argv)
         pid = getattr(process, "pid", None)
@@ -778,12 +809,23 @@ class ChannelControllerArmer:
             # started above closes this pod as an abandoned unarmed lease.
             try:
                 store.heartbeat(owner_token=owner_token, now=self.now())
-            except Exception as error:
+            except LeaseOwnershipError as error:
                 return self._refuse(
                     attempt,
                     LAUNCH_OWNER_LOST,
                     f"this launch could not refresh its own lease heartbeat while polling: "
                     f"{error}; another controller now owns or has closed this lease",
+                )
+            except Exception as error:
+                # A store fault (`OSError`, `LeaseFormatError`) and any
+                # unclassified failure get the same posture: an ownership
+                # change is not established either way, so this must not
+                # carry the "another controller now owns" claim.
+                return self._refuse(
+                    attempt,
+                    LEASE_STORE_FAILED,
+                    f"this launch's own lease record could not be updated while polling: "
+                    f"{error}; no ownership change is established by this failure",
                 )
             self.sleeper(min(self.poll_seconds, attempt.bound_seconds - waited))
 

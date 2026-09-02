@@ -151,25 +151,30 @@ check.
   outcome). A provider that cannot answer `status` this tick is read as
   neither `RUNNING` nor a reason to close; the heartbeat above still holds and
   the loop keeps ticking rather than crash-looping or guessing. The operator
-  `status` verb gains a read-only supervisor block per open lease — running or
-  absent (by peeking the lock, exactly as `OperatorSurface._exclusive_paid_launch`
-  already does for the paid-launch claim, never by trusting a pid), identity
-  file age, last tick result, last close record, and the volume's ongoing
-  hourly price — with no new verb. Exit status follows `cli.py`'s convention
+  `status` verb gains a read-only supervisor block per open lease — running,
+  absent, or unknown (by peeking the lock, never creating it and never
+  trusting a recorded pid, and classifying only `BlockingIOError` as proof of
+  a holder — exactly as `OperatorSurface._exclusive_paid_launch` already does
+  for the paid-launch claim; any other lock-check failure prints an honest
+  "unknown", never "running"), identity file age, last tick result, last
+  close record, and the volume's ongoing hourly price — with no new verb.
+  Exit status follows `cli.py`'s convention
   (0 guarded, 2 nothing touched, 3 go and look) with one addition: a durable
   lease this run confirmed active going missing or unreadable exits 3, not 2,
   since the pod it guarded may still be billing. `main()` catches
   `BaseException`, not only its own refusal type, so a bad `--provider-factory`
   reference or a malformed `spend.toml` still writes a durable final record
   before exiting — a detached process's traceback on stderr goes unwatched
-  otherwise. Six offline drills against `FakeProvider` and an injected clock
+  otherwise. Seven offline drills against `FakeProvider` and an injected clock
   prove it: a crash mid-heartbeat resuming ownership with no close; a lost
   identity file reporting `BUSY` inside the timeout and closing after it,
   naming which; a provider unreachable on `status`/`verify_absent`/
   `capture_cost` reporting non-green without ever fabricating a verified
   close; an `EXITED` pod closing on a fresh heartbeat, naming the volume's
   ongoing rate; an already-`closed-verified` lease exiting without touching
-  the provider; and a second driver refused before it ever reaches the lease.
+  the provider; a second driver refused before it ever reaches the lease;
+  and a foreign owner's deadline passing while the supervisor breaks rather
+  than spinning.
   **A session that starts `supervise.py` is running a long-lived process
   while a pod bills — `~/.claude/WAKE_PLAYBOOK.md` applies to it exactly as to
   any other unattended long-running work.**
@@ -257,7 +262,10 @@ check.
   the correct immediate close. `ChairCacheBootstrapAction` is constructed here
   for the first time in the tracked tree, using the real Hugging Face fetchers
   already in `common/chairs/registry.py` for both chair-cache verification and
-  model-store materialization — **deferral 04-8 is closed.** The transfer
+  model-store materialization — **deferral 04-8 is only partly closed**: the
+  class is constructed, but `refetch_same_pin=None` (the registry has no
+  cache-clear verb), so the at-most-one same-pin re-fetch still does not ship,
+  and no test exercises the action. See the 04-8 row below. The transfer
   target stays optional: no submission manifest on the volume is a vacuous
   success and this process needs no object-store client at all; a manifest
   present with no configured target is a refusal, never a silently skipped
@@ -441,7 +449,7 @@ python3 -m pytest operations/pod
 
 They include deliberately broken confirmation, ceiling, status, billing, transfer,
 cache, smoke-read, laptop-controller, and pod-timer paths, plus (as of `supervise.py`,
-`controller_armer.py`, and `bootstrap_main.py` landing) the six `supervise` drills named
+`controller_armer.py`, and `bootstrap_main.py` landing) the seven `supervise` drills named
 above, the arming states in `test_controller_armer.py`, and the hold/refusal/scrub paths
 in `test_bootstrap_main.py`. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
@@ -547,7 +555,7 @@ even once closed, marked, so the history of what closed each one is not lost.**
 
 | # | What is deferred | Status |
 |---|---|---|
-| 04-1 | No durable laptop-supervisor driver in the tracked tree | **Closed.** `supervise.py` is that driver: a kernel-lock-owned, restart-safe process per lease, the `EXITED`-closes provider-lifecycle check, and six offline drills against `FakeProvider` (crash-mid-heartbeat resume, lost-identity `BUSY`-then-close, provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed-verified no-op, second-driver refusal). |
+| 04-1 | No durable laptop-supervisor driver in the tracked tree | **Closed.** `supervise.py` is that driver: a kernel-lock-owned, restart-safe process per lease, the `EXITED`-closes provider-lifecycle check, and seven offline drills against `FakeProvider` (crash-mid-heartbeat resume, lost-identity `BUSY`-then-close, provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed-verified no-op, second-driver refusal, foreign-owner-past-deadline break). |
 | 04-2 | No controller armer that observes the real timer report | **Partly closed.** `controller_armer.py`'s `ChannelControllerArmer` performs the real read, arms only on a complete observation, and is fake-proven against every refusal state; `ObservingControllerArmer` performs the identical read and never arms. **New closes-when:** the first authorized boot observes an object written through the pod's mount appearing in the network volume's S3 view, and records the delay. Until then the channel is a designed path, not an observed one. |
 | 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | **Closed.** `bootstrap_main.py` is bootstrap-and-hold: on green it does not exit, because `pod_timer.run_with_bootstrap` treats any child exit before the hard deadline — exit 0 included — as `completed-early` and closes the pod. Holding, not exiting, is the fix. |
 | 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input — and the first-boot checklist asks whether v2 offers one (see the checklist row above). |
@@ -560,7 +568,7 @@ fixed on an assumption. Both are Tyrel's to accept or send back:
 | # | What is deferred | Status |
 |---|---|---|
 | 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | **Amended to the v2 route**, not closed on this branch. Tyrel ruled on 2026-08-11: *"V2 should be what we use"* — REST v2 documents `createdAt`, a `startTime` snap, and a per-pod cost breakdown, which the ruling itself names as closing this finding. The migration is next-section work (see the v1/v2 paragraph above); until it lands, this row's original text still describes the code, and the first authorised live run still observes the two instants under whichever version is live at the time. |
-| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Partly closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree (`_build_cache`, `bootstrap_main.py:673`), closing the "constructed nowhere" half. It is still exercised by no test — `test_bootstrap_main.py` is fakes-only and never calls `_build_cache` — and the at-most-one same-pin re-fetch is deliberately left unwired (`refetch_same_pin=None`) because `ChairRegistry` has no cache-clear verb, so the behaviour the deferral is about still does not ship. |
+| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Partly closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree (`_build_cache`), closing the "constructed nowhere" half. It is still exercised by no test — `test_bootstrap_main.py` is fakes-only and never calls `_build_cache` — and the at-most-one same-pin re-fetch is deliberately left unwired (`refetch_same_pin=None`) because `ChairRegistry` has no cache-clear verb, so the behaviour the deferral is about still does not ship. |
 
 One more, found by the 2026-08-12 independent audit of this package and disclosed here
 rather than papered over with a check that guesses at unobserved provider behaviour.

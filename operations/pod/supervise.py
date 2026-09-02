@@ -77,6 +77,23 @@ _CONTINUE_STATES = frozenset(
     {"active", "owner-heartbeat-fresh", "controller-unarmed", PROVIDER_UNREACHABLE}
 )
 
+# A floor under the sleep between ticks: `sleep_for` below is `min(...)` of two
+# non-negative terms, and a future continue-state whose deadline term has
+# already reached zero must not turn this loop into a hot spin -- every tick
+# still does a durable write (`record_tick`), which fsyncs.
+#
+# Unreachable defense-in-depth today, not proven by a drill: every state in
+# `_CONTINUE_STATES` other than `owner-heartbeat-fresh` can only be returned
+# by a tick whose own `run_once` call already found `now() < lease.hard_deadline`
+# strictly (its expiry check uses `>=`), so `sleep_for`'s deadline term is
+# strictly positive on every one of those ticks -- the same `now()` value that
+# passed the expiry check is the one `sleep_for` is computed from. And
+# `owner-heartbeat-fresh` past the deadline is caught by the explicit break
+# just above, before `sleep_for` is ever computed. What the spin drill below
+# actually proves is that break; this floor is a guard against a future
+# continue-state losing that invariant.
+_MIN_TICK_SECONDS = 0.05
+
 
 class SuperviseRefusal(RuntimeError):
     """A named refusal raised before the loop starts; nothing was touched."""
@@ -183,7 +200,7 @@ def release_lock(leases_root: Path, lease_id: str) -> None:
         handle.close()
 
 
-def peek_running(leases_root: Path, lease_id: str) -> bool:
+def peek_running(leases_root: Path, lease_id: str) -> bool | None:
     """Read-only: does some process currently hold this lease's ownership lock?
 
     Takes the same non-blocking lock the owning driver would and releases it
@@ -191,14 +208,37 @@ def peek_running(leases_root: Path, lease_id: str) -> bool:
     does for the paid-launch claim -- so the operator status surface can
     answer "is a supervisor running" without ever becoming one itself, and
     without trusting a recorded pid that a reboot can hand to someone else.
+
+    Never creates the lock file or its parent directory: this is a read, and
+    a lease with no lock file has nothing holding it, so that case is
+    unambiguously "not running" rather than a reason to write beside a state
+    tree a caller may only be allowed to read. Returns ``None`` -- unknown,
+    never "running" -- when the lock could not be checked at all (any
+    ``OSError`` other than ``BlockingIOError``): only ``BlockingIOError``
+    proves another process holds this lock, exactly as
+    `OperatorSurface._exclusive_paid_launch` already classifies it for the
+    paid-launch claim. Treating an unclassified failure as "running" would be
+    fail-open on the one question this surface exists to answer for a pod
+    that may still be billing.
     """
 
-    handle = _open_lock_handle(_lock_path(leases_root, lease_id))
+    path = _lock_path(leases_root, lease_id)
+    try:
+        # O_RDONLY, no O_CREAT: flock works on a read-only descriptor, and a
+        # lock file that does not exist cannot be held by anything.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    handle = os.fdopen(descriptor, "rb")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             return True
+        except OSError:
+            return None
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return False
     finally:
@@ -517,13 +557,15 @@ def supervise_tick(
             ),
             lease=lease,
         )
-    # Case-folded: `FakeProvider.create` defaults a brand-new fake pod's word
-    # to lowercase "running" (`PodRecord.state`'s own default), while the
-    # explicit lifecycle words this check exists to catch -- "EXITED" and the
-    # adapter's uppercase lifecycle vocabulary -- are upper case. Comparing
-    # case-sensitively would close a perfectly healthy fake pod on its first
-    # tick; the word itself, not its case, is what 04-4 needs distinguished.
-    if status.provider_state is not None and status.provider_state.upper() != "RUNNING":
+    # Case-folded and stripped: `FakeProvider.create` defaults a brand-new fake
+    # pod's word to lowercase "running" (`PodRecord.state`'s own default),
+    # while the explicit lifecycle words this check exists to catch --
+    # "EXITED" and the adapter's uppercase lifecycle vocabulary -- are upper
+    # case. Comparing case-sensitively would close a perfectly healthy fake
+    # pod on its first tick; the word itself, not its case or any surrounding
+    # whitespace a provider or a non-adapter caller supplies, is what 04-4
+    # needs distinguished.
+    if status.provider_state is not None and status.provider_state.strip().upper() != "RUNNING":
         reason = (
             f"provider observed pod lifecycle state {status.provider_state!r}, not RUNNING -- "
             "closing now rather than leaving an EXITED pod billing its attached volume unobserved"
@@ -682,13 +724,19 @@ def run_supervisor(
             break
         if result.state not in _CONTINUE_STATES:
             break
+        # A foreign owner's heartbeat can stay fresh past this lease's own
+        # hard deadline -- that deadline is immutable and this driver is not
+        # the owner, so it has nothing left to try. Without this break the
+        # loop below spins: `sleep_for`'s deadline term is pinned at zero
+        # forever, and `_exit_code` already has a named answer (3, "go and
+        # look") for exactly this state once the lease is confirmed active.
+        if result.state == "owner-heartbeat-fresh" and now() >= result.lease.hard_deadline:
+            break
         sleep_for = min(
             heartbeat_timeout.total_seconds() / 3,
             max((result.lease.hard_deadline - now()).total_seconds(), 0.0),
         )
-        if sleep_for <= 0:
-            continue
-        sleeper(sleep_for)
+        sleeper(max(sleep_for, _MIN_TICK_SECONDS))
     return result, _exit_code(result, observed_active_lease=observed_active_lease)
 
 

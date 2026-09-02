@@ -405,10 +405,14 @@ class RunPodProvider:
         # other code trusts as RUNNING; `status` only reports what the
         # provider said, so an unfamiliar future lifecycle word still reaches
         # its caller instead of becoming a raised ProviderFailure on a
-        # read-only observation.
+        # read-only observation. "Verbatim" covers casing and unknown future
+        # words, which survive untouched -- it does not cover surrounding
+        # whitespace, because this value is compared against `"RUNNING"`
+        # downstream (`supervise.py`), never displayed, and the usability
+        # decision below is already made on the stripped word.
         raw_state = row.get("desiredStatus")
         usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
-        provider_state = raw_state if usable_state else None
+        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
         detail = "RunPod exact-pod GET returned 200"
         if raw_state is not None and not usable_state:
             detail = f"{detail}; unusable desiredStatus {raw_state!r}"

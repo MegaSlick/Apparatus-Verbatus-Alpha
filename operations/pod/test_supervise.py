@@ -8,10 +8,13 @@ paired drill would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import errno
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -338,6 +341,40 @@ def test_an_exited_pod_closes_even_while_the_heartbeat_is_fresh_and_names_the_vo
     assert provider.terminate_calls == [record.pod_id]
 
 
+def test_a_padded_running_word_from_the_provider_does_not_close_a_healthy_pod(
+    tmp_path: Path,
+) -> None:
+    """The RUNNING guard must strip, not just case-fold: `provider_runpod.py`
+
+    now stores the stripped word it already decided usability on, but a
+    non-adapter provider (this fake, or a future one) can still hand this
+    guard a padded string directly. Regression for the guard disagreeing with
+    the seam about the same byte string and terminating a healthy pod --
+    see `test_provider_runpod.py`'s companion drill for the adapter side.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    make_lease(store, record, owner=ident.owner_token, clock=clock, deadline_seconds=3600)
+
+    provider.set_pod_state(record.pod_id, " RUNNING ")
+
+    result = supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=ident.owner_token,
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    )
+    assert result.state == "active"
+    assert result.close_report is None
+    assert provider.terminate_calls == []
+
+
 # -- drill 5: lease already closed-verified ----------------------------------
 
 
@@ -485,6 +522,88 @@ def test_run_supervisor_loops_to_a_verified_lifetime_expiry_and_writes_a_final_r
     stored = supervise.read_identity(supervise.identity_path(tmp_path, LEASE_ID))
     assert stored is not None
     assert stored.last_tick_state == "lifetime-expired"
+
+
+# -- drill 7: foreign owner past its own hard deadline ------------------------
+
+
+class _ForeverFreshForeignOwnerStore:
+    """Wraps a real `LeaseStore` to model a foreign heartbeater still ticking.
+
+    Every read reports a different owner (never this driver's) whose
+    heartbeat is exactly "now" -- as if some other process kept refreshing
+    it -- while everything else (creation, the underlying file) passes
+    through untouched. This is what a genuinely foreign, still-live
+    supervisor looks like from `run_supervisor`'s side, without needing a
+    second real process in the drill.
+    """
+
+    def __init__(self, inner: LeaseStore, now: Callable[[], datetime]) -> None:
+        self._inner = inner
+        self._now = now
+
+    def create(self, lease: PodLease) -> PodLease:
+        return self._inner.create(lease)
+
+    def load(self) -> PodLease | None:
+        lease = self._inner.load()
+        if lease is None:
+            return None
+        # A name bound first, not a literal on the keyword: the ingress scan reads
+        # `owner_token="..."` as a credential literal (see the note at `newid`).
+        foreign_driver = "a-different-live-driver"
+        return replace(lease, owner_token=foreign_driver, heartbeat_at=self._now())
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_passes(
+    tmp_path: Path,
+) -> None:
+    """A foreign owner whose heartbeat never goes stale, once its lease's own
+
+    hard deadline has passed, must end the run with a named exit rather than
+    hot-loop rewriting its identity file forever. Regression for the spin:
+    without the deadline break, `sleep_for` collapses to 0 the moment the
+    deadline passes (both its terms floor at 0), and the old
+    `if sleep_for <= 0: continue` never slept or stopped.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    real_store = _store(tmp_path)
+    make_lease(real_store, record, owner="a-different-live-driver", clock=clock, deadline_seconds=3)
+    store = _ForeverFreshForeignOwnerStore(real_store, clock.now)
+
+    tick_count = 0
+    sleeps: list[float] = []
+
+    def counting_sleeper(seconds: float) -> None:
+        nonlocal tick_count
+        tick_count += 1
+        if tick_count > 50:
+            raise AssertionError("run_supervisor spun past 50 ticks without ending the run")
+        sleeps.append(seconds)
+        clock.sleep(seconds)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,  # type: ignore[arg-type]
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=1, lifetime=3600),
+        now=clock.now,
+        sleeper=counting_sleeper,
+        pid=1000,
+    )
+
+    assert result.state == "owner-heartbeat-fresh"
+    assert exit_code == 3, "go and look: another owner's heartbeat stayed fresh past our deadline"
+    assert provider.terminate_calls == []
+    assert all(seconds > 0 for seconds in sleeps), sleeps
 
 
 def test_main_smoke_reports_no_lease_as_exit_code_two(tmp_path: Path, monkeypatch) -> None:
@@ -783,3 +902,59 @@ def test_a_reused_pid_after_reboot_does_not_block_a_legitimate_restart(tmp_path:
     )
     assert second.owner_token == first.owner_token
     assert second.pid == 1000
+
+
+# -- peek_running: a pure read, and fail-closed on the money direction ------
+
+
+def test_peek_running_never_creates_the_lock_file_or_its_directory(tmp_path: Path) -> None:
+    """The status surface only ever *reads* this lock -- see
+    `operations/operator/test_surface.py`'s writing-tree drill for the
+    consumer side of this guard.
+    """
+
+    leases_root = tmp_path / "leases"
+
+    assert supervise.peek_running(leases_root, LEASE_ID) is False
+    assert not (leases_root / "supervisors").exists()
+
+
+def test_peek_running_reports_true_only_while_the_owner_holds_the_lock(tmp_path: Path) -> None:
+    clock = Clock()
+    supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+
+    assert supervise.peek_running(tmp_path, LEASE_ID) is True
+
+    supervise.release_lock(tmp_path, LEASE_ID)
+
+    assert supervise.peek_running(tmp_path, LEASE_ID) is False
+
+
+def test_peek_running_reports_unknown_not_running_on_a_non_contention_errno(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Only `BlockingIOError` proves another holder, exactly as
+    `OperatorSurface._exclusive_paid_launch` already classifies it for the
+    paid-launch claim. Any other `OSError` (e.g. `flock` unsupported on this
+    filesystem) means the check failed, which is not evidence a supervisor
+    exists -- so it must never read as "running".
+    """
+
+    import fcntl
+
+    clock = Clock()
+    supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    supervise.release_lock(tmp_path, LEASE_ID)
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        # EACCES, not a made-up errno: it must not be one of the handful
+        # Python's OSError constructor auto-upgrades to BlockingIOError
+        # (EAGAIN/EWOULDBLOCK/EALREADY/EINPROGRESS -- platform-dependent
+        # numbers, so picking one by value alone is not portable), or this
+        # drill would silently test the wrong branch.
+        raise OSError(errno.EACCES, "Permission denied")
+
+    assert not isinstance(OSError(errno.EACCES, "x"), BlockingIOError)
+    monkeypatch.setattr(fcntl, "flock", _raise)
+
+    assert supervise.peek_running(tmp_path, LEASE_ID) is None

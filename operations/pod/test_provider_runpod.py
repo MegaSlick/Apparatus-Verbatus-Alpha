@@ -585,6 +585,26 @@ def test_status_drops_a_malformed_desiredstatus_and_names_it_rather_than_reporti
     assert f"unusable desiredStatus {malformed!r}" in status.detail
 
 
+@pytest.mark.parametrize("padded", [" RUNNING ", "RUNNING\n", "\tRUNNING"])
+def test_status_strips_a_padded_but_usable_desiredstatus_before_storing_it(
+    padded: str,
+) -> None:
+    """The usability decision and the stored word must agree: deciding on the
+
+    stripped word but storing the padded one let `supervise.py`'s RUNNING
+    guard (which case-folds but did not used to strip) disagree with this
+    seam about the same byte string, closing a healthy pod. See
+    `test_supervise.py`'s companion drill for the consuming guard."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=padded))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.provider_state == "RUNNING"
+    assert "unusable desiredStatus" not in status.detail
+
+
 def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
     context = timer_context_from_environment(
         {

@@ -1,4 +1,4 @@
-# Pod runtime — handoff (`work/pod-u6`, on top of units 1–5 and U4)
+# Pod runtime — handoff (U6's record, on `work/pod-runtime`, over units 1–5 and U4)
 
 This branch's own job (U6) is the record, not new code: `README.md` above and this
 file. Everything it describes was built and tested by earlier units on this branch;
@@ -27,10 +27,11 @@ before trusting what it reads.
 process per lease: ownership by kernel `fcntl.flock`, never by a recorded pid, because
 a pid is reused after a laptop reboot and a bare `os.kill(pid, 0)` check fails open.
 Every tick also re-reads `provider.status()` and closes on any lifecycle word other
-than `RUNNING` — the real 04-4 fix. Six offline drills, all against `FakeProvider` and
+than `RUNNING` — the real 04-4 fix. Seven offline drills, all against `FakeProvider` and
 an injected clock, prove: crash-mid-heartbeat resume, lost-identity `BUSY`-then-close,
 provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed exit
-with no provider call, and a refused second driver.
+with no provider call, a refused second driver, and a foreign owner's deadline passing
+while the supervisor breaks rather than spins.
 
 **U4 — `controller_armer.py`, the armer and a channel that cannot lie (closes 04-2
 partly).** `ChannelControllerArmer` starts the supervisor first, detached, before
@@ -57,7 +58,7 @@ mid-arming; an unstartable supervisor command is caught at preflight; and
 `_read_bounded`'s accumulation is bounded to its declared `limit` even against an
 over-serving body.
 
-**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3 and 04-8).** On green this
+**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3; partly closes 04-8).** On green this
 process holds rather than exits, because `pod_timer.run_with_bootstrap` treats any
 child exit before the hard deadline as `completed-early` and closes the pod.
 `ChairCacheBootstrapAction` is constructed here for the first time in the tracked
@@ -77,6 +78,15 @@ name Tyrel's 2026-08-11 ruling and the 2026-11-15 v1 retirement date, with the c
 v1 code named as a session decision that predates and contradicts that ruling; two new
 checklist rows (the drill boot, and the account-balance-observer gap); a
 `~/.claude/WAKE_PLAYBOOK.md` line under the supervisor description; and this file.
+
+**After U6 — `test_launch_drill.py`.** Two further commits landed on this branch
+after U6's record was written, adding `operations/pod/test_launch_drill.py`: seven
+offline drills that drive the armer, the pod's own report, and the `supervise` driver
+together — a green launch, a launcher that dies mid-poll, a report that never appears,
+an `EXITED` pod, both close-ordering directions, and the observing armer — with no
+network and no live pod. This file was not updated for it at the time; see the "No
+code changed by this unit" note below, which is about U6's own diff, not the branch as
+a whole.
 
 ## What each unit actually proved (not what it was asked to prove)
 
@@ -127,10 +137,11 @@ In order, because each depends on the one before it existing to observe against:
    `observe_account_balance` raises without one. This is engineering work, not a
    decision reserved for Tyrel, but it blocks both boots equally.
 
-## The six `supervise` drills, by name
+## The `supervise` drills, by name
 
-All six live in `operations/pod/test_supervise.py`, offline against `FakeProvider`
-and an injected clock:
+All live in `operations/pod/test_supervise.py`, offline against `FakeProvider`
+and an injected clock. The first six are U1's; the seventh was added later, closing
+a spin CodeRabbit found in the run loop:
 
 1. Crash mid-heartbeat — a second driver instance over the same identity file resumes
    ownership; no close.
@@ -144,10 +155,13 @@ and an injected clock:
 5. Lease already `closed-verified` — exits without touching the provider.
 6. Two drivers — the second is refused before it ever reaches the lease; it never
    closes the first driver's pod.
+7. Foreign owner past its own hard deadline — a lease owned by another, still
+   heartbeating driver ends the run at that deadline (exit 3, go and look) instead
+   of hot-looping identity rewrites forever.
 
 ## What this unit did not do, and why
 
-- **No code changed on this branch.** U6's brief is the record; `models.py`,
+- **No code changed by this unit.** U6's brief is the record; `models.py`,
   `supervise.py`, `controller_armer.py`, `bootstrap_main.py`, `pod_timer.py`,
   `cli.py`, and `provider_runpod.py` are read here, not edited.
 - **No v2 migration, no balance observer.** `SPEC_POD.md` §4.0 draws the boundary
@@ -197,7 +211,7 @@ and an injected clock:
 
 `.venv/bin/ruff format` and `.venv/bin/ruff check` are not applicable — no `.py` file
 was touched by this unit. `sh .githooks/check-documents.sh` was run from the worktree
-root (this branch touched `.md` files) and passed: "Ingress check passed for the
+root (this unit touched `.md` files) and passed: "Ingress check passed for the
 requested scope." / "Document check passed." No `pytest` was run: this unit's brief
 scoped test iteration to `test_pod_runtime.py -k readme`, and no such test exists in
 this tree to iterate against (see "What this unit did not do" above) — the final
