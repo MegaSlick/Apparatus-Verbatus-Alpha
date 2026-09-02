@@ -53,6 +53,7 @@ from common.contracts.canonical import self_hash
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
@@ -283,6 +284,35 @@ class _StructureDesignator:
             record["engine_call"] = self.engine_call()
         return record
 
+    def call_record(self, **changes: Any) -> dict[str, Any]:
+        """A genuine `chair-call-record.v1` blob, shaped as `operations/serving/client.py`
+        retains one -- what a structure answer's `call_record_ref` actually names on a
+        served chair, not just a shape the digest hop happens to accept."""
+        record: dict[str, Any] = {
+            "schema": CHAIR_CALL_RECORD_SCHEMA,
+            "chair": DESIGNATOR_CHAIR,
+            "resolved_identity": self.identity.to_record(),
+            "resolved_revision": self.identity.receipt_revision,
+            "serving_recipe": self.identity.serving_recipe,
+            "served_model_id": "hand-built-structure-chair-model",
+            "receipt_ref": self.receipt,
+            "launch_audit_ref": None,
+            "decoding_config_sha256": self.decoding_sha256,
+            "kind": STRUCTURE_CALL_KIND,
+            "request_sha256": "a" * 64,
+            "image_sha256s": [],
+            "generation_sent": {},
+            "generation_declared": {},
+            "raw_response_ref": None,
+            "response_sha256": None,
+            "response_model": None,
+            "finish_reason": "stop",
+            "usage": None,
+            "parse_problem": None,
+        }
+        record.update(changes)
+        return record
+
     # --- geometry ---------------------------------------------------------
 
     def page_size(self, ordinal: int) -> tuple[int, int]:
@@ -313,12 +343,12 @@ class _StructureDesignator:
         page_ordinal: int | None = None,
         act_count: int | None = None,
         call_record_ref: Any = "default",
+        call_record: dict[str, Any] | str = "default",
     ) -> dict[str, str]:
         """One `structure-answer` record, text-free as SPEC_D §1.3 requires."""
         page = self.pages[ordinal]
-        _, stored = self.tree.put_blob(
-            DESIGNATOR, json.dumps({"call": "hand-built chair call record"}).encode("utf-8")
-        )
+        record = self.call_record() if call_record == "default" else call_record
+        _, stored = self.tree.put_blob(DESIGNATOR, json.dumps(record).encode("utf-8"))
         published = self.context.publish(
             kind=STRUCTURE_ANSWER_KIND,
             subject_id=page["subject_id"],
@@ -569,6 +599,53 @@ def test_a_status_naming_a_different_page_ordinal_than_the_row_is_refused(real_r
         expected_acts(context)
 
 
+# --- a real submission owes the call it says produced it ------------------
+
+
+def test_a_structural_proposal_on_real_ingress_with_no_served_chair_is_refused(real_root):
+    """Omitting `engine_call` may not buy a real proposal an easier check.
+
+    A rectangle no answer exists to name is exactly the forged hop the module
+    docstring names: the geometry recomputes on its own say-so, the act key
+    agrees with the region that carries it, and nothing else stood behind it.
+    A fixture-ingress seal that stays silent falls to the *stronger* fixture
+    floor instead (`test_the_same_fixture_ingress_seal_without_a_call_falls_to_the_fixture_floor`);
+    real ingress carries no declaration to fall back to, so silence has to
+    refuse here or it is not checked anywhere.
+    """
+    designator = _real_designator(real_root)
+    silent = designator.provenance(call=None)
+    rectangle = designator.rectangle(1, 0)
+    designator.propose(1, rectangle)
+    designator.seal(provenance=silent)
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="names no engine_call"):
+        expected_acts(context)
+
+
+def test_a_structural_proposal_on_real_ingress_with_no_served_chair_is_refused_even_with_a_forged_answer(
+    real_root,
+):
+    """The same refusal even when a status and answer are published beside it.
+
+    A forger who also fabricated a `structure-status` and `structure-answer`
+    (easy: nothing serves a model, so nothing here would notice a hand-built
+    pair) gains nothing -- the seal's own provenance still names no call, and
+    that alone is fatal before either record is ever read.
+    """
+    designator = _real_designator(real_root)
+    silent = designator.provenance(call=None)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(1, designator.answer(1, [rectangle], provenance=silent))
+    designator.propose(1, rectangle)
+    designator.seal(provenance=silent)
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="names no engine_call"):
+        expected_acts(context)
+
+
 # --- what the answer itself has to say ------------------------------------
 
 
@@ -644,16 +721,100 @@ def test_a_parsed_answer_naming_no_call_record_is_refused(real_root):
 
 
 def test_an_answer_produced_under_a_different_call_than_the_seal_is_refused(real_root):
-    """One run's seal and the answers its acts came from name one posture."""
+    """One run's seal and the answers its acts came from name one posture.
+
+    A structure-chair engine call is a closed four-field record whose decoding
+    digest is checked against the one digest this run actually sealed
+    (`_validate_structure_chair_call`), so there is no *second* well-formed call
+    this run could have made -- an answer naming a genuinely different one would
+    already be caught as an invalid call by `validate_serving_provenance`, not
+    by this equality. What this proves is the case that check cannot: an answer
+    whose provenance is otherwise honest but records no call at all still may
+    not stand in for the seal's own.
+    """
     designator = _real_designator(real_root)
     rectangle = designator.rectangle(1, 0)
-    other = designator.provenance(call=designator.engine_call(decoding_config_sha256="b" * 64))
+    other = designator.provenance(call=None)
     designator.status(1, designator.answer(1, [rectangle], provenance=other))
     designator.propose(1, rectangle)
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
     with pytest.raises(FatalAccounting, match="a different structure-chair call"):
+        expected_acts(context)
+
+
+def test_an_answer_whose_provenance_does_not_validate_is_refused(real_root):
+    """The answer's premise is held to the same closed schema the seal's is.
+
+    Comparing only `engine_call` let an answer with a fabricated chair name, no
+    `chair_state`, no `resolved_identity` and no `receipt_ref` stand behind a
+    minted act, so long as the one field the equality check reads happened to
+    match. `validate_serving_provenance` refuses that provenance on its own
+    terms, before the equality check is ever reached.
+    """
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    junk = {
+        "engine_call": designator.engine_call(),
+        "chair": "not-a-chair",
+        "adapter_revision": adapter_recipe_for(designator.context.run, DESIGNATOR),
+    }
+    designator.status(1, designator.answer(1, [rectangle], provenance=junk))
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(SchemaRefusal, match="structural pass is served by"):
+        expected_acts(context)
+
+
+def test_a_call_record_that_is_not_a_chair_call_record_is_refused(real_root):
+    """The digest hop is not the whole check -- what it resolves to is read too."""
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(
+        1,
+        designator.answer(1, [rectangle], call_record=designator.call_record(schema="wrong.v0")),
+    )
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
+        expected_acts(context)
+
+
+def test_a_call_record_naming_a_different_chair_is_refused(real_root):
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(
+        1,
+        designator.answer(1, [rectangle], call_record=designator.call_record(chair="attestator_1")),
+    )
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
+        expected_acts(context)
+
+
+def test_a_call_record_naming_a_different_decoding_digest_is_refused(real_root):
+    """The call record's own binding to the sealed decoding posture, not just its shape."""
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(
+        1,
+        designator.answer(
+            1, [rectangle], call_record=designator.call_record(decoding_config_sha256="b" * 64)
+        ),
+    )
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
         expected_acts(context)
 
 
