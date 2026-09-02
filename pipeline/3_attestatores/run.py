@@ -4092,6 +4092,13 @@ def resumed_page_captures(
     that neither describes was never answered at this ordinal and is asked for
     normally; a continuation page is exactly that case, because no act record is
     ever derived from a continuation page's response.
+
+    More than one act on the page can carry that compatibility record (the
+    happy fixture's a1 and a2 are both primary on page 1), and every one of
+    them is checked, not just the first found: they all claim to derive from
+    the same page response, so a disagreement between them is a record
+    problem this boundary must name rather than silently resolve by taking
+    whichever act sorts first.
     """
     sealed_records = _sealed_page_testimonia(context, ordinal)
     captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] = {}
@@ -4105,14 +4112,24 @@ def resumed_page_captures(
                     f"the page Testimonium sealed for page {page_ordinal}, chair {chair!r}",
                 )
                 continue
+            candidates: list[tuple[str, Attempt]] = []
             for act in page_acts:
                 pair = (act["act_id"], chair)
                 if act["page_ordinal"] != page_ordinal or pair not in sealed_pairs:
                     continue
                 attempt = attempts_by_pair[pair]
+                if attempt.outcome not in ATTEMPTED_WITNESS_OUTCOMES:
+                    # `dead`/`not-run`: this pair was never shown pixels, so it
+                    # neither stands in for a response nor disagrees with one --
+                    # a not-run act sealed by live_attempt_pass's own first loop
+                    # (a held crop, a refused proposal) is not a fixture-posture
+                    # record wearing this act's name, it is simply not evidence
+                    # of this page's response either way.
+                    continue
                 if attempt.serving_call_ref is None:
-                    # The act layer's own live marker: every live attempt names
-                    # the call record of the request that produced it, whether or
+                    # An *attempted* outcome naming no serving call is the
+                    # fixture posture's own shape: every live attempt names the
+                    # call record of the request that produced it, whether or
                     # not its adapter's retained view could be published beside
                     # it.
                     raise SchemaRefusal(
@@ -4120,8 +4137,23 @@ def resumed_page_captures(
                         f"ordinal {ordinal} names no serving call, so it was not written by a "
                         "live pass; a live pass cannot resume over a fixture-posture record"
                     )
-                captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
-                break
+                candidates.append((act["act_id"], attempt))
+            if not candidates:
+                continue
+            first_act_id, first_attempt = candidates[0]
+            for act_id, attempt in candidates[1:]:
+                if (
+                    attempt.raw_response_ref != first_attempt.raw_response_ref
+                    or attempt.native_capture != first_attempt.native_capture
+                    or attempt.outcome != first_attempt.outcome
+                ):
+                    raise SchemaRefusal(
+                        f"the Testimonia sealed for page {page_ordinal}, chair {chair!r} "
+                        f"disagree between act {first_act_id!r} and act {act_id!r} about which "
+                        "response produced them; a resumed page capture cannot be rebuilt from "
+                        "records that do not agree about their own evidence"
+                    )
+            captures[(page_ordinal, chair)] = (first_attempt, first_attempt.native_capture)
     return captures
 
 
@@ -4171,6 +4203,27 @@ def live_attempt_pass(
     )
     recorded = 0
     isolated_crop_failure = False
+
+    # A resumed page capture answers for its page's response, but not for
+    # every act view that response feeds: an interruption between two of a
+    # page's own act publications leaves the later ones sealed nowhere, and a
+    # resumed pass that only reused the page capture would never revisit them
+    # -- `resumed_page_captures` records that the response happened, this
+    # loop finishes publishing what it answers for. Only a pair still
+    # `PENDING_LIVE_ATTEMPT` is published; the pairs the interrupted pass
+    # already sealed are untouched.
+    for (page_ordinal, chair), (attempt, _capture) in page_captures.items():
+        recorded += publish_page_act_views(
+            context,
+            chair=chair,
+            resolved=context.registry.resolve(chair),
+            attempt=attempt,
+            page_ordinal=page_ordinal,
+            page_acts=acts_by_page[page_ordinal],
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
+        )
 
     # Everything no chair has to answer for: a pair already sealed at this
     # ordinal (counted, never re-asked, never rewritten) and a pair no chair was
@@ -4330,7 +4383,10 @@ def publishable_native_capture(capture: dict[str, Any] | None) -> dict[str, Any]
 
 
 def refuse_unpublishable_stop_word(
-    adapter_name: str, capture: dict[str, Any] | None, what: str
+    adapter_name: str,
+    transport_stop_reason: str,
+    capture: dict[str, Any] | None,
+    what: str,
 ) -> None:
     """Refuse a live response whose engine stop word cannot be recorded honestly.
 
@@ -4341,7 +4397,12 @@ def refuse_unpublishable_stop_word(
     read, and mapping it to either "complete" or "cut off" would be a
     measurement nobody made (GOVERNANCE 10, and the same rule
     `pipeline/4_perlector/truncation.py` applies by refusing an unknown engine
-    string by name).
+    string by name). This check runs on `transport_stop_reason` alone, before
+    `capture` is even consulted, so it also catches an unmeasured word on a
+    response `ChairClient` could not parse into a reading at all: a wire body
+    no adapter parsed still names its engine word verbatim inside the retained
+    `chair-call-record.v1` blob, and a word this pipeline has never measured a
+    meaning for is exactly as unpublishable there as on a parsed capture.
 
     A *Churro* response that reports no stop word at all is refused for a
     narrower reason: the shared page contract re-derives a Churro page record's
@@ -4350,22 +4411,26 @@ def refuse_unpublishable_stop_word(
     `truncated: false`. The live boundary measures three states
     (`SPEC_A.md` section 2.3), and the third one has nowhere to go until that
     shared reconciliation is widened -- `common/native_witness.py`'s change,
-    recorded as owed in the HANDOFF.
+    recorded as owed in the HANDOFF. This second refusal only fires once a
+    capture exists (a response an adapter actually parsed): a response with no
+    capture at all has no page-Testimonium truncation field to contradict,
+    because `content_health.recordable` is already `False` for it.
 
     Both refuse before the response's own record is published, with its bytes
     already retained by the client (GOVERNANCE 2).
     """
-    if capture is None:
-        return
-    stop = capture["transport_stop_reason"]
-    if stop not in _LIVE_ENGINE_STOP_WORDS:
+    if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
         raise ContractError(
-            f"{what} reports transport_stop_reason {stop!r}, which this pipeline has never "
-            "measured a meaning for; recording it as complete or as cut off would assert a "
-            "boundary nobody observed. The response bytes are retained and nothing was "
-            "published for it"
+            f"{what} reports transport_stop_reason {transport_stop_reason!r}, which this "
+            "pipeline has never measured a meaning for; recording it as complete or as cut "
+            "off would assert a boundary nobody observed. The response bytes are retained "
+            "and nothing was published for it"
         )
-    if adapter_name == "churro.v1" and stop == STOP_REASON_UNREPORTED:
+    if (
+        capture is not None
+        and adapter_name == "churro.v1"
+        and transport_stop_reason == STOP_REASON_UNREPORTED
+    ):
         raise ContractError(
             f"{what} reports no engine stop word, and the shared page-Testimonium contract "
             "cannot reconcile that against a truncation state: it would have to record 'not "
@@ -4403,8 +4468,12 @@ def _serve_act_unit(
         generation_declared=built.request.generation_declared,
         parser="text",
     )
+    transport_stop_reason = (
+        response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
+    )
     refuse_unpublishable_stop_word(
         resolved.witness_adapter,
+        transport_stop_reason,
         live.native_capture,
         f"the {resolved.witness_adapter} response for act {act['act_id']}",
     )
@@ -4423,43 +4492,32 @@ def _serve_act_unit(
     return 1
 
 
-def _serve_page_unit(
+def publish_page_act_views(
     context,
     *,
-    client: ChairClient,
     chair: str,
     resolved: ChairIdentity,
-    adapter,
+    attempt: Attempt,
     page_ordinal: int,
     page_acts: list[dict[str, Any]],
     ordinal: int,
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
-    page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
 ) -> int:
-    """One page-scoped chair, one page: one request, then every act view it feeds.
+    """Publish every still-pending act view one page chair's response feeds.
 
     The act-scoped records are the same facts as the page record -- outcome,
     retained text, health, retained bytes -- because they are the same response.
     Only an act whose *primary* page is this one takes its view from here: a
     continuation's act view belongs to the act's own page, and the far page's
     reading reaches that act through the page record its attachment names.
+
+    Shared by `_serve_page_unit` (a page response this pass just received) and
+    `live_attempt_pass` (a page response a resumed pass recovered from a sealed
+    record, per the interrupted-mid-page repair below). Only a pair still
+    `PENDING_LIVE_ATTEMPT` is published: a pair the interrupted pass already
+    sealed for this page is left exactly as it was.
     """
-    presentation = presentation_for_page(context, page_ordinal)
-    request = live_witness.page_chair_request(
-        context, adapter, resolved.witness_adapter, presentation
-    )
-    response = client.read(request)
-    live = live_witness.captured_page_attempt(
-        context, page_ordinal, chair, resolved.witness_adapter, adapter, response
-    )
-    refuse_unpublishable_stop_word(
-        resolved.witness_adapter,
-        live.native_capture,
-        f"the {resolved.witness_adapter} response for page {page_ordinal}",
-    )
-    attempt = attempt_from_live(live)
-    page_captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
     recorded = 0
     for act in page_acts:
         pair = (act["act_id"], chair)
@@ -4481,6 +4539,53 @@ def _serve_page_unit(
         )
         recorded += 1
     return recorded
+
+
+def _serve_page_unit(
+    context,
+    *,
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    adapter,
+    page_ordinal: int,
+    page_acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
+) -> int:
+    """One page-scoped chair, one page: one request, then every act view it feeds."""
+    presentation = presentation_for_page(context, page_ordinal)
+    request = live_witness.page_chair_request(
+        context, adapter, resolved.witness_adapter, presentation
+    )
+    response = client.read(request)
+    live = live_witness.captured_page_attempt(
+        context, page_ordinal, chair, resolved.witness_adapter, adapter, response
+    )
+    transport_stop_reason = (
+        response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
+    )
+    refuse_unpublishable_stop_word(
+        resolved.witness_adapter,
+        transport_stop_reason,
+        live.native_capture,
+        f"the {resolved.witness_adapter} response for page {page_ordinal}",
+    )
+    attempt = attempt_from_live(live)
+    page_captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
+    return publish_page_act_views(
+        context,
+        chair=chair,
+        resolved=resolved,
+        attempt=attempt,
+        page_ordinal=page_ordinal,
+        page_acts=page_acts,
+        ordinal=ordinal,
+        regions_by_act=regions_by_act,
+        attempts_by_pair=attempts_by_pair,
+    )
 
 
 def witness_bound_reading_acts(context) -> frozenset[str]:
@@ -4784,6 +4889,17 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
         )
         for family in ("churro_page_response", "native_observation", *families)
     }
+    # `chandra_anchor` keys on `page_ordinal`, not `chair` -- a page anchor is
+    # not any one witness's row -- so the `chair in live_chairs` filter above
+    # cannot be reused for it. `publish_page_testimonia_and_attachments` drops
+    # every declared anchor unconditionally once it is passed a live
+    # `page_captures` dict, so every anchor the scenario declares is counted
+    # here, not only the ones a particular chair would have read.
+    counted["chandra_anchor"] = sum(
+        1
+        for row in context.fixture.get("chandra_anchor", [])
+        if isinstance(row, dict) and row.get("scenario") in (None, context.scenario)
+    )
     declared = {family: count for family, count in counted.items() if count}
     if declared:
         print(

@@ -984,4 +984,286 @@ def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication
         "parse": {"state": "parsed", "parser": "json", "text": ""},
     }
     with pytest.raises(ContractError, match=message):
-        attestatores.refuse_unpublishable_stop_word(adapter, capture, "the response for page 1")
+        attestatores.refuse_unpublishable_stop_word(
+            adapter, stop, capture, "the response for page 1"
+        )
+
+
+def test_the_stop_word_vocabulary_check_runs_even_when_no_capture_exists():
+    """An unmeasured engine word must not survive on a response no adapter parsed.
+
+    A wire body `ChairClient` could not parse at all carries `native_capture =
+    None` (`live_witness._malformed_response_attempt`), so the guard cannot
+    read the word off a capture; it has to be given the response's own
+    transport word directly, and must still refuse it.
+    """
+    with pytest.raises(ContractError, match="never measured a meaning for"):
+        attestatores.refuse_unpublishable_stop_word(
+            "chandra.v1", "abort", None, "the response for page 1"
+        )
+
+
+def test_a_churro_page_with_no_capture_at_all_is_not_refused_for_the_page_contract_reason():
+    """The Churro-specific 'cannot reconcile truncation' refusal needs a capture.
+
+    A response with no capture has `content_health.recordable=False` already,
+    so there is no truncation field for an unreported stop word to contradict;
+    the recognized-but-unreported word alone must not raise.
+    """
+    attestatores.refuse_unpublishable_stop_word(
+        "churro.v1",
+        attestatores.STOP_REASON_UNREPORTED,
+        None,
+        "the response for page 1",
+    )
+
+
+# ============================ resume: mid-page interruption ===================
+
+
+def test_a_pass_interrupted_between_two_act_views_of_one_page_completes_on_resume(
+    live_run, tmp_path, monkeypatch
+):
+    """The resume rule's own hard case: a crash between two act publications of
+    the same page response.
+
+    A page-scoped chair publishes one act view per act on its page from a
+    single response (`publish_page_act_views`, shared by `_serve_page_unit`
+    and the resume repair in `live_attempt_pass`). The happy fixture puts both
+    `a1` and `a2` on page 1, so a crash after `a1` publishes and before `a2`
+    does leaves `a1` sealed, `a2` sealed nowhere, and the page Testimonium
+    itself unsealed either way. Before this fix the resume could rebuild the
+    page's capture from `a1` alone but never revisited `a2`, so the pass died
+    on `FatalAccounting: ... unresolved witness attempt(s)`, at that ordinal,
+    forever. The resumed pass here must finish `a2` from the retained `a1`
+    response, ask attestator_1 for page 2 only, and exit 0.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    real_publish_attempt = attestatores.publish_attempt
+
+    def crashing_publish_attempt(
+        context, *, act, chair, resolved, ordinal, regions, attempt, live=False
+    ):
+        # `act["act_id"]` is the internal per-act identity (`act_<hash>`); the
+        # fixture's own human-readable `key` -- what `act_records()` below
+        # indexes by -- is carried as `act["act_key"]`.
+        if chair == "attestator_1" and act["act_key"] == "a2":
+            raise RuntimeError("simulated crash between two act publications of one page")
+        return real_publish_attempt(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions,
+            attempt=attempt,
+            live=live,
+        )
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crashing_publish_attempt)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_attestatores(live_run, run_root, factory=world.factory)
+    monkeypatch.undo()
+
+    interrupted = act_records(RunTree(run_root, RUN_ID))
+    assert ("a1", "attestator_1") in interrupted
+    assert ("a2", "attestator_1") not in interrupted
+    # attestator_1 is alphabetically first and page-scoped: the crash inside
+    # its own page-1 act publications means attestator_3 never started.
+    assert ("a1", "attestator_3") not in interrupted
+    assert not page_records(RunTree(run_root, RUN_ID))
+
+    resumed_scripts = {
+        # Page 1 is rebuilt from the sealed `a1` record; only page 2 is asked.
+        "attestator_1": [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop")],
+        # attestator_3 never sealed anything and is asked fresh for both pages.
+        "attestator_3": [
+            ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop"),
+            ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop"),
+        ],
+    }
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+
+    assert len(resumed.requests("attestator_1")) == 1
+    assert len(resumed.requests("attestator_3")) == 2
+
+    tree = RunTree(run_root, RUN_ID)
+    records = act_records(tree)
+    # a1's record is untouched -- a live chair cannot reproduce immutable bytes.
+    assert records[("a1", "attestator_1")] == interrupted[("a1", "attestator_1")]
+    # a2 is finally published, from the same retained response as a1: same
+    # outcome, same retained bytes, never a second Chandra call.
+    assert records[("a2", "attestator_1")]["outcome"] == records[("a1", "attestator_1")]["outcome"]
+    assert (
+        records[("a2", "attestator_1")]["payload"]["raw_response_ref"]
+        == records[("a1", "attestator_1")]["payload"]["raw_response_ref"]
+    )
+    assert records[("a1", "attestator_3")]["outcome"] == "read"
+    assert records[("a2", "attestator_3")]["outcome"] == "read"
+
+
+def test_resumed_page_captures_skips_a_not_run_pair_instead_of_refusing():
+    """A held or refused act sealed as `not-run` is not fixture-posture evidence.
+
+    `live_attempt_pass`'s own first loop seals `not-run`/`dead` records, with
+    `serving_call_ref=None`, for every pair no chair was asked about -- a held
+    act, a refused proposal crop. That is the *same* shape a fixture-posture
+    record has, but it is not the same fact: only an *attempted* outcome
+    naming no serving call is evidence this pair was declared rather than
+    served. A page whose first-listed act was held must not have its resume
+    refused over that unrelated record.
+    """
+    not_run = attestatores.Attempt(
+        outcome="not-run",
+        native_payload=None,
+        witness_reported=None,
+        format_capabilities=dict(attestatores.DEFAULT_FORMAT_CAPABILITIES),
+        health=attestatores.no_response_health(reason="not-attempted"),
+        reason="the Designator held this act",
+    )
+    read_attempt = attestatores.Attempt(
+        outcome="read",
+        native_payload="declared text",
+        witness_reported=None,
+        format_capabilities=dict(attestatores.DEFAULT_FORMAT_CAPABILITIES),
+        health=attestatores.content_health("declared text", completed=True),
+        reason=None,
+        serving_call_ref={"relative_path": "3_attestatores/blobs/sha256/x", "sha256": "x"},
+    )
+    context = SimpleNamespace(tree=SimpleNamespace(build_manifest=lambda stage: {"artifacts": []}))
+    captures = attestatores.resumed_page_captures(
+        context,
+        acts_by_page={
+            1: [
+                {"act_id": "held-act", "page_ordinal": 1},
+                {"act_id": "act-1", "page_ordinal": 1},
+            ]
+        },
+        page_chairs=["attestator_3"],
+        ordinal=1,
+        attempts_by_pair={
+            ("held-act", "attestator_3"): not_run,
+            ("act-1", "attestator_3"): read_attempt,
+        },
+        sealed_pairs=frozenset({("held-act", "attestator_3"), ("act-1", "attestator_3")}),
+    )
+    assert captures[(1, "attestator_3")] == (read_attempt, read_attempt.native_capture)
+
+
+def test_resumed_page_captures_refuses_two_sealed_acts_that_disagree():
+    """Two records claiming the same page response must actually agree.
+
+    `resumed_page_captures` used to take the first sealed act it found and
+    never check the rest; a page with two acts whose sealed records disagree
+    about which response produced them must be named, not silently resolved
+    by taking whichever act sorts first.
+    """
+    first = attestatores.Attempt(
+        outcome="read",
+        native_payload="one response",
+        witness_reported=None,
+        format_capabilities=dict(attestatores.DEFAULT_FORMAT_CAPABILITIES),
+        health=attestatores.content_health("one response", completed=True),
+        reason=None,
+        raw_response_ref={"relative_path": "3_attestatores/blobs/sha256/a", "sha256": "a" * 64},
+        serving_call_ref={"relative_path": "3_attestatores/blobs/sha256/x", "sha256": "x" * 64},
+    )
+    second = attestatores.Attempt(
+        outcome="read",
+        native_payload="a different response",
+        witness_reported=None,
+        format_capabilities=dict(attestatores.DEFAULT_FORMAT_CAPABILITIES),
+        health=attestatores.content_health("a different response", completed=True),
+        reason=None,
+        raw_response_ref={"relative_path": "3_attestatores/blobs/sha256/b", "sha256": "b" * 64},
+        serving_call_ref={"relative_path": "3_attestatores/blobs/sha256/y", "sha256": "y" * 64},
+    )
+    context = SimpleNamespace(tree=SimpleNamespace(build_manifest=lambda stage: {"artifacts": []}))
+    with pytest.raises(SchemaRefusal, match="disagree"):
+        attestatores.resumed_page_captures(
+            context,
+            acts_by_page={
+                1: [
+                    {"act_id": "a1", "page_ordinal": 1},
+                    {"act_id": "a2", "page_ordinal": 1},
+                ]
+            },
+            page_chairs=["attestator_3"],
+            ordinal=1,
+            attempts_by_pair={("a1", "attestator_3"): first, ("a2", "attestator_3"): second},
+            sealed_pairs=frozenset({("a1", "attestator_3"), ("a2", "attestator_3")}),
+        )
+
+
+# ================== resumed observation-payload guard (Chandra) ===============
+
+
+def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_payload(
+    live_run, tmp_path
+):
+    """The defect-fix guard `_attempt_from_retained_testimonium` relies on.
+
+    A live Chandra response never parses into a payload (SPEC_A section 2.2:
+    Chandra is live in transport only), so a resumed act-scoped compatibility
+    record for it names a serving call, retains its raw bytes, and reports
+    `content_health.recordable=False`. Rehydrating those bytes as
+    `observation_payload` would feed page geometry from bytes no parser ever
+    recognized -- exactly the measurement nobody made the guard exists to
+    refuse (the `served_by_a_chair and not parsed_into_a_payload` branch).
+    Proven directly against the function, because the branch depends only on
+    the record's own shape, not on running a whole live pass twice.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    context = open_live_context(live_run, run_root)
+    raw_response_ref = attestatores.retained_blob_ref(context, CHANDRA_BODY.encode("utf-8"))
+    record = {
+        "outcome": "failed",
+        "payload": {
+            "payload": None,
+            "witness_reported": None,
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "content_health": {
+                "native_type": "unrecordable",
+                "encoding": "invalid-or-unrecordable",
+                "recordable": False,
+                "empty": None,
+                "blank": None,
+                "truncated": None,
+                "characters": None,
+                "truncation_basis": "unverified-response-schema",
+            },
+            "reason": "unverified-response-schema",
+            "raw_response_ref": raw_response_ref,
+            "serving_call_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/call",
+                "sha256": "c" * 64,
+            },
+            "native_capture": None,
+            "provenance": {"receipt_ref": None},
+        },
+    }
+
+    attempt = attestatores._attempt_from_retained_testimonium(context.tree, record)
+
+    assert attempt.observation_payload is None
+
+
+# ==================== the operator-facing unread-declarations line ============
+
+
+def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tmp_path, capsys):
+    """`chandra_anchor` is a declared fixture stimulus a live pass discards too.
+
+    It keys on `page_ordinal`, not `chair`, so it cannot ride the same
+    `chair in live_chairs` filter as the other families -- and had been left
+    off the printed count entirely, even though `live_attempt_pass` discards
+    every declared anchor unconditionally.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    reported = capsys.readouterr().err
+    assert "chandra_anchor" in reported
