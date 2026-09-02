@@ -577,6 +577,27 @@ test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals` captures
 the real reader call and requires exact equality with the sealed plan; it is the
 test that fails if the two ever part again.
 
+**A `testimony-diff` flag's end and a re-proof's change span can each be
+suffix-trimmed by one coincidental byte, against two different strings.**
+`audit.py` computes a flag's location by `text_change_span(text, testimony)`;
+`common.perlector_audit.change_record` computes a re-proof's change span by
+the same function over `(before, after)` — and `before` is that same act
+text. Suffix trimming is exact for the pair it compares, but exact for two
+different pairs is not the same claim: when the act's own text and the one
+testimony that located a flag happen to share their final character, the
+flag's recorded end lands one byte short of the true end of the text, and a
+re-proof that genuinely rewrites through to that true end (a tail correction,
+not an escape) produces an envelope one byte wider than every flag —
+`change_record` used to refuse it outright, on the strength of a single
+witness's coincidental last character rather than the content of the change.
+`change_record` now credits a witness-derived flag with the one trailing byte
+its own trim could have coincidentally eaten, and only there: the gap must
+reach exactly `len(before)` (suffix trimming can only ever fall short at the
+true end of a string) and be exactly one byte, or the change still refuses as
+a real escape from every flagged location — this loosens the coincidence, not
+the posture. `common/test_perlector_audit.py` and `pipeline/4_perlector/
+test_audit.py` pin both the one-byte credit and its boundary.
+
 ## Live reader
 
 The stage reads through `VLLMReader` (`live_reader.py`) behind one `ChairClient`

@@ -423,9 +423,21 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             and self._readiness_probe_answered
         ):
             digest = hashlib.sha256(body).hexdigest()[:12] if body is not None else "no-body"
-            self.script(
-                ScriptedAnswer(content=f"{READING} {digest}", finish_reason=self._finish_reason)
-            )
+            # Bracketed, not bare: a bare hex digest ends in "a" one time in
+            # sixteen, and every witness body this fixture serves also ends
+            # in "a" (`DAI_ACT_ONE`, `DAI_ACT_TWO`, and Churro's parsed
+            # `<output>` text all end mid-word on "...gamma"/"...eta"). When
+            # both coincide, a testimony-diff flag's suffix-trimmed end lands
+            # one character short of a re-proof envelope that reaches the
+            # true end of the text — a real production coincidence
+            # (`common.perlector_audit.change_record` now tolerates exactly
+            # that one-byte gap), but not one this fixture needs to also
+            # roll on every run. "]" is not a character any scripted witness
+            # body ends with, so the coincidence this constant final
+            # character could still produce is structural, not random.
+            content = f"{READING} [{digest}]"
+            assert content.startswith(READING)
+            self.script(ScriptedAnswer(content=content, finish_reason=self._finish_reason))
         return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
 
 
