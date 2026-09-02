@@ -16,8 +16,7 @@ from itertools import groupby
 from threading import RLock
 from typing import Any, Callable, Iterator
 
-from common.chandra_custody import read_retained_chandra_response
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.native_witness import (
@@ -381,44 +380,6 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     return target_width, target_height
 
 
-def chandra_capture_intake(
-    tree: Any,
-    *,
-    page_id: str,
-    page_ordinal: int,
-    response_ref: object,
-    receipt_ref: object,
-    custody_ref: object,
-) -> dict[str, Any]:
-    """Consume R2's one-receipt raw response without re-serving Chandra.
-
-    The shared custody rule lives in common/chandra_custody.py (a stage may not
-    import another stage's module).  ``custody_ref`` is the content-addressed
-    binding record R2's write recorded; without it, two individually-valid
-    references would not be proof they came from the same Chandra call.  The
-    result intentionally carries the original references alongside the exact
-    raw bytes' digest.
-    """
-    raw = read_retained_chandra_response(
-        tree,
-        response_ref,
-        receipt_ref,
-        custody_ref,
-        page_id=page_id,
-        page_ordinal=page_ordinal,
-    )
-    return {
-        "schema": "attestatores-chandra-capture.v1",
-        "adapter": "chandra-capture.v1",
-        "page_id": page_id,
-        "page_ordinal": page_ordinal,
-        "response_ref": response_ref,
-        "receipt_ref": receipt_ref,
-        "custody_ref": custody_ref,
-        "raw_response_sha256": digest_bytes(raw),
-    }
-
-
 def retain_model_view(
     tree: Any,
     *,
@@ -470,7 +431,8 @@ def retain_model_view(
         )
     elif adapter == "chandra.v1" and parser == "json":
         # Import locally: the runnable sibling module imports this retention
-        # seam, while its parser must remain the one owner of Chandra's shape.
+        # seam, while its parser must remain the one owner of Chandra's shapes
+        # (the wire contract in `chandra_response`, and the fixture placeholder).
         from chandra import parse as parse_chandra
 
         parsed = parse_chandra(raw_response)
