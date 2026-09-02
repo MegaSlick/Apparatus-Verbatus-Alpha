@@ -522,26 +522,33 @@ def ask_page(
     findings: list[dict[str, Any]] = []
     if response.parse_problem is not None:
         disposition, reason_code = DISPOSITION_HELD, HELD_CALL_UNUSABLE
-    elif parsed is None:
-        disposition, reason_code = DISPOSITION_HELD, f"structure-answer-{parse_outcome}"
     else:
+        # The engine's stop word is checked before the parse outcome: a
+        # cut-off body that also fails to parse is still a cut-off, not a
+        # parse refusal, and a stop word outside the closed vocabulary is
+        # refused whether or not the body happened to parse.
         cut_off = _finish_reason_disposition(response.finish_reason)
-        unique, findings = dedupe_rectangles(parsed["acts"])
         if cut_off is not None:
-            # Held even though it parsed: a truncated act list is a missed act.
+            # Held even though it may have parsed: a truncated act list is a
+            # missed act either way.
             disposition, reason_code = DISPOSITION_HELD, cut_off
-        elif not unique:
-            disposition, reason_code = DISPOSITION_FALLBACK_TILES, None
-        elif analysis["structure_evidence"] == DISPOSITION_DETECTED and not any(
-            touches_ink(act["raw_bounds"], analysis) for act in unique
-        ):
-            # The coordinate-space tripwire: the scan found ink and nothing the
-            # chair drew touches any of it. Not a threshold -- zero pixels,
-            # page-wide -- and it fires only when the scan itself found ink.
-            disposition, reason_code = DISPOSITION_HELD, HELD_NO_INK_OVERLAP
+        elif parsed is None:
+            disposition, reason_code = DISPOSITION_HELD, f"structure-answer-{parse_outcome}"
         else:
-            disposition, reason_code = DISPOSITION_DETECTED, None
-            mint = unique
+            unique, findings = dedupe_rectangles(parsed["acts"])
+            if not unique:
+                disposition, reason_code = DISPOSITION_FALLBACK_TILES, None
+            elif analysis["structure_evidence"] == DISPOSITION_DETECTED and not any(
+                touches_ink(act["raw_bounds"], analysis) for act in unique
+            ):
+                # The coordinate-space tripwire: the scan found ink and nothing
+                # the chair drew touches any of it. Not a threshold -- zero
+                # pixels, page-wide -- and it fires only when the scan itself
+                # found ink.
+                disposition, reason_code = DISPOSITION_HELD, HELD_NO_INK_OVERLAP
+            else:
+                disposition, reason_code = DISPOSITION_DETECTED, None
+                mint = unique
     if reason_code is not None and reason_code not in STRUCTURE_HELD_CODES:
         raise ContractError(  # pragma: no cover - closed by construction above
             f"page {ordinal} would be held under {reason_code!r}, which is not a declared "
