@@ -1595,6 +1595,22 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument(
         "--chair", default=None, help="one chair role, for an Attestatores reread operation"
     )
+    parser.add_argument(
+        "--placement-tier",
+        default=None,
+        help=(
+            "the measured placement tier of the card actually serving this run "
+            "(e.g. generic-48gb); required to resolve a live serving profile "
+            "(serving_mode_for), refused by name when a live catalogue is selected "
+            "without it. Deliberately NOT sealed into config_digest: it is a measured "
+            "runtime fact of the card, not run configuration, so it carries no "
+            "'--no-placement-tier' companion and is simply omitted from a fixture "
+            "run's argv. GOVERNANCE 6 — 'the record itself protects the past' — is "
+            "why the receipt records the caps that actually bound the serving "
+            "moment (the launch audit's profile.tier) rather than folding this into "
+            "the reproducibility contract config_digest exists to protect."
+        ),
+    )
     return parser
 
 
