@@ -11,13 +11,30 @@ locally-defined interface and not a defect worked around.
 **Refusal order, in the sequence §5.2 and §5.4 name:** a page in the hold-out
 ledger is refused by name (`holdout-page` or the stronger `cross-split-page`,
 `holdout.refuse_held_out_page`) before this module ever asks whether the page was
-fetched; a page with no supplied bytes is refused `page-not-fetched`; two
-identifiers whose fetched bytes are byte-identical are refused `duplicate-page-bytes`
-on the second occurrence, per §5.1's dedupe-before-submit rule — a merged page is
-unrecoverable at the Exemplar boundary (`HANDOFF.md:177-183`), so this is the last
-place it can be caught cheaply. None of these refusals abort the whole build:
-following rule 7, every refusal is recorded by name and the build proceeds around
-it, the same shape `plan.py` already uses for a malformed row.
+fetched; a page carrying an unsafe `source`/`volume`/`designation` path segment is
+refused `unsafe-identifier-segment` before anything is joined into a filesystem
+path; a page naming a record absent from the row snapshot is refused
+`record-not-in-row-snapshot` before any byte of it is written; a page with no
+supplied bytes is refused `page-not-fetched`; two identifiers whose fetched bytes
+are byte-identical are refused `duplicate-page-bytes` on the second occurrence,
+per §5.1's dedupe-before-submit rule — a merged page is unrecoverable at the
+Exemplar boundary (`HANDOFF.md:177-183`), so this is the last place it can be
+caught cheaply — and a page is only registered against later duplicates once it
+is fully admitted, so a page refused for an unrelated reason can never be named as
+the "original" of someone else's `duplicate-page-bytes` refusal; and a page whose
+decoded pixels disagree with the IIIF response's declared dimensions is refused
+`dimension-mismatch`, because `record_url`'s `x,y,w,h` is defined in the declared
+frame. None of these refusals abort the whole build: following rule 7, every
+refusal is recorded by name and the build proceeds around it, the same shape
+`plan.py` already uses for a malformed row.
+
+**The plan, snapshot, and hold-out ledger must all be bound to the same row
+snapshot.** Each of the three carries (or, for the snapshot, is) a
+`source_row_snapshot_self_hash`/`self_hash`; `build_submission` refuses
+`mismatched-row-snapshot` unless all three agree, because a hold-out ledger
+derived from a different snapshot cannot be trusted to protect this plan's
+held-out pages — §5.4's strongest mechanism is only as strong as the binding
+that guarantees it was computed over the same rows.
 
 **The submission folder carries images only, and this is checked, not assumed.**
 `operations/submit/inventory.py` inventories every regular file under a submitted
@@ -51,7 +68,7 @@ from operations.submit import gate, submit
 
 from . import CorpusRefusal
 from .holdout import refuse_held_out_page, validate_holdout
-from .plan import validate_plan
+from .plan import _unsafe_segment, validate_plan
 from .rows import validate_snapshot
 from .sidecar import build_sidecar, write_sidecar
 
@@ -65,6 +82,9 @@ SUBMISSION_REFUSAL_REASONS = frozenset(
         "unrecognized-page-extension",
         "unexpected-file-in-submission-folder",
         "record-not-in-row-snapshot",
+        "unsafe-identifier-segment",
+        "dimension-mismatch",
+        "mismatched-row-snapshot",
         "malformed-record",
     }
 )
@@ -115,8 +135,15 @@ def refuse_non_image_files(folder: Path) -> None:
     submitted material.
     """
     folder = Path(folder)
-    for root, _dirnames, filenames in os.walk(folder, followlinks=False):
+    for root, dirnames, filenames in os.walk(folder, followlinks=False):
         root_path = Path(root)
+        for dirname in dirnames:
+            candidate = root_path / dirname
+            if candidate.is_symlink():
+                raise CorpusRefusal(
+                    f"unexpected-file-in-submission-folder: {candidate} is a symlinked "
+                    "directory, which a submission folder may never carry"
+                )
         for filename in filenames:
             candidate = root_path / filename
             if candidate.is_symlink():
@@ -131,7 +158,7 @@ def refuse_non_image_files(folder: Path) -> None:
                 )
 
 
-def _group_key(page: dict[str, Any]) -> tuple[Any, ...]:
+def _sort_key(page: dict[str, Any]) -> tuple[Any, ...]:
     return (
         tuple(sorted(page["splits_present"])),
         page["source"],
@@ -140,30 +167,71 @@ def _group_key(page: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _partition_key(page: dict[str, Any]) -> tuple[Any, ...]:
+    """`(split, source, volume)` — the partition key `SPEC.md` §5.2 names.
+
+    Deliberately excludes `designation`: that varies per page within a volume and
+    would make every "group" exactly one page, defeating partitioning entirely.
+    """
+    return (tuple(sorted(page["splits_present"])), page["source"], page["volume"])
+
+
 def partition_into_shards(
     admitted: list[tuple[dict[str, Any], FetchedPage]],
     max_pages_per_shard: int = DEFAULT_MAX_PAGES_PER_SHARD,
 ) -> list[list[tuple[dict[str, Any], FetchedPage]]]:
     """Sort admitted pages by `(split, source, volume, designation)` and cap each slice.
 
-    `SPEC.md` §5.2's `<=1000 pages` is the sealed cap (`common/stage.py`); this is
-    a plain slice of the deterministically sorted list, not a bin-packing search —
-    exact for page counts far below the cap, and it never mixes an ordering
-    surprise into which pages land together.
+    `SPEC.md` §5.2's `<=1000 pages` is the sealed cap (`common/stage.py`) and names
+    `(split, source, volume)` as the partition key: a shard boundary never crosses
+    that group, so every shard carries pages from exactly one split and one
+    source. Within a group this is a plain slice of the deterministically sorted
+    list, not a bin-packing search — exact for page counts far below the cap.
     """
     if max_pages_per_shard <= 0:
         raise CorpusRefusal("malformed-record: max_pages_per_shard must be a positive integer")
-    ordered = sorted(admitted, key=lambda pair: _group_key(pair[0]))
-    return [
-        ordered[start : start + max_pages_per_shard]
-        for start in range(0, len(ordered), max_pages_per_shard)
-    ]
+    ordered = sorted(admitted, key=lambda pair: _sort_key(pair[0]))
+    shards: list[list[tuple[dict[str, Any], FetchedPage]]] = []
+    group_start = 0
+    while group_start < len(ordered):
+        group_key = _partition_key(ordered[group_start][0])
+        group_end = group_start
+        while group_end < len(ordered) and _partition_key(ordered[group_end][0]) == group_key:
+            group_end += 1
+        for start in range(group_start, group_end, max_pages_per_shard):
+            shards.append(ordered[start : min(start + max_pages_per_shard, group_end)])
+        group_start = group_end
+    return shards
+
+
+def _unsafe_page_segment(page: dict[str, Any]) -> str | None:
+    """The first unsafe path segment `_page_relative_path` would carry, if any.
+
+    `page["source"]` is third-party parquet data (`rows.py` checks only that it is
+    non-empty) that this module joins straight into a filesystem path alongside
+    `volume` and `designation`, which `plan.py`'s identifier parser has already
+    screened. `source` never passes through that parser, so it is screened here,
+    with the exact rule `plan._unsafe_segment` uses — split on `/` first, exactly
+    as `volume` already is, because `Path(page["source"], ...)` treats an embedded
+    `/` in a single caller-supplied string as more path components, not literal
+    text: `"../../escaped"` is unsafe precisely because it *is* two `..`
+    components once split, not because the whole string equals `".."`.
+    """
+    for segment in (
+        *page["source"].split("/"),
+        *page["volume"].split("/"),
+        page["designation"],
+    ):
+        if _unsafe_segment(segment):
+            return segment
+    return None
 
 
 def _admit_pages(
     plan: dict[str, Any],
     holdout: dict[str, Any],
     fetched_pages: dict[str, FetchedPage],
+    rows_by_id: dict[str, dict[str, Any]],
 ) -> tuple[list[tuple[dict[str, Any], FetchedPage]], list[dict[str, Any]]]:
     admitted: list[tuple[dict[str, Any], FetchedPage]] = []
     refusals: list[dict[str, Any]] = []
@@ -177,6 +245,40 @@ def _admit_pages(
         except CorpusRefusal as error:
             reason = str(error).split(":", 1)[0]
             refusals.append({"identifier": identifier, "reason": reason, "detail": str(error)})
+            continue
+
+        unsafe = _unsafe_page_segment(page)
+        if unsafe is not None:
+            detail = (
+                f"unsafe-identifier-segment: page {identifier!r} carries the unsafe path "
+                f"segment {unsafe!r}; a submission path is never built from it"
+            )
+            refusals.append(
+                {"identifier": identifier, "reason": "unsafe-identifier-segment", "detail": detail}
+            )
+            continue
+
+        missing_record_id = next(
+            (
+                record["record_id"]
+                for record in page["records"]
+                if record["record_id"] not in rows_by_id
+            ),
+            None,
+        )
+        if missing_record_id is not None:
+            detail = (
+                f"record-not-in-row-snapshot: page {identifier!r} record "
+                f"{missing_record_id!r} is not present in the row snapshot the plan was "
+                "built from"
+            )
+            refusals.append(
+                {
+                    "identifier": identifier,
+                    "reason": "record-not-in-row-snapshot",
+                    "detail": detail,
+                }
+            )
             continue
 
         fetched = fetched_pages.get(identifier)
@@ -213,7 +315,6 @@ def _admit_pages(
                 {"identifier": identifier, "reason": "duplicate-page-bytes", "detail": detail}
             )
             continue
-        seen_response_sha256[fetched.response_sha256] = identifier
 
         if not page["designation"].lower().endswith(_IMAGE_SUFFIX):
             detail = (
@@ -229,6 +330,21 @@ def _admit_pages(
             )
             continue
 
+        if fetched.width != fetched.declared_width or fetched.height != fetched.declared_height:
+            detail = (
+                f"dimension-mismatch: {identifier!r} decoded {fetched.width}x{fetched.height} "
+                f"but the IIIF response declared {fetched.declared_width}x"
+                f"{fetched.declared_height}; record_url regions are in the declared frame"
+            )
+            refusals.append(
+                {"identifier": identifier, "reason": "dimension-mismatch", "detail": detail}
+            )
+            continue
+
+        # Registered only once a page is fully admitted: a page refused for any
+        # reason above must never make an unrelated later page's identical bytes
+        # look like a duplicate of a page that was never actually submitted.
+        seen_response_sha256[fetched.response_sha256] = identifier
         admitted.append((page, fetched))
 
     return admitted, refusals
@@ -361,6 +477,20 @@ def build_submission(
     plan = validate_plan(plan)
     snapshot = validate_snapshot(snapshot)
     holdout = validate_holdout(holdout)
+    if plan["source_row_snapshot_self_hash"] != snapshot["self_hash"]:
+        raise CorpusRefusal(
+            "mismatched-row-snapshot: the fetch plan was built from row snapshot "
+            f"{plan['source_row_snapshot_self_hash']!r}, not the supplied snapshot "
+            f"{snapshot['self_hash']!r} — a plan and a snapshot must be bound to the "
+            "same row snapshot"
+        )
+    if holdout["source_row_snapshot_self_hash"] != snapshot["self_hash"]:
+        raise CorpusRefusal(
+            "mismatched-row-snapshot: the hold-out ledger was built from row snapshot "
+            f"{holdout['source_row_snapshot_self_hash']!r}, not the supplied snapshot "
+            f"{snapshot['self_hash']!r} — a ledger derived from a different snapshot cannot "
+            "be trusted to protect this plan's held-out pages"
+        )
     rows_by_id = {row["record_id"]: row for row in snapshot["rows"]}
 
     submissions_root = Path(submissions_root)
@@ -372,15 +502,27 @@ def build_submission(
     gate.require_approved_storage_location(submissions_root, roots, "RecordGold submissions root")
     gate.require_approved_storage_location(sidecars_root, roots, "RecordGold sidecars root")
     gate.require_approved_storage_location(ledger_root, roots, "RecordGold submission ledger root")
-    if gate.same_or_inside(submissions_root, sidecars_root) or gate.same_or_inside(
-        sidecars_root, submissions_root
-    ):
+    abs_submissions_root = Path(os.path.abspath(submissions_root))
+    abs_sidecars_root = Path(os.path.abspath(sidecars_root))
+    nested_by_identity = gate.same_or_inside(
+        submissions_root, sidecars_root
+    ) or gate.same_or_inside(sidecars_root, submissions_root)
+    # `gate.same_or_inside` decides by inode and answers False for either root
+    # before it exists — exactly the state on a first build, since both are only
+    # created later by `mkdir` inside `_link_page_bytes`/`write_sidecar`. A plain
+    # spelling comparison of the already-`abspath`'d paths answers before either
+    # directory is on disk.
+    nested_by_spelling = abs_submissions_root == abs_sidecars_root or (
+        abs_sidecars_root in abs_submissions_root.parents
+        or abs_submissions_root in abs_sidecars_root.parents
+    )
+    if nested_by_identity or nested_by_spelling:
         raise CorpusRefusal(
             "malformed-record: the sidecars root must not be the submissions root or nest "
             "inside it — SPEC.md 5.1 requires sidecars outside the submission folder"
         )
 
-    admitted, refusals = _admit_pages(plan, holdout, fetched_pages)
+    admitted, refusals = _admit_pages(plan, holdout, fetched_pages, rows_by_id)
     shards = partition_into_shards(admitted, max_pages_per_shard)
 
     shard_reports: list[dict[str, Any]] = []

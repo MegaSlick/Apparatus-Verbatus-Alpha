@@ -10,6 +10,7 @@ covers the whole tree regardless).
 """
 
 import hashlib
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -95,7 +96,15 @@ def _cache_file(scratch, name: str, content: bytes) -> tuple[Path, str]:
     return path, hashlib.sha256(content).hexdigest()
 
 
-def _fetched(cache_path: Path, response_sha256: str, *, width=4000, height=6000) -> FetchedPage:
+def _fetched(
+    cache_path: Path,
+    response_sha256: str,
+    *,
+    width=4000,
+    height=6000,
+    declared_width=None,
+    declared_height=None,
+) -> FetchedPage:
     return FetchedPage(
         cache_path=cache_path,
         info_url="https://europe.iiif.teklia.com/iiif/2/x/info.json",
@@ -105,8 +114,8 @@ def _fetched(cache_path: Path, response_sha256: str, *, width=4000, height=6000)
         bytes=len(cache_path.read_bytes()),
         http_status=200,
         fetched_at_utc="2026-09-01T00:00:00Z",
-        declared_width=width,
-        declared_height=height,
+        declared_width=width if declared_width is None else declared_width,
+        declared_height=height if declared_height is None else declared_height,
         width=width,
         height=height,
     )
@@ -148,15 +157,18 @@ def test_build_submission_writes_images_and_outside_sidecars(scratch):
 
     assert report["admitted_page_count"] == 2
     assert report["refused_page_count"] == 0
-    assert len(report["shards"]) == 1
-    shard = report["shards"][0]
-    assert shard["shard_id"] == "val-0001"
+    # The two pages carry different volumes (380403 vs 383351) — same split and
+    # source, but the partition key is (split, source, volume), so each page's
+    # own volume is its own shard.
+    assert len(report["shards"]) == 2
+    assert [shard["shard_id"] for shard in report["shards"]] == ["val-0001", "val-0002"]
+    shard1, shard2 = report["shards"]
 
     image1 = (
-        Path(shard["folder"]) / "Ardennes" / "geneanet" / "Ardennes_BMS" / "380403" / "00026.jpg"
+        Path(shard1["folder"]) / "Ardennes" / "geneanet" / "Ardennes_BMS" / "380403" / "00026.jpg"
     )
     image2 = (
-        Path(shard["folder"]) / "Ardennes" / "geneanet" / "Ardennes_BMS" / "383351" / "00143.jpg"
+        Path(shard2["folder"]) / "Ardennes" / "geneanet" / "Ardennes_BMS" / "383351" / "00143.jpg"
     )
     assert image1.read_bytes() == b"page-one-bytes"
     assert image2.read_bytes() == b"page-two-bytes"
@@ -164,7 +176,7 @@ def test_build_submission_writes_images_and_outside_sidecars(scratch):
     assert image1.stat().st_ino == page1_path.stat().st_ino
 
     sidecar1_path = (
-        Path(shard["sidecar_dir"])
+        Path(shard1["sidecar_dir"])
         / "Ardennes"
         / "geneanet"
         / "Ardennes_BMS"
@@ -189,6 +201,114 @@ def test_sidecar_never_carries_an_ordinal(scratch):
     assert "ordinal" not in sidecar
     for record in sidecar["records"]:
         assert "ordinal" not in record
+
+
+# --- plan / snapshot / hold-out binding ---------------------------------------------
+
+
+def test_refuses_holdout_built_from_a_different_snapshot(scratch):
+    rows = [
+        _row("rec-1", "val", VAL_PAGE_URL),
+        _row("rec-2", "test", TEST_ONLY_PAGE_URL),
+    ]
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+
+    # A holdout built from a *different* snapshot — here, one where the same page
+    # is labelled `val` instead of `test`, so held_identifiers is empty and the
+    # held-out page would otherwise slip straight through.
+    other_rows = [
+        _row("rec-1", "val", VAL_PAGE_URL),
+        _row("rec-2", "val", TEST_ONLY_PAGE_URL),
+    ]
+    other_snapshot = _snapshot(other_rows)
+    mismatched_holdout = build_holdout(other_snapshot["rows"], other_snapshot["self_hash"])
+    assert mismatched_holdout["held_identifiers"] == []
+
+    page1_path, page1_digest = _cache_file(scratch, "page1.jpg", b"page-one")
+    page2_path, page2_digest = _cache_file(scratch, "page2.jpg", b"page-two")
+    fetched = {
+        "geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page1_path, page1_digest),
+        "geneanet/Ardennes_BMS/999999/00099.jpg": _fetched(page2_path, page2_digest),
+    }
+    with pytest.raises(CorpusRefusal, match="mismatched-row-snapshot"):
+        build_submission(
+            plan,
+            snapshot,
+            mismatched_holdout,
+            fetched,
+            submissions_root=scratch / "submissions",
+            sidecars_root=scratch / "sidecars",
+            ledger_root=scratch / "ledger",
+            shard_prefix="probe1",
+        )
+    assert not any((scratch / "submissions").rglob("*"))
+
+
+def test_refuses_record_not_in_row_snapshot(scratch):
+    # A plan whose self-hash binding matches the snapshot (so it clears the
+    # mismatched-row-snapshot check) but whose own `records` were tampered to
+    # name a record_id the snapshot never carried — the shape a corrupted or
+    # hand-built plan could take even though `build_fetch_plan` itself never
+    # produces one, per rule 7's "nothing is lost silently, not merely trusted".
+    import copy
+
+    from common.contracts.canonical import self_hash as recompute_self_hash
+
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+
+    tampered = copy.deepcopy(dict(plan))
+    del tampered["self_hash"]
+    tampered["pages"][0]["records"].append(
+        {
+            "record_id": "rec-does-not-exist",
+            "physical_act_id": tampered["pages"][0]["records"][0]["physical_act_id"],
+            "region": {"x": 1, "y": 1, "w": 10, "h": 10},
+            "split": "val",
+        }
+    )
+    tampered["self_hash"] = recompute_self_hash(tampered)
+
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    report = build_submission(
+        tampered,
+        snapshot,
+        holdout,
+        fetched,
+        submissions_root=scratch / "submissions",
+        sidecars_root=scratch / "sidecars",
+        ledger_root=scratch / "ledger",
+        shard_prefix="val",
+    )
+    assert report["admitted_page_count"] == 0
+    assert report["refusals"][0]["reason"] == "record-not-in-row-snapshot"
+
+
+def test_refuses_plan_built_from_a_different_snapshot(scratch):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    snapshot = _snapshot(rows)
+    holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+
+    other_snapshot = _snapshot([_row("rec-1", "val", VAL_PAGE_URL, text="autre texte")])
+    mismatched_plan = build_fetch_plan(other_snapshot["rows"], other_snapshot["self_hash"])
+
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    with pytest.raises(CorpusRefusal, match="mismatched-row-snapshot"):
+        build_submission(
+            mismatched_plan,
+            snapshot,
+            holdout,
+            fetched,
+            submissions_root=scratch / "submissions",
+            sidecars_root=scratch / "sidecars",
+            ledger_root=scratch / "ledger",
+            shard_prefix="probe2",
+        )
 
 
 # --- hold-out refusals ------------------------------------------------------------
@@ -258,6 +378,70 @@ def test_refuses_response_sha256_mismatch(scratch):
     assert report["refusals"][0]["reason"] == "response-sha256-mismatch"
 
 
+def test_refuses_unrecognized_page_extension(scratch):
+    non_jpg_url = (
+        "https://europe.iiif.teklia.com/iiif/2/geneanet%2FArdennes_BMS%2F380403%2F00026.png/"
+        "239,208,1232,443/full/0/default.jpg"
+    )
+    rows = [_row("rec-1", "val", non_jpg_url)]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.png": _fetched(page_path, digest)}
+    report = _build(scratch, rows, fetched)
+    assert report["admitted_page_count"] == 0
+    assert report["refusals"][0]["reason"] == "unrecognized-page-extension"
+
+
+def test_refuses_dimension_mismatch(scratch):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {
+        "geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(
+            page_path, digest, width=1000, height=1500, declared_width=4000, declared_height=6000
+        )
+    }
+    report = _build(scratch, rows, fetched)
+    assert report["admitted_page_count"] == 0
+    assert report["refusals"][0]["reason"] == "dimension-mismatch"
+
+
+def test_refused_page_does_not_taint_a_later_page_with_a_phantom_duplicate(scratch):
+    # A page sorts before another (by identifier) and shares its response bytes,
+    # but is itself refused `unrecognized-page-extension` — a check that used to
+    # run *after* this module registered a page's digest for dedupe purposes.
+    # If registration ever runs for a page that is not actually admitted, the
+    # later, byte-identical, otherwise-good page is wrongly refused
+    # `duplicate-page-bytes` naming a page that was never in the submission.
+    bad_extension_url = (
+        "https://europe.iiif.teklia.com/iiif/2/geneanet%2FArdennes_BMS%2F100000%2F00001.png/"
+        "1,1,50,50/full/0/default.jpg"
+    )
+    rows = [
+        _row("rec-1", "val", bad_extension_url),
+        _row("rec-2", "val", VAL_PAGE_URL),
+    ]
+    shared_path, shared_digest = _cache_file(scratch, "shared.jpg", b"identical-bytes")
+    fetched = {
+        "geneanet/Ardennes_BMS/100000/00001.png": _fetched(shared_path, shared_digest),
+        "geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(shared_path, shared_digest),
+    }
+    report = _build(scratch, rows, fetched)
+    assert report["admitted_page_count"] == 1
+    reasons = {r["reason"] for r in report["refusals"]}
+    assert reasons == {"unrecognized-page-extension"}
+
+
+def test_refuses_unsafe_source_segment(scratch):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL, source="../../escaped")]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    report = _build(scratch, rows, fetched)
+    assert report["admitted_page_count"] == 0
+    assert report["refusals"][0]["reason"] == "unsafe-identifier-segment"
+    for root, _dirnames, filenames in os.walk(scratch):
+        for filename in filenames:
+            assert "escaped" not in str(Path(root) / filename)
+
+
 # --- images-only guard ------------------------------------------------------------
 
 
@@ -294,6 +478,35 @@ def test_clean_folder_passes_the_images_only_guard(scratch):
     refuse_non_image_files(Path(report["shards"][0]["folder"]))  # does not raise
 
 
+def test_symlinked_directory_inside_submission_folder_refused(scratch):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    report = _build(scratch, rows, fetched)
+    folder = Path(report["shards"][0]["folder"])
+
+    hidden = scratch / "hidden"
+    hidden.mkdir()
+    (hidden / "sidecar.json").write_bytes(b'{"schema": "recordgold-page-records.v1"}')
+    (folder / "link").symlink_to(hidden, target_is_directory=True)
+    with pytest.raises(CorpusRefusal, match="unexpected-file-in-submission-folder"):
+        refuse_non_image_files(folder)
+
+
+def test_pre_existing_stray_file_refuses_the_whole_build(scratch):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+
+    shard_folder = scratch / "submissions" / "val-0001"
+    shard_folder.mkdir(parents=True)
+    (shard_folder / ".DS_Store").write_bytes(b"junk")
+
+    with pytest.raises(CorpusRefusal, match="unexpected-file-in-submission-folder"):
+        _build(scratch, rows, fetched, shard_prefix="val")
+    assert not any((scratch / "ledger").glob("*.manifest.json"))
+
+
 # --- the real submit door: manifest names exactly the images ----------------------
 
 
@@ -309,21 +522,56 @@ def test_submit_build_manifest_names_exactly_the_images(scratch):
         "geneanet/Ardennes_BMS/383351/00143.jpg": _fetched(page2_path, page2_digest),
     }
     report = _build(scratch, rows, fetched)
-    folder = Path(report["shards"][0]["folder"])
-
-    sources = inventory.read_submission(folder, max_bytes=0)
-    manifest = submit.build_manifest(
-        [{"relative_path": s.relative_path, "sha256": s.sha256, "bytes": s.size} for s in sources]
-    )
+    # Different volumes (380403 vs 383351) land in separate shards; check the
+    # union of every shard's own manifest against the images actually written.
+    manifest_relative_paths: set[str] = set()
+    for shard in report["shards"]:
+        folder = Path(shard["folder"])
+        sources = inventory.read_submission(folder, max_bytes=0)
+        manifest = submit.build_manifest(
+            [
+                {"relative_path": s.relative_path, "sha256": s.sha256, "bytes": s.size}
+                for s in sources
+            ]
+        )
+        manifest_relative_paths.update(entry["relative_path"] for entry in manifest["files"])
     expected_relative_paths = {
         "Ardennes/geneanet/Ardennes_BMS/380403/00026.jpg",
         "Ardennes/geneanet/Ardennes_BMS/383351/00143.jpg",
     }
-    assert {entry["relative_path"] for entry in manifest["files"]} == expected_relative_paths
+    assert manifest_relative_paths == expected_relative_paths
 
-    # And the manifest submission() actually wrote is the same one, on disk.
-    written = submit.load_manifest(Path(report["shards"][0]["manifest_path"]))
-    assert {entry["relative_path"] for entry in written["files"]} == expected_relative_paths
+    # And the manifests submission() actually wrote are the same ones, on disk.
+    written_relative_paths: set[str] = set()
+    for shard in report["shards"]:
+        written = submit.load_manifest(Path(shard["manifest_path"]))
+        written_relative_paths.update(entry["relative_path"] for entry in written["files"])
+    assert written_relative_paths == expected_relative_paths
+
+
+# --- sidecars-root-not-inside-submissions-root, before either exists ----------------
+
+
+def test_refuses_same_sidecars_and_submissions_root_before_either_exists(scratch):
+    shared = scratch / "shared_root"
+    assert not shared.exists()
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+    with pytest.raises(CorpusRefusal, match="sidecars root"):
+        build_submission(
+            plan,
+            snapshot,
+            holdout,
+            fetched,
+            submissions_root=shared,
+            sidecars_root=shared,
+            ledger_root=scratch / "ledger",
+            shard_prefix="val",
+        )
 
 
 # --- gate acceptance of every written path -----------------------------------------
@@ -389,6 +637,31 @@ def test_partition_into_shards_refuses_non_positive_cap():
         partition_into_shards(_fake_admitted(1), max_pages_per_shard=0)
 
 
+def _fake_page(index, *, split, source):
+    return {
+        "identifier": f"geneanet/{source}/vol/{index:05d}.jpg",
+        "splits_present": [split],
+        "source": source,
+        "volume": f"geneanet/{source}/vol",
+        "designation": f"{index:05d}.jpg",
+        "records": [],
+    }
+
+
+def test_partition_into_shards_never_mixes_split_or_source_across_a_cap_boundary():
+    admitted = [
+        (_fake_page(index, split="train", source="Ardennes"), None) for index in range(3)
+    ] + [(_fake_page(index, split="val", source="Tours"), None) for index in range(3)]
+    shards = partition_into_shards(admitted, max_pages_per_shard=4)
+    for shard in shards:
+        splits = {tuple(page["splits_present"]) for page, _fetched in shard}
+        sources = {page["source"] for page, _fetched in shard}
+        assert len(splits) == 1
+        assert len(sources) == 1
+    seen = {page["identifier"] for shard in shards for page, _fetched in shard}
+    assert len(seen) == 6
+
+
 # --- sidecar module directly ---------------------------------------------------------
 
 
@@ -427,6 +700,11 @@ def test_validate_sidecar_refuses_extra_field():
         ],
     )
     validate_sidecar(good)
+
+    tampered = dict(good)
+    tampered["source"] = "Tours"
+    with pytest.raises(CorpusRefusal, match="self-hash-mismatch"):
+        validate_sidecar(tampered)
 
     with_ordinal = dict(good)
     with_ordinal["ordinal"] = 1
