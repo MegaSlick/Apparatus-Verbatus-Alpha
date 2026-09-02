@@ -336,14 +336,20 @@ def test_a_chair_captured_at_one_tier_and_live_at_another_refuses_the_captured_t
 
 
 def test_a_captured_and_fixture_mix_for_one_chair_resolves_nowhere() -> None:
+    # The refusal at each tier names the posture actually sitting at the
+    # *other* tier, never a fixed guess of "live" — this chair is never live
+    # anywhere in this catalogue, so "live" must not appear in either message.
     chair = _captured_chair()
     catalogue = _recipes(
         _captured_row(tier="tier-a"),
         _fixture_row(recipe=chair.serving_recipe, chair=chair.role, tier="tier-b"),
     )
-    for tier in (None, "tier-a", "tier-b"):
-        with pytest.raises(ServingModeRefusal):
-            serving_mode_for(catalogue, chair, tier)
+    with pytest.raises(ServingModeRefusal, match="a live serving profile needs"):
+        serving_mode_for(catalogue, chair, None)
+    with pytest.raises(ServingModeRefusal, match="tier='tier-a'.*another tier is fixture"):
+        serving_mode_for(catalogue, chair, "tier-a")
+    with pytest.raises(ServingModeRefusal, match="tier='tier-b'.*another tier is captured"):
+        serving_mode_for(catalogue, chair, "tier-b")
 
 
 # --- the manager never launches it --------------------------------------------
@@ -590,6 +596,36 @@ def test_every_other_real_chair_is_still_an_unproven_vllm_row() -> None:
             assert profile.preflight_state == "unproven"
             assert profile.required_packages["vllm"] == "0.10.1"
         assert serving_mode_for(catalogue, identity, tiers[0]) == "live"
+
+
+def test_the_shipped_real_catalogue_mixes_postures_across_witness_chairs() -> None:
+    """Known blocker, measured rather than discovered on a rented pod.
+
+    ``pipeline.3_attestatores.run.witness_serving_modes`` refuses to start a
+    run whose witness chairs resolve to more than one serving posture (one
+    run, one way of reading its witnesses). With the shipped real pair,
+    ``attestator_1`` is ``captured`` while every other configured witness
+    chair is ``live`` -- exactly the mix that function refuses. This is a
+    named D5 gap (teach that function that ``captured`` coexists with
+    ``live``), not something D2 can close: ``witness_serving_modes`` lives in
+    a file outside this unit's ownership. This test reproduces its own
+    posture computation against the committed config so the refusal is
+    proven here rather than surprising an operator at Attestatores start.
+    """
+    models, catalogue, tiers = _real_pair()
+    modes = {
+        role: serving_mode_for(catalogue, chair, tiers[0])
+        for role, chair in models.chairs.items()
+        if role in models.witness_chairs and isinstance(chair, ChairIdentity)
+    }
+    assert modes["attestator_1"] == "captured"
+    assert set(modes.values()) - {"captured"} == {"live"}
+    postures = {mode for mode in modes.values()}
+    assert len(postures) > 1, (
+        "if this now holds, the D5 mixed-posture reconciliation has landed and "
+        "pipeline/3_attestatores/run.py::witness_serving_modes should be re-checked "
+        "for whether it still refuses this catalogue"
+    )
 
 
 def test_the_fixture_catalogue_is_untouched_by_the_captured_kind() -> None:

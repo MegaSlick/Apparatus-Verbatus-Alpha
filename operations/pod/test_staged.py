@@ -13,10 +13,13 @@ import pytest
 from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
+from operations.serving.client import serving_mode_for
+from operations.serving.config import load_serving_recipes
 
 from .fake_provider import FakeProvider
 from .launch import LaunchResult, LaunchState
 from .models import BILLING_CUTOFF_MARGIN_ENV, PodCreateRequest
+from .preflight import load_placement_table
 from .shutdown import CloseReport, VerifiedShutdown
 from .staged import (
     COLLECTION_BOOT_SCHEDULE,
@@ -243,9 +246,21 @@ def test_lifecycle_refuses_construction_without_a_durable_cost_store(tmp_path: P
 def test_printed_schedule_starts_podless_and_states_the_ruled_witness_order(capsys) -> None:
     print_boot_schedule("parish-17")
     schedule = capsys.readouterr().out.rstrip("\n")
-    assert schedule.splitlines()[1] == "1. ingest-to-volume: no pod (no GPU-hours)."
-    witness_line = next(line for line in schedule.splitlines() if "attestatores:" in line)
-    assert witness_line.index("Chandra") < witness_line.index("Churro") < witness_line.index("DAI")
+    lines = schedule.splitlines()
+    assert lines[1] == "1. ingest-to-volume: no pod (no GPU-hours)."
+    # Chandra's checkpoint no longer boots its own pod at the Attestatores
+    # (attestator_1 is captured from the Designator's own Chandra call), so the
+    # ruled order now spans two blocks: the Designator's line names Chandra,
+    # then the Attestatores line names Churro before DAI.
+    designator_line = next(line for line in lines if "designator:" in line)
+    assert "Chandra" in designator_line
+    witness_line = next(line for line in lines if "attestatores:" in line)
+    # Chandra's own checkpoint is not a pod boot here -- captured from the
+    # Designator's line above -- though Churro's note still names it as the
+    # point it runs after, which is what "Chandra" surviving in this line
+    # would otherwise misread as.
+    assert "attestator_1" not in witness_line
+    assert witness_line.index("Churro") < witness_line.index("DAI")
     assert witness_line.count("fresh GOVERNANCE 8 authorization") == 1
 
 
@@ -651,18 +666,34 @@ def test_the_printed_schedule_names_every_chair_the_real_roster_configures() -> 
     roster is the one a pod ever serves -- the fixture roster resolves to local
     snapshots -- and `secondary_proposer` is configured there and absent here,
     which is how this list was wrong when it was written.
+
+    A *configured* chair is not automatically a *launched* one: `attestator_1`
+    is configured, but `config/serving_recipes_real.toml` resolves it to a
+    `captured` row, so it is excluded from `configured` by the same test that
+    would catch any other chair quietly dropped from the schedule -- the
+    posture comes from the shipped config, not a hardcoded name.
     """
 
     root = Path(__file__).resolve().parents[2]
     real = load_models_toml(root / "config/models-real.toml")
-    configured = {role for role, chair in real.chairs.items() if isinstance(chair, ChairIdentity)}
+    catalogue = load_serving_recipes(root / "config/serving_recipes_real.toml")
+    tiers = tuple(
+        tier.identifier for tier in load_placement_table(root / "config/pod_placement.toml").tiers
+    )
+    configured = {
+        role
+        for role, chair in real.chairs.items()
+        if isinstance(chair, ChairIdentity)
+        and serving_mode_for(catalogue, chair, tiers[0]) != "captured"
+    }
     assert configured, "the real roster configures no chair; this test would prove nothing"
 
     scheduled = [chair.chair for item in COLLECTION_BOOT_SCHEDULE for chair in item.chairs]
     assert sorted(scheduled) == sorted(set(scheduled)), "a chair is scheduled onto two pods"
     assert set(scheduled) == configured, (
         "the boot schedule and the real roster disagree about which chairs are served; "
-        "a configured chair the schedule omits is a pod boot nobody was asked to authorize"
+        "a configured, launchable chair the schedule omits is a pod boot nobody was asked "
+        "to authorize"
     )
     for item in COLLECTION_BOOT_SCHEDULE:
         assert item.pod_required == bool(item.chairs), (

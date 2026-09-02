@@ -30,6 +30,7 @@ from common.contracts.serving import (
 )
 
 from .config import (
+    AnyProfile,
     CapturedProfile,
     FixtureProfile,
     ServingProfile,
@@ -559,6 +560,26 @@ def _peek_model(body: bytes) -> str | None:
     return model if isinstance(model, str) else None
 
 
+def _other_tiers_posture(rows: tuple[AnyProfile, ...], tier: str) -> str:
+    """Name the posture(s) the *other* tiers hold, for a mixed-posture refusal.
+
+    Never assumes "live": a mix can just as well be captured-and-fixture, so
+    the message names whatever kind is actually sitting at the other tiers
+    rather than a fixed guess.
+    """
+
+    others = tuple(row for row in rows if row.tier != tier)
+    kinds = {
+        "live"
+        if isinstance(row, ServingProfile)
+        else type(row).__name__.removesuffix("Profile").lower()
+        for row in others
+    }
+    if len(kinds) == 1:
+        return f"another tier is {next(iter(kinds))}"
+    return f"other tiers are {sorted(kinds)}"
+
+
 def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str | None) -> str:
     """``"fixture"``, ``"captured"`` or ``"live"`` by the sealed row kind alone.
 
@@ -615,15 +636,15 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
         raise ServingModeRefusal(
             "SERVING_MODE_UNRESOLVED",
             f"chair={identity.role!r}, recipe={identity.serving_recipe!r} is a fixture row at "
-            f"tier={tier!r} while another tier in this catalogue is live; a catalogue may not "
-            "be half live for one chair",
+            f"tier={tier!r} while {_other_tiers_posture(rows, tier)} in this catalogue; a "
+            "catalogue may not be half fixture for one chair",
         )
     if isinstance(profile, CapturedProfile):
         raise ServingModeRefusal(
             "SERVING_MODE_UNRESOLVED",
             f"chair={identity.role!r}, recipe={identity.serving_recipe!r} is a captured row at "
-            f"tier={tier!r} while another tier in this catalogue is not; a catalogue may not "
-            "be half captured for one chair",
+            f"tier={tier!r} while {_other_tiers_posture(rows, tier)} in this catalogue; a "
+            "catalogue may not be half captured for one chair",
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingModeRefusal("SERVING_MODE_UNSUPPORTED", profile.reason)

@@ -50,12 +50,13 @@ from .assembly import (
     assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
 )
+from .client import serving_mode_for
 from .config import (
+    CapturedProfile,
     FixtureProfile,
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
-    UnsupportedProfile,
     chair_preflight_identity_digest,
     load_serving_recipes,
     model_and_tokenizer_pins,
@@ -2417,7 +2418,16 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
 
 
 def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_service():
-    """The real roster is opt-in; every row is launch-red for its actual cause."""
+    """The real roster is opt-in; every row is launch-red for its actual cause.
+
+    `secondary_proposer` is absent from `config/models-real.toml` (Tyrel's
+    ruling of 2026-08-12), not a `ChairIdentity` an `UnsupportedProfile` needs
+    to explain, so it never reaches `configured` at all. `attestator_1` is
+    configured, but names Chandra's structure-chair checkpoint as its source
+    (D2's Testimonium ruling) and resolves to a `captured` row -- it never
+    proposes to serve a live process. Every other configured chair is still an
+    unproven vLLM row.
+    """
 
     root = Path(__file__).resolve().parents[2]
     placement = load_placement_table(root / "config/pod_placement.toml")
@@ -2434,18 +2444,26 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
     configured = [
         value for value in real_models.chairs.values() if isinstance(value, ChairIdentity)
     ]
+    assert {identity.role for identity in configured} == {
+        "designator_structure",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+    }
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
         for tier in tiers:
             profile = real_catalogue.for_identity(identity, tier)
-            if identity.role == "secondary_proposer":
-                assert isinstance(profile, UnsupportedProfile)
-                assert "Ultralytics YOLO object detector" in profile.reason
-                assert "vLLM completion serving" in profile.reason
+            if identity.role == "attestator_1":
+                assert isinstance(profile, CapturedProfile)
+                assert profile.captured_from == "designator_structure"
+                assert serving_mode_for(real_catalogue, identity, tier) == "captured"
             else:
                 assert isinstance(profile, ServingProfile)
                 assert profile.preflight_state == "unproven"
                 assert profile.required_packages["vllm"] == "0.27.1"
+                assert serving_mode_for(real_catalogue, identity, tier) == "live"
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

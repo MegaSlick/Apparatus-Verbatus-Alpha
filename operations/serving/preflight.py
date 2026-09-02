@@ -155,8 +155,10 @@ class ServingSmokeReader:
         serving_profile = self.manager.recipes.for_identity(identity, placement.identifier)
         if isinstance(serving_profile, ServingProfile):
             # These two coherence checks only mean something for a profile that
-            # will actually launch. A fixture row carries no flags to check and
-            # is refused by name inside `manager.start` below, through the
+            # will actually launch. A fixture row, and a captured row (its
+            # reading is a retained response filed by the Attestatores, never a
+            # process this preflight starts), carry no flags to check and are
+            # refused by name inside `manager.start` below, through the
             # registry's own no-substitution door.
             if gpu_profile is not None and serving_profile.dtype != gpu_profile.dtype:
                 raise ServingConfigurationError(
