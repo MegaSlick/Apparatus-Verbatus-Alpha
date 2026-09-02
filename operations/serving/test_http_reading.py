@@ -196,6 +196,21 @@ def test_reading_carries_an_unrecognized_finish_reason_verbatim() -> None:
     assert result.finish_reasons == ("abort",)
 
 
+@pytest.mark.parametrize("finish_reason", ["", {"x": 1}])
+def test_reading_refuses_a_non_string_or_empty_finish_reason_by_name(finish_reason: object) -> None:
+    response = _response(
+        {
+            "model": "reader-api",
+            "choices": [{"message": {"content": "x"}, "finish_reason": finish_reason}],
+        }
+    )
+
+    with pytest.raises(ChairResponseRefusal) as excinfo:
+        parse_openai_reading(response, kind="chat-completions", expected_model_id="reader-api")
+
+    assert excinfo.value.code == "CHAIR_RESPONSE_INVALID"
+
+
 @pytest.mark.parametrize(
     "usage",
     [
@@ -222,7 +237,12 @@ def test_reading_treats_malformed_usage_as_none(usage: object) -> None:
 
 
 def test_reading_carries_valid_usage_verbatim() -> None:
-    usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    usage = {
+        "prompt_tokens": 12,
+        "completion_tokens": 3,
+        "total_tokens": 15,
+        "extra": {"deep": [1]},
+    }
     response = _response(
         {"model": "reader-api", "choices": [{"message": {"content": "x"}}], "usage": usage}
     )
@@ -230,6 +250,8 @@ def test_reading_carries_valid_usage_verbatim() -> None:
     result = parse_openai_reading(response, kind="chat-completions", expected_model_id="reader-api")
 
     assert result.usage == usage
+    with pytest.raises(TypeError):
+        result.usage["prompt_tokens"] = 0
 
 
 # --- chat_image_bytes_all: the multi-image generalization ---
