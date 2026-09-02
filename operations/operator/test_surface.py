@@ -4244,3 +4244,35 @@ def test_status_never_calls_the_provider_while_reading_supervisor_telemetry(
     _surface(tmp_path, provider=provider).status()
 
     assert provider.calls == []
+
+
+def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
+    """The status extension is built from `SupervisorIdentity.telemetry()`,
+
+    never from the identity object itself, so the capability that closes
+    this lease structurally cannot reach a terminal (`ps` is public) through
+    this read path -- see supervise.py's own module docstring on the token's
+    two permitted homes.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert identity.owner_token not in "\n".join(lines)

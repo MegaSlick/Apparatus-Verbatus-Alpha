@@ -8,22 +8,30 @@ own heartbeat is perfectly fresh -- the fix for 04-4's real harm, an
 ``EXITED`` pod billing volume disk at double rate under a supervisor that
 never looked past presence.
 
-Restart safety rests on one durable file alongside the lease, under its own
-``supervisors/`` subdirectory so the flat lease-directory listing other
-readers already trust never has to learn to skip it:
-``supervisors/supervisor-<lease_id>.json``, holding the owner token this
-process shares
-with `LaptopSupervisor`, when it was first minted, this process's pid, and a
-running record of the last tick. A first-ever start creates it with
-`durable.exclusive_write`; a process that finds one already there checks
-whether the pid inside it is still alive. Alive means another supervisor
-already owns this lease -- refuse outright, touch neither provider nor
-lease, so two drivers can never both reach for the same pod. Dead means the
-prior owner crashed -- adopt its owner token verbatim and keep going, so the
-lease sees the same controller identity across the restart and never reads
-this as a rival to reconcile. Losing the file entirely is not silently
-tolerated either: a process with no identity to resume mints a fresh token
-that the lease does not recognise, which can only reach the pod through
+Restart safety rests on two durable files alongside the lease, under their
+own ``supervisors/`` subdirectory so the flat lease-directory listing other
+readers already trust never has to learn to skip them. The lock file
+(``supervisors/supervisor-<lease_id>.lock``) holds nothing but an
+``fcntl.flock``: ownership is decided by acquiring it, never by a recorded
+pid, because a pid is reused by an unrelated process after a laptop reboot
+and a bare ``os.kill(pid, 0)`` check can find that unrelated process alive
+and refuse forever to supervise a pod that is still billing. The kernel
+releases the lock the instant the holding process exits or crashes, however
+it dies -- no code here has to notice. The identity file
+(``supervisors/supervisor-<lease_id>.json``) holds the owner token this
+process shares with `LaptopSupervisor`, when it was first minted, this
+process's pid (telemetry only, never load-bearing for the ownership
+decision), and a running record of the last tick. A first-ever start wins
+the lock and creates the identity file fresh with `durable.exclusive_write`;
+a process that wins the lock and finds the identity file already there
+resumes the token inside it -- the lock is the proof the prior holder is
+gone, so the same controller identity carries across the restart and the
+lease never reads it as a rival to reconcile. Failing to win the lock means
+a live rival already owns this lease -- refuse outright, touch neither
+provider nor lease, so two drivers can never both reach for the same pod.
+Losing the identity file entirely is not silently tolerated either: a
+process with no identity to resume mints a fresh token that the lease does
+not recognise, which can only reach the pod through
 `LeaseStore.claim_if_orphan` once the old heartbeat goes stale -- the
 correct fail-closed cost of losing the file, not a bug to route around.
 
@@ -34,6 +42,7 @@ never rides in a receipt: it lives only in this file and in memory.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib
 import json
 import os
@@ -109,6 +118,93 @@ def default_pid_alive(pid: int) -> bool:
     return True
 
 
+def _lock_path(leases_root: Path, lease_id: str) -> Path:
+    """The kernel-held claim on ownership -- distinct from the identity file.
+
+    ``identity_path`` records who owns the lease and what it last observed;
+    this file's only job is to hold an ``fcntl.flock``. A recorded pid is
+    reused by an unrelated process after a laptop reboot, so a bare
+    ``os.kill(pid, 0)`` check can find that unrelated process alive and
+    refuse forever to supervise a pod that is still billing. A kernel lock
+    tied to the open file description has no such failure mode: it is
+    released -- by the kernel, not by any code here -- the instant this
+    process exits or crashes, however it dies.
+    """
+
+    return Path(leases_root) / "supervisors" / f"supervisor-{lease_id}.lock"
+
+
+# Held for the life of this process: a lock released by closing its handle,
+# so the handle must outlive the stack frame that acquired it. Keyed by path
+# so a test process supervising several leases in sequence does not leak
+# across them.
+_HELD_LOCKS: dict[Path, object] = {}
+
+
+def _open_lock_handle(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # O_NOFOLLOW like every other evidence reader in this package: the claim
+    # that decides whether two drivers may both reach for the same pod must
+    # not be redirectable through a planted link.
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    return os.fdopen(descriptor, "r+b")
+
+
+def _acquire_lock(path: Path) -> bool:
+    """Take this lease's ownership lock for the life of this process."""
+
+    handle = _open_lock_handle(path)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _HELD_LOCKS[path] = handle
+    return True
+
+
+def release_lock(leases_root: Path, lease_id: str) -> None:
+    """Explicitly give up this process's hold -- tests simulate a crash this way.
+
+    A normal process death needs no call here: the kernel drops the lock the
+    moment the holding file descriptor closes, which a process exit always
+    does. This exists for the corner this module's own docstring names --
+    a restart resuming after the *prior* holder is confirmed gone -- and for
+    drills that must model that without actually killing a process.
+    """
+
+    path = _lock_path(leases_root, lease_id)
+    handle = _HELD_LOCKS.pop(path, None)
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def peek_running(leases_root: Path, lease_id: str) -> bool:
+    """Read-only: does some process currently hold this lease's ownership lock?
+
+    Takes the same non-blocking lock the owning driver would and releases it
+    immediately -- exactly as `OperatorSurface._exclusive_paid_launch` already
+    does for the paid-launch claim -- so the operator status surface can
+    answer "is a supervisor running" without ever becoming one itself, and
+    without trusting a recorded pid that a reboot can hand to someone else.
+    """
+
+    handle = _open_lock_handle(_lock_path(leases_root, lease_id))
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
+    finally:
+        handle.close()
+
+
 @dataclass(frozen=True, slots=True)
 class SupervisorIdentity:
     """The restart-safe identity file's full contents.
@@ -135,6 +231,24 @@ class SupervisorIdentity:
         require_utc(self.started_at, "supervisor identity started_at")
         if self.last_tick_at is not None:
             require_utc(self.last_tick_at, "supervisor identity last_tick_at")
+
+    def telemetry(self) -> dict[str, object]:
+        """Everything the operator status surface may read -- ``owner_token`` excluded.
+
+        `owner_token` is the exact capability that closes a lease; it must
+        never reach a terminal (``ps`` is public, and this is the only other
+        place identity data is displayed). Building a status line from this
+        projection rather than from the identity object directly makes that
+        omission structural rather than a habit a future edit can forget.
+        """
+
+        return {
+            "pid": self.pid,
+            "started_at": self.started_at,
+            "last_tick_at": self.last_tick_at,
+            "last_tick_state": self.last_tick_state,
+            "last_tick_detail": self.last_tick_detail,
+        }
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -216,17 +330,34 @@ def establish_identity(
     pid: int | None = None,
     pid_alive: Callable[[int], bool] = default_pid_alive,
     token_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+    lock_acquirer: Callable[[Path], bool] = _acquire_lock,
 ) -> SupervisorIdentity:
     """Create, resume, or refuse ownership of this lease's identity file.
 
-    A first-ever start wins the file outright and mints a fresh token. A
-    restart that finds the file already there resumes the token inside it
-    once the pid it names is proven dead; a live pid refuses instead, and
-    that refusal is the only thing that stands between two drivers and one
-    pod. Nothing here reads or writes the lease itself.
+    Ownership is decided by ``lock_acquirer`` taking this lease's kernel
+    lock (`_lock_path`), never by a recorded pid: see `_lock_path` for why a
+    pid check fails open across a reboot. Acquiring it and finding no
+    identity file wins the file outright and mints a fresh token; finding
+    one there resumes the token inside it, since the lock proves the prior
+    holder is gone. Failing to acquire it means a live rival owns this lease
+    now -- refuse outright, touch neither provider nor lease, so two drivers
+    can never both reach for the same pod. Nothing here reads or writes the
+    lease itself.
+
+    ``pid_alive`` is accepted only for source compatibility with existing
+    callers and is not consulted -- it predates the lock and is not the fix
+    for the failure it once caused.
     """
 
+    del pid_alive
     resolved_pid = os.getpid() if pid is None else pid
+    lock_path = _lock_path(leases_root, lease_id)
+    if not lock_acquirer(lock_path):
+        raise SuperviseRefusal(
+            f"another live supervisor already owns lease {lease_id!r} (lock {lock_path} is "
+            "held); refusing to start a second one over the same pod",
+            exit_code=2,
+        )
     path = identity_path(leases_root, lease_id)
     fresh = SupervisorIdentity(owner_token=token_factory(), started_at=now(), pid=resolved_pid)
     try:
@@ -241,12 +372,8 @@ def establish_identity(
         # rather than guess at one that no longer exists on disk.
         durable.exclusive_write(path, durable.canonical_json(fresh.to_record()))
         return fresh
-    if pid_alive(existing.pid):
-        raise SuperviseRefusal(
-            f"another live supervisor (pid {existing.pid}) already owns lease {lease_id!r}; "
-            "refusing to start a second one over the same pod",
-            exit_code=2,
-        )
+    # The lock above is the proof that no other process holds this lease --
+    # the prior owner named in this file is gone, whatever its pid was.
     resumed = replace(existing, pid=resolved_pid)
     durable.atomic_write(path, durable.canonical_json(resumed.to_record()))
     return resumed
@@ -371,7 +498,12 @@ def supervise_tick(
         store, shutdown, owner_token=owner_token, heartbeat_timeout=heartbeat_timeout, now=now
     )
     result = _from_controller(supervisor.run_once())
-    if result.state != "active" or result.lease is None or result.lease.pod_id is None:
+    if (
+        result.state not in {"active", "controller-unarmed"}
+        or result.lease is None
+        or result.lease.pod_id is None
+        or not result.lease.active
+    ):
         return result
     lease = result.lease
     try:
@@ -387,8 +519,8 @@ def supervise_tick(
         )
     # Case-folded: `FakeProvider.create` defaults a brand-new fake pod's word
     # to lowercase "running" (`PodRecord.state`'s own default), while the
-    # explicit lifecycle words this check exists to catch -- "EXITED" and
-    # RunPod's real `desiredStatus` vocabulary -- are upper case. Comparing
+    # explicit lifecycle words this check exists to catch -- "EXITED" and the
+    # adapter's uppercase lifecycle vocabulary -- are upper case. Comparing
     # case-sensitively would close a perfectly healthy fake pod on its first
     # tick; the word itself, not its case, is what 04-4 needs distinguished.
     if status.provider_state is not None and status.provider_state.upper() != "RUNNING":
@@ -408,13 +540,22 @@ def supervise_tick(
     return result
 
 
-def _exit_code(result: SuperviseResult) -> int:
-    """The `cli.py` convention: 0 guarded, 2 nothing touched, 3 go and look."""
+def _exit_code(result: SuperviseResult, *, observed_active_lease: bool = False) -> int:
+    """The `cli.py` convention: 0 guarded, 2 nothing touched, 3 go and look.
+
+    ``observed_active_lease`` names the fact that decides between 2 and 3 for
+    a durable lease that goes missing or unreadable: found and confirmed
+    active by *this run* before it vanished (a pod may still be out there
+    billing -- 3, go and look) versus never found at all, or a pre-loop
+    refusal that made no provider call (nothing to look at -- 2). Only
+    `run_supervisor` ever passes ``True``; every pre-loop `SuperviseRefusal`
+    path returns its own exit code directly and never reaches here.
+    """
 
     if result.state in {"no-lease", "owner-heartbeat-fresh"}:
-        return 2
+        return 3 if observed_active_lease else 2
     if result.state == "lease-record-failure" and result.close_report is None:
-        return 2
+        return 3 if observed_active_lease else 2
     if result.green:
         return 0
     return 3
@@ -430,11 +571,22 @@ def _write_final_record(
     now: datetime,
 ) -> Path:
     """One durable record per run, so GOVERNANCE 2 has something on disk even
-    when nobody is watching a terminal."""
+    when nobody is watching a terminal.
+
+    Named per run -- pid and timestamp both -- rather than once per lease:
+    a second driver's own outcome (e.g. a BUSY refusal while a first driver
+    is still live) is itself a fact GOVERNANCE 2 requires kept, and a shared
+    fixed name would let a later run's record silently replace it.
+    """
 
     supervisors_dir = Path(leases_root) / "supervisors"
     supervisors_dir.mkdir(parents=True, exist_ok=True)
-    name = f"supervisor-{lease_id}-final.json" if lease_id else "supervisor-final.json"
+    stamp = _stamp(now).replace(":", "")
+    name = (
+        f"supervisor-{lease_id}-final-{os.getpid()}-{stamp}.json"
+        if lease_id
+        else f"supervisor-final-{os.getpid()}-{stamp}.json"
+    )
     path = supervisors_dir / name
     payload = {
         "schema": FINAL_RECORD_SCHEMA,
@@ -460,7 +612,7 @@ def run_supervisor(
     now: Callable[[], datetime] = utc_now,
     sleeper: Callable[[float], None] = time.sleep,
     pid: int | None = None,
-    pid_alive: Callable[[int], bool] = default_pid_alive,
+    lock_acquirer: Callable[[Path], bool] = _acquire_lock,
 ) -> tuple[SuperviseResult, int]:
     """Drive one durable lease to a terminal state, or forever while it is healthy.
 
@@ -483,7 +635,7 @@ def run_supervisor(
             f"lease already reached terminal phase {lease.phase!r}; no provider call was made",
             lease=lease,
         )
-        return result, _exit_code(result)
+        return result, _exit_code(result, observed_active_lease=False)
     heartbeat_timeout = timedelta(seconds=policy.laptop_heartbeat_timeout_seconds)
     remaining = lease.hard_deadline - now()
     if heartbeat_timeout >= remaining:
@@ -494,11 +646,15 @@ def run_supervisor(
             "the hard deadline anyway",
             exit_code=2,
         )
+    # This run has now confirmed a durable, active lease exists: from here on
+    # a lease that goes missing or unreadable is not "nothing happened" --
+    # the pod it was guarding may still be out there billing (finding 1).
+    observed_active_lease = True
     # Named `ident`, not `identity`: the obvious `identity.owner_token` spelling
     # is 20 bytes -- long enough to read as a credential-shaped literal to the
     # ingress scanner's generic `*token*=<20+ chars>` rule, over a value that
     # is never anything but a plain attribute path.
-    ident = establish_identity(leases_root, lease_id, now=now, pid=pid, pid_alive=pid_alive)
+    ident = establish_identity(leases_root, lease_id, now=now, pid=pid, lock_acquirer=lock_acquirer)
     owner_token = ident.owner_token
     ident_path = identity_path(leases_root, lease_id)
 
@@ -514,12 +670,14 @@ def run_supervisor(
         )
         record_tick(ident_path, ident, state=result.state, detail=result.detail, now=now())
         if result.close_report is not None and not result.close_report.verified:
-            notifier(
+            outcome = notifier(
                 f"pod supervisor: lease {lease_id} close is UNVERIFIED ({result.detail}); "
                 "go and look"
             )
+            result = replace(result, detail=f"{result.detail} | {outcome.line()}")
         elif result.close_report is not None:
-            notifier(f"pod supervisor: lease {lease_id} closed verified ({result.state})")
+            outcome = notifier(f"pod supervisor: lease {lease_id} closed verified ({result.state})")
+            result = replace(result, detail=f"{result.detail} | {outcome.line()}")
         if result.lease is None or not result.lease.active:
             break
         if result.state not in _CONTINUE_STATES:
@@ -531,7 +689,7 @@ def run_supervisor(
         if sleep_for <= 0:
             continue
         sleeper(sleep_for)
-    return result, _exit_code(result)
+    return result, _exit_code(result, observed_active_lease=observed_active_lease)
 
 
 def _load_provider(reference: str) -> PodProvider:
@@ -630,6 +788,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
         return refusal.exit_code
+    except BaseException as error:
+        # `SuperviseRefusal` above is the only exception this module expects.
+        # Anything else -- a bad `--provider-factory` reference, a malformed
+        # spend.toml, an OSError from a durable write, KeyboardInterrupt --
+        # must still leave a durable record: Stage 04.4 line 99 starts this
+        # process detached, which is precisely where a bare traceback on
+        # stderr goes unwatched. Mirrors `cli.py`'s own interrupt handling.
+        detail = f"{type(error).__name__}: {error}"
+        try:
+            _write_final_record(
+                leases_root,
+                lease_id,
+                exit_code=3,
+                state="crashed",
+                detail=detail,
+                now=utc_now(),
+            )
+        except Exception:
+            # A failing record write must not mask the original fault, and
+            # must not stop the crash from being reported below either.
+            pass
+        print(
+            json.dumps(
+                {"lease_id": lease_id, "state": "crashed", "detail": detail},
+                sort_keys=True,
+                indent=2,
+            ),
+            flush=True,
+        )
+        if isinstance(error, KeyboardInterrupt):
+            raise
+        return 3
 
 
 if __name__ == "__main__":  # pragma: no cover - command wrapper

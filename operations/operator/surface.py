@@ -76,10 +76,10 @@ from operations.pod.spend import (
     load_spend_policy,
 )
 from operations.pod.supervise import (
-    default_pid_alive as _supervisor_pid_alive,
+    identity_path as _supervisor_identity_path,
 )
 from operations.pod.supervise import (
-    identity_path as _supervisor_identity_path,
+    peek_running as _supervisor_peek_running,
 )
 from operations.pod.supervise import (
     read_identity as _read_supervisor_identity,
@@ -1596,23 +1596,28 @@ class OperatorSurface:
         never asks the provider anything, which keeps `status` a pure read.
         """
 
-        path = _supervisor_identity_path(self.state_root / "leases", lease.lease_id)
+        leases_root = self.state_root / "leases"
+        path = _supervisor_identity_path(leases_root, lease.lease_id)
         try:
             identity = _read_supervisor_identity(path)
         except Exception as error:
             return [f"  supervisor: identity file UNREADABLE ({error})."]
         if identity is None:
             return ["  supervisor: absent -- no identity file has been written for this lease yet."]
-        running = _supervisor_pid_alive(identity.pid)
-        age = max((self.now() - identity.started_at).total_seconds(), 0.0)
+        # Built from the token-free projection, never from `identity` itself,
+        # so the capability that closes this lease structurally cannot reach
+        # a terminal (`ps` is public) through this read path.
+        telemetry = identity.telemetry()
+        running = _supervisor_peek_running(leases_root, lease.lease_id)
+        age = max((self.now() - telemetry["started_at"]).total_seconds(), 0.0)
         lines = [
-            f"  supervisor: {'running' if running else 'absent (pid ' + str(identity.pid) + ' not found)'}"
-            f", identity file age {age:.0f}s (pid {identity.pid})."
+            f"  supervisor: {'running' if running else 'absent (pid ' + str(telemetry['pid']) + ' not found)'}"
+            f", identity file age {age:.0f}s (pid {telemetry['pid']})."
         ]
-        if identity.last_tick_at is not None:
+        if telemetry["last_tick_at"] is not None:
             lines.append(
-                f"  last tick: {identity.last_tick_state} at {utc_stamp(identity.last_tick_at)} "
-                f"-- {identity.last_tick_detail}"
+                f"  last tick: {telemetry['last_tick_state']} at "
+                f"{utc_stamp(telemetry['last_tick_at'])} -- {telemetry['last_tick_detail']}"
             )
         else:
             lines.append("  last tick: none recorded yet.")
