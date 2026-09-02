@@ -12,7 +12,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Protocol
 
 from .errors import (
     ChairRequestRefusal,
@@ -137,7 +138,7 @@ class OpenAIResult:
     outputs: tuple[str, ...]
     response_sha256: str
     finish_reasons: tuple[str | None, ...] = ()
-    usage: Mapping[str, int] | None = None
+    usage: Mapping[str, object] | None = None
 
 
 def models_url(endpoint: str) -> str:
@@ -254,7 +255,12 @@ def parse_openai_answer(
                 "VLLM_PROBE_RESPONSE_INVALID", "inference response has no non-empty text"
             )
         outputs.append(content)
-        finish_reasons.append(_finish_reason(choice))
+        finish_reasons.append(
+            _finish_reason(
+                choice,
+                refuse=lambda detail: ReadinessError("VLLM_PROBE_RESPONSE_INVALID", detail),
+            )
+        )
     return OpenAIResult(
         model_id=expected_model_id,
         outputs=tuple(outputs),
@@ -325,7 +331,12 @@ def parse_openai_reading(
         model_id=expected_model_id,
         outputs=(content,),
         response_sha256=hashlib.sha256(response.body).hexdigest(),
-        finish_reasons=(_finish_reason(choice),),
+        finish_reasons=(
+            _finish_reason(
+                choice,
+                refuse=lambda detail: ChairResponseRefusal("CHAIR_RESPONSE_INVALID", detail),
+            ),
+        ),
         usage=_usage(payload),
     )
 
@@ -371,14 +382,30 @@ def chat_image_bytes_all(payload: Mapping[str, object]) -> list[bytes]:
     return [_decode_image_url(candidate, label="chat request") for candidate in active_candidates]
 
 
-def _finish_reason(choice: Mapping[str, Any]) -> str | None:
-    """The engine's own word, verbatim.  Missing or ``null`` become ``None``."""
+def _finish_reason(choice: Mapping[str, Any], *, refuse: Callable[[str], Exception]) -> str | None:
+    """The engine's own word, verbatim.  Missing or ``null`` become ``None``.
 
-    return choice.get("finish_reason")
+    Anything else that is not a non-empty string is refused by name through
+    the caller's own refusal class, never coerced and never let through to a
+    membership test (``finish_reason in ENGINE_STOP_COMPLETE``) as an
+    unhashable value.
+    """
+
+    value = choice.get("finish_reason")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise refuse(f"finish_reason must be a non-empty string or null, got {value!r}")
+    return value
 
 
-def _usage(payload: Mapping[str, Any]) -> Mapping[str, int] | None:
-    """The response's ``usage`` object, verbatim, or ``None`` when malformed."""
+def _usage(payload: Mapping[str, Any]) -> Mapping[str, object] | None:
+    """The response's ``usage`` object, verbatim, or ``None`` when malformed.
+
+    Only the three named counters are validated; everything else in the
+    object is retained as-is.  The returned mapping is a read-only view over
+    a private copy so it can never be mutated through this frozen result.
+    """
 
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -387,7 +414,7 @@ def _usage(payload: Mapping[str, Any]) -> Mapping[str, int] | None:
         value = usage.get(field_name)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return None
-    return usage
+    return MappingProxyType(dict(usage))
 
 
 def _decode_image_url(candidate: object, *, label: str) -> bytes:
