@@ -71,7 +71,7 @@ never touched here. Nothing else changes with the route -- the constructor path,
 closed record schema and the index reconciliation are the same on both. No real
 Recensor seal exists yet, so a real run refuses at `predecessor recensor has no
 stage-seal` with its context already opened, writing nothing;
-`pipeline/5_recensor/test_real_ingress.py` pins that for this stage beside the
+`pipeline/5_recensor/test_recensor_real_ingress.py` pins that for this stage beside the
 Recensor and the Perlector.
 
 ## `kind="archetypus"`
