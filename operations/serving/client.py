@@ -22,7 +22,12 @@ from typing import Callable, Mapping, Protocol
 
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
-from common.contracts.serving import CHAIR_CALL_RECORD_FIELDS, CHAIR_CALL_RECORD_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_SCHEMA,
+    WIRE_DECIMAL_FIELDS,
+    WIRE_DECIMAL_SCHEMA,
+)
 
 from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedProfile
 from .errors import (
@@ -38,6 +43,75 @@ from .manager import AdapterCalibration, ServiceHandle, ServingManager
 # adapter's or a stage's. A caller that names one is refused before anything
 # is built or sent.
 _FORBIDDEN_GENERATION_SENT_KEYS = frozenset({"model", "stream", "temperature", "seed", "n"})
+
+# One JSON serialization, used for both halves of the generation round-trip
+# check below, so the comparison is between two texts rather than between two
+# Python values whose `==` is looser than the wire's.
+_JSON = {"sort_keys": True, "separators": (",", ":"), "ensure_ascii": False}
+
+
+def _recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
+    """The generation view in a form the canonical writer can hold, losslessly.
+
+    A vendor's decoding value may be a float — DAI's carried
+    ``generation_config.json`` names ``repetition_penalty`` 1.05 and ``top_p``
+    0.001 — and :func:`common.contracts.canonical.canonical_bytes` refuses
+    floats outright, so a call record that simply carried them could not be
+    written at all. That refusal is right and is not loosened here: a float's
+    JSON form is not stable enough to hash against.
+
+    What is recorded instead is the exact decimal text the request body itself
+    carries for that value, tagged with ``wire-decimal.v1`` so a reader can
+    tell it from a string the vendor genuinely declared. ``json.dumps`` emits
+    the shortest text that reads back as the identical double, which is why
+    this is a transcription rather than a rounding: :func:`_decoded_generation`
+    returns the very same value, and ``read`` proves that on every call before
+    it writes the record.
+    """
+
+    return {key: _recorded_value(item) for key, item in view.items()}
+
+
+def _recorded_value(value: object) -> object:
+    if isinstance(value, float) and not isinstance(value, bool):
+        return {"schema": WIRE_DECIMAL_SCHEMA, "decimal": json.dumps(value)}
+    if isinstance(value, Mapping):
+        return {key: _recorded_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_recorded_value(item) for item in value]
+    return value
+
+
+def _decoded_generation(value: object) -> object:
+    """The inverse of :func:`_recorded_generation`, used to check it, not to trust it."""
+
+    if isinstance(value, dict):
+        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
+            return float(value["decimal"])
+        return {key: _decoded_generation(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decoded_generation(item) for item in value]
+    return value
+
+
+def _refuse_generation_that_cannot_be_recorded_as_sent(
+    recorded: object, view: Mapping[str, object], field: str
+) -> None:
+    """Prove the recorded view re-encodes to the exact JSON the wire carried.
+
+    Not a formality: it is the whole claim gap 1 of the Attestatores HANDOFF
+    turns on. The record may say what was sent only if it can be shown to say
+    it, so the client checks its own transcription on every call — before the
+    record is written — and refuses rather than filing a request it cannot
+    account for byte-for-byte.
+    """
+
+    if json.dumps(_decoded_generation(recorded), **_JSON) != json.dumps(dict(view), **_JSON):  # type: ignore[arg-type]
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            f"{field} cannot be recorded as the values that were sent; the call record would "
+            "describe a request other than the one on the wire",
+        )
 
 
 class ReceiptDriftRefusal(ServingError):
@@ -187,7 +261,16 @@ class ChairClient:
         handle = self._manager.start(
             self._identity, self._tier, adapter_calibration=self._adapter_calibration
         )
-        receipt = self._read_receipt(handle.receipt_reference)
+        # Normalized here, at the one seam that knows both sides.
+        # `ReceiptPublication` freezes its reference into a `MappingProxyType`
+        # so nothing can edit a published provenance record; `RunTree.
+        # read_run_receipt` accepts its own reference type or a plain `dict`
+        # and refuses anything else by name. Both rules are right about their
+        # own boundary, and neither is loosened: the client copies. Without
+        # this, every stage wiring a real tree had to carry a private
+        # converter, and `read_receipt=context.tree.read_run_receipt` — the
+        # wiring this client's own README describes — refused every live start.
+        receipt = self._read_receipt(dict(handle.receipt_reference))
         if (
             not isinstance(receipt, Mapping)
             or receipt.get("chair") != self._identity.role
@@ -234,6 +317,17 @@ class ChairClient:
 
         handle = self.handle
         _refuse_unbuildable_request(request)
+        # Built and checked before the request leaves: a generation value this
+        # client could not record as sent must stop the call, not be discovered
+        # after a chair has already answered it.
+        generation_sent = _recorded_generation(request.generation_sent)
+        generation_declared = _recorded_generation(request.generation_declared)
+        _refuse_generation_that_cannot_be_recorded_as_sent(
+            generation_sent, request.generation_sent, "generation_sent"
+        )
+        _refuse_generation_that_cannot_be_recorded_as_sent(
+            generation_declared, request.generation_declared, "generation_declared"
+        )
         body = request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,
@@ -290,8 +384,8 @@ class ChairClient:
             "kind": request.kind,
             "request_sha256": request_sha256,
             "image_sha256s": list(request.image_sha256s),
-            "generation_sent": dict(request.generation_sent),
-            "generation_declared": dict(request.generation_declared),
+            "generation_sent": generation_sent,
+            "generation_declared": generation_declared,
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],
             "response_model": _peek_model(response.body),
@@ -336,6 +430,21 @@ def _refuse_unbuildable_request(request: ChairRequest) -> None:
             "CHAIR_REQUEST_INVALID",
             f"generation_sent must not name {forbidden}; those fields are manager-owned",
         )
+    for field, view in (
+        ("generation_sent", request.generation_sent),
+        ("generation_declared", request.generation_declared),
+    ):
+        # `NaN`/`Infinity` are not JSON. Python's encoder emits them anyway, so
+        # a request carrying one would put a body on the wire that no
+        # conforming reader can parse and no record can transcribe. Refused
+        # here, before the body exists, rather than substituted with a finite
+        # number nobody declared.
+        if _nonfinite_path(view) is not None:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                f"{field}{_nonfinite_path(view)} is not a finite number; NaN and Infinity are "
+                "not JSON and cannot be sent or recorded",
+            )
     actual = tuple(
         digest_bytes(data) for data in chat_image_bytes_all({"messages": list(request.messages)})
     )
@@ -345,6 +454,25 @@ def _refuse_unbuildable_request(request: ChairRequest) -> None:
             f"request image digests {list(actual)} do not match the claimed image_sha256s "
             f"{list(request.image_sha256s)}, exactly and in order",
         )
+
+
+def _nonfinite_path(value: object, path: str = "") -> str | None:
+    """Where the first non-finite float sits, in a form a refusal can name."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        return path if (value != value or value in (float("inf"), float("-inf"))) else None
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if (found := _nonfinite_path(item, f"{path}[{key!r}]")) is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            if (found := _nonfinite_path(item, f"{path}[{index}]")) is not None:
+                return found
+    return None
 
 
 def _refuse_bytes_from_the_wrong_source(response: HttpResponse, *, expected_model_id: str) -> None:

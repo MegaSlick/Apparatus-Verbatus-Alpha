@@ -6,26 +6,19 @@ answers one chair at a time behind a real `ServingManager`, a real
 `ChairClient`, and this stage's own `main`, over a run tree carried to the
 Designator by the real upstream stage programs.
 
-**Why the DAI chair is absent from the live roster these tests use.** Two
-defects outside this unit's files stop a `dai.v1` chair from being served at
-all, and both are proven here rather than described:
-
-1. `feeding.dai_generation()` carries floats (`repetition_penalty`, `top_p`,
-   `temperature`). `ChairClient.read` writes its `chair-call-record.v1` blob
-   with `common.contracts.canonical.canonical_bytes`, which refuses a float
-   outright, so the request cannot be recorded and therefore cannot be made
-   (`test_a_live_dai_request_cannot_be_recorded_and_says_which_value_stops_it`).
-2. `witness_adapters._dai_present` republishes its own crop even when DAI needs
-   no resize, while `feeding.dai_model_view`'s identity-transform rule requires
-   the source and model image references to be the *same* retained blob -- so a
-   small act crop, which is every act crop in this fixture, is refused after the
-   response comes back. `pipeline/3_attestatores/live_witness.py`'s module
-   docstring names this one too.
-
-Both are one-file changes in files this unit does not own, and neither can be
-worked around here without recording something nobody measured. The live roster
-below is therefore the two page-scoped chairs, and the HANDOFF carries both as
-owed work.
+**The roster here is the committed one, complete.** It was, for a while, the
+two page-scoped chairs and an `attestator_2` marked absent, because two
+defects outside that unit's files stopped a `dai.v1` chair from being served
+at all: `feeding.dai_generation()` carries floats and the `chair-call-record.v1`
+blob goes through `canonical_bytes`, which refuses floats, so the request could
+not be recorded and therefore was never made; and `feeding.dai_model_view`'s
+identity-transform rule compared whole reference dicts across two stages' blob
+namespaces, so every no-resize act -- which is every act crop in this fixture --
+was refused *after* its response had already come back. Both are closed
+(`operations/serving/client.py` records a float as the exact decimal text the
+wire carried; `dai_model_view` compares the digest the two references share),
+and the act-scoped arm of the live pass is exercised here end to end rather
+than described.
 """
 
 from __future__ import annotations
@@ -81,8 +74,8 @@ from operations.serving.residency import FileResidencyLease  # noqa: E402
 
 TIER = "generic-48gb"
 RUN_ID = "live"
-LIVE_CHAIRS = ("attestator_1", "attestator_3")
-CATALOGUE_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
+LIVE_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
+CATALOGUE_CHAIRS = LIVE_CHAIRS
 FIXTURE_ROOT = ROOT / "proof"
 
 # A body shaped like something a real Chandra service would return, and
@@ -94,6 +87,10 @@ CHURRO_PAGE_ONE = (
     "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 )
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+# DAI is act-scoped and its parser is plain UTF-8 text
+# (`feeding.validate_dai_text`), so its answers are one per act.
+DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta"
+DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 
 def _load_attestatores():
@@ -237,31 +234,20 @@ def write_mixed_catalogue(path: Path, registry) -> Path:
     return path
 
 
-def write_absent_dai_models_config(work: Path) -> Path:
-    """The committed roster with its one act-scoped chair marked absent.
+def committed_models_config() -> Path:
+    """The committed roster, unedited: three configured witness chairs.
 
-    See the module docstring: a `dai.v1` chair cannot be served at all until two
-    defects outside this unit are fixed, and an absent chair is the roster's own
-    honest way to say a witness is not there.
+    This used to rewrite `attestator_2` to `state = "absent"`, because a
+    `dai.v1` chair could not be served at all (see the module docstring). Both
+    defects are closed, so the live pass is exercised against exactly the
+    roster the repository ships -- the assertions below are what would notice
+    if that roster stopped describing the three scopes these tests exercise.
     """
-    config_root = work / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    committed = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert tomllib.loads(committed)["chairs"]["attestator_2"]["state"] == "configured"
-    start = committed.index("[chairs.attestator_2]\n")
-    following = committed.find("\n[", start + 1)
-    end = len(committed) - 1 if following == -1 else following
-    absent = (
-        "[chairs.attestator_2]\n"
-        'state = "absent"\n'
-        'reason = "the live reading seam cannot yet carry DAI\'s float generation values"\n'
-    )
-    path = config_root / "models.toml"
-    path.write_text(committed[:start] + absent + committed[end + 1 :], encoding="utf-8")
-    rewritten = tomllib.loads(path.read_text(encoding="utf-8"))
-    assert rewritten["chairs"]["attestator_2"]["state"] == "absent"
-    assert set(rewritten["chairs"]) == set(tomllib.loads(committed)["chairs"])
+    path = ROOT / "config" / "models.toml"
+    chairs = tomllib.loads(path.read_text(encoding="utf-8"))["chairs"]
+    assert chairs["attestator_2"]["state"] == "configured"
+    assert chairs["attestator_2"]["witness_adapter"] == "dai.v1"
+    assert chairs["attestator_2"]["witness_scope"] == "act"
     return path
 
 
@@ -301,7 +287,7 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
     work = tmp_path_factory.mktemp("live-seam")
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     catalogue = write_live_catalogue(work / "serving_recipes_live.toml", registry)
-    models = write_absent_dai_models_config(work)
+    models = committed_models_config()
     run_root = work / "runs"
     for program in (
         "pipeline/1_exemplar/door.py",
@@ -324,11 +310,21 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
 
 
 def default_scripts() -> dict[str, list[ScriptedAnswer]]:
-    """One answer per page, per chair: two pages carry these two acts."""
+    """A chair's unit of work is its own sealed scope, and the scripts say so.
+
+    The two page-scoped chairs answer once per page -- two pages carry these
+    two acts -- and the act-scoped chair answers once per act. A script whose
+    length disagreed with that would be the first thing to notice a scope
+    regression, which is why they are written out rather than generated.
+    """
     return {
         "attestator_1": [
             ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop"),
             ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop"),
+        ],
+        "attestator_2": [
+            ScriptedAnswer(content=DAI_ACT_ONE, finish_reason="stop"),
+            ScriptedAnswer(content=DAI_ACT_TWO, finish_reason="stop"),
         ],
         "attestator_3": [
             ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop"),
@@ -516,15 +512,103 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
     # not once per (act, chair), which is what the act layer would have asked.
     assert len(world.requests("attestator_1")) == 2
     assert len(world.requests("attestator_3")) == 2
+    # The act-scoped chair is asked once per act, on the same two acts: the
+    # same corpus read through a different sealed scope, which is the whole of
+    # what `witness_scope` means.
+    assert len(world.requests("attestator_2")) == 2
 
     tree = RunTree(run_root, RUN_ID)
     records = act_records(tree)
-    # Every configured chair still answers for every expected act: the absent
-    # one through a `dead` record it never had to be asked for.
+    # Every configured chair answers for every expected act, and every one of
+    # them is a chair that really served this run.
     assert {chair for _act, chair in records} == {"attestator_1", "attestator_2", "attestator_3"}
-    assert records[("a1", "attestator_2")]["outcome"] == "dead"
+    assert records[("a1", "attestator_2")]["outcome"] == "read"
+    assert records[("a1", "attestator_2")]["payload"]["payload"] == DAI_ACT_ONE
+    assert records[("a2", "attestator_2")]["payload"]["payload"] == DAI_ACT_TWO
     assert records[("a1", "attestator_3")]["outcome"] == "read"
     assert page_records(tree)[(1, "attestator_3")]["outcome"] == "read"
+
+
+def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(live_run, tmp_path):
+    """The DAI arm of the live pass, end to end through the real adapter.
+
+    Its closed model view is the thing the two closed gaps were blocking: the
+    exact crop it was shown, the exact carried prompt bytes, and the carried
+    generation config, all named by digest-checked references. The identity
+    transform is the ordinary case here -- these act crops need no resize -- so
+    the source and model images are one set of bytes under the two stage-owned
+    paths that legitimately hold them.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    payload = act_records(tree)[("a1", "attestator_2")]["payload"]
+    view = payload["native_capture"]["view"]
+    assert payload["native_capture"]["adapter"] == "dai.v1"
+    assert view["adapter"] == "dai-atr.v1"
+    if view["transform"]["kind"] == "identity":
+        assert view["source_image_ref"]["sha256"] == view["model_image_ref"]["sha256"]
+    else:
+        assert view["source_image_ref"]["sha256"] != view["model_image_ref"]["sha256"]
+    # Every reference in the closed view names real bytes in this run's tree.
+    for reference in (
+        view["source_image_ref"],
+        view["model_image_ref"],
+        view["prompts"]["system"],
+        view["prompts"]["query"],
+        view["generation_config_ref"],
+    ):
+        assert tree.read_bytes(reference["relative_path"])
+    prompt = feeding.dai_prompt()
+    assert tree.read_bytes(view["prompts"]["system"]["relative_path"]).decode() == prompt["system"]
+    assert tree.read_bytes(view["prompts"]["query"]["relative_path"]).decode() == prompt["user"]
+    # And the call record carries the vendor's own declared values, floats
+    # included, beside the three that actually went on the wire.
+    call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
+    declared = feeding.dai_generation()
+    assert set(call["generation_sent"]) == {"repetition_penalty", "top_k", "top_p"}
+    assert call["generation_declared"]["repetition_penalty"] == {
+        "schema": "wire-decimal.v1",
+        "decimal": json.dumps(declared["repetition_penalty"]),
+    }
+    assert call["generation_declared"]["do_sample"] is True
+
+
+def test_every_live_record_says_which_kind_of_bytes_it_retained(live_run, tmp_path):
+    """U8's sixth gap: `raw_response_ref` meant two things and said neither.
+
+    On every branch where an adapter parsed, the retained blob is the model's
+    own output; on the one branch where none could, it is the whole transport
+    body. Both are evidence and neither substitutes for the other, so the
+    record names which it holds -- and the tally still re-reads and
+    digest-checks the very blob it names.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    for (_act, chair), record in act_records(tree).items():
+        payload = record["payload"]
+        if "serving_call_ref" not in payload:
+            continue
+        assert payload["raw_response_kind"] == "model-output", chair
+        assert payload["native_capture"]["raw_response_ref"] == payload["raw_response_ref"]
+        attestatores.validate_retained_response_blob(tree, payload["raw_response_ref"])
+
+    # The record may not claim the other kind while carrying an adapter's own
+    # account of the bytes: a capture describes model output and nothing else.
+    payload = dict(act_records(tree)[("a1", "attestator_3")]["payload"])
+    payload["raw_response_kind"] = "transport-response-body"
+    with pytest.raises(SchemaRefusal, match="a capture describes the model's own output"):
+        attestatores.validate_testimonium_payload(payload)
+
+    # Nor may a live record stay silent about it.
+    del payload["raw_response_kind"]
+    with pytest.raises(SchemaRefusal, match="without saying which kind of bytes"):
+        attestatores.validate_testimonium_payload(payload)
 
 
 def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produced_it(
@@ -605,10 +689,18 @@ def test_chandra_goes_live_in_transport_only_and_the_record_says_so(live_run, tm
     # transporting Chandra before its schema is known.
     assert tree.read_bytes(payload["raw_response_ref"]["relative_path"]).decode() == CHANDRA_BODY
     assert "serving_call_ref" in payload
-    # The retained model view is left off deliberately: the shared capture
-    # contract admits no `unrecognized-shape` parse state (see
-    # `publishable_native_capture`).
-    assert "native_capture" not in payload
+    # The adapter's own account of those bytes rides along. It reached
+    # `unrecognized-shape` -- the parser ran, read the whole body, and could
+    # place no shape it knows -- which is a different fact from a parse
+    # failure, and the shared capture contract now has room for it, so the
+    # retained model view stays beside the blob it describes.
+    assert payload["native_capture"]["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "json",
+        "outcome": "unverified-response-schema",
+    }
+    assert payload["native_capture"]["raw_response_ref"] == payload["raw_response_ref"]
+    assert payload["raw_response_kind"] == "model-output"
 
 
 def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
@@ -658,10 +750,15 @@ def test_a_resumed_live_pass_recovers_a_page_response_from_the_act_layer_it_seal
     assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
 
     # Exactly one request each, for the continuation page alone: page 1 is
-    # rebuilt from the act layer the interrupted pass sealed.
-    assert resumed.loads == sorted(LIVE_CHAIRS)
+    # rebuilt from the act layer the interrupted pass sealed. The act-scoped
+    # chair finished both its acts before the interruption, so the resume has
+    # nothing to ask it and never starts it -- a chair with no pending unit is
+    # a chair that is not loaded, which is what makes a resume cheap as well as
+    # safe.
+    assert resumed.loads == ["attestator_1", "attestator_3"]
     assert len(resumed.requests("attestator_1")) == 1
     assert len(resumed.requests("attestator_3")) == 1
+    assert resumed.requests("attestator_2") == []
     tree = RunTree(run_root, RUN_ID)
     assert act_records(tree)[("a1", "attestator_3")] == interrupted[("a1", "attestator_3")]
     published = page_records(tree)
@@ -683,15 +780,47 @@ def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(
     assert ("a1", "attestator_1") not in act_records(RunTree(run_root, RUN_ID))
 
 
-def test_a_churro_response_with_no_engine_stop_word_is_refused_by_name(live_run, tmp_path):
-    """The shared page contract cannot hold an unknown truncation state yet."""
+def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation(
+    live_run, tmp_path
+):
+    """U8's third gap: the third truncation state, published rather than refused.
+
+    A live Churro page whose wire carried no `finish_reason` used to stop the
+    pass by name, because the shared page contract asked a two-valued question
+    of a three-state fact and could only have published `truncated: false` --
+    a completed boundary nobody observed. The third state is now measured on
+    both records, so the response is carried instead of refused, and it is
+    carried as unknown rather than as either measured answer.
+    """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
-    scripts["attestator_3"] = [ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason=ABSENT)]
+    scripts["attestator_3"] = [
+        ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason=ABSENT),
+        ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason=ABSENT),
+    ]
     world = LiveWorld(live_run, tmp_path, scripts)
 
-    with pytest.raises(ContractError, match="reconcile"):
-        run_attestatores(live_run, run_root, factory=world.factory)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    for payload in (
+        act_records(tree)[("a1", "attestator_3")]["payload"],
+        page_records(tree)[(1, "attestator_3")]["payload"],
+    ):
+        assert payload["content_health"]["truncated"] is None
+        assert payload["content_health"]["truncation_basis"] == "not-recorded"
+        assert payload["native_capture"]["transport_stop_reason"] == "unreported"
+    # The engine's own silence travels verbatim into the request record too:
+    # `unreported` is this system's word for the absence, never a stop word the
+    # engine did not say.
+    call = json.loads(
+        tree.read_bytes(
+            act_records(tree)[("a1", "attestator_3")]["payload"]["serving_call_ref"][
+                "relative_path"
+            ]
+        )
+    )
+    assert call["finish_reason"] is None
 
 
 def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
@@ -835,14 +964,17 @@ def test_a_page_record_the_fixture_posture_wrote_is_not_resumed_into_a_live_pass
         attestatores._page_capture_from_record(context, record, "the page Testimonium")
 
 
-def test_a_live_dai_request_cannot_be_recorded_and_says_which_value_stops_it(tmp_path):
-    """The first of the two defects that keep DAI out of the live roster.
+def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):
+    """The defect that used to keep DAI out of the live roster, from the outside.
 
-    `chair-call-record.v1` is canonical JSON, and canonical JSON refuses a
-    float; DAI's carried generation config is mostly floats. The request is
-    therefore refused while it is being *recorded*, before any answer is read,
-    which is the honest place for it -- a reading whose request cannot be
-    recorded has no provenance (GOVERNANCE 6).
+    `chair-call-record.v1` is canonical JSON and canonical JSON refuses a
+    float, so a request carrying DAI's shipped generation config could not be
+    recorded and was therefore never made. It is recorded now as the exact
+    decimal text the wire carries, which this test checks against the bytes the
+    endpoint actually received rather than against the client's own values --
+    a request recorded as something other than what was sent has no provenance
+    (GOVERNANCE 6), and rounding it would be the silent version of the same
+    problem.
     """
     identity = ChairIdentity(
         role="attestator_2",
@@ -896,8 +1028,24 @@ def test_a_live_dai_request_cannot_be_recorded_and_says_which_value_stops_it(tmp
     )
     with client:
         endpoint.script(ScriptedAnswer(content="transcribed", finish_reason="stop"))
-        with pytest.raises(TypeError, match="repetition_penalty"):
-            client.read(request)
+        response = client.read(request)
+
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    posted = endpoint.requests[0]
+    for key in ("repetition_penalty", "top_p"):
+        assert posted[key] == declared[key]
+        assert record["generation_sent"][key] == {
+            "schema": "wire-decimal.v1",
+            "decimal": json.dumps(declared[key]),
+        }
+        assert float(record["generation_sent"][key]["decimal"]) == declared[key]
+    # `temperature` is declared by the vendor and never sent -- the sealed
+    # reading-of-record posture is 0 -- and is still recorded to the digit.
+    assert record["generation_declared"]["temperature"] == {
+        "schema": "wire-decimal.v1",
+        "decimal": json.dumps(declared["temperature"]),
+    }
+    assert "temperature" not in request.generation_sent
 
 
 def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(live_run, tmp_path):
@@ -955,67 +1103,35 @@ def test_the_live_preflight_refuses_to_leave_a_sealed_pair_unresolved(live_run, 
         )
 
 
-@pytest.mark.parametrize(
-    ("adapter", "stop", "message"),
-    [
-        ("chandra.v1", "abort", "never measured a meaning for"),
-        ("churro.v1", "unreported", "reconcile"),
-    ],
-)
-def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication(
-    adapter, stop, message
-):
-    """The two live stop-word refusals, at the boundary that owns them.
+def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication():
+    """One refusal, on the transport word alone, whatever the adapter.
 
-    The shared capture contract checks the transport word only for `churro.v1`,
-    so an unreadable engine word from any other adapter would otherwise travel
-    into a record unexamined; and an unreported word is refused for Churro alone,
-    because its page contract is the one that cannot hold the third truncation
-    state.
-    """
-    capture = {
-        "schema": "attestatores-model-view.v1",
-        "adapter": adapter,
-        "view": {},
-        "raw_response_ref": {"relative_path": "3_attestatores/blobs/sha256/x", "sha256": "x"},
-        "transport_stop_reason": stop,
-        "stop_reason": stop,
-        "findings": [],
-        "parse": {"state": "parsed", "parser": "json", "text": ""},
-    }
-    with pytest.raises(ContractError, match=message):
-        attestatores.refuse_unpublishable_stop_word(
-            adapter, stop, capture, "the response for page 1"
-        )
-
-
-def test_the_stop_word_vocabulary_check_runs_even_when_no_capture_exists():
-    """An unmeasured engine word must not survive on a response no adapter parsed.
-
-    A wire body `ChairClient` could not parse at all carries `native_capture =
-    None` (`live_witness._malformed_response_attempt`), so the guard cannot
-    read the word off a capture; it has to be given the response's own
-    transport word directly, and must still refuse it.
+    The shared capture contract checks the transport word only for
+    `churro.v1`, so an unreadable engine word from any other adapter would
+    otherwise travel into a record unexamined. The check reads the response's
+    own word directly rather than off a capture, so it also covers a wire body
+    `ChairClient` could not parse at all (`native_capture = None`), whose
+    engine word is still recorded verbatim in its `chair-call-record.v1` blob.
     """
     with pytest.raises(ContractError, match="never measured a meaning for"):
-        attestatores.refuse_unpublishable_stop_word(
-            "chandra.v1", "abort", None, "the response for page 1"
-        )
+        attestatores.refuse_unpublishable_stop_word("abort", "the response for page 1")
 
 
-def test_a_churro_page_with_no_capture_at_all_is_not_refused_for_the_page_contract_reason():
-    """The Churro-specific 'cannot reconcile truncation' refusal needs a capture.
+def test_an_unreported_stop_word_is_recorded_rather_than_refused():
+    """The vocabulary admits the absence marker; only unmeasured words refuse.
 
-    A response with no capture has `content_health.recordable=False` already,
-    so there is no truncation field for an unreported stop word to contradict;
-    the recognized-but-unreported word alone must not raise.
+    A second refusal used to live here, for Churro alone, because the shared
+    page contract could not reconcile an unreported boundary against a
+    truncation state. `common/native_witness.py` measures that third state now,
+    so the guard is gone rather than merely narrowed -- what is left is the one
+    question it was always for: has this pipeline ever measured a meaning for
+    this word?
     """
     attestatores.refuse_unpublishable_stop_word(
-        "churro.v1",
-        attestatores.STOP_REASON_UNREPORTED,
-        None,
-        "the response for page 1",
+        attestatores.STOP_REASON_UNREPORTED, "the response for page 1"
     )
+    for word in ("stop", "length", "eos", "max_new_tokens"):
+        attestatores.refuse_unpublishable_stop_word(word, "the response for page 1")
 
 
 # ============================ resume: mid-page interruption ===================
@@ -1077,7 +1193,12 @@ def test_a_pass_interrupted_between_two_act_views_of_one_page_completes_on_resum
     resumed_scripts = {
         # Page 1 is rebuilt from the sealed `a1` record; only page 2 is asked.
         "attestator_1": [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop")],
-        # attestator_3 never sealed anything and is asked fresh for both pages.
+        # The two chairs after it never sealed anything and are asked fresh:
+        # the act-scoped one once per act, the page-scoped one once per page.
+        "attestator_2": [
+            ScriptedAnswer(content=DAI_ACT_ONE, finish_reason="stop"),
+            ScriptedAnswer(content=DAI_ACT_TWO, finish_reason="stop"),
+        ],
         "attestator_3": [
             ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop"),
             ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop"),
@@ -1087,6 +1208,7 @@ def test_a_pass_interrupted_between_two_act_views_of_one_page_completes_on_resum
     assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
 
     assert len(resumed.requests("attestator_1")) == 1
+    assert len(resumed.requests("attestator_2")) == 2
     assert len(resumed.requests("attestator_3")) == 2
 
     tree = RunTree(run_root, RUN_ID)
