@@ -357,10 +357,11 @@ catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
 first — if all of them are fixture rows, the chair is fixture regardless of
 tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
 the profile at that exact tier decides, with an `UnsupportedProfile` refusing
-by its own recorded reason and a fixture row at that tier refused when the
-same chair is live at another tier — a catalogue may not be half live for one
-chair, and that refusal names whichever posture the other tiers actually hold
-rather than asserting they are live. A tier with no configured row at all for
+by its own recorded reason and a fixture row at that tier refused when any
+other tier for the same chair is not a fixture row — a catalogue may not be
+half fixture for one chair — and that refusal names whichever posture the
+other tiers actually hold (live, unsupported, or both) rather than asserting
+they are live. A tier with no configured row at all for
 this chair is also this function's own vocabulary:
 `config.ServingRecipes.for_identity`'s zero-match
 `ServingConfigurationError` is caught and re-raised as

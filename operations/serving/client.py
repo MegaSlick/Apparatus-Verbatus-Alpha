@@ -574,9 +574,9 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
 
     Three-name lookup, never a ranking: every row for this ``(recipe, chair)``
     is collected first. If every one of them is a fixture row, the chair is
-    fixture regardless of a supplied tier. Otherwise a live posture exists
-    somewhere in the catalogue, so a tier is required; the row at that exact
-    tier decides, with no fallback to another tier or to fixture in either
+    fixture regardless of a supplied tier. Otherwise at least one row is not
+    a fixture row — live or unsupported — so a tier is required; the row at
+    that exact tier decides, with no fallback to another tier or to fixture in either
     direction (GOVERNANCE 3 / hard rule 8).
     """
 
