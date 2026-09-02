@@ -1,0 +1,72 @@
+# Grouping and reconciliation thresholds: geometric policy for the
+# Designator's structure/grouping/conservation pass, expressed as a fraction
+# of the page's own dimensions wherever a fraction is the honest shape, and
+# left absolute wherever it is not.
+#
+# `[grouping.page_fraction_bp]` holds thresholds that scale with the page:
+# integer basis points (1/10000), never a float -- canonical artifacts carry
+# integers, never floats (`common/contracts/canonical.py`), and
+# `config/designator_padding.toml` already ruled this project's fractional
+# policy values are basis points for exactly that reason. Resolve a field to
+# pixels with `geometry._pad_amount(dimension, bp)` -- round-half-up, pure
+# integer arithmetic -- never write a second rounding rule.
+#
+# Each field's basis is named below because it is NOT uniform: five fields
+# are a fraction of the page's own HEIGHT and one (`margin_bp`) is a fraction
+# of the page's own WIDTH, matching what the retired pixel constant actually
+# measured against in `grouping.py`/`structure.py`/`conservation.py`.
+#
+#   field                               | basis  | retired constant
+#   ------------------------------------|--------|---------------------------
+#   margin_bp                           | WIDTH  | grouping.DEFAULT_MARGIN_FRACTION (0.15)
+#   chain_gap_bp                        | HEIGHT | grouping.DEFAULT_CHAIN_GAP_PX (6)
+#   anchor_reach_bp                     | HEIGHT | grouping.DEFAULT_ANCHOR_REACH_PX (2)
+#   brace_min_height_bp                 | HEIGHT | grouping.DEFAULT_BRACE_MIN_HEIGHT_PX (30)
+#   page_edge_reach_bp                  | HEIGHT | grouping.DEFAULT_PAGE_EDGE_REACH_PX (4)
+#   review_priority_min_dimension_bp    | HEIGHT | conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX (6)
+#
+# `[grouping.absolute]` holds `gap_tolerance_px`, which stays a raw pixel
+# count and must NEVER be converted to a page-fraction basis point -- see the
+# provenance caveat below. It is the one field in this file this build cannot
+# honestly set.
+#
+# `max_residual_components` is a bare integer count (not a basis point, not a
+# sub-table field): the ceiling on how many residual components one page's
+# conservation record may enumerate before the page itself is held as one
+# review item instead. See the provenance block for the reasoning.
+#
+# **Two constants deliberately do NOT live here and never will:**
+# `structure.PRIMARY_MARGIN` (20) and `structure.SECONDARY_MARGIN` (2) are
+# 8-bit ink-intensity offsets, not page geometry -- scaling either by a page
+# dimension is meaningless, and `common/test_designator_recensor_ink_calibration.py`
+# is an AST pin that reads `SECONDARY_MARGIN` as a source literal in
+# `structure.py` and cross-checks it against the Recensor's own contrast
+# constant. Moving it into a per-run config value would make that
+# cross-stage invariant unenforceable statically -- a sealed run could carry
+# a margin the Recensor would then call ink what the Designator dismissed,
+# which is the one direction of ink loss `conservation.py` names as unsafe.
+# They stay Python module constants. This file's closed schema refuses a
+# `primary_margin` or `secondary_margin` key wherever one is written, by name.
+
+[grouping]
+max_residual_components = 2000
+
+[grouping.page_fraction_bp]
+margin_bp = 1500
+chain_gap_bp = 231
+anchor_reach_bp = 77
+brace_min_height_bp = 1154
+page_edge_reach_bp = 154
+review_priority_min_dimension_bp = 231
+
+[grouping.absolute]
+gap_tolerance_px = 3
+
+[grouping.provenance]
+source = "every page_fraction_bp value is a basis-point conversion of the retired module-level Python default it replaces (grouping.DEFAULT_MARGIN_FRACTION, grouping.DEFAULT_CHAIN_GAP_PX, grouping.DEFAULT_ANCHOR_REACH_PX, grouping.DEFAULT_BRACE_MIN_HEIGHT_PX, grouping.DEFAULT_PAGE_EDGE_REACH_PX, conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX), computed against this project's own synthetic fixture pages (proof/fixtures/synthetic-two-page-v0, measured 200x260) with geometry._pad_amount round-half-up so every field resolves bit-identically to the retired constant at that size; gap_tolerance_px is carried forward unconverted from structure.DEFAULT_GAP_TOLERANCE_PX (3); max_residual_components is a new policy value, not a converted constant -- reasoned from operations/operator/review.py's own MAX_REVIEW_ITEMS = 50_000-item / 16 MiB console refusal (CONSOLE_TREE_UNREADABLE), which a single unbounded page can already trip"
+corpus = "none of these values comes from a measured parish-register corpus. The six page_fraction_bp values are unmeasured walking-skeleton defaults tuned by eye against this project's own tiny synthetic fixtures, not derived from any register sample; gap_tolerance_px has no corpus behind it at all -- see caveat; max_residual_components is reasoned from the operator console's own documented item ceiling, not from any ink-density sample"
+sample_unit = "page (the synthetic fixture pages under proof/fixtures/synthetic-two-page-v0, not a real register record or act)"
+sample_count = 0
+statistic = "none -- every field here is an unmeasured default or a policy ceiling reasoned from another module's documented limit, not a computed percentile or summary statistic over any sample"
+calibrated_for_this_corpus = false
+caveat = "gap_tolerance_px is the loudest number in this file and must never be expressed as a page-fraction basis point. It is a stroke-connectivity radius -- how many blank pixels two ink runs may have between them and still count as one connected mark -- not a page-layout proportion, and it must not scale with page size: structure.label_components builds a Chebyshev offset list of radius (gap_tolerance_px + 1), so its cost is quadratic in this value (roughly ink_pixels * radius^2 in the current pure-Python scan). Scaling it the way the six page_fraction_bp fields scale -- to ~41px on a 3508px-tall real page -- would both change what 'connected' means (bridging inter-word gaps into merged lines, not just closing letterform strokes) and make the labeller's runtime grow with the cube of page scale. Its correct value is a function of scan resolution (DPI, stroke width in pixels), not of page dimension, and no measurement of that relationship exists in this project yet; it stays absolute at 3 by decision, not by oversight. Separately, max_residual_components decides review granularity only -- it is reasoned from the operator console's item ceiling, never from a calibrated ink-density figure, and GOVERNANCE 10 forbids treating it as anything that constrains what conservation measures (see pipeline/2_designator/conservation.py's own module docstring). Every value in this file, gap_tolerance_px included, needs re-derivation against this project's own real corpus before calibrated_for_this_corpus may become true; padding_calibration.py's sibling harness for this file does not exist yet because no gold set does either."
