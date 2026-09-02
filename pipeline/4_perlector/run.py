@@ -1760,28 +1760,14 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             retain=partial(retain_chair_bytes, context),
             decoding_config_sha256=decoding_config_sha256,
             record_temperature=record_temperature,
-            read_receipt=_read_receipt_through(context),
+            # Wired bare. `ChairClient.__enter__` copies
+            # `ServiceHandle.receipt_reference` into a plain `dict` before it
+            # calls this, which is exactly the type `RunTree.read_run_receipt`
+            # requires, so no stage-side conversion is left to do.
+            read_receipt=context.tree.read_run_receipt,
         )
 
     return factory
-
-
-def _read_receipt_through(context):
-    """The tree's receipt reader, behind one conversion the two seams need.
-
-    `ChairClient.__enter__` hands its `read_receipt` exactly what
-    `ServiceHandle.receipt_reference` holds, and `ReceiptPublication` freezes
-    that into a `MappingProxyType`; `RunTree.read_run_receipt` requires a plain
-    `dict` and refuses anything else by name. Both are right about their own
-    boundary — one is protecting an immutable reference, the other a closed
-    reference schema — so the stage that composes them converts, rather than
-    either giving up its rule.
-    """
-
-    def read_receipt(reference):
-        return context.tree.read_run_receipt(dict(reference))
-
-    return read_receipt
 
 
 def retain_chair_bytes(context, data: bytes) -> dict[str, str]:

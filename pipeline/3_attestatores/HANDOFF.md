@@ -207,23 +207,23 @@ be present. The field is written only in live mode, its vocabulary is closed
 model output, and the attempt tally still re-reads and digest-checks the blob it
 names.
 
-**The client normalizes the receipt reference.** `ServiceHandle.receipt_reference`
-is a read-only mapping proxy and `RunTree.read_run_receipt` requires its own
-reference type or a plain `dict`; both boundaries are right and neither is
-loosened, so `ChairClient.__enter__` copies on the way in and both stages can
-now pass the tree's reader bare. The converters already wired at each stage's
-own construction site are pure no-ops as a result. This stage's own is left in
-place for its owner to remove, and `pipeline/4_perlector/run.py`'s
-`_read_receipt_through` is not a pure no-op removal either — `test_live_perlector.py`
-names it — so removing both is one small follow-on, not a change made from
-outside their files. The comment beside this stage's own lambda
-(`run.py` around `read_receipt=lambda reference: ...`) still says the bare
-wiring "refuses every live start on the reference the manager itself just
-published" — true when it was written, false now that `ChairClient.__enter__`
-normalizes the reference itself (`operations/serving/client.py`); whoever
-removes the lambda should drop the stale claim with it, or correct it first
-if the lambda is kept a while longer. `pipeline/4_perlector/run.py:1772`
-carries the identical stale claim in `_read_receipt_through`'s comment.
+**The client normalizes the receipt reference, and both stage-side converters
+are gone.** `ServiceHandle.receipt_reference` is a read-only mapping proxy and
+`RunTree.read_run_receipt` requires its own reference type or a plain `dict`;
+both boundaries are right and neither is loosened, so `ChairClient.__enter__`
+copies on the way in (`operations/serving/client.py`, asserted by
+`operations/serving/test_client.py::test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter`,
+whose stand-in reader refuses exactly what the real one refuses). Each stage's
+own converter was a `dict()` over an already-plain `dict` from that moment on,
+and both are now removed: this stage passes `read_receipt=context.tree.read_run_receipt`
+at its construction site, and `pipeline/4_perlector/run.py::_read_receipt_through`
+is deleted along with the one line in `pipeline/4_perlector/test_live_perlector.py`
+that named it. The client's `__enter__` is the sole caller of `read_receipt`, so
+both removals are behaviour-identical, and the stale claim that the bare wiring
+"refuses every live start" went with the comments that carried it. One converter
+of the same shape survives in this stage's own `test_attestatores_live_pass.py`,
+where it is a local test fixture rather than a stage seam; it is equally
+redundant and equally harmless, and whoever next edits that file may drop it.
 
 One smaller note still open for whoever comes next: a page Testimonium cannot
 name its `serving_call_ref` (the shared page contract's optional fields do not
@@ -914,3 +914,31 @@ attempts it describes are still on disk*. Over a folder whose attempts are gone,
 re-deriving the manifest discards the last record that they existed, and the
 pass that follows restarts the history at ordinal 1. That is a decision someone
 may legitimately take; it is not one to take without reading the manifest first.
+
+## Who wrote what
+
+The live reading seam this stage sits in was built by several seats across eight
+units. The record of which seat wrote which unit is the dispatch record — the
+workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
+`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`), which name the model each
+seat was dispatched as. **The commit trailers on this branch are self-reported
+and several are wrong**: some Opus and Sonnet seats copied the host's own
+`Co-Authored-By` line. Where a trailer and this table disagree, this table is
+the record. The Fable seat was the host orchestrator and wrote no unit code.
+
+| unit | built by | verified by | fixed by |
+|---|---|---|---|
+| U1 contract and parser | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U2 client and fakes | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U3 Perlector live reader | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U5 Attestatores live boundary | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U7p placement-tier plumbing | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U4 Perlector wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U6 Attestatores wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U8 cross-file seams | Opus 5 | Opus 5 | Sonnet 5 |
+| U7-e2e end to end | Opus 5 | Opus 5 | Sonnet 5 (host committed) |
+
+This stage's own live boundary is U5, its wiring into the stage is U6, and the
+cross-file seams described under "The cross-file seams that let a live pass carry
+every chair" are U8. U7-e2e is the whole-run proof recorded at the end of that
+section.

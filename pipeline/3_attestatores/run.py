@@ -4036,15 +4036,12 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         retain=lambda data: retained_blob_ref(context, data),
         decoding_config_sha256=decoding_sha256,
         record_temperature=policy["reading_of_record"]["temperature"],
-        # Copied into a plain dict on the way in, deliberately.
-        # `ServiceHandle.receipt_reference` is a read-only mapping proxy, and
-        # `RunTree.read_run_receipt` accepts its own reference type or a `dict`
-        # and refuses anything else by name -- so the wiring the serving README
-        # describes (`read_receipt=context.tree.read_run_receipt`) refuses every
-        # live start on the reference the manager itself just published. Found
-        # by wiring it; the adaptation belongs here, at the seam that knows both
-        # sides, rather than by loosening a run-tree type check.
-        read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
+        # Wired bare, the way the serving README describes.
+        # `ServiceHandle.receipt_reference` is a read-only mapping proxy and
+        # `RunTree.read_run_receipt` accepts its own reference type or a plain
+        # `dict` and refuses anything else by name; `ChairClient.__enter__`
+        # copies at that seam, so no stage-side conversion is left to do.
+        read_receipt=context.tree.read_run_receipt,
     )
 
 

@@ -282,7 +282,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
             retain=lambda data: perlector.retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=decoding_policy["reading_of_record"]["temperature"],
-            read_receipt=perlector._read_receipt_through(context),
+            read_receipt=context.tree.read_run_receipt,
         )
 
     return factory
