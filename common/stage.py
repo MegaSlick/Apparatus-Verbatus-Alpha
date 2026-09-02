@@ -2725,13 +2725,18 @@ def _verify_real_act_denominator(
             if hold is not None and isinstance(hold.get("payload"), dict)
             else {}
         )
-        regions = [
+        proposal_regions = [
             record
             for record in records
             if record["kind"] == "region"
             and isinstance(record["payload"].get("transform"), Mapping)
-            and record["payload"]["transform"].get("source_page_id") == row["page_id"]
         ]
+        regions = [
+            record
+            for record in proposal_regions
+            if record["payload"]["transform"].get("source_page_id") == row["page_id"]
+        ]
+        far_regions = [record for record in proposal_regions if record not in regions]
         classes = []
         if "residual_bounds" in hold_payload:
             classes.append("residual")
@@ -2760,17 +2765,22 @@ def _verify_real_act_denominator(
                 "page-fallback record; real ingress carries no declaration to admit it on"
             )
         if classes == ["proposal"]:
-            _verify_structural_act_row(act_id, row, regions)
+            _verify_structural_act_row(act_id, row, regions, far_regions)
             continue
         minted_rows[act_id] = row
         if hold is not None:
             holds_by_subject[act_id] = hold
-    _verify_minted_act_rows(context, minted_rows, holds_by_subject, fallbacks_by_subject)
+    _verify_minted_act_rows(
+        context, minted_rows, holds_by_subject, fallbacks_by_subject, beyond="the structural pass"
+    )
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
 def _verify_structural_act_row(
-    act_id: str, row: dict[str, Any], regions: list[dict[str, Any]]
+    act_id: str,
+    row: dict[str, Any],
+    regions: list[dict[str, Any]],
+    far_regions: list[dict[str, Any]],
 ) -> None:
     """A real structural act, recomputed from the rectangle it was minted over.
 
@@ -2779,14 +2789,33 @@ def _verify_structural_act_row(
     That is the one producer-independent fact a consumer can recompute the
     identity against, so a real run's denominator is *verified* rather than
     trusted. Exactly one proposal-origin region may sit on the row's own page; a
-    continuation is a second region on the far page and is not counted here.
+    continuation is a second region on a far page and is not counted here, but
+    it is not ignored either.
+
+    Act identity binds only page, class and bounds (`act_bindings`), so the
+    identity check above proves none of `act_key`, `page_ordinal` or
+    `has_continuation` -- a seal row is free to *name* a different page ordinal
+    or a foreign act key for the very region whose bounds it verified against,
+    and stages 3-7 index and join by those named fields, not by identity.
+    `cut_minted_region` publishes `act_key` and `transform.source_page_ordinal`
+    beside every region, so both are recomputable and are recomputed here.
+
+    `has_continuation` is the same kind of belief otherwise: nothing before this
+    reconciled it against the regions the Designator actually cut. A row
+    claiming a continuation with no far-page region names one that was never
+    cut; a row denying one while a far-page region exists would drop a
+    published continuation crop silently downstream (the Attestatores append
+    the far page only when the flag is set) -- exactly the loss GOALS 1 calls
+    worse than a poorly read act. So the far-page count is checked against the
+    flag in both directions.
     """
     if len(regions) != 1:
         raise FatalAccounting(
             f"act {act_id} has {len(regions)} proposal regions on page {row['page_id']}, not "
             "exactly one; a structural act is minted over one rectangle on its own page"
         )
-    bounds = regions[0]["payload"].get("raw_bounds")
+    region_payload = regions[0]["payload"]
+    bounds = region_payload.get("raw_bounds")
     if not isinstance(bounds, dict):
         raise FatalAccounting(
             f"act {act_id}'s proposal region carries no raw_bounds to recompute its identity "
@@ -2799,6 +2828,28 @@ def _verify_structural_act_row(
             f"act {act_id} does not verify against the proposal class and the raw_bounds its "
             f"own region record names: {error}"
         ) from error
+    if region_payload.get("act_key") != row["act_key"]:
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names act_key {row['act_key']!r}, but its own proposal "
+            f"region names act_key {region_payload.get('act_key')!r}; the two must agree"
+        )
+    region_ordinal = region_payload["transform"].get("source_page_ordinal")
+    if region_ordinal != row["page_ordinal"]:
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names page_ordinal {row['page_ordinal']!r}, but its own "
+            f"proposal region names source_page_ordinal {region_ordinal!r}; the two must agree"
+        )
+    if len(far_regions) > 1:
+        raise FatalAccounting(
+            f"act {act_id} has {len(far_regions)} proposal regions on pages other than "
+            f"{row['page_id']}; a continuation is at most one region on one far page"
+        )
+    if row["has_continuation"] != bool(far_regions):
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names has_continuation={row['has_continuation']!r}, but "
+            f"its Designator evidence names {len(far_regions)} proposal region(s) on a page "
+            "other than its own; the two must agree"
+        )
 
 
 def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> None:
@@ -3059,8 +3110,16 @@ def _verify_minted_act_rows(
     extra_rows: dict[str, dict[str, Any]],
     holds_by_subject: dict[str, dict[str, Any]] | None = None,
     fallbacks_by_subject: dict[str, dict[str, Any]] | None = None,
+    *,
+    beyond: str = "the fixture",
 ) -> None:
     """Every expected-act row beyond the fixture's own denominator.
+
+    `beyond` names what a row is being checked against in refusal sentences.
+    The synthetic caller has a fixture denominator to name; the real caller has
+    none, so it passes "the structural pass" instead -- a malformed real-mode
+    row must never be told it "extends the denominator beyond the fixture",
+    the exact sentence a real run never had a fixture to be measured against.
 
     Two units the Designator may add beyond what the fixture declares, and no
     others. Both exist for GOALS 1's "a missed act is worse than a poorly read
@@ -3105,23 +3164,23 @@ def _verify_minted_act_rows(
     for act_id, row in extra_rows.items():
         if row["has_continuation"]:
             raise FatalAccounting(
-                f"act {act_id} extends the denominator beyond the fixture but claims a "
+                f"act {act_id} extends the denominator beyond {beyond} but claims a "
                 "continuation; a residual has no declared continuation to claim, and neither "
                 "has a page-fallback or page-residual act"
             )
         if row["outcome"] == "proposed":
-            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject)
+            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject, beyond=beyond)
             continue
         if row["outcome"] != "held":
             raise FatalAccounting(
                 f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
-                "'proposed'; the only units that may extend the denominator beyond the fixture "
+                f"'proposed'; the only units that may extend the denominator beyond {beyond} "
                 "are a conservation residual, a page-residual hold, and a page-fallback act"
             )
         hold = holds_by_subject.get(act_id)
         if hold is None:
             raise FatalAccounting(
-                f"act {act_id} extends the denominator beyond the fixture but the Designator "
+                f"act {act_id} extends the denominator beyond {beyond} but the Designator "
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
@@ -3149,7 +3208,12 @@ def _verify_minted_act_rows(
 
 
 def _verify_page_fallback_act_row(
-    context, act_id: str, row: dict[str, Any], fallbacks_by_subject: dict[str, dict[str, Any]]
+    context,
+    act_id: str,
+    row: dict[str, Any],
+    fallbacks_by_subject: dict[str, dict[str, Any]],
+    *,
+    beyond: str = "the fixture",
 ) -> None:
     """The one extra row that may be `proposed`, checked against its own evidence.
 
@@ -3168,7 +3232,7 @@ def _verify_page_fallback_act_row(
     record = fallbacks_by_subject.get(act_id)
     if record is None:
         raise FatalAccounting(
-            f"act {act_id} extends the denominator beyond the fixture as a proposed act but the "
+            f"act {act_id} extends the denominator beyond {beyond} as a proposed act but the "
             "Designator published no page-fallback record for it; it is not 'held' either, so it "
             "is not a conservation residual"
         )
