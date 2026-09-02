@@ -311,8 +311,11 @@ from it is cited with its page and its date in the file that relies on it.
   condition written beside the admission, rather than widened to a glob.
 
 **Verification run.** `ruff format` and `ruff check` on every `.py` touched, clean.
-Tests through the shared test lock only, as the brief required — see the commit
-messages for the exact runs and exit codes.
+Tests through the shared test lock only, as the brief required. The three owned
+files (`test_provider_runpod.py`, `test_pod_runtime.py`, `test_boot_a_request.py`)
+passed through the lock: `PYTEST_EXIT=0`, 2026-09-02. The full `operations/pod` run
+is still pending — the brief allows it once, and it was not spent verifying this
+review pass.
 
 ## Blockers before either boot
 

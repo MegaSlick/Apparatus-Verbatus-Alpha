@@ -55,6 +55,20 @@ def test_the_committed_unconfigured_policy_renders_a_refusal_not_a_request() -> 
     assert "No pod, lease, preview or provider call results" in rendered.text
 
 
+def test_an_unconfigured_policy_renders_a_refusal_not_a_request() -> None:
+    """The refusal path must not depend solely on the committed spend.toml
+    happening to say state="unconfigured" today -- it has to hold for the
+    state itself, independent of the committed file's current contents."""
+    rendered = render_boot_a_request(
+        SpendPolicy(state="unconfigured"), load_placement_table(PLACEMENT)
+    )
+
+    assert rendered.refused
+    assert "REFUSED" in rendered.text
+    assert rendered.card is None and rendered.hard_lifetime_seconds is None
+    assert "python -m operations.pod.cli" not in rendered.text
+
+
 def test_a_configured_policy_renders_the_drill_from_its_own_numbers() -> None:
     placement = load_placement_table(PLACEMENT)
     rendered = render_boot_a_request(configured(), placement)
@@ -139,6 +153,21 @@ def test_placeholders_stay_visible_until_supplied() -> None:
 
 def test_main_exits_two_on_the_committed_policy(capsys: pytest.CaptureFixture[str]) -> None:
     status = main(["--spend", str(COMMITTED_SPEND), "--placement", str(PLACEMENT)])
+
+    assert status == 2
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_main_exits_two_on_an_uncommitted_unconfigured_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same as test_main_exits_two_on_the_committed_policy, but against a
+    policy file this test writes itself, so the refusal path keeps its own
+    coverage even after the committed config/spend.toml is configured."""
+    spend = tmp_path / "spend.toml"
+    spend.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+
+    status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
 
     assert status == 2
     assert "REFUSED" in capsys.readouterr().out
