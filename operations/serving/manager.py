@@ -475,7 +475,16 @@ class ServingManager:
             # Invoking vLLM through this interpreter binds the command to the
             # exact environment inspected through importlib.metadata below.  A
             # PATH-resolved console script could name another virtualenv's vLLM.
-            command_prefix = (sys.executable, "-m", "vllm")
+            #
+            # The module is `vllm.entrypoints.cli.main`, not `vllm` itself: the
+            # published wheel (checked against the pinned 0.27.1's own central
+            # directory) carries no `vllm/__main__.py`, so `python -m vllm`
+            # raises `No module named vllm.__main__` before a request is ever
+            # served.  `vllm.entrypoints.cli.main` is the module vLLM's own
+            # `[project.scripts] vllm = "vllm.entrypoints.cli.main:main"` console
+            # script points at, and it carries `if __name__ == "__main__":
+            # main()`, so `-m` runs it the same way the console script would.
+            command_prefix = (sys.executable, "-m", "vllm.entrypoints.cli.main")
         if (
             not isinstance(command_prefix, tuple)
             or not command_prefix

@@ -60,13 +60,22 @@ log-directory default: the pod assembler must give every manager for the same
 card the same stable lock path. The launcher passes that lock descriptor to
 the exact vLLM child, so a controller crash cannot release the lease while its
 child remains resident. The default command is
-`sys.executable -m vllm serve`: the executable and the inspected installed
-distribution therefore come from the same Python environment. That equality is
-enforced, not merely defaulted — a supplied `command_prefix` naming a different
-interpreter is refused at construction unless the caller also supplies the
-`PackageInspector` for the environment it launches. Otherwise the exact package
-pin would pass against distributions the engine never imports, and the launch
-audit's `runtime_packages.observed` would measure the wrong Python.
+`sys.executable -m vllm.entrypoints.cli.main serve`: the executable and the
+inspected installed distribution therefore come from the same Python
+environment. The module is `vllm.entrypoints.cli.main`, not `vllm` itself —
+checked against the pinned vLLM 0.27.1's own published wheel, not assumed:
+`vllm/__main__.py` is absent from its central directory (and from the tree at
+v0.10.1, v0.27.1, and v0.28.0), so `python -m vllm` raises `No module named
+vllm.__main__` before a request is ever served, while `vllm.entrypoints.cli.main`
+is the module vLLM's own `[project.scripts] vllm =
+"vllm.entrypoints.cli.main:main"` console script points at and it ends with
+`if __name__ == "__main__": main()`. That equality between launcher and
+inspected interpreter is enforced, not merely defaulted — a supplied
+`command_prefix` naming a different interpreter is refused at construction
+unless the caller also supplies the `PackageInspector` for the environment it
+launches. Otherwise the exact package pin would pass against distributions the
+engine never imports, and the launch audit's `runtime_packages.observed` would
+measure the wrong Python.
 
 **Where the pinned stack comes from.** This package asserts the pins; it never
 installs them. For the real catalogue the installer is the pod: `pyproject.toml`

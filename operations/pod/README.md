@@ -596,7 +596,7 @@ carries those exact versions under
 |---|---|---|
 | `vllm` | `0.27.1` | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
 | `transformers` | `5.14.1` | The version the vLLM 0.27 line's own requirements were bumped to; above vLLM's `transformers >= 5.5.3` floor and above the Perlector's stated `>= 5.8.0` |
-| `qwen-vl-utils` | `0.0.14` | Unchanged; latest, and its dependencies are pure-Python |
+| `qwen-vl-utils` | `0.0.14` | Unchanged; latest, and it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing in this group compiles on the card |
 
 **Why the old pins could not be locked.** The catalogue previously pinned
 `vllm 0.10.1` / `transformers 4.57.1`, and `uv lock` refused the group outright:
@@ -760,9 +760,12 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   cache verification and a served golden-page smoke through `ServingManager`); before
   it can go green on real silicon each real row must be stamped proven, and the
   locked serving stack (see "The serving stack, re-planned and locked") must
-  actually install and load — record whether `uv sync --group pod` completed, how
-  long the wheel download took, and whether each chair's weights loaded under
-  `vllm 0.27.1`, since no offline check can answer that.
+  actually install and load. Record `nvidia-smi`'s driver and CUDA version **before**
+  `uv sync --group pod` runs: the locked stack resolved `torch 2.13.0`, which pulls the
+  CUDA 13 `nvidia-*` wheels, so a pod image whose driver predates CUDA 13 is a refusal
+  to make before paying for the ~10 GB download, not after. Then record whether
+  `uv sync --group pod` completed, how long the wheel download took, and whether each
+  chair's weights loaded under `vllm 0.27.1`, since no offline check can answer that.
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
@@ -821,7 +824,7 @@ One more, found while wiring the pod run seam. Tyrel's to accept or send back:
 
 | # | What is deferred | Status |
 |---|---|---|
-| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (see "The serving stack cannot be locked yet") | **Closed.** Every named condition is met: the pair was re-planned onto `vllm 0.27.1` / `transformers 5.14.1` (researched against the four chairs' own `config.json` files and vLLM's v0.27.1 registry, cited in "The serving stack, re-planned and locked"), the `pod` group carries exactly those pins under Linux/x86_64 markers, `uv lock` resolves, `bootstrap.py` syncs `--group pod`, and `test_pod_run.py`'s expected failure is now a live test binding the group to the catalogue. `flash-attn` was dropped rather than re-pinned, for the reasons given there. **What this does not close:** no wheel has been installed and no weight loaded — the rows stay `preflight_state = "unproven"`, and the first boot is what proves the stack runs. |
+| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (now "The serving stack, re-planned and locked") | **Closed.** Every named condition is met: the pair was re-planned onto `vllm 0.27.1` / `transformers 5.14.1` (researched against the four chairs' own `config.json` files and vLLM's v0.27.1 registry, cited in "The serving stack, re-planned and locked"), the `pod` group carries exactly those pins under Linux/x86_64 markers, `uv lock` resolves, `bootstrap.py` syncs `--group pod`, and `test_pod_run.py`'s expected failure is now a live test binding the group to the catalogue. `flash-attn` was dropped rather than re-pinned, for the reasons given there. **What this does not close:** no wheel has been installed and no weight loaded — the rows stay `preflight_state = "unproven"`, and the first boot is what proves the stack runs. |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
 

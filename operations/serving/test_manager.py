@@ -836,7 +836,13 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     handle = manager.start(chair, TIER)
 
     argv, log_path = launcher.calls[0]
-    assert argv[:5] == (sys.executable, "-m", "vllm", "serve", str(tmp_path / "reader"))
+    assert argv[:5] == (
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.cli.main",
+        "serve",
+        str(tmp_path / "reader"),
+    )
     assert _value_after(argv, "--revision") == REVISION
     assert _value_after(argv, "--tokenizer-revision") == REVISION
     assert _value_after(argv, "--served-model-name") == "reader-api"
@@ -924,7 +930,7 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
     assert launcher.calls[0][0] == (
         sys.executable,
         "-m",
-        "vllm",
+        "vllm.entrypoints.cli.main",
         "serve",
         snapshot_root,
         "--tokenizer",

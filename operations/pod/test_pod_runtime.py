@@ -4822,6 +4822,45 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
+    """uv's own CLI refuses `--locked` and `--frozen` together.
+
+    A review of this step once found the argv actually built,
+    `["uv", "sync", "--locked", "--frozen", "--group", "pod"]`, is a usage
+    error on the pinned uv 0.12.1 (`--locked` `conflicts_with_all`
+    `--frozen`) -- so the pod would boot, bill, and die on `uv`'s argument
+    parser before a single wheel downloaded. This captures the real argv
+    through the injected runner so that pairing cannot come back unnoticed.
+    """
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    lockfile = repository / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    observed: list[list[str]] = []
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        observed.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    actions = SubprocessBootstrapActions(
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+        runner=runner,
+    )
+
+    result = actions.sync_uv_environment(lockfile)
+
+    assert observed == [["/usr/local/bin/uv", "sync", "--locked", "--group", "pod"]]
+    (argv,) = observed
+    assert "--group" in argv and "pod" in argv
+    assert not ("--locked" in argv and "--frozen" in argv)
+    assert result["mode"] == "locked"
+
+
 def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
     tmp_path: Path, monkeypatch
 ) -> None:

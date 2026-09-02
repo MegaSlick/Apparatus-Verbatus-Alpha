@@ -36,7 +36,7 @@ BOOTSTRAP_ENVIRONMENT = {
     "LC_ALL": "C.UTF-8",
     # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
     # $HOME. This environment is explicit and supplies none of those, so where
-    # `uv sync --locked --frozen` cached anything was left to whatever uv could
+    # `uv sync --locked` cached anything was left to whatever uv could
     # infer from a passwd entry -- on the money path, with the GPU billing while
     # it failed. Naming it makes the dependency visible instead of inferred.
     #
@@ -503,14 +503,20 @@ class SubprocessBootstrapActions:
         # The cost is real and lands here: on the order of ten gigabytes of wheels,
         # downloaded on the billing card into the container-local `UV_CACHE_DIR`
         # above, paid once per pod because that cache does not survive one.
+        # `--locked` alone: uv's own CLI refuses `--locked` and `--frozen`
+        # together (`conflicts_with_all` on `--locked` in uv-cli, present in the
+        # pinned uv 0.12.1), so the pair this step used to pass was a usage error
+        # that would have failed the sync -- billing the pod for the failure --
+        # before a single wheel downloaded. `--locked` still gets the property
+        # this step wants: uv refuses to run if uv.lock is out of date.
         self._command(
-            ["uv", "sync", "--locked", "--frozen", "--group", "pod"],
+            ["uv", "sync", "--locked", "--group", "pod"],
             BootstrapStep.UV_ENVIRONMENT,
         )
         return {
             "lockfile": str(supplied_lockfile),
             "sha256": hashlib.sha256(supplied_lockfile.read_bytes()).hexdigest(),
-            "mode": "locked-frozen",
+            "mode": "locked",
             "groups": ["pod"],
         }
 
