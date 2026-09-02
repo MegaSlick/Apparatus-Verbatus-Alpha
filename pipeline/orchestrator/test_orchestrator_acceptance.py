@@ -1483,7 +1483,14 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
-        formats_config=ROOT / "config" / "armarium_formats.toml",
+        # `config/armarium_formats.toml` until now, which is a file that has
+        # never existed: the Armarium's formats policy is `config/formats.toml`
+        # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, which
+        # is what `--formats-config` actually defaults to). Harmless while these
+        # mocked tests only assert argv presence, and wrong the moment one of
+        # them reads the file -- a stand-in that mirrors the argv surface must
+        # name the surface's own path.
+        formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,

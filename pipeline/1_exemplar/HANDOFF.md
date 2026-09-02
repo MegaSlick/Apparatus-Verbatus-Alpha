@@ -33,10 +33,23 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
-A wholly refused Door is that second case: it publishes its refusal report and
-its duplicate report, and only then does `require_some_admitted` raise — so the
-evidence is on disk and no `stage-seal` is, and the Exemplar's "predecessor door
-has no stage-seal" names a refused submission rather than a missing file.
+A refused Door is that second case: it publishes its refusal report and its
+duplicate report, announces both, and only then do `require_no_duplicate_sources`
+and `require_some_admitted` raise — so the evidence is on disk and no `stage-seal`
+is, and the Exemplar's "predecessor door has no stage-seal" names a refused
+submission rather than a missing file.
+
+**On a real submission that sentence does not hold, and it is a gap rather than
+a design.** `run.py::_open` takes the real-ingress branch, which builds a
+`StageContext` directly instead of going through `common.stage.open_context` —
+the fixture/scenario binding it exists to check has nothing to compare on a real
+run — and `verify_predecessor_seal` is called from `open_context` alone. So a
+real run whose Door refused still seals its Exemplar pages if the programs are
+driven one at a time. The pipeline is not driven that way:
+`pipeline/orchestrator/run.py::invoke` refuses any stage exit outside
+complete/held/halted, so a Door at `EXIT_FATAL` stops the run there. Found while
+building the merged-page refusal below; `1_exemplar/run.py` is not that unit's
+file and the check is not moved here.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
@@ -148,10 +161,15 @@ A refused payload has `reason`, whose prefix is one of the closed alarm codes:
 `unsupported-variant`, or `digest-mismatch`. The artifact retains the
 filename; a terminal is only presentation.
 
-Byte-identical submitted sources are not refusals. Each ordinal is admitted and
-keeps its filename link, may reuse the same content-addressed blob, and the Door
-seals a private `duplicate-report` naming the first observed ordinal/path and
-operator-visible duplicate counts.
+Byte-identical submitted sources are not *per-source* refusals. Each ordinal is
+still admitted and keeps its filename link, may reuse the same content-addressed
+blob, and the Door seals a private `duplicate-report` naming the first observed
+ordinal/path and operator-visible duplicate counts. The **run** is then refused
+whole once that report exists — see the merged-page section below — because two
+files carrying one page identity is a submission the pipeline cannot read
+correctly, not a bad file. Two byte-identical *pages inside one container* are a
+different thing entirely and are never touched by this: the report groups by
+declared filename, so a scanned volume's blank pages stay two pages.
 
 ## Exemplar `kind="page"` and corpus seal
 
@@ -174,14 +192,36 @@ every consumer reads that set. The top-level `ordinal` and filename facts descri
 one of those rows and must agree with it. A refused admission becomes an Exemplar
 `refused` page outcome with the same original filename/digest and reason.
 
-**A merged page is refused at the next boundary, by name.** Every stage behind the
-Exemplar still keys its work by submitted ordinal and would mint each act on such a
-page twice, so `verify_exemplar_corpus_seal` stops the run there rather than letting
-it read the page twice or report the second row as a lost ordinal it plainly is not.
-The operator consequence is worth knowing before a run starts: a submitted folder
-holding the same scan under two filenames — routine in archive exports — produces a
-green Exemplar and then a fatal Designator. This lifts when consumers process merged
-pages once per identity.
+**A submission that would merge two files into one page is refused at the Door,
+before any of this happens.** `door.py::require_no_duplicate_sources` raises after
+the duplicate report is sealed and announced and before the Door seals its own
+boundary, naming the submitted ordinals of every group — ordinals only, never
+filenames, because the message goes to a terminal and the sealed report is where
+the filenames belong. The whole submission is refused and no file is dropped:
+choosing which copy to discard is an automated exclusion, which GOVERNANCE reserves
+to Tyrel, and choosing to read the merged page once would decide silently whether
+identical bytes are one page shot twice or an export that wrote one scan under two
+names. There is deliberately no `--allow-duplicate-sources`. The remedy the message
+names is a re-submission whose `--submission-manifest` names each distinct scan
+once.
+
+**A merged page is still refused at the next boundary, by name**, and that stays.
+`verify_exemplar_corpus_seal` guards the sealed shape rather than one route into
+it, so a merged page record reaching a consumer another way — a future producer, a
+repaired tree, a caller that never passed a Door — is refused on its own merits
+rather than depending on the Door having run. Every stage behind the Exemplar still
+keys its work by submitted ordinal and would mint each act on such a page twice.
+
+The operator consequence has changed shape: the same scan under two filenames —
+routine in archive exports — now stops at the stage that read the filenames, with a
+report naming them, instead of producing a green Exemplar and then a fatal
+Designator complaining about an ordinal that was never lost. **What lifts the Door
+refusal is a decision, not a code change**: consumers processing merged pages once
+per identity is tractable (`sealed_submission_rows` was built for it; the census is
+one row per ordinal and `expected_refs` is a set, so only the Designator's
+`page_records` keying by ordinal breaks), but it would leave the operator with a run
+that silently reads one page where two files were submitted. Whether the pipeline
+may make that call automatically is Tyrel's, not a session's.
 
 The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
 per submitted ordinal — per *ordinal*, not per page, so a merged page contributes a

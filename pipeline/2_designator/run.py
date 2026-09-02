@@ -51,6 +51,7 @@ sealed into a run but read by nobody is a closed window that nothing shuts.
     python pipeline/2_designator/run.py ... --operation recover --act <act_id>
 """
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -889,6 +890,28 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
     "inferred" of a pass that never ran would be the same defect the fields
     exist to close.
 
+    `page_width`/`page_height` and `resolved_thresholds` are the same kind of
+    fact one step further out: not how the page was read, but *what geometry the
+    run executed on it*. The sealed `designator-grouping` policy is expressed in
+    basis points of a page dimension, so the pixel numbers this page actually
+    ran under are a function of the policy and of this page's own size, and
+    until now they existed only inside `_analyze_page`'s cache. A calibration
+    session reading the tree back could recover the policy from the seal and the
+    page from its bytes and re-derive them -- and re-derivation is the thing
+    that goes quietly wrong when a resolution rule changes. Publishing what
+    executed costs eight integers and two dimensions on a record already being
+    written, which is GOVERNANCE 6 applied to these values (SPEC_C 4.2). It is a
+    recording, never a decision: nothing reads these back to choose anything,
+    and no threshold is computed here that `_analyze_page` did not already
+    resolve for this page.
+
+    The whole of `GroupingThresholds` is published rather than a chosen subset.
+    `max_residual_components` is a count rather than a pixel threshold, but it
+    is part of what this page ran under, and a subset boundary would be a second
+    judgment about which of one dataclass's fields matter -- kept in step with
+    the dataclass instead, so a field added there cannot silently stop being
+    recorded.
+
     Returns each page's own published status reference, because the
     page-fallback act minted below has to name the record that independently
     says its premise is true (`common/stage.py::_verify_page_fallback_act_row`).
@@ -915,6 +938,15 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
                 "reason_code": reason_code,
                 "background_source": analysis["background_source"] if analysis else None,
                 "structure_evidence": analysis["structure_evidence"] if analysis else None,
+                # Null on a page held before it was analysed, for the same
+                # reason the two fields above are: no geometry executed on that
+                # page, and naming the numbers it *would* have run under would
+                # be a resolution reported as an execution.
+                "page_width": analysis["width"] if analysis else None,
+                "page_height": analysis["height"] if analysis else None,
+                "resolved_thresholds": (
+                    dataclasses.asdict(analysis["thresholds"]) if analysis else None
+                ),
                 "provenance": provenance,
             },
         )

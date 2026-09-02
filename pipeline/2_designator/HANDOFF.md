@@ -39,6 +39,17 @@ filename ledger with every Exemplar page outcome and the one self-hashed corpus
 seal. A sealed page's Door admission and pixel blob are checked again before its
 pixels are cropped. The check is deliberately before the first region write.
 
+That reconciliation includes the merged page — two byte-identical files deriving
+one `page_id` — which this stage refuses because `page_records` keys on the
+submitted ordinal and would otherwise mint each act on such a page twice. **It
+is no longer where an operator meets that case.** The Door now refuses the whole
+submission when two submitted files would merge, naming their ordinals, while it
+still has the filenames and before it seals its own boundary
+(`pipeline/1_exemplar/door.py::require_no_duplicate_sources`). This check stays
+as the second line of defence over the sealed shape itself, rather than over one
+route into it; what it no longer has to be is the first thing that tells an
+operator their export wrote one scan twice.
+
 The current structural proposer is the declared synthetic walking skeleton, and
 it is a real visual pass rather than a fixture value standing in for one: every
 sealed page is decoded and independently ink-scanned (`structure.py`), and the
@@ -451,6 +462,8 @@ different fact about the *act*, not this per-page structural pass record.
 ```text
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 background_source | null, structure_evidence | null
+page_width | null, page_height | null
+resolved_thresholds | null (the eight fields of GroupingThresholds)
 provenance (the resolved Designator chair)
 ```
 
@@ -466,6 +479,23 @@ nothing published, which meant neither fact survived the run. Both are `null` on
 a page held before it was analysed at all: the structure pass produced no
 background and no evidence there, and saying `inferred-modal` of a pass that
 never ran would be the same defect these fields exist to close.
+
+`page_width`/`page_height` and `resolved_thresholds` answer the next question
+out: not how the page was read, but **what geometry the run executed on it**.
+The sealed grouping policy is in basis points of a page dimension, so the pixel
+numbers a page runs under are a function of the policy and of that page's own
+size, and until now they lived only in `_analyze_page`'s cache. A calibration
+session reading a finished run back can now say, per page, what the structure
+pass actually ran at instead of re-deriving it from the seal and the pixels —
+and a re-derivation is what stops matching the run the day the resolution rule
+changes. The whole of `GroupingThresholds` is published rather than a chosen
+subset, `max_residual_components` included: it is part of what the page ran
+under, and a subset boundary would be a second judgment about which of one
+dataclass's fields matter. These fields are a recording and decide nothing; they
+are `null` on a page held before analysis for the same reason the two above are.
+This is the cheap honest half of the 300-DPI question — there is no physical
+page size on disk for a photographed master, so there is no DPI to probe, and a
+probe that guessed one would be a measurement invented rather than taken.
 
 A failure is declared per scenario by the fixture's `[[structure_failure]]`
 rows, because the walking skeleton has no live structure model that can fail.

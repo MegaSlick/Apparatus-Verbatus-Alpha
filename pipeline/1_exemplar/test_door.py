@@ -54,10 +54,13 @@ from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
+    EXIT_COMPLETE,
+    EXIT_FATAL,
     StageContext,
     require_sealed_config,
     require_triage_modes,
     run_sealed_config_digests,
+    run_stage,
 )
 from operations.submit import gate, submit
 from operations.triage import instrument, producer
@@ -947,6 +950,162 @@ def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tm
     assert "1 duplicate source(s) admitted across 1 page ordinal(s)" in summary
     assert "source-a.png" not in summary
     assert "source-b.png" not in summary
+
+
+def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path):
+    """The merged-page trap, closed where the filenames are still in hand.
+
+    Two byte-identical files derive one `page_id`, so the Exemplar seals one
+    page citing both submission rows while every stage behind it still works one
+    page per row. Left to run, that submission reads one page where two files
+    were submitted, and the only trace is a private report nobody was told to
+    open. The door refuses the whole submission instead.
+
+    What this pins is the *order*, which is the half a refusal can quietly get
+    wrong: the duplicate report is published, counted and announced first, so
+    the operator keeps the complete per-filename evidence in the tree, and only
+    then does the run stop -- before `seal_boundary` writes the door's own
+    completion. Refusing before the report would lose the evidence; refusing
+    after the seal would leave a completed door on an unreadable submission.
+    """
+    data = png(3, 2)
+    sources = [
+        SourceEntry(1, "source-a.png", digest_bytes(data)),
+        SourceEntry(2, "source-b.png", digest_bytes(data)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(
+        context, tree, sources, reader({"source-a.png": data, "source-b.png": data}), policy=POLICY
+    )
+    assert admitted == 2
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "[1] and [2]" in message
+    assert "derives one page identity from more than one submitted file" in message
+    # By ordinal, never by filename: `run_stage` prints this to stderr, and the
+    # data-handling logging rule excludes a declared path from that channel.
+    assert "source-a.png" not in message
+    assert "source-b.png" not in message
+    # Nothing was excluded and nothing was dropped -- both admissions and the
+    # full report survive in the tree, which is what the operator reads back.
+    assert {record["outcome"] for record in admissions(tree).values()} == {"admitted"}
+    entry = next(
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    )
+    duplicate = tree.read_artifact(DOOR, "duplicate-report", entry["artifact_id"])["payload"]
+    assert duplicate["duplicate_source_count"] == 1
+    assert duplicate["duplicate_ordinal_count"] == 1
+    assert [source["declared_path"] for source in duplicate["groups"][0]["sources"]] == [
+        "source-a.png",
+        "source-b.png",
+    ]
+    assert entry["relative_path"] in message, (
+        "the refusal must point at the sealed report, which is where the filenames are"
+    )
+    # The door never completed: no stage seal, so nothing downstream may treat
+    # this run as a door that finished.
+    assert [
+        item for item in tree.build_manifest(DOOR)["artifacts"] if item["kind"] == "stage-seal"
+    ] == []
+
+
+def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
+    """The four-source case: two copies of one two-page PDF.
+
+    Four ordinals, and two page identities between them -- ordinals 1 and 3 are
+    page 0 of the same container bytes, 2 and 4 are page 1 -- so the refusal has
+    to name all four rather than the two it happened to notice first. Pages
+    *inside* one container are never duplicates of each other, and this run is
+    refused for the second copy of the file, not for the book having two pages.
+    """
+    data = two_page_pdf()
+    files = {"scan-1.pdf": data, "scan-2.pdf": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    assert admitted == 4
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "[1, 2] and [3, 4]" in message
+    assert "scan-1.pdf" not in message
+    assert "scan-2.pdf" not in message
+
+
+def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
+    """The regression against over-refusal: distinct bytes are not a trap.
+
+    Including two byte-identical *pages of one container*, which produce no
+    duplicate report at all -- the report groups by declared path, so a scanned
+    volume's blank pages never reach this refusal, and a run that started
+    refusing them would be losing pages that genuinely exist (GOALS 1).
+    """
+    volume = blank_pages_pdf(2, width=8, height=6)
+    files = {"scanned-volume.pdf": volume, "other.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    assert admitted == 3
+
+    assert door._finish_door_run(context, tree, admitted) == EXIT_COMPLETE
+    assert [
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    ] == []
+
+
+def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(
+    tmp_path,
+):
+    """A corrupt twin keeps its own corruption alarm.
+
+    `process_sources` registers a source as "seen" only once it is admitted, so
+    two copies of a broken file are each refused on their own merits and neither
+    becomes a duplicate of the other. That distinction predates this refusal and
+    must survive it: the door admitted nothing here, so what fires is
+    `require_some_admitted`'s census naming the format alarm, and no duplicate
+    claim is made about pixels that never entered the Exemplar.
+    """
+    data = b"not an image at all"
+    sources = [
+        SourceEntry(1, "broken-a.png", digest_bytes(data)),
+        SourceEntry(2, "broken-b.png", digest_bytes(data)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(
+        context, tree, sources, reader({"broken-a.png": data, "broken-b.png": data}), policy=POLICY
+    )
+    assert admitted == 0
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "the door admitted nothing" in message
+    assert "unrecognized-format: 2" in message
+    assert "page identity" not in message
 
 
 def test_expansion_ordinals_are_stable_by_filename_and_page_index():
@@ -1885,6 +2044,86 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert "reconciled the Exemplar filename ledger" in boundary.stderr
     assert "no proposals or holds were fabricated" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
+
+
+def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes(
+    tmp_path, monkeypatch, capsys
+):
+    """The operator case the refusal exists for, end to end on the real route.
+
+    A folder holding the same scan under two filenames is routine in archive
+    exports. Before this it produced a green door, a green Exemplar, and then a
+    fatal Designator complaining about a page ordinal that was never lost — the
+    wrong stage saying the wrong thing about the wrong page. Now the door itself
+    exits `EXIT_FATAL`, which `pipeline/orchestrator/run.py::invoke` refuses to
+    carry ("exited 2"), so the run stops at the stage that still had the
+    filenames in hand.
+
+    **What the door's refusal does not do is bar a hand-driven Exemplar**, and
+    this test says so rather than implying otherwise: no stage in this tree
+    requires its predecessor's completion seal, so a caller who runs the
+    programs one by one past a non-zero exit still gets a sealed merged page.
+    That is not this refusal's job and is left as it stands — the last assertion
+    here is that such a page is still refused by name at the first consumer that
+    would read it twice, which is the second line of defence
+    (`common/exemplar_boundary._refuse_a_merged_page_no_consumer_reads_yet`).
+    """
+    from common.exemplar_boundary import verify_exemplar_corpus_seal
+
+    data = png(4, 3)
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": data, "iPhone/FS-1234 copy.png": data}
+    )
+    run_root = approved / "runs"
+
+    def door_main():
+        return _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="merged",
+        )
+
+    assert run_stage(door_main) == EXIT_FATAL
+    stderr = capsys.readouterr().err
+    assert "derives one page identity from more than one submitted file" in stderr
+    assert "FS-1234.png" not in stderr
+    assert "FS-1234 copy.png" not in stderr
+
+    tree = RunTree(run_root, "merged")
+    artifacts = tree.build_manifest(DOOR)["artifacts"]
+    assert [item for item in artifacts if item["kind"] == "duplicate-report"], (
+        "the evidence must be sealed before the run is refused"
+    )
+    assert [item for item in artifacts if item["kind"] == "stage-seal"] == [], (
+        "the door refused, so it never completed its own boundary"
+    )
+
+    sealed = subprocess.run(
+        [sys.executable, str(EXEMPLAR_CLI), "--run-root", str(run_root), "--run-id", "merged"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert sealed.returncode == 0, sealed.stderr
+    run = tree.read_run()
+    manifest = tree.build_manifest(EXEMPLAR)
+    entry = next(item for item in manifest["artifacts"] if item["kind"] == "page")
+    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+    assert sorted(row["ordinal"] for row in page["payload"]["submission_rows"]) == [1, 2], (
+        "the two files are one sealed page, which is exactly what the door refused"
+    )
+    with pytest.raises(ContractError, match="would mint each act on it twice"):
+        verify_exemplar_corpus_seal(
+            tree,
+            run,
+            manifest,
+            {row["ordinal"]: row for row in run["source_manifest"]},
+            {1: page},
+            {1: entry},
+        )
 
 
 def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, monkeypatch):
