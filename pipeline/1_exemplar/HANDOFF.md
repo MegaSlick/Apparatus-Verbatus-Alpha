@@ -321,6 +321,35 @@ the same, but the page count does not collapse: `require_corpus_frame_shard`, th
 Exemplar census, and the Armarium all reconcile against declared post-split pages,
 including pages whose pixels could not be produced.
 
+## RecordGold admission shape
+
+`operations/corpus/` fetches RecordGold pages and submits them like any other
+real material, and the Door admits them **unchanged** — no new route, no new
+alarm. Each fetched page is a single-frame JPEG, so it takes `admit-or-fan-out`
+and is sealed as its own original bytes, exactly as an iPhone-native HEIC
+frame or a single-page TIFF is; the record regions in `record_url` are already
+stated in that raster's own pixel coordinates, so nothing is transformed and
+nothing needs re-deriving — provided the fetcher's own `dimension-mismatch`
+and `exif-orientation` refusals passed. This stage does not and cannot check
+the box-to-raster correspondence itself; the coordinate claim rests entirely
+on `operations/corpus/`'s decode-time verification against `info.json`. There
+is no triage decision manifest, no cluster, and no producer recipe behind any
+of it — these pages never go near the
+triage split/apply path, so `colour_mode` never applies to them; a builder
+that invents a triage manifest "to be safe" would move `config_digest` and put
+the pages on a re-encoding path they were never on. Each submission shard
+stays at or under the sealed 1,000-page cap this stage already enforces,
+partitioned by (split, source, volume) rather than by `content_aware_shards`,
+which reasons about triage cluster pairs a RecordGold submission has none of.
+The one obligation on the fetcher itself, not this stage: dedupe by response
+digest before a folder is ever written, because two IIIF identifiers
+returning identical bytes derive one page identity, and this stage would seal
+one page citing both submission rows — which the next boundary then refuses as
+a merged page. Sidecars carrying each page's records, split, and text sit
+outside the submission folder for the same reason any record file must:
+`inventory.py` would otherwise name a sidecar JSON as a submitted source and
+the Door would refuse it `unrecognized-format`.
+
 ## Data handling and scope
 
 Real input is fail-closed on living inside a storage root
