@@ -372,14 +372,17 @@ reading must never be able to stretch those.
 selector: a three-name lookup (`recipe`, `chair`, `tier`) in the sealed
 serving-recipe catalogue, never a ranking. Every row for one `(recipe, chair)`
 is collected first — if all of them are fixture rows, the chair is fixture
-regardless of tier; if all of them are captured rows naming one source chair,
-it is `captured` regardless of tier (captured rows naming different sources
-across tiers refuse). Otherwise a tier is required (`SERVING_MODE_UNRESOLVED`
-without one); the profile at that exact tier decides, with an
-`UnsupportedProfile` refusing by its own recorded reason and a fixture or
-captured row at that tier refused when the same chair is live at another tier
-— a catalogue may not be half live for one chair. A tier with no configured row at all for this chair is also this
-function's own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
+regardless of tier; if all of them are captured rows naming one source
+chair, it is `captured` regardless of tier (captured rows naming different
+sources across tiers refuse). Otherwise a tier is required
+(`SERVING_MODE_UNRESOLVED` without one); the profile at that exact tier
+decides, with an `UnsupportedProfile` refusing by its own recorded reason
+and a fixture or captured row at that tier refused when the same chair holds
+a different posture at another tier — a catalogue may not be half live, half
+fixture, or half captured for one chair, and the refusal names whichever
+posture the other tier actually holds rather than assuming it was live. A
+tier with no configured row at all for this chair is also this function's
+own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
 `ServingConfigurationError` is caught and re-raised as
 `ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
 this function's refusals to report a placement-tier problem never sees a

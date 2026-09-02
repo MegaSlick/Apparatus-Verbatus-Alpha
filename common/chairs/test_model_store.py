@@ -35,7 +35,7 @@ from common.chairs.model_store import (
     write_derived_inventory,
     write_download_record,
 )
-from common.chairs.models import ChairIdentity
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -966,7 +966,16 @@ def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
 
 
 def test_real_roster_and_materialization_inventory_name_the_same_pinned_repositories():
-    """The selectable real roster cannot drift from the launch-time fetch list."""
+    """The selectable real roster cannot drift from the launch-time fetch list.
+
+    Every configured chair's pin must still agree exactly. A chair the
+    materialization inventory still lists but the real roster does not
+    configure is tolerated -- not silently ignored -- only when the roster
+    itself names that absence deliberately: `secondary_proposer` is `absent`
+    by Tyrel's ruling of 2026-08-12 (config/models-real.toml), not a chair
+    this test forgot to check. Any other missing chair is a real drift and
+    must still fail here.
+    """
 
     real = load_models_toml(ROOT / "config" / "models-real.toml")
     assert _artifact_disagreements(real.chairs) == []
@@ -980,7 +989,15 @@ def test_real_roster_and_materialization_inventory_name_the_same_pinned_reposito
         for role, identity in real.chairs.items()
         if isinstance(identity, ChairIdentity) and identity.source == "huggingface"
     }
-    assert observed == expected
+    tolerated_absent = {
+        role for role, chair in real.chairs.items() if isinstance(chair, AbsentChair)
+    }
+    missing = set(expected) - set(observed)
+    assert missing <= tolerated_absent, (
+        f"the real roster is missing pins the inventory still requires, and the roster "
+        f"never named them absent: {sorted(missing - tolerated_absent)}"
+    )
+    assert observed == {role: pin for role, pin in expected.items() if role not in missing}
 
 
 _MATERIALIZATION_CAPACITY = {
@@ -1552,7 +1569,10 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         "notes were not compared"
     )
     assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 6
+    # Five, not the store's six required artifacts: `secondary_proposer` is
+    # `absent` in `config/models-real.toml` (Tyrel's ruling of 2026-08-12), so
+    # it is not a `ChairIdentity` and carries no `license_note` to compare here.
+    assert len(carried) == 5
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1568,7 +1588,14 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
     for requirement in REQUIRED_ARTIFACTS:
         if requirement.source != "huggingface":
             continue
-        note = real.chairs[requirement.chair].license_note.lower()
+        chair = real.chairs[requirement.chair]
+        if not isinstance(chair, ChairIdentity):
+            # `secondary_proposer` is `absent` in the real roster (Tyrel's
+            # ruling of 2026-08-12): an `AbsentChair` carries a `reason`, not a
+            # `license_note`, because the roster took no licensing position on
+            # a repository it never configured.
+            continue
+        note = chair.license_note.lower()
         declares_nothing = "no licence declared" in note
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
 

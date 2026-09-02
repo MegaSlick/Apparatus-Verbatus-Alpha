@@ -722,8 +722,10 @@ def verify_recipes_cover_chairs(
     different model); and the captured chair's ``witness_adapter`` must be a
     capture adapter, with the reverse also held — a chair whose adapter reads
     captured bytes has no serving row of its own to answer through.  The
-    Attestatores repeats these checks at run time against the sealed roster;
-    this is where they fail offline.
+    Attestatores will repeat these checks at run time against the sealed
+    roster once it is taught to (unbuilt: the D5 mixed-posture reconciliation);
+    this is where they fail offline today, and the only place they fail at all
+    until then.
     """
 
     tier_values = tuple(tiers)

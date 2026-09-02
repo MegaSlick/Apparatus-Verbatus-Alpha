@@ -133,35 +133,38 @@ class ScheduledStage:
 
 
 # This is stage order, not a model preference.  The one model-order ruling is
-# represented only inside the Attestatores block: Chandra reaches its checkpoint
-# before Churro, then DAI.  No model is co-resident in that block.
+# represented across two blocks now that attestator_1 no longer boots its own
+# pod: Chandra reaches its checkpoint during the Designator's boot, captured
+# and retained for the Attestatores to file; Churro then runs after that
+# checkpoint, then DAI.  No model is co-resident in the Attestatores block.
 #
 # The chairs named per stage are the real roster's, not the fixture roster's:
 # the fixture roster resolves to local snapshots and boots nothing, so a
 # schedule measured against it would under-report every real boot.
-# `secondary_proposer` is the case that proves the point -- absent in the
-# fixture roster, configured in the real one, and served by the Designator's
-# own pod after the structure chair (`pipeline/2_designator/run.py:258`, `:282`).
+#
+# `secondary_proposer` is absent from this schedule because it is absent from
+# the real roster itself (`config/models-real.toml`, Tyrel's ruling of
+# 2026-08-12): a role this schedule would need to name, if it were configured,
+# is not a boot to describe until it is.
+#
+# `attestator_1` is absent from the Attestatores block below for a different
+# reason: it is *configured*, but `config/serving_recipes_real.toml` resolves
+# it to a `captured` row naming `designator_structure` as its source
+# (`common/chairs/models.py` `CapturedProfile`, D2's Testimonium ruling) — its
+# reading is the Designator pod's Chandra call, retained and filed by the
+# Attestatores, never a second boot of its own. A schedule that named it here
+# would authorize a pod nothing serves.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
         "designator",
         True,
-        (
-            ScheduledChair("designator_structure", "Chandra, structure and crop authority"),
-            ScheduledChair(
-                "secondary_proposer",
-                "NOT YET SERVABLE: every real recipe tier marks this chair unsupported "
-                "(Ultralytics YOLO detector; this package serves only vLLM completion) — "
-                "a confirmed boot will not serve it",
-            ),
-        ),
+        (ScheduledChair("designator_structure", "Chandra, structure and crop authority"),),
     ),
     ScheduledStage(
         "attestatores",
         True,
         (
-            ScheduledChair("attestator_1", "Chandra, all work to checkpoint"),
             ScheduledChair("attestator_3", "Churro, after Chandra"),
             ScheduledChair("attestator_2", "DAI, after Churro"),
         ),
