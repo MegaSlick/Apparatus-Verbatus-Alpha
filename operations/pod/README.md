@@ -97,9 +97,11 @@ check.
   account-balance observer anywhere in this tree.** `RunPodProvider.balance_observer`
   is an injected callable with no default; `observe_account_balance` raises
   "RunPod account balance source was not configured" until one is supplied, and
-  `spend.py`'s balance-floor gate then refuses every paid action. This is
-  GraphQL-only under both REST versions (`myself { clientBalance currentSpendPerHr }`)
-  and the version move does not touch it. No live pod — not even the Boot A
+  `spend.py`'s balance-floor gate then refuses every paid action. The
+  2026-09-01 research found balance and spend observability only in GraphQL
+  (`myself { clientBalance currentSpendPerHr }`) and located no REST v1 or v2
+  equivalent in that pass — documented absence, not a verified negative; on
+  that reading the version move does not touch balance. No live pod — not even the Boot A
   drill below — can be created until this observer exists. `fake_provider.py`
   has a fixed local price sheet, exact-token crash recovery, and injected
   failures only.
@@ -281,9 +283,12 @@ check.
   argument is supplied and the README names it drill-only.
 
   **How the journal reaches the laptop: the same channel, and the same
-  caveat.** The journal is written to the volume under the launch-bound name;
-  the laptop reads it with `TimerReportChannel.read`. Until the first boot
-  proves the S3 view, this is **a designed path, not an observed one.**
+  caveat.** The journal is written to the volume under the launch-bound name.
+  No laptop-side reader for it exists yet — nothing in the tree calls
+  `TimerReportChannel.read` on the journal key; the armer reads only the
+  sealed pod-report path. Reading the journal back (`SPEC_POD.md` §4.5's
+  `supervise --show-bootstrap`) is unbuilt, and the S3 view it would use is in
+  any case **a designed path, not an observed one.**
 
   **Where this unit's tests differ from what the spec predicted, said plainly.**
   `test_bootstrap_main.py` states in its own module docstring that "no git,
@@ -292,7 +297,8 @@ check.
   `SubprocessBootstrapActions` or a real subprocess. `SPEC_POD.md`'s §4.5
   predicted this unit's tests would close three of deferral 04-5's five
   untested seams; verified against the code as it stands, they do not. See
-  the rewritten 04-5 row below for what is and is not actually covered. the same price display, ceiling calculation, and typed phrase to
+  the rewritten 04-5 row below for what is and is not actually covered.
+- `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use
   challenge only a preview issued in this process can supply, binding the
@@ -365,9 +371,10 @@ check.
   verified rows, and refuses conflicting target bytes rather than overwriting them.
   `bootstrap.py` journals idempotent exact-commit, locked-`uv`, transfer, chair-cache,
   and preflight steps. A cache digest mismatch is *specified* to receive at most one
-  same-pin re-fetch — see deferral 04-8: the class implementing it is constructed nowhere
-  and tested nowhere, so this describes the design rather than a shipped behaviour;
-  another mismatch is red and names the chair.
+  same-pin re-fetch — see deferral 04-8: the class implementing it is now constructed
+  once, in `bootstrap_main.py`, but wired with `refetch_same_pin=None` and covered by
+  no test, so the at-most-one same-pin re-fetch itself still does not ship; another
+  mismatch is red and names the chair.
 - `preflight.py` measures or receives CUDA/driver/capability/VRAM/disk facts, selects a
   single-resident plan only from `config/pod_placement.toml`, verifies every configured
   chair, and validates a stochastic proof-page read by shape, non-emptiness, and format.
@@ -457,6 +464,9 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Confirm whether the pod-scoped API key actually holds **delete** and **billing**
   rights. DELETE must be accepted for this exact pod, and the billing query must return
   usable, exact-pod records. Do not infer either right from successful creation or GET.
+- [ ] Record whether the provider offers any pod-side TTL / maxRuntime field on create
+  under the version actually used (none appears in the documented v1 create input; 04-4
+  has no provider-side belt without one).
 - [ ] Exercise **a pod that fails field validation and cannot then be auto-terminated**.
   Record any returned identity, the exact launch-token recovery result, whether the
   automatic close path could act, and the manual provider-console recovery if it could
@@ -482,8 +492,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   there, read both back, and record the filesystem result.
 - [ ] Run **Boot A, the drill**, before Boot B: the cheapest available card, a short
   `hard_lifetime_seconds` (roughly 900), `ObservingControllerArmer`, and
-  `bootstrap_main --hold-only`. It is designed to end in an immediate close and cannot
-  leave a pod up. Record whether the pod-written object appears in the S3 view, under
+  `bootstrap_main --hold-only`. It closes its pod immediately by construction — the
+  arming verdict is False whatever it observes — and, as with any close, the result is
+  only green when GET-404, list absence and exact-pod billing all agree; a non-verified
+  close is reported as such and the supervisor keeps guarding it. Record whether the
+  pod-written object appears in the S3 view, under
   which key, after how long, and whether the pod-scoped key actually holds delete and
   billing rights. See "The boot plan" below for the full split and what it needs from
   Tyrel.
@@ -537,8 +550,8 @@ even once closed, marked, so the history of what closed each one is not lost.**
 | 04-1 | No durable laptop-supervisor driver in the tracked tree | **Closed.** `supervise.py` is that driver: a kernel-lock-owned, restart-safe process per lease, the `EXITED`-closes provider-lifecycle check, and six offline drills against `FakeProvider` (crash-mid-heartbeat resume, lost-identity `BUSY`-then-close, provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed-verified no-op, second-driver refusal). |
 | 04-2 | No controller armer that observes the real timer report | **Partly closed.** `controller_armer.py`'s `ChannelControllerArmer` performs the real read, arms only on a complete observation, and is fake-proven against every refusal state; `ObservingControllerArmer` performs the identical read and never arms. **New closes-when:** the first authorized boot observes an object written through the pod's mount appearing in the network volume's S3 view, and records the delay. Until then the channel is a designed path, not an observed one. |
 | 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | **Closed.** `bootstrap_main.py` is bootstrap-and-hold: on green it does not exit, because `pod_timer.run_with_bootstrap` treats any child exit before the hard deadline — exit 0 included — as `completed-early` and closes the pod. Holding, not exiting, is the fix. |
-| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input — and the first-boot checklist should ask whether v2 offers one. |
-| 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | **Mostly still open — verified against the code, not assumed from the plan.** `SPEC_POD.md` §4.5 predicted `bootstrap_main`'s tests would close three of these five; `test_bootstrap_main.py`'s own module docstring says otherwise ("no git, uv, Hugging Face, or GPU probe is ever invoked here" — every test runs through a fakes-only `actions_factory`). Checked against the tree as it stands: `SubprocessBootstrapActions.checkout_commit`'s success path *is* covered, pre-existing in `test_pod_runtime.py` (`test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment`, an injected-subprocess success). The other four remain untested — `sync_uv_environment`'s success path, `pod_timer.main`/`load_timer_context`'s success path, `cli.main`'s success path through the real `module:callable` factory resolution (existing tests inject `cli._provider`/`cli._controller_armer` directly, bypassing that resolution), and `UrllibRunPodTransport`'s ordinary success (only its redirect-refusal is exercised against real loopback servers). Closes when: the live pieces this branch adds (`supervise.py`, `controller_armer.py`, `bootstrap_main.py`) now exist to test against; writing those tests is not yet done. |
+| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input — and the first-boot checklist asks whether v2 offers one (see the checklist row above). |
+| 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | **Mostly still open — verified against the code, not assumed from the plan.** `SPEC_POD.md` §4.5 predicted `bootstrap_main`'s tests would close three of these five; `test_bootstrap_main.py`'s own module docstring says otherwise ("no git, uv, Hugging Face, or GPU probe is ever invoked here" — every test runs through a fakes-only `actions_factory`). Checked against the tree as it stands: `SubprocessBootstrapActions.checkout_commit`'s success path *is* covered, pre-existing in `test_pod_runtime.py` (`test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment`, an injected-subprocess success). The other four remain untested — `sync_uv_environment`'s success path, `pod_timer.main`/`load_timer_context`'s success path, `cli.main`'s success path through the real `module:callable` factory resolution (`test_cli.py` exercises `cli._controller_armer`'s module:callable resolution on its own; what is untested is `cli.main`'s green path end to end, where existing tests monkeypatch `cli._provider`/`cli._controller_armer` before the call), and `UrllibRunPodTransport`'s ordinary success (only its redirect-refusal is exercised against real loopback servers). Closes when: the live pieces this branch adds (`supervise.py`, `controller_armer.py`, `bootstrap_main.py`) now exist to test against; writing those tests is not yet done. |
 | 04-6 | Every RunPod field name is documented, not observed — no live call has been made | Open. Closes when: the first authorised live run. |
 
 Two more, found by the pre-push review of this branch and disclosed here rather than
@@ -547,15 +560,15 @@ fixed on an assumption. Both are Tyrel's to accept or send back:
 | # | What is deferred | Status |
 |---|---|---|
 | 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | **Amended to the v2 route**, not closed on this branch. Tyrel ruled on 2026-08-11: *"V2 should be what we use"* — REST v2 documents `createdAt`, a `startTime` snap, and a per-pod cost breakdown, which the ruling itself names as closing this finding. The migration is next-section work (see the v1/v2 paragraph above); until it lands, this row's original text still describes the code, and the first authorised live run still observes the two instants under whichever version is live at the time. |
-| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree. |
+| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Partly closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree (`_build_cache`, `bootstrap_main.py:673`), closing the "constructed nowhere" half. It is still exercised by no test — `test_bootstrap_main.py` is fakes-only and never calls `_build_cache` — and the at-most-one same-pin re-fetch is deliberately left unwired (`refetch_same_pin=None`) because `ChairRegistry` has no cache-clear verb, so the behaviour the deferral is about still does not ship. |
 
 One more, found by the 2026-08-12 independent audit of this package and disclosed here
 rather than papered over with a check that guesses at unobserved provider behaviour.
 Tyrel's to accept or send back:
 
-| # | What is deferred | Closes when |
+| # | What is deferred | Status |
 |---|---|---|
-| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | the first authorised live run observes real bucket posting, then the coverage check is written against observations |
+| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | Open. Closes when: the first authorised live run observes real bucket posting, then the coverage check is written against observations. |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
 
@@ -567,8 +580,11 @@ the session and teaches a human to relax the safety check that just did its job.
 
 **Boot A, the drill.** Cheapest available card. `hard_lifetime_seconds` around 900.
 `ObservingControllerArmer`, never `ChannelControllerArmer`. `bootstrap_main --hold-only`,
-never a real bootstrap plan. It is designed to end in an immediate close and cannot
-leave a pod up, whatever it observes. It buys the four facts no offline test can buy:
+never a real bootstrap plan. It closes its pod immediately by construction — the
+arming verdict is False whatever it observes — and, as with any close, the result is
+only green when GET-404, list absence and exact-pod billing all agree; a non-verified
+close is reported as such and the supervisor keeps guarding it. It buys the four facts
+no offline test can buy:
 does the pod-written object appear in the S3 view, under which key, after how long, and
 does the pod-scoped key actually hold delete and billing rights. Cost is minutes of a
 cheap card.

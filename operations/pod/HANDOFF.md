@@ -62,7 +62,7 @@ process holds rather than exits, because `pod_timer.run_with_bootstrap` treats a
 child exit before the hard deadline as `completed-early` and closes the pod.
 `ChairCacheBootstrapAction` is constructed here for the first time in the tracked
 tree. `PREFLIGHT` stays honestly red — no production `ChairCacheVerifier` or
-`SmokeReader` exists anywhere in this repository; Spec 05 owns that. Sixteen tests
+`SmokeReader` exists anywhere in this repository; Spec 05 owns that. Its tests
 drive hold survival, red-step immediate exit, every named refusal, env scrubbing, and
 both no-action modes — **all against a fakes-only `actions_factory`**, per the test
 file's own module docstring ("no git, uv, Hugging Face, or GPU probe is ever invoked
