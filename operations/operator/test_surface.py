@@ -4476,3 +4476,401 @@ def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
     lines = _surface(tmp_path, provider=provider).status()
 
     assert identity.owner_token not in "\n".join(lines)
+
+
+# --- the run verb carries the real-roster pair, together or not at all --------
+
+
+def test_run_forwards_the_roster_pair_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+    roster = tmp_path / "config" / "models-real.toml"
+    catalogue = tmp_path / "config" / "serving_recipes_real.toml"
+
+    with pytest.raises(OperatorError) as interrupted:
+        surface.run(
+            run_id="real-roster-run",
+            models_config=roster,
+            serving_recipes_config=catalogue,
+        )
+
+    assert interrupted.value.code is ErrorCode.RUN_INTERRUPTED
+    [(command, _cwd)] = observed
+    assert _argv_value(command, "--models-config") == str(roster.absolute())
+    assert _argv_value(command, "--serving-recipes-config") == str(catalogue.absolute())
+
+
+def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="fixture-roster-run")
+
+    [(command, _cwd)] = observed
+    assert "--models-config" not in command and "--serving-recipes-config" not in command
+
+
+@pytest.mark.parametrize("supplied", ["models_config", "serving_recipes_config"])
+def test_run_refuses_half_a_roster_before_any_child_starts(tmp_path: Path, supplied: str) -> None:
+    """One roster half without the other would seal the real chairs against the
+    fixture catalogue, or the reverse; the orchestrator digests both together."""
+
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="half-roster", **{supplied: tmp_path / "half.toml"})
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert "supply both or neither" in str(refusal.value.detail)
+    assert not observed
+
+
+def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    roster = tmp_path / "models-real.toml"
+    catalogue = tmp_path / "serving_recipes_real.toml"
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "run",
+                "--run-id",
+                "real-run",
+                "--models-config",
+                str(roster),
+                "--serving-recipes-config",
+                str(catalogue),
+            ]
+        )
+        == 0
+    )
+    assert observed["models_config"] == roster
+    assert observed["serving_recipes_config"] == catalogue
+
+
+# --- fetch-run: the tree comes home digest-checked, never overwriting ---------
+
+
+class DirectoryRunReader:
+    """A directory standing in for the volume's S3 view, as the launch drill does."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.overrides: dict[str, bytes] = {}
+        self.fetched: list[str] = []
+
+    def list_keys(self, prefix: str) -> tuple[str, ...]:
+        keys = [
+            path.relative_to(self.root).as_posix()
+            for path in sorted(self.root.rglob("*"))
+            if path.is_file()
+        ]
+        return tuple(key for key in keys if key.startswith(prefix))
+
+    def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
+        self.fetched.append(key)
+        payload = self.overrides.get(key, (self.root / key).read_bytes())
+        assert len(payload) <= max_bytes
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        return len(payload)
+
+
+def _volume_run(tmp_path: Path, run_id: str = "brought-home") -> tuple[Path, DirectoryRunReader]:
+    """A real, sealed run tree under `runs/<id>` on a directory standing in for the volume."""
+
+    from common.contracts.envelope import build_envelope
+    from common.contracts.identities import artifact_id as make_artifact_id
+    from common.contracts.stages import DESIGNATOR
+    from common.runtree.store import RunTree
+
+    volume = tmp_path / "volume"
+    page = b"synthetic page one"
+    tree = RunTree.create(
+        volume / "runs",
+        run_id,
+        source_manifest=[
+            {"relative_path": "proof/page-1.png", "sha256": _sha256(page), "ordinal": 1}
+        ],
+        config_digest="c" * 64,
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1", "attestator_2", "attestator_3"],
+    )
+    tree.put_blob(DESIGNATOR, page)
+    tree.publish_artifact(
+        build_envelope(
+            run_id=run_id,
+            artifact_id=make_artifact_id(DESIGNATOR, "proposal", "pg_0123456789abcdef"),
+            subject_id="pg_0123456789abcdef",
+            stage=DESIGNATOR,
+            kind="proposal",
+            outcome="proposed",
+            config_digest="c" * 64,
+            adapter_revision="fake-designator-v0",
+            inputs=[],
+            payload={"proposals": 2},
+        )
+    )
+    tree.write_manifest(DESIGNATOR)
+    # Publication residue a crashed pod leaves beside the manifest: skipped by
+    # name, never fetched as evidence.
+    (tree.root / "2_designator" / ".manifest.json.tmp-residue").write_bytes(b"half")
+    return volume, DirectoryRunReader(volume)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _files_under(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.name.startswith(".")
+    }
+
+
+def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert _files_under(into / "brought-home") == _files_under(volume / "runs" / "brought-home")
+    assert not (into / "brought-home" / "2_designator" / ".manifest.json.tmp-residue").exists()
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert payload["fetched"] == len(_files_under(volume / "runs" / "brought-home"))
+    assert payload["reused"] == 0
+    assert payload["stages_verified"] == ["designator"]
+    assert payload["excluded_publication_temporaries"] == [
+        "2_designator/.manifest.json.tmp-residue"
+    ]
+    assert payload["zero_gpu_hours"] is True
+    assert any("every one checked against the run tree's own digests" in line for line in messages)
+    # The first thing fetched was the authority, then the inventories, then
+    # what they account for -- so a bad object stops the fetch at itself.
+    assert reader.fetched[0] == "runs/brought-home/run.json"
+    assert reader.fetched[1].endswith("/manifest.json")
+
+    again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    repeated = surface.receipts.read(again)["payload"]
+    assert repeated["fetched"] == 0
+    assert repeated["reused"] == payload["fetched"]
+
+
+def test_fetch_run_refuses_an_object_no_stage_accounts_for(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "notes.txt").write_text("stray", encoding="utf-8")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "runs/brought-home/notes.txt" in str(refusal.value.detail)
+    assert reader.fetched == []  # refused at the listing, before a byte moved
+
+
+def test_fetch_run_refuses_an_artifact_whose_bytes_differ_from_its_manifest(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path)
+    manifest = json.loads(
+        (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").read_text("utf-8")
+    )
+    [entry] = manifest["artifacts"]
+    reader.overrides[f"runs/brought-home/{entry['relative_path']}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "its stage manifest records" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_blob_that_does_not_hash_to_its_name(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    blobs = volume / "runs" / "brought-home" / "2_designator" / "blobs" / "sha256"
+    [blob] = [path for path in blobs.iterdir() if path.is_file()]
+    reader.overrides[f"runs/brought-home/2_designator/blobs/sha256/{blob.name}"] = b"other"
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "not the one its name claims" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_manifest_the_fetched_artifacts_do_not_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A manifest naming an artifact that never arrived does not reconcile."""
+
+    volume, reader = _volume_run(tmp_path)
+    manifest_path = volume / "runs" / "brought-home" / "2_designator" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["artifacts"].append(
+        {
+            "artifact_id": "proposal_deadbeefdeadbeef",
+            "kind": "proposal",
+            "subject_id": "pg_deadbeefdeadbeef",
+            "outcome": "proposed",
+            "relative_path": "2_designator/artifacts/proposal/proposal_deadbeefdeadbeef.json",
+            "sha256": "d" * 64,
+        }
+    )
+    reader.overrides["runs/brought-home/2_designator/manifest.json"] = canonical_bytes(manifest)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "does not match the manifest the fetched artifacts rebuild" in str(refusal.value.detail)
+
+
+def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:
+    _volume, reader = _volume_run(tmp_path)
+    into = tmp_path / "local"
+    local_run = into / "brought-home" / "run.json"
+    local_run.parent.mkdir(parents=True)
+    local_run.write_bytes(b"a different run wearing this name\n")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "was not overwritten" in str(refusal.value.detail)
+    assert local_run.read_bytes() == b"a different run wearing this name\n"
+    assert [path.name for path in local_run.parent.iterdir()] == ["run.json"]
+
+
+def test_fetch_run_refuses_a_prefix_with_nothing_under_it(tmp_path: Path) -> None:
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="never-written", into=tmp_path / "local", reader=reader)
+
+    assert "nothing is stored under 'runs/never-written/'" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_prefix_with_no_run_authority(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "run.json").unlink()
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "no run.json under" in str(refusal.value.detail)
+    assert reader.fetched == []
+
+
+def test_fetch_run_refuses_a_tampered_run_authority(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    authority = json.loads((volume / "runs" / "brought-home" / "run.json").read_text("utf-8"))
+    authority["config_digest"] = "e" * 64
+    reader.overrides["runs/brought-home/run.json"] = canonical_bytes(authority)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "self-hash" in str(refusal.value.detail)
+    assert reader.fetched == ["runs/brought-home/run.json"]
+
+
+def test_fetch_run_needs_a_network_volume_when_no_reader_is_supplied(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local")
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "--network-volume" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_bad_run_id_by_name(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(
+            run_id="Not A Run", into=tmp_path / "local", reader=DirectoryRunReader(tmp_path)
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "run_id" in str(refusal.value.detail)
+
+
+def test_fetch_run_writes_a_partial_receipt_when_it_stops(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "stray.bin").write_bytes(b"?")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    receipt = surface._descriptor_receipt("fetch-run")
+    assert receipt is not None
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "partial"
+    assert "stray.bin" in payload["detail"]
+
+
+def test_cli_fetch_run_reads_the_named_volume_and_never_a_local_stand_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def fetch_run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "fetch-run",
+                "--run-id",
+                "brought-home",
+                "--into",
+                str(tmp_path / "local"),
+                "--network-volume",
+                "EU-CZ-1:vol123",
+            ]
+        )
+        == 0
+    )
+    assert observed["run_id"] == "brought-home"
+    assert observed["into"] == tmp_path / "local"
+    assert observed["volume"].volume_id == "vol123"
+    assert observed["volume"].datacenter_id == "EU-CZ-1"
+    assert (
+        cli.main(["--workspace", str(tmp_path), "fetch-run", "--run-id", "x", "--into", "y"]) == 2
+    )

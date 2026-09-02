@@ -29,9 +29,11 @@ quoted rather than paraphrased where the detail is load-bearing:
 - limits: `PutObject` is for objects "<500MB"; a multipart part may not exceed
   500MB; maximum request clock skew is one hour.
 - `ListObjects` "may take a long time when used on a directory containing many
-  files (over 10,000) or large amounts of data (over 10GB)". This class never
-  lists — `inspect` is one `HeadObject` per file — so the limit is avoided rather
-  than worked around.
+  files (over 10,000) or large amounts of data (over 10GB)". The transfer target
+  never lists — `inspect` is one `HeadObject` per file — so that limit is avoided
+  rather than worked around; `S3VolumeObjectReader` does list, one run prefix at
+  a time, and bounds the walk at `MAX_LISTED_KEYS` rather than trusting the
+  documented figure.
 
 **Stated as unconfirmed rather than asserted:**
 
@@ -56,7 +58,9 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, BinaryIO, Final, Mapping
 
 from operations.pod.transfer import RemoteObject
@@ -73,6 +77,10 @@ MAX_CONCURRENCY: Final = 4
 # past anything this channel should believe, and the bytes come off a volume a
 # pod writes, so their size is untrusted input like their content.
 MAX_READ_BYTES: Final = 1024 * 1024
+# `S3VolumeObjectReader`: one run tree's listing is bounded, and each object is
+# streamed in chunks under the caller's own per-object bound.
+MAX_LISTED_KEYS: Final = 100_000
+FETCH_CHUNK_BYTES: Final = 1024 * 1024
 
 # `Error.Code` values that mean "no such object" rather than "something is wrong".
 # botocore reports a bare `HeadObject` 404 as "404"; `NoSuchKey` and `NotFound`
@@ -364,6 +372,172 @@ class S3VolumeReadChannel:
         return payload
 
 
+class S3VolumeObjectReader:
+    """The list-and-fetch seam `surface.fetch_run` brings a run tree home through.
+
+    `ListObjectsV2` under one prefix, paginated to the end, and one streamed
+    `GetObject` per key into a local file -- beside `S3VolumeReadChannel`'s
+    single bounded read and `S3VolumeTarget`'s `HeadObject`, sharing the client
+    construction and the one classifier, `_means_absent`. It knows nothing
+    about run trees: which keys belong to a run, what each must digest to, and
+    whether a local copy may be touched are `surface.fetch_run`'s questions.
+
+    Both verbs fail closed. A listing the volume cannot finish (a truncated
+    page with no continuation token, a non-list `Contents`, a key that is not
+    a string) is a refusal, never a shorter run. A key the listing named that
+    `GetObject` then reports absent is a refusal too: an object that vanished
+    between the two calls is not one to skip. Bytes go to a temporary file in
+    the destination's own directory and are renamed into place only once the
+    body reached EOF inside the caller's bound, so a dropped connection never
+    leaves a short file wearing a real name.
+
+    `ListObjects` "may take a long time" past 10,000 objects or 10 GB
+    (RunPod's documented limit, module docstring); a run tree of a few pages
+    is far inside that, and `MAX_LISTED_KEYS` refuses one that is not rather
+    than walking it forever. Note 3 of the module docstring applies: nothing
+    here has run against a real endpoint.
+    """
+
+    def __init__(
+        self,
+        spec: VolumeSpec,
+        *,
+        client: Any | None = None,
+        environ: Mapping[str, str] | None = None,
+    ) -> None:
+        self.spec = spec
+        self.client = build_client(spec, environ) if client is None else client
+
+    def list_keys(self, prefix: str) -> tuple[str, ...]:
+        """Every key under `prefix`, in the order the volume listed them."""
+
+        if not prefix or not prefix.endswith("/"):
+            raise VolumeTransferRefusal(
+                f"a run prefix must be non-empty and end in '/', not {prefix!r}"
+            )
+        keys: list[str] = []
+        token: str | None = None
+        while True:
+            request: dict[str, Any] = {"Bucket": self.spec.volume_id, "Prefix": prefix}
+            if token is not None:
+                request["ContinuationToken"] = token
+            try:
+                page = self.client.list_objects_v2(**request)
+            except Exception as error:
+                raise VolumeTransferRefusal(
+                    f"the network volume refused or could not answer a listing of {prefix!r}: "
+                    f"{error}"
+                ) from error
+            if not isinstance(page, Mapping):
+                raise VolumeTransferRefusal(
+                    f"the network volume answered a listing of {prefix!r} with no page"
+                )
+            contents = page.get("Contents", [])
+            if not isinstance(contents, list):
+                raise VolumeTransferRefusal(
+                    f"the network volume listed {prefix!r} as something other than a list"
+                )
+            for entry in contents:
+                key = entry.get("Key") if isinstance(entry, Mapping) else None
+                if not isinstance(key, str) or not key.startswith(prefix):
+                    raise VolumeTransferRefusal(
+                        f"the network volume listed an object under {prefix!r} with no usable "
+                        "key; the listing is not evidence of the run"
+                    )
+                keys.append(key)
+                if len(keys) > MAX_LISTED_KEYS:
+                    raise VolumeTransferRefusal(
+                        f"more than {MAX_LISTED_KEYS} objects under {prefix!r}; that is not the "
+                        "shape of one run tree and was not walked further"
+                    )
+            if not page.get("IsTruncated", False):
+                return tuple(keys)
+            token = page.get("NextContinuationToken")
+            if not isinstance(token, str) or not token:
+                raise VolumeTransferRefusal(
+                    f"the network volume truncated the listing of {prefix!r} without a "
+                    "continuation token; a partial listing is not a run"
+                )
+
+    def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
+        """Stream one object into `destination`; the byte count, or a refusal.
+
+        The caller has already decided `destination` may be written (it does
+        not exist, or `surface.fetch_run` will compare bytes afterwards). This
+        writes a temporary file beside it and renames only after the body's
+        EOF arrived inside `max_bytes`.
+        """
+
+        if max_bytes <= 0:
+            raise VolumeTransferRefusal("network-volume fetch bound must be positive")
+        try:
+            response = self.client.get_object(Bucket=self.spec.volume_id, Key=key)
+        except Exception as error:
+            if _means_absent(error):
+                raise VolumeTransferRefusal(
+                    f"the network volume listed {key!r} and then reported it absent; an object "
+                    "that vanished mid-fetch is not one to skip"
+                ) from error
+            raise VolumeTransferRefusal(
+                f"the network volume refused or could not answer a read of {key!r}: {error}"
+            ) from error
+        body = response.get("Body") if isinstance(response, Mapping) else None
+        if body is None or not callable(getattr(body, "read", None)):
+            raise VolumeTransferRefusal(
+                f"the network volume answered a read of {key!r} without a readable body"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=destination.parent
+        )
+        written = 0
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                while True:
+                    chunk = body.read(FETCH_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if not isinstance(chunk, (bytes, bytearray)):
+                        raise VolumeTransferRefusal(
+                            f"the network volume answered {key!r} with a non-bytes body chunk"
+                        )
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise VolumeTransferRefusal(
+                            f"the object at {key!r} is larger than the {max_bytes}-byte bound; "
+                            "it was not kept"
+                        )
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        except VolumeTransferRefusal:
+            _unlink_quietly(temporary)
+            raise
+        except Exception as error:
+            _unlink_quietly(temporary)
+            raise VolumeTransferRefusal(
+                f"the network volume dropped the body of {key!r} while it was being read; "
+                f"nothing was kept: {error}"
+            ) from error
+        finally:
+            closer = getattr(body, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # pragma: no cover - a failed close hides no evidence
+                    pass
+        return written
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _read_bounded(body: Any, limit: int) -> bytes:
     """Accumulate up to ``limit`` bytes, tolerating short reads.
 
@@ -440,10 +614,13 @@ def _means_absent(error: BaseException) -> bool:
 
 
 __all__ = [
+    "FETCH_CHUNK_BYTES",
     "MAX_CONCURRENCY",
+    "MAX_LISTED_KEYS",
     "MAX_READ_BYTES",
     "PART_BYTES",
     "SHA256_METADATA_KEY",
+    "S3VolumeObjectReader",
     "S3VolumeReadChannel",
     "S3VolumeTarget",
     "VolumeSpec",

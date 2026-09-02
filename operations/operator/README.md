@@ -27,9 +27,9 @@ only that): see the upload section below.
 Every screen says "fixture" where a real run would name a real resource. The first real
 run requires separate approval.
 
-## The fourteen words
+## The fifteen words
 
-Twelve things this tool can do, in the order a normal run uses them, plus two you can run
+Thirteen things this tool can do, in the order a normal run uses them, plus two you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
@@ -40,7 +40,8 @@ any time to check on things.
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
-| `run` | Processes the images through the pipeline. This build runs the declared synthetic fixture. | No new cost beyond the machine already running. |
+| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door, and `--models-config` with `--serving-recipes-config` seal the real chair roster and its serving catalogue into the run (always the pair; one without the other is refused). | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
+| `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. It is the one word besides `upload --network-volume` that talks to the volume, so you have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only and shows its sealed boundaries, page and act images, review queue and recorded decisions. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
 | `advance` | Appends Tyrel's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record it appends is permanent and is never retracted. |
@@ -92,7 +93,8 @@ a bound; prepare that material as smaller submitted folders.
 the submitted folder if you are preparing source masters, work its queue with `triage`,
 `upload` your images (zero machine cost while you do any of that), then `launch` when you
 are ready to actually process
-them, `boot`, `run`, `export`, `backup` your run tree to keep a local copy, and `close`
+them, `boot`, `run`, `export`, `fetch-run` to bring a pod-written run tree home,
+`backup` your run tree to keep a local copy, and `close`
 the moment you are done. Use `review` to read one run tree without changing anything in
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
 time you are unsure what is happening or costing money.
@@ -143,6 +145,29 @@ cannot see:
   status` to see whether it created a machine. If it did, a verified close is required
   before you preview again. If it did not — the first launch simply refused or failed —
   nothing needs closing; preview again so the price and request are current.
+
+## `fetch-run`: bring a pod's run tree home
+
+`verbatus fetch-run --run-id <id> --into <local root> --network-volume DATACENTER:VOLUME_ID`
+lists everything under `runs/<id>/` on the named volume (where the pod's own run writes
+its tree) and fetches each object into `<local root>/<id>/`. It needs the same two
+storage-key environment variables as `upload --network-volume`, and nothing else: no
+pod, no GPU-hours, no provider API key.
+
+Every object is checked the way the run tree checks itself before it counts as fetched: a
+blob must hash to its own name, a receipt to its own name, an artifact to the digest its
+stage manifest recorded, `run.json` to its own self-hash, and each stage manifest must
+equal the one the fetched artifacts rebuild. The authority is fetched first and the
+inventories second, so a bad object stops the fetch at itself rather than after a folder
+of them. An object under the prefix that no stage of a run tree accounts for is refused
+by name. A publication temporary a crashed pod left beside a manifest is skipped and its
+name is in the receipt.
+
+A file that already exists locally is compared, never replaced: identical bytes are reused
+and counted, different bytes refuse by name and leave the local run untouched. Run it
+again after a refusal and it safely reuses what was verified. The receipt records counts,
+the stages verified and the excluded temporaries; `status` shows it. The listing and
+`GetObject` path has never run against a real endpoint.
 
 ## `spend show`: inspect the reviewed guard
 
@@ -235,8 +260,13 @@ cannot travel in a commit.
 3. **`upload` writes to a local folder by default** through the same checksum-verified,
    resumable transfer a network volume uses. `--network-volume DATACENTER:VOLUME_ID`
    selects the S3-compatible target; it has never been run against a real endpoint.
-4. **`run` processes the declared synthetic fixture**, not the files you uploaded. The two
-   are not joined yet.
+4. **`run` runs on this computer, not on a pod.** With no submission it processes the
+   declared synthetic fixture; with `--submission-folder` and `--submission-manifest` it
+   sends a real approved submission to the Door, and with the `--models-config` /
+   `--serving-recipes-config` pair it seals the real roster — but no chair is served
+   here, so a real-roster run on this computer stops where a stage first needs one.
+   The pod's run is `python -m operations.pod.pod_run`, and `fetch-run` is how its tree
+   comes back.
 5. **`export` produces a base Armarium evidence bundle**, not Spec 11's product export,
    and says so on screen every time.
 6. **The fixture pod is given a fixed cost at close** so the captured-cost line has

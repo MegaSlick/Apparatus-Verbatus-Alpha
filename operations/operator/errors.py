@@ -59,6 +59,7 @@ class ErrorCode(StrEnum):
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
+    FETCH_RUN_FAILED = "fetch-run-failed"
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
@@ -304,6 +305,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
         "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
+    ),
+    ErrorCode.FETCH_RUN_FAILED: ErrorCopy(
+        "The run tree was not brought back from the network volume as one verified whole.",
+        "Files already verified stay where they landed; an existing local file that differed was not touched, and no pod was started or billed.",
+        "Keep the saved detail, repair the named object, digest, or local-copy conflict, then run `verbatus fetch-run` again; it safely reuses verified files.",
     ),
     ErrorCode.INGEST_REFUSED: ErrorCopy(
         "The submission could not be prepared for the Door.",

@@ -25,14 +25,21 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
-from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterator, Protocol, Sequence
 
 from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.contracts.identities import artifact_id
+from common.contracts.errors import ContractError
+from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.stages import ARMARIUM
-from common.runtree.store import RunTree
+from common.runtree.store import (
+    DOOR_MANIFEST_FILE,
+    MANIFEST_FILE,
+    RECEIPTS_DIR,
+    RUN_FILE,
+    RunTree,
+)
 from common.stage import load_fixture
 from operations.pod.arming import ControllerArming, ControllerReadiness
 from operations.pod.bootstrap import (
@@ -102,6 +109,7 @@ from .records import (
 from .volume_cost import volume_cost_lines
 from .volume_s3 import (
     TRANSFER_CREDENTIAL_ENV,
+    S3VolumeObjectReader,
     S3VolumeTarget,
     VolumeSpec,
     VolumeTransferRefusal,
@@ -122,6 +130,13 @@ DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 # credential stayed in a stage's environment.
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
+FETCH_RUN_PREFIX = "runs"
+"""Where `pod_run` writes run trees on the volume, relative to its mount:
+`<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
+MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
+"""One object's bound. A whole-page blob is the largest thing a run tree holds;
+the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
+gigabyte is past any page this project has rendered."""
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
 # -- so a frozen test clock still opens a valid, non-empty billing window. This
@@ -758,6 +773,108 @@ class OperatorSurface:
         self.present(f"Saved report: {receipt}")
         return receipt
 
+    # -- fetch-run ------------------------------------------------------------
+
+    def fetch_run(
+        self,
+        *,
+        run_id: str,
+        into: str | Path,
+        volume: VolumeSpec | None = None,
+        reader: RunObjectReader | None = None,
+        run_prefix: str = FETCH_RUN_PREFIX,
+    ) -> Path:
+        """Bring one run tree back from the volume, every object digest-checked.
+
+        Lists every object under ``<run_prefix>/<run_id>/`` through the volume
+        S3 seam and fetches each into ``<into>/<run_id>/``, then checks it the
+        way the tree checks itself: a blob must hash to its own name, a receipt
+        to its own name, an artifact to the digest its stage manifest recorded,
+        ``run.json`` to its own self-hash, and every stage manifest must equal
+        the manifest the local copy rebuilds from the artifacts that arrived.
+        An object nobody accounts for -- a key outside the tree's own inventory
+        scope -- is a refusal by name; a publication temporary is skipped and
+        its name recorded. A local file that already exists is compared, never
+        replaced: identical bytes are reused, different bytes refuse by name.
+
+        Zero GPU-hours: this reads storage and needs no pod. Nothing here has
+        run against a real endpoint (``volume_s3.py``, note 3).
+        """
+
+        try:
+            checked_id = validate_run_id(run_id)
+        except ContractError as error:
+            raise OperatorError(ErrorCode.FETCH_RUN_FAILED, detail=str(error)) from error
+        if reader is None:
+            if volume is None:
+                raise OperatorError(
+                    ErrorCode.FETCH_RUN_FAILED,
+                    detail="fetch-run needs the network volume the run was written to "
+                    "(--network-volume DATACENTER:VOLUME_ID); there is no local stand-in",
+                )
+            self.present(f"Fetch-run will read {volume.describe()}.")
+            try:
+                reader = S3VolumeObjectReader(volume)
+            except Exception as error:
+                self._record_failure("fetch-run", "volume-unavailable", str(error))
+                raise OperatorError(
+                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)
+                ) from error
+        self.present("No pod needs to be running. This step uses zero GPU-hours.")
+        destination_root = Path(into).resolve()
+        prefix = f"{run_prefix.strip('/')}/{checked_id}/"
+        try:
+            outcome = _fetch_run_tree(reader, prefix, destination_root, checked_id)
+        except (FetchRunRefusal, VolumeTransferRefusal, ContractError, OSError) as error:
+            receipt = self._write_action(
+                "fetch-run",
+                {
+                    "summary": "Fetch-run stopped before the whole run tree was verified.",
+                    "state": "partial",
+                    "run_id": checked_id,
+                    "prefix": prefix,
+                    "into": str(destination_root),
+                    "detail": str(error),
+                    "zero_gpu_hours": True,
+                },
+                descriptor_action="fetch-run",
+            )
+            raise OperatorError(
+                ErrorCode.FETCH_RUN_FAILED, detail=f"{error} Saved receipt: {receipt}"
+            ) from error
+        receipt = self._write_action(
+            "fetch-run",
+            {
+                "summary": (
+                    f"Run {checked_id} was brought back and verified: "
+                    f"{outcome.fetched} object(s) fetched, {outcome.reused} reused."
+                ),
+                "state": "verified",
+                "run_id": checked_id,
+                "prefix": prefix,
+                "into": str(destination_root),
+                "fetched": outcome.fetched,
+                "reused": outcome.reused,
+                "bytes": outcome.bytes,
+                "stages_verified": list(outcome.stages),
+                "excluded_publication_temporaries": list(outcome.excluded),
+                "zero_gpu_hours": True,
+            },
+            descriptor_action="fetch-run",
+        )
+        self.present(
+            f"Run {checked_id} is at {destination_root / checked_id}: "
+            f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
+            f"identical, every one checked against the run tree's own digests."
+        )
+        if outcome.excluded:
+            self.present(
+                f"{len(outcome.excluded)} publication temporar{'y' if len(outcome.excluded) == 1 else 'ies'} "
+                "on the volume were not fetched; their names are in the receipt."
+            )
+        self.present(f"Saved receipt: {receipt}")
+        return receipt
+
     # -- run ------------------------------------------------------------------
 
     def run(
@@ -769,6 +886,8 @@ class OperatorSurface:
         submission_folder: str | Path | None = None,
         submission_manifest: str | Path | None = None,
         data_gate_policy: str | Path | None = None,
+        models_config: str | Path | None = None,
+        serving_recipes_config: str | Path | None = None,
     ) -> RunOutcome:
         if submission_folder is None:
             if submission_manifest is not None:
@@ -781,6 +900,13 @@ class OperatorSurface:
                     ErrorCode.INVALID_COMMAND,
                     detail="--data-gate-policy is meaningful only with --submission-folder",
                 )
+        # The roster's two halves travel together or not at all: the
+        # orchestrator seals both into `config_digest`, and forwarding one
+        # would let the real roster resolve against the fixture catalogue.
+        # Resolved here, before the fault drill or any child starts.
+        roster_argv = _roster_argv(
+            models_config=models_config, serving_recipes_config=serving_recipes_config
+        )
 
         run_root = self.state_root / "runs"
         ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
@@ -833,6 +959,7 @@ class OperatorSurface:
                 submission_folder=submission_folder,
                 submission_manifest=submission_manifest,
                 data_gate_policy=data_gate_policy,
+                roster_argv=roster_argv,
             )
             receipt = self._write_action(
                 "run",
@@ -874,6 +1001,7 @@ class OperatorSurface:
                 data_gate_policy=data_gate_policy,
             )
         )
+        command.extend(roster_argv)
         completed = self.runner(
             command,
             cwd=self.workspace,
@@ -1814,6 +1942,7 @@ class OperatorSurface:
         submission_folder: str | Path | None = None,
         submission_manifest: str | Path | None = None,
         data_gate_policy: str | Path | None = None,
+        roster_argv: Sequence[str] = (),
     ) -> None:
         command = [
             sys.executable,
@@ -1832,6 +1961,7 @@ class OperatorSurface:
                 data_gate_policy=data_gate_policy,
             )
         )
+        command.extend(roster_argv)
         completed = self.runner(
             command,
             cwd=self.workspace,
@@ -2767,6 +2897,235 @@ def _real_ingress_argv(
         if value is not None:
             argv.extend((flag, str(Path(value).absolute())))
     return argv
+
+
+def _roster_argv(
+    *, models_config: str | Path | None, serving_recipes_config: str | Path | None
+) -> list[str]:
+    """The real-roster pair, forwarded together; one without the other is refused."""
+
+    if (models_config is None) != (serving_recipes_config is None):
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND,
+            detail=(
+                "--models-config and --serving-recipes-config select one roster together "
+                "(the chairs and the catalogue they are served under); supply both or neither"
+            ),
+        )
+    if models_config is None:
+        return []
+    return [
+        "--models-config",
+        str(Path(models_config).absolute()),
+        "--serving-recipes-config",
+        str(Path(serving_recipes_config).absolute()),  # type: ignore[arg-type]
+    ]
+
+
+_MANIFEST_NAMES = frozenset({MANIFEST_FILE, DOOR_MANIFEST_FILE})
+
+
+class FetchRunRefusal(RuntimeError):
+    """The fetched tree could not be verified as one whole; it is never called fetched."""
+
+
+class RunObjectReader(Protocol):
+    """What `fetch_run` needs from the volume: a listing and a streamed read."""
+
+    def list_keys(self, prefix: str) -> tuple[str, ...]:
+        """Every key under `prefix`, or a refusal; never a shorter listing."""
+
+    def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
+        """Stream one object into `destination`; the byte count, or a refusal."""
+
+
+@dataclass(frozen=True, slots=True)
+class FetchRunOutcome:
+    fetched: int
+    reused: int
+    bytes: int
+    stages: tuple[str, ...]
+    excluded: tuple[str, ...]
+
+
+def _fetch_run_tree(
+    reader: RunObjectReader, prefix: str, destination_root: Path, run_id: str
+) -> FetchRunOutcome:
+    """List, fetch, and verify one run tree; refuse the first thing that does not reconcile."""
+
+    tree = RunTree(destination_root, run_id)
+    scope = tree.inventory_scope()
+    keys = reader.list_keys(prefix)
+    if not keys:
+        raise FetchRunRefusal(
+            f"nothing is stored under {prefix!r} on the volume; either the run was never "
+            "written there or the prefix is not where pod_run wrote it."
+        )
+    relative_paths: list[str] = []
+    excluded: list[str] = []
+    for key in keys:
+        relative = key[len(prefix) :]
+        if _is_publication_temporary(relative, scope):
+            excluded.append(relative)
+            continue
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in relative.split("/")
+            or not any(
+                relative.startswith(item) if item.endswith("/") else relative == item
+                for item in scope
+            )
+        ):
+            raise FetchRunRefusal(
+                f"the volume holds {key!r} under the run prefix, and no stage of a run tree "
+                "accounts for an object at that path; nothing was fetched past it."
+            )
+        relative_paths.append(relative)
+    if RUN_FILE not in relative_paths:
+        raise FetchRunRefusal(
+            f"no {RUN_FILE} under {prefix!r}: there is no run authority to check the rest "
+            "against, so nothing was fetched."
+        )
+    # Authority first, then the inventories, then everything the inventories
+    # account for -- each verified as it lands, so a mismatch stops the fetch
+    # at the object that failed rather than after a directory full of them.
+    ordered = sorted(
+        relative_paths,
+        key=lambda item: (
+            item != RUN_FILE,
+            PurePosixPath(item).name not in _MANIFEST_NAMES,
+            item,
+        ),
+    )
+    fetched = reused = total = 0
+    expected: dict[str, str] = {}
+    manifests: dict[str, dict[str, Any]] = {}
+    root = tree.root
+    for relative in ordered:
+        target = root / relative
+        data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
+        total += data_size
+        fetched += not was_reused
+        reused += was_reused
+        name = PurePosixPath(relative).name
+        if relative == RUN_FILE:
+            tree.read_run()  # self-hash, schema, and run id, or a ContractError
+        elif name in _MANIFEST_NAMES:
+            manifest = _fetched_manifest(tree, relative)
+            manifests[relative] = manifest
+            for entry in manifest["artifacts"]:
+                expected[entry["relative_path"]] = entry["sha256"]
+        elif "/artifacts/" in relative:
+            digest = _sha256_of(target)
+            recorded = expected.get(relative)
+            if recorded is None:
+                raise FetchRunRefusal(
+                    f"{relative} arrived from the volume but no stage manifest records it; an "
+                    "artifact nobody inventoried is not evidence."
+                )
+            if recorded != digest:
+                raise FetchRunRefusal(
+                    f"{relative} digests to {digest}, not the {recorded} its stage manifest "
+                    "records; the fetched tree does not reconcile with itself."
+                )
+        elif "/blobs/sha256/" in relative or relative.startswith(f"{RECEIPTS_DIR}/"):
+            digest = _sha256_of(target)
+            if PurePosixPath(relative).stem != digest:
+                raise FetchRunRefusal(
+                    f"{relative} is content-addressed but its bytes digest to {digest}; "
+                    "the object on the volume is not the one its name claims."
+                )
+        else:
+            # A rebuildable index or the derived Recensor receipt: readable
+            # JSON, digested into the receipt, verified by the tree's own
+            # readers when a verb next opens it.
+            try:
+                json.loads(target.read_bytes().decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
+    stages: list[str] = []
+    for relative, manifest in manifests.items():
+        stage = manifest["stage"]
+        rebuilt = tree.build_manifest(stage, verify_inputs=False)
+        if rebuilt["artifacts"] != manifest["artifacts"] or rebuilt["blobs"] != manifest["blobs"]:
+            raise FetchRunRefusal(
+                f"{relative} does not match the manifest the fetched artifacts rebuild for "
+                f"stage {stage!r}; the tree on the volume and the tree here disagree."
+            )
+        stages.append(stage)
+    return FetchRunOutcome(fetched, reused, total, tuple(sorted(stages)), tuple(excluded))
+
+
+def _fetch_or_compare(reader: RunObjectReader, key: str, target: Path) -> tuple[int, bool]:
+    """Fetch into `target`, or -- if it exists -- fetch beside it and compare, never replace."""
+
+    if target.is_symlink():
+        raise FetchRunRefusal(f"{target} is a symbolic link; a run tree holds no aliases.")
+    if not target.exists():
+        return reader.fetch_to(key, target, max_bytes=MAX_FETCH_OBJECT_BYTES), False
+    if not target.is_file():
+        raise FetchRunRefusal(f"{target} exists and is not a regular file.")
+    staging = target.with_name(f".{target.name}.fetch-{secrets.token_hex(4)}")
+    try:
+        size = reader.fetch_to(key, staging, max_bytes=MAX_FETCH_OBJECT_BYTES)
+        if _sha256_of(staging) != _sha256_of(target):
+            raise FetchRunRefusal(
+                f"{target} already exists with different bytes than the volume holds for "
+                f"{key!r}; the local run was not overwritten."
+            )
+    finally:
+        staging.unlink(missing_ok=True)
+    return size, True
+
+
+def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
+    try:
+        manifest = json.loads(tree.read_bytes(relative).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, OSError) as error:
+        raise FetchRunRefusal(f"{relative} is not a readable manifest: {error}") from error
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("run_id") != tree.run_id
+        or not isinstance(manifest.get("stage"), str)
+        or not isinstance(manifest.get("artifacts"), list)
+        or not isinstance(manifest.get("blobs"), list)
+    ):
+        raise FetchRunRefusal(f"{relative} is not a manifest of run {tree.run_id!r}.")
+    if relative != tree.manifest_path(manifest["stage"]):
+        raise FetchRunRefusal(
+            f"{relative} names stage {manifest['stage']!r}, whose manifest lives at "
+            f"{tree.manifest_path(manifest['stage'])!r}."
+        )
+    for entry in manifest["artifacts"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("relative_path"), str)
+            or not isinstance(entry.get("sha256"), str)
+        ):
+            raise FetchRunRefusal(f"{relative} lists an artifact with no path and digest.")
+    return manifest
+
+
+def _is_publication_temporary(relative: str, scope: tuple[str, ...]) -> bool:
+    """RunTree's same-directory `.<target>.tmp-*` residue, and nothing else."""
+
+    path = PurePosixPath(relative)
+    if not path.name.startswith("."):
+        return False
+    target_name, separator, unique = path.name[1:].partition(".tmp-")
+    if not separator or not target_name or not unique:
+        return False
+    target = path.with_name(target_name).as_posix()
+    return any(target.startswith(item) if item.endswith("/") else target == item for item in scope)
+
+
+def _sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(_COPY_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _display_usd(amount: Decimal) -> str:

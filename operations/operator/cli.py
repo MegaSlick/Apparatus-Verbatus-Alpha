@@ -256,6 +256,43 @@ def build_parser() -> PlainParser:
         "--submission-manifest", type=Path, help="self-hashed ledger for the real folder"
     )
     run.add_argument("--data-gate-policy", type=Path, help="approved-storage policy for real input")
+    run.add_argument(
+        "--models-config",
+        type=Path,
+        help="the chair roster to seal into this run (config/models-real.toml for the real "
+        "chairs); always paired with --serving-recipes-config",
+    )
+    run.add_argument(
+        "--serving-recipes-config",
+        type=Path,
+        help="the serving catalogue the roster's chairs are served under "
+        "(config/serving_recipes_real.toml with the real roster); always paired with "
+        "--models-config",
+    )
+
+    fetch_run = verbs.add_parser(
+        "fetch-run",
+        help="bring one run tree back from the network volume, every object digest-checked",
+    )
+    fetch_run.add_argument("--run-id", required=True, help="the run pod_run wrote on the volume")
+    fetch_run.add_argument(
+        "--into",
+        type=Path,
+        required=True,
+        help="local run root; the tree lands at <into>/<run-id> and an existing file there "
+        "is compared, never replaced",
+    )
+    fetch_run.add_argument(
+        "--network-volume",
+        metavar="DATACENTER:VOLUME_ID",
+        required=True,
+        help=(
+            "the RunPod network volume the run was written to, for example EU-CZ-1:abc123. "
+            "Reading it needs no pod and uses no GPU-hours. Credentials are read from "
+            "RUNPOD_S3_ACCESS_KEY and RUNPOD_S3_SECRET_KEY in your environment, never from a "
+            "file here"
+        ),
+    )
 
     export = verbs.add_parser(
         "export", help="copy the recorded base Armarium evidence locally and print reconciliation"
@@ -392,7 +429,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
         else:
             _print("Verbatus will not start, adopt or close any pod: that stays offline.")
-            _print(f"You asked it to send files to {volume.describe()}.")
+            if args.verb == "fetch-run":
+                _print(f"You asked it to read a run tree from {volume.describe()}.")
+            else:
+                _print(f"You asked it to send files to {volume.describe()}.")
         if args.verb == "launch":
             request = load_request(args.request)
             spend = args.spend or workspace / "config" / "spend.toml"
@@ -442,7 +482,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 submission_folder=args.submission_folder,
                 submission_manifest=args.submission_manifest,
                 data_gate_policy=args.data_gate_policy,
+                models_config=args.models_config,
+                serving_recipes_config=args.serving_recipes_config,
             )
+        elif args.verb == "fetch-run":
+            surface.fetch_run(run_id=args.run_id, into=args.into, volume=volume)
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":
@@ -942,7 +986,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, export, close, status, spend, review, advance, or backup."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1091,6 +1135,16 @@ def _interactive_arguments() -> list[str]:
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]
+    if verb == "fetch-run":
+        run_id = _ask("The run ID pod_run wrote on the volume")
+        into = _ask("Local folder to bring the run tree into")
+        volume = _ask("Network volume, as DATACENTER:VOLUME_ID")
+        if not run_id or not into or not volume:
+            _print(
+                "Fetch-run needs a run ID, a local folder and a network volume. Nothing changed."
+            )
+            return []
+        return ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
     if verb == "export":
         return ["export"]
     if verb == "close":
