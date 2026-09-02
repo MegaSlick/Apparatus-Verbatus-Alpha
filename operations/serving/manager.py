@@ -41,6 +41,8 @@ from common.chairs.models import (
 )
 
 from .config import (
+    AnyProfile,
+    CapturedProfile,
     FixtureProfile,
     ServingConfigInputs,
     ServingProfile,
@@ -1277,15 +1279,14 @@ class ServingManager:
             ) from refusal
 
 
-def _launchable(
-    profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
-) -> ServingProfile:
+def _launchable(profile: AnyProfile, identity: ChairIdentity) -> ServingProfile:
     """Refuse non-launchable rows before snapshot and runtime checks.
 
-    Fixture chairs are answered from declared ``fixture://`` details, while an
-    unsupported row names a missing native engine. Deferring either refusal
-    would replace its configuration cause with a misleading pin or engine
-    failure.
+    Fixture chairs are answered from declared ``fixture://`` details, an
+    unsupported row names a missing native engine, and a captured row is
+    answered by another chair's retained response. Deferring any of these
+    refusals would replace its configuration cause with a misleading pin or
+    engine failure.
     """
 
     if isinstance(profile, FixtureProfile):
@@ -1294,6 +1295,14 @@ def _launchable(
             f"at tier {profile.tier!r} ({profile.description}); a fixture profile is never "
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
+        )
+    if isinstance(profile, CapturedProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to captured serving profile {profile.recipe!r} "
+            f"at tier {profile.tier!r}, captured from chair {profile.captured_from!r}; a "
+            "captured profile is never launched: its Testimonium is that chair's retained "
+            "response, filed by the Attestatores under this chair; no serving process was "
+            "started"
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingConfigurationError(

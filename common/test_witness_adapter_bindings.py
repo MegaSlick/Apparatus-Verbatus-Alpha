@@ -128,7 +128,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "dai.v1", "unbound.fixture.v1"}),
+        witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES | {"unbound.fixture.v1"},
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -392,6 +392,46 @@ def test_adapter_rows_travel_in_the_resolved_provenance_record():
     assert record["witness_scope"] == "page"
 
 
+def test_the_capture_adapter_is_a_declared_name_and_the_real_roster_binds_it():
+    """`chandra-capture.v1` reads the structure chair's retained answer as
+    Attestator 1's Testimonium. It is declared here, beside the served adapters,
+    so the same exact-name resolver accepts it, and the real roster is the one
+    occupant that names it; the fixture roster's pins above are unchanged."""
+    assert witness_adapters.CAPTURE_WITNESS_ADAPTER_NAMES == frozenset({"chandra-capture.v1"})
+    assert (
+        witness_adapters.CAPTURE_WITNESS_ADAPTER_NAMES
+        < witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES
+    )
+    assert (
+        witness_adapters.resolve_witness_adapter_name("chandra-capture.v1") == "chandra-capture.v1"
+    )
+
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    witness_adapters.validate_witness_adapter_bindings(real)
+    assert {
+        name: (chair.witness_adapter, chair.witness_scope)
+        for name, chair in real.chairs.items()
+        if getattr(chair, "witness_adapter", None) is not None
+    } == {
+        "attestator_1": ("chandra-capture.v1", "page"),
+        "attestator_2": ("dai.v1", "act"),
+        "attestator_3": ("churro.v1", "page"),
+    }
+    record = real.chairs["attestator_1"].to_record()
+    assert record["witness_adapter"] == "chandra-capture.v1"
+
+
+def test_a_receipt_identity_naming_the_capture_adapter_is_accepted_by_the_reader():
+    models = _models()
+    captured = replace(models.chairs["attestator_1"], witness_adapter="chandra-capture.v1")
+    record = receipt_record(build_receipt(captured, _serving_details()))
+    validate_receipt(record)
+    assert record["adapter_identity"] is None
+    nested = {**captured.to_record()}
+    record["adapter_identity"] = nested
+    validate_receipt(record)
+
+
 @pytest.mark.parametrize(
     ("role", "changes", "message"),
     (
@@ -425,7 +465,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "dai.v1", "other.fixture.v1"}),
+        witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES | {"other.fixture.v1"},
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]
