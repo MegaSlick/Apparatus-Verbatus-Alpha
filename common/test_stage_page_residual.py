@@ -43,6 +43,7 @@ from common.stage import (
     adapter_recipe_for,
     fallback_page_act_key,
     page_residual_act_key,
+    run_sealed_config_digests,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,13 @@ RUN_ID = "page-residual-unit"
 ORDINAL = 1
 BOUND = 2000
 MEASURED = 2500
+
+# Sentinel default for `_Page.hold_page`'s `grouping_config_sha256` parameter: it
+# means "use the digest this run actually sealed", resolved against the page's
+# own context rather than fixed at import time, since the value comes from a
+# real run tree built per test. `None` is not reused for this because `None`
+# already means "omit the field" for the tests that exercise that refusal.
+_SEALED_GROUPING_DIGEST = object()
 
 
 @pytest.fixture(scope="module")
@@ -202,13 +210,24 @@ class _Page:
         act_key: str | None = None,
         count: int | None = MEASURED,
         bound: int | None = BOUND,
+        grouping_config_sha256: str | None | object = _SEALED_GROUPING_DIGEST,
         extra: dict | None = None,
         inputs: list[dict] | None = None,
     ) -> str:
-        """Mint the page-residual hold the spec's §1 describes."""
+        """Mint the page-residual hold the spec's §1 describes.
+
+        `grouping_config_sha256` defaults to the sentinel `_SEALED_GROUPING_DIGEST`,
+        replaced below with the digest this run actually sealed at binding time —
+        the value the consumer verifier checks the hold against. Pass `None` to
+        omit the field, or a foreign digest to prove the consumer refuses one.
+        """
         bounds = self.rectangle if bounds is None else bounds
         act = derive_act_id(self.page_id, "page-residual", bounds) if act is None else act
         key = page_residual_act_key(ORDINAL) if act_key is None else act_key
+        if grouping_config_sha256 is _SEALED_GROUPING_DIGEST:
+            grouping_config_sha256 = run_sealed_config_digests(self.context.run)[
+                "designator-grouping"
+            ]
         payload = {
             "act_key": key,
             "page_id": self.page_id,
@@ -220,6 +239,11 @@ class _Page:
             "reason": (
                 "this page's conservation reconciled more residual components than the sealed "
                 "bound allows to be minted separately, so the page is held as one review item"
+            ),
+            **(
+                {"grouping_config_sha256": grouping_config_sha256}
+                if grouping_config_sha256 is not None
+                else {}
             ),
             **(extra or {}),
         }
@@ -334,6 +358,30 @@ def test_a_hold_naming_both_a_residual_and_a_page_rectangle_is_refused(page):
         _verify_minted_act_rows(page.context, {act: page.rows[act]})
 
 
+def test_a_hold_naming_no_grouping_digest_is_refused(page):
+    """The bound is a grouping-policy parameter; a hold owes the policy's name.
+
+    Without it, a Designator free to invent its `max_residual_components` could
+    hold any page it likes and this verifier would agree with it.
+    """
+    page.publish_conservation(_conservation_payload())
+    act = page.hold_page(grouping_config_sha256=None)
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="sealed grouping"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+def test_a_hold_naming_a_foreign_grouping_digest_is_refused(page):
+    """A bound judged against a policy this run never sealed is not this run's bound."""
+    page.publish_conservation(_conservation_payload())
+    act = page.hold_page(grouping_config_sha256="0" * 64)
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="this run sealed at binding time"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
 def test_a_bound_the_reconciliation_did_not_exceed_is_refused(page):
     """The premise is the record's own count against the hold's own bound."""
     page.publish_conservation(_conservation_payload(count=BOUND))
@@ -362,6 +410,22 @@ def test_a_hold_judged_against_a_bound_the_record_did_not_apply_is_refused(page)
     page.context.finish()
     with pytest.raises(FatalAccounting, match="must name one policy"):
         _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
+
+
+def test_a_held_page_over_a_record_still_reporting_proposed_is_refused(page):
+    """The record standing behind a held page must itself say `held`.
+
+    A record whose payload matches the hold exactly, down to the bound and
+    count, still tells a reader the reconciliation *proposed* its residuals if
+    its own `outcome` disagrees — the reverse of what a page-residual hold
+    means.
+    """
+    page.publish_conservation(_conservation_payload(), outcome="proposed")
+    act = page.hold_page()
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="rather than 'held'"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
 
 
 def test_a_withheld_hold_over_an_enumerated_record_is_refused(page):
@@ -523,6 +587,27 @@ def test_an_enumerated_record_with_no_component_list_is_still_refused(page):
 
     with pytest.raises(FatalAccounting, match="carries no residual-component list"):
         _verify_every_conservation_residual_is_accounted(page.context, {})
+
+
+def test_an_enumerated_records_count_must_match_its_own_listed_components(page):
+    """The count a reviewer is shown must be the list they can already count.
+
+    An enumerated record whose `residual_component_count` disagrees with
+    `len(residual_components)` is the same untruth `_verify_page_residual_premise`
+    already refuses on the withheld side; here the evidence to recompute it is
+    free, so nothing may leave it unrefused.
+    """
+    payload = _conservation_payload(
+        enumeration=RESIDUAL_ENUMERATION_COMPLETE,
+        count=99,
+        components=[{"bounds": COMPONENT, "pixel_count": 4, "review_priority": "high"}],
+    )
+    page.publish_conservation(payload, outcome="proposed")
+    page.hold_component(COMPONENT)
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match="carries 1 entries"):
+        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 
 def test_a_component_hold_still_traces_to_the_reconciliation_that_found_it(page):

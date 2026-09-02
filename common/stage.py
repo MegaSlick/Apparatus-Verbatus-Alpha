@@ -2583,6 +2583,14 @@ def _verify_every_conservation_residual_is_accounted(
                 f"the conservation record for page {page_id} carries no residual-component list "
                 "to reconcile the denominator against"
             )
+        declared_count = payload.get("residual_component_count")
+        if not _is_count(declared_count) or declared_count != len(components):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} names residual_component_count "
+                f"{declared_count!r} but its residual_components list carries {len(components)} "
+                "entries; on an enumerated page the count a reviewer is told is the count the "
+                "list itself supports, recomputed rather than believed"
+            )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, Mapping) else None
             if not isinstance(bounds, dict):
@@ -2885,7 +2893,7 @@ def _verify_page_residual_act_row(
     it the one row whose evidence a reader cannot open and count for themselves,
     which is exactly why none of it may be believed here.
 
-    Four things are recomputed rather than read. The rectangle comes from the
+    Five things are recomputed rather than read. The rectangle comes from the
     sealed page bytes, so a hold naming a rectangle that is not the whole page —
     or naming a page it was not minted over — refuses however self-consistent its
     own identity is. The identity is re-derived against the reserved
@@ -2896,6 +2904,15 @@ def _verify_page_residual_act_row(
     no `residual_components` key at all: an empty list would mean a page with no
     unclaimed ink, which is the opposite claim, and the key's absence is what
     makes every existing consumer fail loudly instead of reading absence as none.
+
+    The bound itself is not merely internally consistent, it is bound to the run.
+    `max_residual_components` is a Designator grouping-policy parameter (SPEC_C
+    1), and this run sealed a `designator-grouping` digest for exactly that
+    policy at `open_context`. A hold naming its own bound and never naming which
+    grouping configuration it was judged against would let a Designator invent
+    any bound it liked; the hold's `grouping_config_sha256` is checked against
+    `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
+    is bound to the policy this run actually sealed, not merely to itself.
 
     The hold's own `residual_component_count` is held to the record's. It is the
     number a reviewer reads off the review item, and a hold free to name a
@@ -2923,6 +2940,20 @@ def _verify_page_residual_act_row(
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
+        )
+    grouping_digest = payload.get("grouping_config_sha256")
+    if not isinstance(grouping_digest, str) or not grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not name the sealed grouping "
+            "configuration digest its residual bound was judged against"
+        )
+    sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
+    if grouping_digest != sealed_grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, which is not the designator-grouping digest "
+            f"{sealed_grouping_digest!r} this run sealed at binding time; a Designator free to "
+            "invent the grouping policy behind its bound could hold any page it likes"
         )
     sources = [
         source
@@ -2984,6 +3015,17 @@ def _verify_page_residual_premise(
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
             f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
             "over a reconciliation that enumerated its components"
+        )
+    # Checked only once the record has already proven it means to withhold: a
+    # record that enumerated its components is refused above for that alone,
+    # whatever its outcome says, and folding this check in ahead of that one
+    # would report the wrong reason for the same wrong record.
+    outcome = conservation.get("outcome")
+    if outcome != "held":
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} as one review item, but that page's own "
+            f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
+            "record standing behind a held page may not still say it was proposed"
         )
     if "residual_components" in payload:
         raise FatalAccounting(
