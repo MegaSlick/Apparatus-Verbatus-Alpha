@@ -19,6 +19,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
 | `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
+| `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
@@ -210,11 +211,51 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 `recovery.toml` travels as `StageContext.recovery_policy`, `formats.toml` as
 `StageContext.armarium_formats`.
 
-Sealed names today: `designator-padding`, `designator-geometry`, `alignment`, `decoding`,
-`corpus-frame-shard`, `perlector-protocol`, `perlector-audit`, `pdf-render`,
-`recovery`, `hard-failure`, and — on real ingress only, because the fixture route is
-not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's
+Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
+`alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
+`pdf-render`, `recovery`, `hard-failure`, and — on real ingress only, because the
+fixture route is not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its vocabulary.
+
+### `designator_grouping.toml`
+
+The Designator's structure pass used to carry its thresholds as Python module defaults
+in `grouping.py`, `structure.py` and `conservation.py`, where nothing sealed them and
+nothing recorded where they came from. They decide which marks join into one act, so
+two runs under different values mark out *different acts from identical pixels* — the
+padding argument one step earlier in the same stage, and the reason this file exists.
+
+Six of its thresholds are integer basis points of the page's own dimension —
+`margin_bp` of the width, the rest of the height — resolved through the same
+round-half-up rule `designator_padding.toml` already uses, because an absolute pixel
+policy cannot be one policy for both a 200×260 fixture and a 2480×3508 scan, and two
+files would mean fixture runs prove bytes that real runs never seal. Every one resolves
+bit-identically to the constant it replaces at fixture size, so this file changes what
+is *recorded*, not yet what is *read*.
+
+A seventh threshold, `gap_tolerance_px`, sits in the file but never scales with the
+page: it is a stroke-connectivity radius rather than a page proportion, scaling it would
+change what "connected" means and make the labeller's cost grow with the cube of page
+scale, and no measurement of its true relationship to scan resolution exists — the
+file's own caveat says so at length, and it is the one number in there this build
+cannot honestly set. Two more values do not enter the file at all.
+`structure.PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python
+constants: they are 8-bit ink-intensity offsets, not geometry, and
+`common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` as a
+source literal against the Recensor's own contrast constant. A per-run value for either
+would make that cross-stage invariant unenforceable statically, so the file's closed
+schema refuses both names outright.
+
+Unlike `recovery.toml` and `formats.toml` above, this policy is re-read at its point of
+use rather than carried already parsed, exactly as `designator-padding` and
+`designator-geometry` are. Its schema lives in `pipeline/2_designator/grouping_config.py`,
+and `common/` may never import a stage module (`common/README.md`, enforced through
+`ast` by `common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across
+stage directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation
+hashes the bytes and refuses an unreadable file; the Designator loads and validates
+them in `initial_pass` and proves it read the bound bytes through
+`require_sealed_config("designator-grouping", …)`, which is where a malformed policy is
+refused — before the stage marks anything out.
 
 ## Pre-door triage instrument
 
