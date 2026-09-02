@@ -122,7 +122,7 @@ def real_ingress(context) -> bool:
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
 
 
-def page_subject(context, page_ordinal: int) -> str:
+def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
     """The Exemplar page one submitted ordinal names, on either ingress route.
 
     `exemplar_page_ids` is the one index of "which page is ordinal N" for both
@@ -130,15 +130,16 @@ def page_subject(context, page_ordinal: int) -> str:
     (`common.fixture_identity.page_identity`), which a real submission does not
     have; on a fixture run the two agree for every sealed page, because a
     sealed page's identity is the admitted bytes' digest and "sealed" means
-    those bytes matched the declaration. The index is rebuilt from the
-    Exemplar's own inventory on every lookup rather than cached: the Exemplar
-    layer is sealed before this stage opens, so the walk answers the same every
-    time, and a cache keyed on anything this process holds could outlive the
-    tree it described. One inventory walk per page lookup, roughly three
-    lookups per page per pass; the page-level bound on a large corpus is
-    roadmap work, not this stage's.
+    those bytes matched the declaration.
+
+    The Exemplar layer is sealed before this stage opens, so the walk answers
+    the same every time for the life of this process; a caller that visits many
+    pages in one pass builds the index once with `exemplar_page_ids(context)`
+    and threads it in as `page_ids`, rather than paying an inventory walk (one
+    validated read per Exemplar page) at every lookup. A caller asking about a
+    single page may omit it and pay that one walk directly.
     """
-    pages = exemplar_page_ids(context)
+    pages = page_ids if page_ids is not None else exemplar_page_ids(context)
     if page_ordinal not in pages:
         raise FatalAccounting(
             f"page ordinal {page_ordinal} names no Exemplar page in this run (accounted "
@@ -334,10 +335,17 @@ def page_witness_attempted(
     )
 
 
-def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
+def presentation_for_page(
+    context, page_ordinal: int, *, page_ids: dict[int, str] | None = None
+) -> dict[str, Any]:
     """Bind a page witness to the sealed whole-page pixels it was shown."""
-    page_id = page_subject(context, page_ordinal)
+    page_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    if page.get("outcome") != "sealed":
+        raise FatalAccounting(
+            f"page ordinal {page_ordinal} was refused at the Door and carries no sealed "
+            "pixels; no witness can be shown a page that was never admitted"
+        )
     image_path = page["payload"]["image_path"]
     page_bytes = _verified_page_bytes(context, page)
     width, height = dimensions(page_bytes)
@@ -3283,9 +3291,14 @@ def publish_page_testimonia_and_attachments(
     page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     contributing_pages_by_act, by_page = page_denominator(context, acts, regions_by_act)
+    # Built once for this whole pass and threaded into every `page_subject` /
+    # `presentation_for_page` call below: each is otherwise a fresh Exemplar
+    # inventory walk (one validated read per page), paid again for every
+    # page-scoped chair on every page.
+    page_ids = exemplar_page_ids(context)
 
     for page_ordinal, page_acts in sorted(by_page.items()):
-        page_subject_id = page_subject(context, page_ordinal)
+        page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
         page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         for chair in sorted(page_chairs):
             resolved = context.registry.resolve(chair)
@@ -3352,7 +3365,11 @@ def publish_page_testimonia_and_attachments(
                 if captured is not None
                 else content_health(native_payload, completed=reading)
             )
-            presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
+            presented = (
+                presentation_for_page(context, page_ordinal, page_ids=page_ids)
+                if attempted_page
+                else {}
+            )
             adapter = (
                 witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
                 if attempted_page and isinstance(resolved, ChairIdentity)
@@ -4381,6 +4398,8 @@ def live_attempt_pass(
     """
     page_chairs = declared_page_witness_chairs(context)
     _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
+    # Built once for this whole pass; see `publish_page_testimonia_and_attachments`.
+    page_ids = exemplar_page_ids(context)
     live_page_chairs = sorted(
         chair
         for chair in context.witness_chairs
@@ -4465,7 +4484,7 @@ def live_attempt_pass(
                 # The page's own sealed subject id, not a synthesized name: the
                 # schedule is a record of what was served, and a page unit is
                 # addressed by the page the Exemplar sealed.
-                unit_id = page_subject(context, page_ordinal)
+                unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
                 units[(chair, unit_id)] = page_ordinal
                 rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
         else:
@@ -4495,6 +4514,7 @@ def live_attempt_pass(
                 regions_by_act=regions_by_act,
                 attempts_by_pair=attempts_by_pair,
                 page_captures=page_captures,
+                page_ids=page_ids,
             )
         else:
             recorded += _serve_act_unit(
@@ -4696,9 +4716,10 @@ def _serve_page_unit(
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
+    page_ids: dict[int, str] | None = None,
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
-    presentation = presentation_for_page(context, page_ordinal)
+    presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
     request = live_witness.page_chair_request(
         context, adapter, resolved.witness_adapter, presentation
     )

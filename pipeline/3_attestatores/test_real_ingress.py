@@ -535,7 +535,9 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     acts = act_records(tree)
     assert set(acts) == {(key, chair) for _o, _b, key in ACTS for chair in WITNESS_CHAIRS}
     for record in acts.values():
-        assert record["payload"]["provenance"]["receipt_ref"] is not None
+        assert attestatores.served_live(context, record["payload"]["provenance"]), (
+            "a real act record's receipt answers for a live chair, not a fixture"
+        )
     page = page_records(tree)
     assert set(page) == {
         (1, "attestator_1"),
@@ -546,6 +548,9 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     for (ordinal, _chair), record in page.items():
         assert record["subject_id"] == pages[ordinal], (
             "the page record names the Exemplar's own page"
+        )
+        assert attestatores.served_live(context, record["payload"]["provenance"]), (
+            "a real page record's receipt answers for a live chair, not a fixture"
         )
     kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
     assert "stage-seal" in kinds
@@ -596,3 +601,120 @@ def test_a_page_ordinal_the_exemplar_never_accounted_for_is_refused_by_name(serv
     assert attestatores.page_subject(context, 1) == exemplar_page_ids(context)[1]
     with pytest.raises(FatalAccounting, match="page ordinal 9 names no Exemplar page"):
         attestatores.page_subject(context, 9)
+
+
+# ============================== review findings ================================
+
+
+def test_page_subject_reuses_a_supplied_index_rather_than_rewalking_the_exemplar():
+    """`page_ids` is an opt-in cache: given one, `page_subject` never asks the tree.
+
+    Review found the un-cached form rebuilding the whole Exemplar page index --
+    an O(P) validated-artifact walk -- on every one of the ~7 lookups a
+    page-scoped chair's pass makes per page. `_RefusingTree` proves the fast
+    path never reaches the tree at all once a caller has built the index once.
+    """
+
+    class _RefusingTree:
+        def build_manifest(self, stage):
+            raise AssertionError(
+                "page_subject must not rewalk the Exemplar when page_ids is supplied"
+            )
+
+    context = StageContext(
+        tree=_RefusingTree(),
+        run={"ingress": real_ingress_record()},
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage=ATTESTATORES,
+        adapter_revision="unproven-real-attestatores",
+        args=None,
+        registry=None,
+    )
+
+    assert attestatores.page_subject(context, 1, page_ids={1: "page-one"}) == "page-one"
+    with pytest.raises(FatalAccounting, match="page ordinal 9 names no Exemplar page"):
+        attestatores.page_subject(context, 9, page_ids={1: "page-one"})
+
+
+def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
+    served_run, tmp_path, monkeypatch
+):
+    """The full pass builds the Exemplar page index once per pass function.
+
+    Before the fix, `live_attempt_pass` and `publish_page_testimonia_and_attachments`
+    each rewalked the index on every `page_subject`/`presentation_for_page` call --
+    about 7 walks for this fixture's 2 pages and 2 page-scoped chairs. Now each
+    of the two pass functions walks it exactly once and threads the result
+    through, so a run over this fixture makes exactly 2 walks total.
+    """
+    run_root = _copy(served_run.run_root, tmp_path)
+    _designate(run_root)
+    world = LiveWorld(served_run, tmp_path / "world", scripts=_scripts())
+
+    real_exemplar_page_ids = attestatores.exemplar_page_ids
+    calls: list[Any] = []
+
+    def counting(context):
+        calls.append(context)
+        return real_exemplar_page_ids(context)
+
+    monkeypatch.setattr(attestatores, "exemplar_page_ids", counting)
+
+    exit_code = _run_main(
+        run_root,
+        served_run.catalogue,
+        factory=world.factory,
+        extra=("--placement-tier", TIER, "--scenario", "no-such-declared-scenario"),
+    )
+
+    assert exit_code == attestatores.EXIT_COMPLETE
+    assert len(calls) == 2, (
+        "one walk in live_attempt_pass and one in publish_page_testimonia_and_attachments, "
+        "not one per page_subject/presentation_for_page call site"
+    )
+
+
+def test_presentation_for_page_refuses_a_refused_page_by_name_rather_than_a_keyerror():
+    """A refused Exemplar page keeps its ordinal but carries no sealed pixels.
+
+    Review found `presentation_for_page` indexing a refused page's payload
+    directly, which raises a raw `KeyError: 'image_path'` rather than naming
+    what is wrong: a refused page's payload is `ordinal`, `declared_path`,
+    `declared_sha256`, `reason` -- never `image_path` -- because no witness may
+    be shown pixels the Door never admitted.
+    """
+
+    class _RefusedPageTree:
+        def build_manifest(self, stage):
+            assert stage == EXEMPLAR
+            return {"artifacts": [{"kind": "page", "artifact_id": "exemplar-page-refused-1"}]}
+
+        def read_artifact(self, stage, kind, artifact_id):
+            assert (stage, kind) == (EXEMPLAR, "page")
+            return {
+                "subject_id": "source-1",
+                "outcome": "refused",
+                "payload": {
+                    "ordinal": 1,
+                    "declared_path": "page-1.png",
+                    "declared_sha256": "0" * 64,
+                    "reason": "declared-digest-mismatch",
+                },
+            }
+
+    context = StageContext(
+        tree=_RefusedPageTree(),
+        run={"ingress": real_ingress_record(), "source_manifest": [{"ordinal": 1}]},
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage=ATTESTATORES,
+        adapter_revision="unproven-real-attestatores",
+        args=None,
+        registry=None,
+    )
+
+    with pytest.raises(
+        FatalAccounting, match="page ordinal 1 was refused at the Door and carries no sealed"
+    ):
+        attestatores.presentation_for_page(context, 1)
