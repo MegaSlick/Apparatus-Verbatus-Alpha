@@ -693,6 +693,19 @@ anywhere, and this section does not invent one. vLLM bounds generation by
 exhausted rather than that the harness cut the reading short. A sealed output bound
 belongs with the variance-experiment section, which will need one too.
 
+**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` reads a tree the
+Attestatores wrote through three *live* witness chairs — every record on it
+carrying `native_capture`, `serving_call_ref` and `raw_response_kind`, which no
+fixture record has — and then hands what this stage publishes to the Recensor,
+Archetypus and Armarium. Nothing here refused it: every act reaches a Perlectio
+whose `engine_call` names a retained blob holding exactly the bytes the engine
+put on the wire, the live receipt is on every reading's provenance, and the run
+seals a terminal export. The export is held for review rather than delivered,
+for a witness-coverage reason recorded in `pipeline/3_attestatores/HANDOFF.md`
+and not for anything this stage did. The same driver in fixture mode reproduces
+the orchestrator's own tree byte for byte, `--placement-tier` supplied, which is
+the fixture-path claim `with_engine_call` and the mode selector rest on.
+
 ## Not built here
 
 - Real serving on real silicon. What is proven offline: reader selection by sealed row

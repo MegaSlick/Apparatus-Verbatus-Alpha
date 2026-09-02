@@ -245,7 +245,25 @@ this stage is refused one stage downstream, on the very live-Chandra-page case
 the de-duplication exists for. The fix belongs on the Perlector's side (outside
 this stage's ownership): build its `expected_inputs` keeping one entry per
 `relative_path`, the same rule `validate_input_refs` enforces, before the sorted
-comparison.
+comparison. Measured since: that refusal does not fire end to end today,
+because a live Chandra page never parses into an observation payload, so
+`page_response_refs` stays empty and the page record names its capture once.
+The day a Chandra wire schema lands, the page partition starts naming the very
+blob the capture names and the mismatch becomes reachable — so the fix is owed
+before that, not after.
+
+**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
+stage's live pass as one link in a whole run: the real stage programs to the
+Designator, this stage's three live witness chairs, a live Perlector, and then
+the Recensor, Archetypus and Armarium over what both wrote — the first time any
+stage after the Perlector has read a live tree. They read it: the run seals a
+terminal export. It is **held for review, not delivered**, and the reason is
+this stage's own two named limits rather than anything downstream. Each act
+counts one witness of a floor of three, because `chandra.v1` lands `failed` with
+`unverified-response-schema` and both page-scoped chairs' act attachments come
+back unaligned while a live pass reads no declared Chandra anchor. That is the
+honest current measurement of a live roster, and closing either limit is what
+will move it.
 
 ## Testimonium schema
 
