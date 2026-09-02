@@ -392,7 +392,7 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     # Defence in depth: even a caller bypassing inference cannot turn the
     # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
-        primary_scan(width, height, rows, background=0)
+        primary_scan(width, height, rows, background=0, gap_tolerance_px=3)
     assert PRIMARY_MARGIN == 20
 
 
@@ -459,7 +459,7 @@ def test_a_background_exactly_at_the_margin_still_infers():
     rows = [bytearray([20] * 8) for _ in range(8)]
     rows[3][3] = 0
     assert infer_background(8, 8, rows) == 20
-    assert primary_scan(8, 8, rows, background=20) == [
+    assert primary_scan(8, 8, rows, background=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
     ]
 
@@ -581,10 +581,37 @@ def blank_first_page_run(tmp_path, monkeypatch):
     # The premise, asserted rather than assumed: the real structure pass over
     # these real pixels finds nothing. If a later threshold change made this page
     # scan as inked, every assertion below would still pass for the wrong reason.
-    width, height, rows = designator.decode_grayscale_png(_flat_page_png(200, 260, 230))
+    width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
     background = designator.structure.infer_background(width, height, rows)
-    assert designator.structure.primary_scan(width, height, rows, background=background) == []
-    assert designator.grouping.group_page([], width, height) == []
+    # Resolved from the sealed policy the way the run resolves it, rather than
+    # written out as literals: this premise stands in for what `initial_pass`
+    # below actually does, and a hand-copied threshold is how the two would
+    # quietly stop being the same scan.
+    thresholds = designator.grouping_config.resolve_thresholds(
+        designator.grouping_config.load_grouping_config(), width, height
+    )
+    assert (
+        designator.structure.primary_scan(
+            width,
+            height,
+            rows,
+            background=background,
+            gap_tolerance_px=thresholds.gap_tolerance_px,
+        )
+        == []
+    )
+    assert (
+        designator.grouping.group_page(
+            [],
+            width,
+            height,
+            margin_px=thresholds.margin_px,
+            chain_gap_px=thresholds.chain_gap_px,
+            anchor_reach_px=thresholds.anchor_reach_px,
+            brace_min_height_px=thresholds.brace_min_height_px,
+        )
+        == []
+    )
 
     held = designator.initial_pass(context)
     return designator, context, held
