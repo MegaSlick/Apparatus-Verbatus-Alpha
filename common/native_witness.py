@@ -15,6 +15,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
@@ -968,7 +969,16 @@ _CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
-_CHURRO_STOP_REASONS: Final = frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS
+# `eos`/`stop`/`max_new_tokens` are the fixture transport's own vocabulary;
+# `length` is vLLM's cut-off word for the same fact on the live wire.
+# `STOP_REASON_UNREPORTED` (`common/contracts/serving.py`) is neither a fixture
+# nor an engine word -- it is what a live page-scoped chair (Churro) retains
+# when the wire carried no `finish_reason` at all, and it must be admitted
+# here or every such live Churro response would fail `_validate_churro_capture`
+# by name, indistinguishably from a genuinely unknown transport word.
+_CHURRO_STOP_REASONS: Final = (
+    frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS | {STOP_REASON_UNREPORTED}
+)
 
 
 def validate_churro_xml(raw: bytes) -> str:
