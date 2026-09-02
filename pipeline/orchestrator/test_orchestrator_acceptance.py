@@ -1268,10 +1268,47 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # two independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
 # exited 3, and both roots agreed exactly.
+#
+# Live reading seam re-pin (2026-09-02, the whole U1-U8 seam on one branch). Both
+# digests moved and neither count did: happy holds at 96 files / exit 0 and review
+# at 107 / exit 3. **One leaf caused it**, and the rest is content addressing doing
+# its job.
+#
+# The leaf is `payload.prompt.builder_sha256` in the Perlectio and lectio-prior
+# records: `prompts.py` digests its own whole module source (`_MODULE_SOURCE_DIGEST`,
+# `prompts.py:33`), and U3 registered the first real chair's prompt template in that
+# module, so the module's bytes moved and every prompt record now claims the new
+# digest. That is exactly what the D-7 entry above installed the field to do -- a
+# builder edit changes what the record says about itself rather than silently
+# invalidating an old record nothing could detect -- so this movement is the design
+# working, not a fixture regression. The fixture path itself is untouched: no live
+# chair runs here, and no reading, region, page, count or exit changed.
+#
+# Measured rather than argued. A fixture happy tree built at 857d325181~15 (before
+# U3) was compared file by file against one built at this commit: 96 files on both
+# sides, 25 of them differing in content, plus one Armarium bundle blob that is the
+# same artifact under a new content-addressed name, and 118 changed JSON leaves
+# across those 25 files. Every one of those 118 is
+# either a 64-hex digest or a content-addressed blob path -- four of them are
+# `builder_sha256` itself (two lectio-prior, two Perlectio) and the other 114 are
+# the cascade those four force: `self_hash`, the `*_ref` digests that name the
+# changed records, the dossier and audit-request digests computed over them, each
+# stage's `artifact_inventory`/`blob_inventory`, the stage manifests, the Archetypus
+# index, the Recensor partition receipt, and one Armarium bundle blob whose name is
+# its own digest. Not one non-digest field changed anywhere in the tree. The two
+# `builder_sha256` values are the two trees' own `prompts.py` bytes
+# (932f3d48... before, ad623c7d... now), and 10330bc189 (U3) is the only commit in
+# that range that touches the file.
+#
+# Both literals below were measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers. The two roots agreed exactly on both
+# scenarios: happy exited 0 at 96 files, review exited 3 at 107 files. The snapshot
+# counts held, so they are re-stated below unchanged rather than re-pinned.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "0db78cb02752dba8eb2cb205913ccfd6af71cbe35b689e3d57c400538754f4b2"
-REVIEW_RUN_TREE_DIGEST = "b5e2a1757bbd3915a09c607855f7c1a1958d49e9da81de1f4d2a78fb16d3976d"
+HAPPY_RUN_TREE_DIGEST = "9231730a0382adea8b25e66ab855deb8fbc6d5b569ec044ad116b7a5ad2a2381"
+REVIEW_RUN_TREE_DIGEST = "e0abffa940c6bf22eb5e376fcd745b11ce39dbc78eb7d46b64e071bb55cc7e97"
 
 
 def orchestrate(
