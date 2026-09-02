@@ -21,6 +21,7 @@ from typing import Callable
 import pytest
 
 from common.contracts.canonical import canonical_bytes
+from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
@@ -4167,3 +4168,79 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
     # two you can run any time (`status` and `spend show`).
     assert f"## The {total} words" in readme
     assert f"\n{doers} things this tool can do," in readme
+
+
+def test_status_reports_supervisor_absent_when_no_identity_file_exists(tmp_path: Path) -> None:
+    """The 04-1 status extension: an open lease with no supervisor yet says so."""
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    _open_lease_path(surface, provider, spend)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: absent" in line for line in lines), lines
+    assert any("no identity file has been written" in line for line in lines), lines
+
+
+def test_status_reports_a_running_supervisor_its_last_tick_and_the_volume_rate(
+    tmp_path: Path,
+) -> None:
+    """The status block reads `supervise.py`'s identity file and the lease's
+
+    own close record -- no new verb, no provider call, exactly what
+    `operations/pod/README.md`'s 04-1 row promises.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: running" in line and str(os.getpid()) in line for line in lines), lines
+    assert any(
+        "last tick: active" in line and "steady-state heartbeat" in line for line in lines
+    ), lines
+    assert any("last close record: none" in line for line in lines), lines
+    assert any("volume's ongoing hourly price" in line for line in lines), lines
+
+
+def test_status_never_calls_the_provider_while_reading_supervisor_telemetry(
+    tmp_path: Path,
+) -> None:
+    """Reading the identity file and the lease's own close record is a pure
+
+    read; the money-path rule ("reading costs nothing") must stay true of
+    this extension exactly as it is of the rest of `status`.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+    pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    provider.calls.clear()
+
+    _surface(tmp_path, provider=provider).status()
+
+    assert provider.calls == []
