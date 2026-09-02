@@ -48,6 +48,47 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
+## Real ingress
+
+The Armarium opens through `open_stage_context`, which decides the fixture or
+real route from one read of `run.json` and hands this stage the context that
+route produces; it no longer calls `open_context` directly. `expected_acts`,
+`page_census`, and every other reader that walks sealed upstream artifacts by
+stage and kind already work unchanged on either route — nothing about how the
+Armarium accounts for pages and acts is fixture-shaped.
+
+**The one thing that is fixture-shaped is the manifest's run identity, and it is
+now two closed shapes rather than one.** A fixture run's export names
+`fixture_id`; a real run's names `submission_id` — `common.stage.submission_identity`'s
+filename-ledger self-hash, which every real source row carries and which
+`pipeline/1_exemplar/run.py`'s ledger check already proves reproduces the
+ledger that admitted the submission. `ArmariumProjection` carries both fields,
+exactly one of them non-blank; `_validate_projection` refuses a projection
+naming both or neither, and the resealed-manifest verifier
+(`_verify_manifest_field_closure`) refuses the same shape a second time from
+package-supplied JSON that never went through the projection at all. **The
+field is never overloaded**: stamping a submission's identity into the field
+named `fixture_id` would travel in every export forever and read as a fixture
+run, which is exactly the corpus-identity confusion GLOSSARY's "one concept per
+word" rule exists to prevent. `run.py` computes which shape applies once, from
+`submission_identity(context.run)`, before it ever touches `context.fixture` —
+so the refusing fixture accessor is never asked a question on the route where
+it would refuse.
+
+**A known gap this unit did not close.** `bundle.py` (outside this unit's
+ownership) reconstructs the manifest's expected `run` binding to verify a
+published bundle against its sealed `export` artifact, and does so by hardcoding
+`fixture_id` as the key it reads off the artifact payload and compares. A real
+run's export artifact payload now carries `submission_id` instead (mirroring
+the manifest), so `bundle.py`'s comparison would refuse every real-mode publish,
+however sound. This is unreachable today — no real run reaches the Armarium at
+all, because the Designator refuses first — so no test exercises it and nothing
+here is silently wrong on a path any current run takes. It must be fixed
+before a real run can ever be published, which is roadmap item 4's problem, not
+this section's. Flagged rather than fixed here because `bundle.py` is not one
+of this unit's owned files and a one-line fix there would be an undeclared
+scope expansion into a file another unit may still touch.
+
 ## Export contract
 
 The export payload contains the aggregate result, the expected-act count, `delivered`

@@ -76,12 +76,13 @@ from common.stage import (  # noqa: E402
     EXIT_HELD,
     expected_acts,
     latest_attempt,
-    open_context,
+    open_stage_context,
     reading_basis_regions,
     recovery_region_count,
     require_current_witness_basis,
     run_stage,
     stage_parser,
+    submission_identity,
     unaddressed_chairs,
     validate_serving_provenance,
 )
@@ -1325,7 +1326,19 @@ def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ARMARIUM, registry_factory=registry_factory)
+    context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
+    # The manifest's run identity: a fixture id on a fixture run, a real
+    # submission's filename-ledger self-hash on a real one -- never both, never
+    # neither. `submission_identity` itself decides which route this run took;
+    # `context.fixture` is asked only once that has already ruled out real
+    # ingress, so it is never touched on the route where it would refuse.
+    submission_id = submission_identity(context.run)
+    fixture_id = context.fixture["fixture_id"] if submission_id is None else None
+    run_identity: dict[str, str] = (
+        {"submission_id": submission_id}
+        if submission_id is not None
+        else {"fixture_id": fixture_id}
+    )
     formats = context.armarium_formats
     if formats is None:
         raise FatalAccounting("Armarium has no format projection bound to the run configuration")
@@ -1522,7 +1535,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     pages = [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)]
     bundle = build_armarium_bundle(
         ArmariumProjection(
-            fixture_id=context.fixture["fixture_id"],
+            fixture_id=fixture_id,
+            submission_id=submission_id,
             scenario=context.scenario,
             config_digest=context.config_digest,
             aggregate=aggregate,
@@ -1574,7 +1588,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else ArmariumCategory.HELD_FOR_REVIEW.value
         ),
         payload={
-            "fixture_id": context.fixture["fixture_id"],
+            **run_identity,
             "scenario": context.scenario,
             "aggregate": aggregate,
             "expected_acts": expected_count,
