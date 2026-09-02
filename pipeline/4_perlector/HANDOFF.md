@@ -645,10 +645,10 @@ concepts have no real-mode counterpart:
   exactly as before.
 
 The context's fixture slot is `None` behind a refusing accessor and is not touched on
-the real route. No real Designator exists yet, so a real run refuses at `predecessor
-designator has no stage-seal` with its context already opened, writing nothing;
-`pipeline/5_recensor/test_real_ingress.py` pins that for this stage beside the Recensor
-and the Archetypus.
+the real route. No real Attestatores seal exists yet, so a real run refuses at
+`predecessor attestatores has no stage-seal` with its context already opened, writing
+nothing; `pipeline/5_recensor/test_real_ingress.py` pins that for this stage beside the
+Recensor and the Archetypus.
 
 **`engine_call`, and what it names.** A live reading's payload carries
 `engine_call = {call_record_ref, raw_response_ref, response_sha256, finish_reason,

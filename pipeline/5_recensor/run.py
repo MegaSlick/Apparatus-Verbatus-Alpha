@@ -3001,6 +3001,18 @@ def real_ingress(context) -> bool:
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
 
 
+def declared_scenario(context) -> dict | None:
+    """The declared scenario on the fixture route; `None` on a real submission.
+
+    A real submission carries no fixture to declare one, and its refusing
+    accessor is never touched here -- `real_ingress` alone decides the branch,
+    read once off `context.run`. Extracted so the branch is one named function
+    a unit test can call directly, rather than a bare conditional only visible
+    inside `main`.
+    """
+    return None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
+
+
 def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
     """Whether a declared scenario holds this act as unreconciled.
 
@@ -3038,10 +3050,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
 
-    # The declared scenario on the fixture route; nothing on a real submission,
-    # which carries no fixture to declare one and whose refusing accessor is
-    # never touched here. The one thing read from it is `hold_acts`, below.
-    scenario = None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
+    # The declared scenario on the fixture route; nothing on a real submission.
+    # The one thing read from it is `hold_acts`, below.
+    scenario = declared_scenario(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate

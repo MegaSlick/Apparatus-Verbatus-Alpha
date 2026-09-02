@@ -69,7 +69,7 @@ skips the fixture floor by name and recomputes every row from the Designator's o
 sealed evidence. The context's fixture slot is `None` behind a refusing accessor and is
 never touched here. Nothing else changes with the route -- the constructor path, the
 closed record schema and the index reconciliation are the same on both. No real
-Designator exists yet, so a real run refuses at `predecessor designator has no
+Recensor seal exists yet, so a real run refuses at `predecessor recensor has no
 stage-seal` with its context already opened, writing nothing;
 `pipeline/5_recensor/test_real_ingress.py` pins that for this stage beside the
 Recensor and the Perlector.

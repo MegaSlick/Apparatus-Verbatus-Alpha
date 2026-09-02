@@ -253,7 +253,7 @@ def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
     accepted_review = {"artifact_id": "art_accepted", "outcome": "accepted"}
 
     monkeypatch.setattr(archetypus, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(archetypus, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(archetypus, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(archetypus, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(archetypus, "final_review", lambda _context, _act_id: accepted_review)
     # These seams make the counterfactual complete if the guard is removed: the
