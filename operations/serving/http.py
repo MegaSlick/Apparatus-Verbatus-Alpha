@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import errno
 import hashlib
 import http.client
@@ -12,7 +14,12 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from .errors import ReadinessError, ServingConfigurationError
+from .errors import (
+    ChairRequestRefusal,
+    ChairResponseRefusal,
+    ReadinessError,
+    ServingConfigurationError,
+)
 
 
 class EndpointUnavailable(OSError):
@@ -118,11 +125,19 @@ class UrllibHttpTransport:
 
 @dataclass(frozen=True, slots=True)
 class OpenAIResult:
-    """A structurally parsed, non-empty OpenAI-compatible answer."""
+    """A structurally parsed OpenAI-compatible answer.
+
+    ``finish_reasons`` and ``usage`` default so every existing caller and
+    ``outputs_sha256`` keep working unchanged; both parsers below populate
+    them from the wire, verbatim, never defaulting an absent value to
+    anything but ``None``.
+    """
 
     model_id: str
     outputs: tuple[str, ...]
     response_sha256: str
+    finish_reasons: tuple[str | None, ...] = ()
+    usage: Mapping[str, int] | None = None
 
 
 def models_url(endpoint: str) -> str:
@@ -221,6 +236,7 @@ def parse_openai_answer(
     if not isinstance(choices, list) or not choices:
         raise ReadinessError("VLLM_PROBE_RESPONSE_INVALID", "inference response has no choices")
     outputs: list[str] = []
+    finish_reasons: list[str | None] = []
     for choice in choices:
         if not isinstance(choice, dict):
             raise ReadinessError(
@@ -238,11 +254,190 @@ def parse_openai_answer(
                 "VLLM_PROBE_RESPONSE_INVALID", "inference response has no non-empty text"
             )
         outputs.append(content)
+        finish_reasons.append(_finish_reason(choice))
     return OpenAIResult(
         model_id=expected_model_id,
         outputs=tuple(outputs),
         response_sha256=hashlib.sha256(response.body).hexdigest(),
+        finish_reasons=tuple(finish_reasons),
+        usage=_usage(payload),
     )
+
+
+def parse_openai_reading(
+    response: HttpResponse, *, kind: str, expected_model_id: str
+) -> OpenAIResult:
+    """Parse one witness/reader response, empty content included.
+
+    Unlike :func:`parse_openai_answer` — a readiness probe, which must prove
+    the engine can answer at all — this accepts one choice whose content is
+    the empty string: for a witness or reader, an empty answer is legitimate
+    evidence (``genuinely-empty``), not a failed probe.  Every refusal here is
+    a :class:`ChairResponseRefusal` (or, for an unsupported ``kind``, a
+    :class:`ChairRequestRefusal`) naming a ``CHAIR_RESPONSE_*``/``CHAIR_REQUEST_*``
+    code, never a silent default.
+    """
+
+    if kind != "chat-completions":
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            f"reading kind {kind!r} is not supported; vision chairs are chat-completions only",
+        )
+    if response.status != 200:
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_HTTP_ERROR", f"reading response returned HTTP {response.status}"
+        )
+    try:
+        payload = json.loads(response.body)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_INVALID", f"reading response is not JSON: {error}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_INVALID", "reading response is not a JSON object"
+        )
+    if payload.get("model") != expected_model_id:
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_MODEL_MISMATCH",
+            f"reading response model={payload.get('model')!r}, expected {expected_model_id!r}",
+        )
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        count = len(choices) if isinstance(choices, list) else 0
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_CHOICES_NOT_ONE",
+            f"reading response has {count} choices, not exactly one",
+        )
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_CHOICES_NOT_ONE", "reading response's one choice is not an object"
+        )
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_CONTENT_MISSING",
+            "reading response has no string content (empty string is allowed; absent/null is not)",
+        )
+    return OpenAIResult(
+        model_id=expected_model_id,
+        outputs=(content,),
+        response_sha256=hashlib.sha256(response.body).hexdigest(),
+        finish_reasons=(_finish_reason(choice),),
+        usage=_usage(payload),
+    )
+
+
+def chat_image_bytes_all(payload: Mapping[str, object]) -> list[bytes]:
+    """Return every embedded image's decoded bytes, in content-list order.
+
+    The multi-image generalization of the single-image extraction the manager
+    uses for a fixture/adapter probe: every image must be a typed
+    ``image_url`` content block inside a ``role=user`` message's content list,
+    its URL a local ``data:image/...;base64,`` URI, and no ``image_url`` key
+    may appear anywhere else in the payload — an ignored extension field must
+    never let a caller claim an image was sent that vLLM would not see.
+    """
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ServingConfigurationError("chat request must contain a non-empty chat messages list")
+    active_candidates: list[object] = []
+    for message in messages:
+        if not isinstance(message, Mapping):
+            raise ServingConfigurationError("chat request messages must be objects")
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, Mapping) or part.get("type") != "image_url":
+                continue
+            if message.get("role") != "user":
+                raise ServingConfigurationError(
+                    "chat request image_url must be in a role=user content block"
+                )
+            if set(part) != {"type", "image_url"}:
+                raise ServingConfigurationError(
+                    "chat request image_url content block must contain only type and image_url"
+                )
+            active_candidates.append(part["image_url"])
+    all_candidates = _all_image_url_candidates(payload)
+    if len(active_candidates) != len(all_candidates):
+        raise ServingConfigurationError(
+            "chat request has an image_url outside a role=user content list"
+        )
+    return [_decode_image_url(candidate, label="chat request") for candidate in active_candidates]
+
+
+def _finish_reason(choice: Mapping[str, Any]) -> str | None:
+    """The engine's own word, verbatim.  Missing or ``null`` become ``None``."""
+
+    return choice.get("finish_reason")
+
+
+def _usage(payload: Mapping[str, Any]) -> Mapping[str, int] | None:
+    """The response's ``usage`` object, verbatim, or ``None`` when malformed."""
+
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    for field_name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+    return usage
+
+
+def _decode_image_url(candidate: object, *, label: str) -> bytes:
+    if not isinstance(candidate, Mapping) or "url" not in candidate:
+        raise ServingConfigurationError(
+            f"{label} image_url must be an OpenAI image object with a non-blank URL"
+        )
+    if set(candidate) - {"url", "detail"}:
+        raise ServingConfigurationError(f"{label} image_url has fields outside OpenAI url/detail")
+    detail = candidate.get("detail")
+    if detail is not None and not isinstance(detail, str):
+        raise ServingConfigurationError(f"{label} image_url detail must be a string when supplied")
+    url = candidate["url"]
+    if not isinstance(url, str) or not url:
+        raise ServingConfigurationError(f"{label} image_url must contain a non-blank URL")
+    if not url.startswith("data:"):
+        raise ServingConfigurationError(
+            f"{label} image_url must be a local image data URI, not a remote/file URL"
+        )
+    try:
+        header, encoded = url.split(",", 1)
+    except ValueError as error:
+        raise ServingConfigurationError(f"{label} data URI has no payload") from error
+    if not header.startswith("data:image/") or ";base64" not in header:
+        raise ServingConfigurationError(
+            f"{label} data URI must declare an image MIME type and base64 payload"
+        )
+    if not encoded:
+        raise ServingConfigurationError(f"{label} data URI payload must not be empty")
+    try:
+        data = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error) as error:
+        raise ServingConfigurationError(f"{label} data URI payload is not valid base64") from error
+    if not data:
+        raise ServingConfigurationError(f"{label} data URI decoded to no bytes")
+    return data
+
+
+def _all_image_url_candidates(value: object) -> list[object]:
+    if isinstance(value, Mapping):
+        candidates: list[object] = []
+        for key, item in value.items():
+            if key == "image_url":
+                candidates.append(item)
+            else:
+                candidates.extend(_all_image_url_candidates(item))
+        return candidates
+    if isinstance(value, list):
+        return [candidate for item in value for candidate in _all_image_url_candidates(item)]
+    return []
 
 
 def outputs_sha256(result: OpenAIResult) -> str:
