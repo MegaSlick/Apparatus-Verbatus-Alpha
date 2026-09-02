@@ -545,6 +545,19 @@ def test_status_parses_desiredstatus_verbatim_from_the_200_body_it_already_fetch
     assert status.provider_state == "EXITED"
 
 
+def test_status_reports_a_lifecycle_word_unknown_to__pod_states_rather_than_raising() -> None:
+    """`status` is an observation, not a gate: an unfamiliar future lifecycle
+    word must reach the caller verbatim, and casing must survive untouched,
+    or a live supervisor polling a billing pod gets a raised ProviderFailure
+    on a read-only GET the moment RunPod renames a state word."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus="Provisioning_v3"))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.provider_state == "Provisioning_v3"
+
+
 def test_status_yields_no_lifecycle_word_when_the_200_body_omits_desiredstatus() -> None:
     payload = pod_payload()
     del payload["desiredStatus"]
@@ -554,6 +567,22 @@ def test_status_yields_no_lifecycle_word_when_the_200_body_omits_desiredstatus()
 
     assert status.presence is Presence.PRESENT
     assert status.provider_state is None
+
+
+@pytest.mark.parametrize("malformed", [123, "", "   "])
+def test_status_drops_a_malformed_desiredstatus_and_names_it_rather_than_reporting_it(
+    malformed: object,
+) -> None:
+    """A malformed value is not the same fact as an absent one: `None` from
+    this seam must never mean "the provider actually sent something we could
+    not use" without that being visible somewhere -- here, in `detail`."""
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=malformed))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.provider_state is None
+    assert f"unusable desiredStatus {malformed!r}" in status.detail
 
 
 def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:

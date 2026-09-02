@@ -702,6 +702,12 @@ class ProviderStatus:
 
     def __post_init__(self) -> None:
         require_utc(self.observed_at, "provider status observed_at")
+        if self.provider_state is not None and (
+            not isinstance(self.provider_state, str) or not self.provider_state.strip()
+        ):
+            raise ValueError(
+                "provider status provider_state must be a non-blank lifecycle word or None"
+            )
 
 
 @dataclass(frozen=True, slots=True)

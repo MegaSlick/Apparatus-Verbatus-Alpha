@@ -407,12 +407,16 @@ class RunPodProvider:
         # its caller instead of becoming a raised ProviderFailure on a
         # read-only observation.
         raw_state = row.get("desiredStatus")
-        provider_state = raw_state if isinstance(raw_state, str) and raw_state else None
+        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
+        provider_state = raw_state if usable_state else None
+        detail = "RunPod exact-pod GET returned 200"
+        if raw_state is not None and not usable_state:
+            detail = f"{detail}; unusable desiredStatus {raw_state!r}"
         return ProviderStatus(
             pod_id,
             Presence.PRESENT,
             observed,
-            "RunPod exact-pod GET returned 200",
+            detail,
             200,
             provider_state=provider_state,
         )

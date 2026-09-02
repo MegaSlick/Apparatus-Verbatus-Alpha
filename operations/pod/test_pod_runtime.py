@@ -6039,6 +6039,13 @@ def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:
     assert observed.provider_state == "EXITED"
 
 
+def test_set_pod_state_refuses_an_unknown_pod_by_name_rather_than_a_bare_typeerror() -> None:
+    provider = fake(Clock())
+
+    with pytest.raises(ProviderFailure, match="unknown pod"):
+        provider.set_pod_state("fake-pod-404", "EXITED")
+
+
 def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_word() -> None:
     clock = Clock()
     provider = fake(clock)
@@ -6053,15 +6060,25 @@ def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_
 
 
 def test_provider_status_default_carries_no_lifecycle_word_and_is_never_running() -> None:
-    """A fresh ``ProviderStatus`` is never read as RUNNING by omission.
-
-    No consumer in this unit reads ``provider_state`` yet -- the supervisor
-    that will is a later unit -- so this pins the field's own contract: an
-    adapter that supplies nothing yields ``None``, and ``None`` is not the
-    string ``"RUNNING"`` under any comparison a future consumer might write.
-    """
+    """A fresh ``ProviderStatus`` is never read as RUNNING by omission: an
+    adapter that supplies nothing yields ``None``."""
 
     status = ProviderStatus("pod-1", Presence.PRESENT, START, http_status=200)
 
     assert status.provider_state is None
-    assert status.provider_state != "RUNNING"
+
+
+def test_fake_provider_never_reports_running_for_a_pod_it_put_in_exited() -> None:
+    """The contract line 6066 above pins the default for; this pins it against
+    a value a code path actually produced, so the guard can fail for the
+    reason its docstring names -- ``None`` is not the string ``RUNNING``, and
+    neither is an observed non-RUNNING lifecycle word."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+
+    provider.set_pod_state(record.pod_id, "EXITED")
+    observed = provider.status(record.pod_id)
+
+    assert observed.provider_state != "RUNNING"
