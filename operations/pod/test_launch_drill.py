@@ -26,7 +26,9 @@ The supervisor is in-process rather than a real `subprocess`: the drill has to
 decide *when* a tick happens, because every clock here is fake and a real child
 would sleep on the wall clock instead.  `InProcessSupervisor` therefore runs
 `supervise`'s own functions -- the same identity file, the same resumed token,
-the same `supervise_tick` -- and only the loop is the drill's.
+the same `supervise_tick` -- and only the loop is the drill's: its pre-loop
+refusals, notifier wiring and exit-code/final-record reporting are not
+rehearsed here (`test_supervise.py` covers those).
 
 Nothing here reaches a network, a provider, a pod, or the wall clock.  Every
 wait is a fake-clock advance, so the whole module's real sleeping is zero.
@@ -72,7 +74,7 @@ from .models import (
 )
 from .notify_bridge import NotifyOutcome
 from .shutdown import VerifiedShutdown
-from .spend import SpendPolicy, load_spend_policy
+from .spend import load_spend_policy
 
 START = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
 
@@ -248,11 +250,13 @@ class InProcessSupervisor:
     left in the identity file.  `tick` is `supervise.supervise_tick` and
     `supervise.record_tick`, unchanged.
 
-    Only `run_supervisor`'s ``while True`` is the drill's.  It has to be: every
-    clock here is fake, so a real loop would either sleep on the wall clock or
-    spin, and the drill could not say when the supervisor looked.  The spend
-    policy is loaded from the same ``--spend`` file the argv names, the way
-    `supervise.main` loads it, rather than handed in.
+    `run_supervisor`'s loop is the drill's, and its pre-loop refusals (a
+    missing lease, an already-terminal lease, a heartbeat timeout not shorter
+    than the remaining lifetime), its notifier wiring and its exit-code and
+    final-record reporting are not rehearsed here at all -- they are inert at
+    the lifetimes this module uses, and `test_supervise.py` proves them.  The
+    spend policy is loaded from the same ``--spend`` file the argv names, the
+    way `supervise.main` loads it, rather than handed in.
     """
 
     def __init__(
@@ -359,7 +363,6 @@ class Drill:
 
     clock: Clock
     provider: BillingFake
-    policy: SpendPolicy
     lease_root: Path
     volume: Path
     channel: VolumeChannel
@@ -400,6 +403,10 @@ class Drill:
         def hook(key: str, seen: int) -> None:
             if seen == count:
                 self.write_pod_report(key)
+                # Advance past the write so an acknowledgement stamp and a
+                # later observation of it can never land on the same instant
+                # -- see the `Clock` docstring's ordering claim.
+                self.clock.sleep(1)
 
         self.channel.on_read = hook
 
@@ -436,6 +443,11 @@ class Drill:
             )
         except _FirstReportWritten:
             pass
+        else:
+            raise AssertionError(
+                "run_with_bootstrap returned instead of stopping at its first durable "
+                "write; the pod-side close path ran"
+            )
         assert target.is_file(), "the pod timer's first durable write did not reach the volume"
         return target
 
@@ -489,7 +501,6 @@ def _build(
         Drill(
             clock=clock,
             provider=provider,
-            policy=policy,
             lease_root=lease_root,
             volume=volume,
             channel=channel,
@@ -605,6 +616,11 @@ def test_a_green_launch_arms_on_the_pods_own_report_and_hands_the_lease_to_the_s
     assert receipt["pod_id"] == result.record.pod_id
     assert receipt["pod_timer"]["report_path"] == BOUND_REPORT_PATH
     assert receipt["pod_timer"]["acknowledged_at"] == written["acknowledged_at"]
+
+    # The ordering claim the `Clock` docstring makes: the pod's acknowledgement
+    # is strictly earlier than the launcher's observation of it, not merely
+    # equal by coincidence of a shared clock that never advanced between them.
+    assert receipt["pod_timer"]["acknowledged_at"] < armed.controller_record["observed_at"]
 
     # And the supervisor now guards it: a healthy tick, no close, no terminate.
     # A second on the clock first, so the refreshed heartbeat below is a fact
