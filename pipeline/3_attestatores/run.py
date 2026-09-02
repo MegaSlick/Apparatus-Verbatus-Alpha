@@ -4028,6 +4028,7 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         receipt_publisher=StageContextReceiptPublisher(context),
         log_root=context.tree.resolve(f"{ATTESTATORES}/serving-logs"),
         residency_lease=FileResidencyLease(context.tree.resolve("pod-gpu.lock")),
+        producer="pipeline/3_attestatores/run.py",
     )
     return ChairClient(
         manager=manager,
@@ -4282,27 +4283,6 @@ def live_attempt_pass(
     recorded = 0
     isolated_crop_failure = False
 
-    # A resumed page capture answers for its page's response, but not for
-    # every act view that response feeds: an interruption between two of a
-    # page's own act publications leaves the later ones sealed nowhere, and a
-    # resumed pass that only reused the page capture would never revisit them
-    # -- `resumed_page_captures` records that the response happened, this
-    # loop finishes publishing what it answers for. Only a pair still
-    # `PENDING_LIVE_ATTEMPT` is published; the pairs the interrupted pass
-    # already sealed are untouched.
-    for (page_ordinal, chair), (attempt, _capture) in page_captures.items():
-        recorded += publish_page_act_views(
-            context,
-            chair=chair,
-            resolved=context.registry.resolve(chair),
-            attempt=attempt,
-            page_ordinal=page_ordinal,
-            page_acts=acts_by_page[page_ordinal],
-            ordinal=ordinal,
-            regions_by_act=regions_by_act,
-            attempts_by_pair=attempts_by_pair,
-        )
-
     # Everything no chair has to answer for: a pair already sealed at this
     # ordinal (counted, never re-asked, never rewritten) and a pair no chair was
     # shown pixels for at all. Published first, so the folder already accounts
@@ -4330,6 +4310,29 @@ def live_attempt_pass(
                 live=True,
             )
             recorded += 1
+
+    # A resumed page capture answers for its page's response, but not for
+    # every act view that response feeds: an interruption between two of a
+    # page's own act publications leaves the later ones sealed nowhere, and a
+    # resumed pass that only reused the page capture would never revisit them
+    # -- `resumed_page_captures` records that the response happened, this
+    # loop finishes publishing what it answers for. Only a pair still
+    # `PENDING_LIVE_ATTEMPT` is published; the pairs the non-serving loop
+    # above already published or sealed are untouched. Runs after that loop
+    # so a pair it published is no longer `PENDING_LIVE_ATTEMPT` here and is
+    # not published a second time.
+    for (page_ordinal, chair), (attempt, _capture) in page_captures.items():
+        recorded += publish_page_act_views(
+            context,
+            chair=chair,
+            resolved=context.registry.resolve(chair),
+            attempt=attempt,
+            page_ordinal=page_ordinal,
+            page_acts=acts_by_page[page_ordinal],
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
+        )
 
     # One schedule per chair, concatenated: `stage_major_schedule` orders one
     # chair's own units, and a chair's unit is a page or an act depending on its

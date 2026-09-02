@@ -289,7 +289,12 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
 
 
 def _run_perlector(
-    live_run, tmp_path: Path, monkeypatch, *answers: ScriptedAnswer, scenario: str = "happy"
+    live_run,
+    tmp_path: Path,
+    monkeypatch,
+    *answers: ScriptedAnswer,
+    scenario: str = "happy",
+    endpoint_out: list | None = None,
 ):
     """Run the real stage in this process against a scripted endpoint.
 
@@ -311,6 +316,8 @@ def _run_perlector(
     # frozen flags ask for one), and a test that pinned it here would fail on
     # any honest change to that structure while proving nothing about the seam.
     endpoint.script(*answers, *(answers[-1:] or ()) * 60)
+    if endpoint_out is not None:
+        endpoint_out.append(endpoint)
     factory = _serving_factory(endpoint, catalogue, tmp_path / "logs", tmp_path / "pod-gpu.lock")
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(
@@ -586,13 +593,16 @@ def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
     declaring_run, tmp_path, monkeypatch
 ):
     """A declared `reading_failure` is a stand-in for a real engine's own
-    report (`_reconciled_truncation`'s own docstring). Once a live chair has
-    answered, there is a real report, and the fixture's stand-in must not be
-    allowed to override it -- letting `no-readable-text` blank a real reading
-    would be a declared value standing where a measurement belongs
-    (GOVERNANCE 10). `declaring_run` is sealed under `no-readable-text-reading`
-    throughout the chain, so `config_digest` matches this same scenario."""
+    report (`_reconciled_truncation`'s own docstring). A live pass answering a
+    declared act is a misconfiguration knowable from the fixture and the act
+    key alone, before any chair is started -- so the refusal fires ahead of
+    every reader call, chair start and publication, leaving the tree exactly
+    as this invocation found it (no orphaned Pass A, no engine call spent on a
+    reading that would be discarded). `declaring_run` is sealed under
+    `no-readable-text-reading` throughout the chain, so `config_digest`
+    matches this same scenario."""
     root, _catalogue = declaring_run
+    captured_endpoint: list = []
     with pytest.raises(perlector.ContractError, match="declares reading outcome"):
         _run_perlector(
             declaring_run,
@@ -600,10 +610,24 @@ def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
             monkeypatch,
             ScriptedAnswer(content=READING, finish_reason="stop"),
             scenario="no-readable-text-reading",
+            endpoint_out=captured_endpoint,
         )
     assert _published_readings(root) == [], (
         "a refused act must publish nothing rather than a reading contradicted "
         "by its own declared outcome"
+    )
+    assert captured_endpoint and captured_endpoint[0].requests == [], (
+        "the refusal must fire before any chair is asked to read"
+    )
+    artifacts_dir = root / "r" / "4_perlector" / "artifacts"
+    published_kinds = (
+        {path.name for path in artifacts_dir.iterdir() if path.is_dir()}
+        if artifacts_dir.exists()
+        else set()
+    )
+    assert published_kinds == set(), (
+        "the refusal must fire before any establishing pass is published -- "
+        f"found {published_kinds}"
     )
 
 
@@ -640,6 +664,22 @@ def test_an_outcome_that_attempted_no_reading_cannot_carry_a_receipt():
             SimpleNamespace(),
             _perlector_identity(),
             attempted=False,
+            receipt_ref={"relative_path": "receipts/sha256/x.json", "sha256": "a" * 64},
+        )
+
+
+def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt():
+    """An absent chair served nothing, so a receipt reference names a serving
+    moment it never had -- the mirror of the not-attempted guard above, for
+    the other reading that never happened."""
+    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(
+        "secondary_proposer"
+    )
+    with pytest.raises(SchemaRefusal, match="absent"):
+        perlector.provenance_for(
+            SimpleNamespace(),
+            absent,
+            attempted=True,
             receipt_ref={"relative_path": "receipts/sha256/x.json", "sha256": "a" * 64},
         )
 

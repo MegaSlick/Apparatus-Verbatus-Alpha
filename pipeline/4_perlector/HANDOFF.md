@@ -610,13 +610,17 @@ record kind this section does not own.
 
 **A declared reading failure never reaches a live chair's answer.** `declared_failure`
 stands in for a real engine's own report exactly once, before there is one — the
-fixture's own docstring says so. In live mode there always is one by the time
-`declared_reading_failure` is consulted, so the establishing pass refuses outright
-(`serving_mode == "live" and declared_failure is not None`) rather than letting a
-declared `no-readable-text` blank real transcribed ink, or a declared `truncated`
-overwrite a real `complete`, which would be a declared value standing where a
-measurement belongs (GOVERNANCE 10). The guard is one branch that never executes in
-fixture mode, so it does not move the acceptance pin. Proven end to end in
+fixture's own docstring says so. In live mode a real report is always coming, so the
+establishing pass refuses before it ever asks: the check
+(`serving_mode == "live" and declared_failure is not None`) sits immediately after the
+live-resume skip, ahead of every reader call, chair start, and publication, leaving the
+tree exactly as the invocation found it — no orphaned `lectio-prior`, no engine call
+spent on a reading that would be discarded, and no opaque `IncompatibleReuse` on the
+operator's retry. It refuses this way rather than letting a declared `no-readable-text`
+blank real transcribed ink, or a declared `truncated` overwrite a real `complete`, which
+would be a declared value standing where a measurement belongs (GOVERNANCE 10). The
+guard is one branch that never executes in fixture mode, so it does not move the
+acceptance pin. Proven end to end in
 `test_live_perlector.py::test_a_live_pass_refuses_a_fixture_declared_reading_failure`
 against a run tree sealed under `no-readable-text-reading` throughout — a live pass
 cannot honestly mix a `happy`-sealed run tree with a different Perlector-only scenario,

@@ -216,9 +216,15 @@ class ChairRequest:
 
 @dataclass(frozen=True, slots=True)
 class ChairResponse:
-    """One retained reading. ``content``/``finish_reason`` are ``None`` only
-    together with a ``parse_problem`` naming a ``CHAIR_RESPONSE_*`` code — the
-    body arrived and is retained, but it is not a reading."""
+    """One retained reading. ``content`` is ``None`` only together with a
+    ``parse_problem`` naming a ``CHAIR_RESPONSE_*`` code — the body arrived
+    and is retained, but it is not a reading. ``finish_reason`` is not the
+    same signal: it travels verbatim from the chair and is never defaulted,
+    so it is also ``None`` on a successful reading whose engine reported no
+    stop reason at all. ``parse_problem`` is the field a caller checks to
+    tell a retained body apart from a reading; a stage records the
+    engine-silent case as ``STOP_REASON_UNREPORTED``, not by inferring it
+    from a ``None`` here."""
 
     chair: str
     served_model_id: str

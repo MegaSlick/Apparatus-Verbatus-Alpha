@@ -568,6 +568,51 @@ def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_r
         perlector.validate_page_testimonium_record(context, unbound, proposals)
 
 
+def test_a_native_capture_that_repeats_a_partition_response_is_bound_once(real_region):
+    """A native capture that parsed can reach the same retained response the
+    partition already named (a live Chandra page: `live_witness.captured_page_attempt`
+    sets both `raw_response_ref` and `observation_payload` on the parsed
+    branch, so `page_response_refs` and `native_capture.raw_response_ref` land
+    on the identical, content-addressed blob). The writer names that reference
+    once (`_named_once`, 3_attestatores/run.py); the reader must count it once
+    too, or a page record binding one blob twice would be refused for the very
+    thing it did right. Collapsing the count must not open a hole in the
+    "exactly these inputs" rule: a second, genuinely distinct response that is
+    not bound is still refused.
+    """
+    context, _ = real_region
+    proposals = perlector.sealed_proposal_regions(context)
+    testimony = _page_record_with(context, lambda payload: bool(payload.get("native_capture")))
+    perlector.validate_page_testimonium_record(context, testimony, proposals)
+
+    capture_ref = testimony["payload"]["native_capture"]["raw_response_ref"]
+
+    repeated = copy.deepcopy(testimony)
+    repeated["payload"]["raw_response_refs"] = [dict(capture_ref)]
+    # Bound only once: the reference is already in `inputs` from the capture,
+    # and a live Chandra page's writer never lists it twice either.
+    assert repeated["inputs"].count(capture_ref) == 1
+    perlector.validate_page_testimonium_record(context, repeated, proposals)
+
+    # A second reference must still be a properly shaped, closed blob
+    # reference to reach the dedup logic at all, so it is drawn from another
+    # page Testimonium's own genuinely-retained response rather than an
+    # unrelated artifact path.
+    other_testimony = _page_record_with(
+        context,
+        lambda payload, own=testimony["payload"]: (
+            bool(payload.get("raw_response_refs"))
+            and payload["raw_response_refs"][0]["sha256"]
+            != own["native_capture"]["raw_response_ref"]["sha256"]
+        ),
+    )
+    distinct_ref = dict(other_testimony["payload"]["raw_response_refs"][0])
+    unbound_extra = copy.deepcopy(repeated)
+    unbound_extra["payload"]["raw_response_refs"] = [dict(capture_ref), distinct_ref]
+    with pytest.raises(SchemaRefusal, match="every retained raw response"):
+        perlector.validate_page_testimonium_record(context, unbound_extra, proposals)
+
+
 def _page_record_with(context, predicate):
     """The first page Testimonium in the sealed tree that satisfies `predicate`."""
     return next(

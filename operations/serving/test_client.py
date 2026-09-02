@@ -685,7 +685,11 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
     assert record["generation_declared"] == {
         "temperature": {"schema": "wire-decimal.v1", "decimal": "0.1"}
     }
-    assert "temperature" not in endpoint.requests[0] or endpoint.requests[0]["temperature"] == 0
+    # The posted body carries the sealed 0, never the declared 0.1 — asserted
+    # strictly, since a client that stopped pinning temperature at all would
+    # silently drop the reading-of-record posture (GOVERNANCE 7) and this
+    # weaker form (`not in ... or ... == 0`) would not catch it.
+    assert endpoint.requests[0]["temperature"] == 0
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])

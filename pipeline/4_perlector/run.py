@@ -724,11 +724,27 @@ def validate_page_testimonium_record(
         capture = payload.get("native_capture")
         if capture is not None:
             retained.append(capture["raw_response_ref"])
+        # A native capture that parsed reaches the same retained response the
+        # partition already named (`live_witness.captured_page_attempt`, the
+        # chandra.v1 branch): the writer names that reference once
+        # (`_named_once`, 3_attestatores/run.py), and the reader must count it
+        # once too, or a page record binding one blob twice would be refused
+        # for the very thing it did right. Order-preserving, keyed on the
+        # reference's own identity, so two genuinely distinct responses still
+        # count as two.
+        seen_retained: set[tuple[str, str]] = set()
+        deduped_retained = []
+        for reference in retained:
+            key = (reference["relative_path"], reference["sha256"])
+            if key in seen_retained:
+                continue
+            seen_retained.add(key)
+            deduped_retained.append(reference)
         # Sorted the way the envelope stores inputs, exactly as the act-scoped
         # seam above does. Comparing against the payload's own order passes only
         # while the retained paths happen to sort after the presented image.
         expected_inputs = sorted(
-            expected_inputs + retained,
+            expected_inputs + deduped_retained,
             key=lambda item: (item["relative_path"], item["sha256"]),
         )
         if record.get("inputs") != expected_inputs:
@@ -1600,6 +1616,11 @@ def provenance_for(
         raise SchemaRefusal(
             "a Perlector outcome that attempted no reading cannot carry a serving receipt; "
             "a held act and an absent chair name what would have read and stop there"
+        )
+    if receipt_ref is not None and isinstance(resolved, AbsentChair):
+        raise SchemaRefusal(
+            "an absent Perlector chair served nothing, so a receipt reference "
+            "would name a serving moment this chair never had"
         )
     regime = {
         # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
@@ -3296,6 +3317,24 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             resumed += 1
             continue
 
+        # The scenario's declared engine behaviour stands in for a real
+        # engine's own report and, when present, decides `reading` and
+        # `outcome` together: a declared `no-readable-text` means nothing was
+        # read, not that the fixture's normal act text happens to still apply.
+        # That stand-in is only honest when there is no real report to stand
+        # in for. Checked here, before any chair is started or arm published:
+        # a live pass answering a declared act is a misconfiguration knowable
+        # from the fixture and the act key alone, and this stage must refuse
+        # while the tree is still exactly as this invocation found it --
+        # GOVERNANCE 10 names exactly this override.
+        declared_failure = declared_reading_failure(context, act["act_key"])
+        if serving_mode == "live" and declared_failure is not None:
+            raise ContractError(
+                f"the fixture declares reading outcome {declared_failure!r} for "
+                f"act {act['act_key']!r} while a live chair is answering; a "
+                "declared stand-in cannot override an engine that reported"
+            )
+
         if reader is None:
             # First act of a live pass that actually needs reading. One chair for
             # the whole run, entered once here and stopped once at the end: the
@@ -3490,21 +3529,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # objects render the same bytes without giving the reader a side channel.
         prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
 
-        # The scenario's declared engine behaviour stands in for a real
-        # engine's own report and, when present, decides `reading` and
-        # `outcome` together: a declared `no-readable-text` means nothing was
-        # read, not that the fixture's normal act text happens to still apply.
-        # That stand-in is only honest when there is no real report to stand
-        # in for. A live chair has already answered by this point in the
-        # loop, so a fixture-declared outcome here would be a declared value
-        # overriding a measurement -- GOVERNANCE 10 names exactly this.
-        declared_failure = declared_reading_failure(context, act["act_key"])
-        if serving_mode == "live" and declared_failure is not None:
-            raise ContractError(
-                f"the fixture declares reading outcome {declared_failure!r} for "
-                f"act {act['act_key']!r} while a live chair is answering; a "
-                "declared stand-in cannot override an engine that reported"
-            )
+        # `declared_failure` was resolved and, in live mode, already refused
+        # before any reader call above -- this is the one remaining use of the
+        # value, deciding `reading` and `outcome` together.
         reading = "" if declared_failure == "no-readable-text" else result["text"]
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,

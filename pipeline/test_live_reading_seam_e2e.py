@@ -504,6 +504,7 @@ class WitnessWorld:
             log_root=self.work / "serving-logs" / identity.role,
             package_inspector=FakePackages({"vllm": "0.test"}),
             residency_lease=FileResidencyLease(self.work / "pod-gpu.lock"),
+            producer="pipeline/3_attestatores/run.py",
         )
         return ChairClient(
             manager=manager,
@@ -568,12 +569,23 @@ class ReaderWorld:
 
 
 def act_records(tree: RunTree) -> dict[tuple[str, str], dict[str, Any]]:
-    records = {}
+    records: dict[tuple[str, str], dict[str, Any]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] != "testimonium":
             continue
         record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        records[(record["subject_id"], record["payload"]["chair"])] = record
+        key = (record["subject_id"], record["payload"]["chair"])
+        assert key not in records, (
+            f"act_records saw two Testimonia for {key}: "
+            f"{records.get(key, {}).get('artifact_id')} "
+            f"(ordinal {records.get(key, {}).get('payload', {}).get('attempt_ordinal')}) "
+            f"vs {record.get('artifact_id')} "
+            f"(ordinal {record['payload'].get('attempt_ordinal')}) -- these trees are a "
+            "single ordinal-1 pass, so a second record here is either a duplicate "
+            "publication or an unintended second attempt, and manifest hash order "
+            "must not silently pick one over the other"
+        )
+        records[key] = record
     return records
 
 

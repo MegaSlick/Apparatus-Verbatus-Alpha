@@ -475,22 +475,44 @@ def run_attestatores(
 
 
 def act_records(tree: RunTree) -> dict[tuple[str, str], dict[str, Any]]:
-    records = {}
+    records: dict[tuple[str, str], dict[str, Any]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] != "testimonium":
             continue
         record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        records[(record["payload"]["act_key"], record["payload"]["chair"])] = record
+        key = (record["payload"]["act_key"], record["payload"]["chair"])
+        assert key not in records, (
+            f"act_records saw two Testimonia for {key}: "
+            f"{records.get(key, {}).get('artifact_id')} "
+            f"(ordinal {records.get(key, {}).get('payload', {}).get('attempt_ordinal')}) "
+            f"vs {record.get('artifact_id')} "
+            f"(ordinal {record['payload'].get('attempt_ordinal')}) -- these trees are a "
+            "single ordinal-1 pass, so a second record here is either a duplicate "
+            "publication or an unintended second attempt, and manifest hash order "
+            "must not silently pick one over the other"
+        )
+        records[key] = record
     return records
 
 
 def page_records(tree: RunTree) -> dict[tuple[int, str], dict[str, Any]]:
-    records = {}
+    records: dict[tuple[int, str], dict[str, Any]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] != "page-testimonium":
             continue
         record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        records[(record["payload"]["page_ordinal"], record["payload"]["chair"])] = record
+        key = (record["payload"]["page_ordinal"], record["payload"]["chair"])
+        assert key not in records, (
+            f"page_records saw two page-Testimonia for {key}: "
+            f"{records.get(key, {}).get('artifact_id')} "
+            f"(ordinal {records.get(key, {}).get('payload', {}).get('attempt_ordinal')}) "
+            f"vs {record.get('artifact_id')} "
+            f"(ordinal {record['payload'].get('attempt_ordinal')}) -- these trees are a "
+            "single ordinal-1 pass, so a second record here is either a duplicate "
+            "publication or an unintended second attempt, and manifest hash order "
+            "must not silently pick one over the other"
+        )
+        records[key] = record
     return records
 
 
@@ -548,10 +570,17 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     view = payload["native_capture"]["view"]
     assert payload["native_capture"]["adapter"] == "dai.v1"
     assert view["adapter"] == "dai-atr.v1"
-    if view["transform"]["kind"] == "identity":
-        assert view["source_image_ref"]["sha256"] == view["model_image_ref"]["sha256"]
-    else:
-        assert view["source_image_ref"]["sha256"] != view["model_image_ref"]["sha256"]
+    # `feeding.dai_model_view` already refuses either mismatched state (a
+    # resize whose digests still agree, or a claimed identity whose digests
+    # differ -- feeding.py), so a persisted view's kind and digest relation
+    # can never disagree with each other; asserting on `kind` alone would be
+    # tautological. These act crops need no resize, so pin the identity case
+    # directly: no resampler, one set of bytes, under the two stage-owned
+    # paths that legitimately hold them.
+    assert view["transform"]["kind"] == "identity"
+    assert view["transform"]["resampler"] is None
+    assert view["source_image_ref"]["sha256"] == view["model_image_ref"]["sha256"]
+    assert view["source_image_ref"]["relative_path"] != view["model_image_ref"]["relative_path"]
     # Every reference in the closed view names real bytes in this run's tree.
     for reference in (
         view["source_image_ref"],
@@ -1121,6 +1150,10 @@ def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(
         dict(context.serving_config_inputs)
     )
     assert manager.recipes.source_sha256 == load_serving_recipes(live_run.catalogue).source_sha256
+    # The launch audit names the stage that ran it, not the library that
+    # happens to construct the manager -- an operator reading two audits from
+    # different stages must be able to tell them apart by this field alone.
+    assert manager.producer == "pipeline/3_attestatores/run.py"
     # And it is inert: no service exists until the pass enters the client.
     with pytest.raises(Exception, match="enter it as a context manager"):
         assert client.handle is None
@@ -1255,7 +1288,35 @@ def test_a_pass_interrupted_between_two_act_views_of_one_page_completes_on_resum
         ],
     }
     resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+
+    publish_counts: dict[tuple[str, str], int] = {}
+    real_publish_attempt_resumed = attestatores.publish_attempt
+
+    def counting_publish_attempt(
+        context, *, act, chair, resolved, ordinal, regions, attempt, live=False
+    ):
+        publish_counts[(act["act_key"], chair)] = publish_counts.get((act["act_key"], chair), 0) + 1
+        return real_publish_attempt_resumed(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions,
+            attempt=attempt,
+            live=live,
+        )
+
+    monkeypatch.setattr(attestatores, "publish_attempt", counting_publish_attempt)
     assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+    monkeypatch.undo()
+
+    # The regression this pins: a resumed pass once republished every
+    # recovered act view a second time (silent, because the identical
+    # envelope bytes are accepted as immutable reuse) -- each pair must be
+    # published at most once.
+    assert all(count <= 1 for count in publish_counts.values()), publish_counts
+    assert publish_counts.get(("a2", "attestator_1")) == 1
 
     assert len(resumed.requests("attestator_1")) == 1
     assert len(resumed.requests("attestator_2")) == 2

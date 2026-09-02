@@ -341,11 +341,14 @@ def parse_openai_reading(
     )
 
 
-def chat_image_bytes_all(payload: Mapping[str, object]) -> list[bytes]:
+def chat_image_bytes_all(
+    payload: Mapping[str, object], *, label: str = "chat request"
+) -> list[bytes]:
     """Return every embedded image's decoded bytes, in content-list order.
 
-    The multi-image generalization of the single-image extraction the manager
-    uses for a fixture/adapter probe: every image must be a typed
+    Shared by the manager's single-image fixture/adapter probe (via
+    ``_active_chat_image_bytes``, which wraps this and requires exactly one
+    result) and the client's multi-image case: every image must be a typed
     ``image_url`` content block inside a ``role=user`` message's content list,
     its URL a local ``data:image/...;base64,`` URI, and no ``image_url`` key
     may appear anywhere else in the payload — an ignored extension field must
@@ -354,11 +357,11 @@ def chat_image_bytes_all(payload: Mapping[str, object]) -> list[bytes]:
 
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
-        raise ServingConfigurationError("chat request must contain a non-empty chat messages list")
+        raise ServingConfigurationError(f"{label} must contain a non-empty chat messages list")
     active_candidates: list[object] = []
     for message in messages:
         if not isinstance(message, Mapping):
-            raise ServingConfigurationError("chat request messages must be objects")
+            raise ServingConfigurationError(f"{label} messages must be objects")
         content = message.get("content")
         if not isinstance(content, list):
             continue
@@ -367,19 +370,19 @@ def chat_image_bytes_all(payload: Mapping[str, object]) -> list[bytes]:
                 continue
             if message.get("role") != "user":
                 raise ServingConfigurationError(
-                    "chat request image_url must be in a role=user content block"
+                    f"{label} image_url must be in a role=user content block"
                 )
             if set(part) != {"type", "image_url"}:
                 raise ServingConfigurationError(
-                    "chat request image_url content block must contain only type and image_url"
+                    f"{label} image_url content block must contain only type and image_url"
                 )
             active_candidates.append(part["image_url"])
     all_candidates = _all_image_url_candidates(payload)
     if len(active_candidates) != len(all_candidates):
         raise ServingConfigurationError(
-            "chat request has an image_url outside a role=user content list"
+            f"{label} has an image_url outside a role=user content list"
         )
-    return [_decode_image_url(candidate, label="chat request") for candidate in active_candidates]
+    return [_decode_image_url(candidate, label=label) for candidate in active_candidates]
 
 
 def _finish_reason(choice: Mapping[str, Any], *, refuse: Callable[[str], Exception]) -> str | None:
