@@ -38,7 +38,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import common.stage as stage_module
 from common.chairs.models import AbsentChair
+from common.chairs.registry import ChairRegistry
 from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
@@ -213,10 +215,7 @@ def test_the_fixture_reader_refusal_is_resolved_before_the_partition_is_publishe
     partition blob, the refusal would arrive after a write, breaking the
     standard `perlector_serving_mode`'s own docstring states for this class of
     check: refuse while the tree is still exactly as this invocation found it.
-    Read from source rather than driven end to end, because the real route
-    that would reach this line refuses earlier still, at the predecessor seal
-    (see the parametrized test above) -- there is no real Designator yet to
-    build a submission past that point.
+    A cheap companion to the executable proof below, not the only proof.
     """
     source = inspect.getsource(PERLECTOR_RUN._read_the_acts)
     reader_call = source.index("fixture_reader_for(")
@@ -225,6 +224,48 @@ def test_the_fixture_reader_refusal_is_resolved_before_the_partition_is_publishe
         "fixture_reader_for must be resolved before build_run_partition writes "
         "the partition blob, or a real submission's refusal arrives after a write"
     )
+
+
+def test_the_fixture_reader_refusal_actually_fires_before_any_write(
+    real_root, monkeypatch
+):
+    """Drives `_read_the_acts` itself rather than comparing source positions,
+    so deleting the refusal (or introducing a write ahead of it under any
+    name) fails this test. `verify_predecessor_seal` is stubbed out because
+    the real route that would reach this line refuses earlier still, at the
+    predecessor seal (see the parametrized test above) -- there is no real
+    Designator yet to build a submission past that point -- and the chair and
+    serving-mode resolution are pinned directly to the case under test rather
+    than requiring a real catalogue and a live-tier flag.
+    """
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(stage_module, "verify_predecessor_seal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(STAGE_PROGRAMS[PERLECTOR]),
+            "--run-root",
+            str(real_root),
+            "--run-id",
+            RUN_ID,
+        ],
+    )
+    monkeypatch.setattr(
+        PERLECTOR_RUN, "perlector_chair", lambda context: SimpleNamespace(role="perlector")
+    )
+    monkeypatch.setattr(PERLECTOR_RUN, "perlector_serving_mode", lambda *_a, **_k: "fixture")
+
+    before = _tree_bytes(real_root)
+    with pytest.raises(
+        ContractError, match="cannot read a real submission through the fixture reader"
+    ):
+        PERLECTOR_RUN._read_the_acts(
+            registry_factory=ChairRegistry.from_toml,
+            serving_factory=None,
+            service=None,
+        )
+    assert _tree_bytes(real_root) == before, "a refused fixture reader must write nothing"
 
 
 def test_an_absent_chair_on_a_real_run_needs_no_reader_and_a_live_row_starts_none_yet():
@@ -264,6 +305,22 @@ def test_unreconciled_has_no_producer_on_a_real_run_and_the_route_stays_silent()
         )
         is None
     )
+
+
+def test_declared_recovery_has_no_producer_on_a_real_run_and_still_reads_a_fixture_scenario():
+    """`False` because nothing fed the cause, not because any act was measured
+    as needing no recovery; a fixture scenario that declares `recover_acts`
+    still feeds it on the fixture route."""
+    assert RECENSOR_RUN.declared_recovery(None, "structural:1:1") is False
+
+    fixture = {
+        "act": [],
+        "page": [],
+        "scenario": [{"name": "recovered", "recover_acts": ["held-act"]}],
+    }
+    scenario = RECENSOR_RUN.declared_scenario(_fixture_context(RECENSOR, fixture, "recovered"))
+    assert RECENSOR_RUN.declared_recovery(scenario, "held-act") is True
+    assert RECENSOR_RUN.declared_recovery(scenario, "other-act") is False
 
 
 def test_declared_scenario_is_none_on_a_real_run_and_the_declared_row_on_the_fixture_route():

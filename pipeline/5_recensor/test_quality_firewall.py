@@ -224,10 +224,15 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     # act's own sealed `page_ordinal`, and `funded_pages` is a count of recovery
     # requests already recorded in the tree by origin. Neither carries anything
     # a reading said, and neither carries anything a witness reported.
+    # `declared_recovery` is the named accessor for the scenario's declared
+    # crop set (`scenario["recover_acts"]`, gated `False` with no scenario at
+    # all); it is a coverage-and-declaration fact drawn from `act_key` and
+    # `scenario`, still nothing a reading said.
     assert sources <= {
         "act",
         "act_key",
         "bool",
+        "declared_recovery",
         "funded_pages",
         "outside_ink_requests",
         "scenario",
