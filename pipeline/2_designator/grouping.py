@@ -51,16 +51,13 @@ class ActGroup(TypedDict):
     rationale: str
 
 
-# Defaults. Each is a geometric policy, not a magic number buried in a stage
-# program: a caller may override any of them by keyword. `run.py` today calls
-# `group_page` with no overrides, so what runs on every page is exactly the
-# default declared here -- named and reviewable in one place even though
-# nothing currently overrides it.
-DEFAULT_MARGIN_FRACTION: Final = 0.15
-DEFAULT_CHAIN_GAP_PX: Final = 6
-DEFAULT_ANCHOR_REACH_PX: Final = 2
-DEFAULT_BRACE_MIN_HEIGHT_PX: Final = 30
-DEFAULT_PAGE_EDGE_REACH_PX: Final = 4
+# These geometric policies used to carry module defaults here. They no longer
+# do: `run.py` resolves each one, per page, from a sealed basis-point config
+# and that page's own dimensions (SPEC_C section 2, "Where resolution
+# happens"), and passes the resolved pixel integers in on every call. A caller
+# that forgets one now fails loudly rather than running under a value nobody
+# reviewed for this page -- `geometry.load_padding_config`'s own docstring is
+# the precedent: "refused loudly rather than defaulted".
 
 
 def _y_range(component: dict) -> tuple[int, int]:
@@ -89,22 +86,23 @@ def _union_bounds(components: list[dict]) -> Bounds:
 
 
 def assign_columns(
-    components: list[dict], page_w: int, *, margin_fraction: float = DEFAULT_MARGIN_FRACTION
+    components: list[dict], page_w: int, *, margin_px: int
 ) -> tuple[list[dict], list[dict]]:
     """Split components into (margin, body) by horizontal position only.
 
     A component's centre-x decides its column: marginal names and numbered
     markers are narrow and left-aligned, so a centre inside the margin band
     puts it there even when its right edge slightly overhangs the boundary.
-    `margin_fraction` is a fraction of the page's own width, not of any one
-    component's -- the margin is a fixed lane the page's layout defines, not a
-    property of what happens to be printed in it.
+    `margin_px` is resolved from the page's own width before this is called,
+    never a fraction computed here -- the margin is a fixed lane the page's
+    layout defines, not a property of what happens to be printed in it, and
+    the last float left this module when the resolution moved to the caller.
     """
     if page_w <= 0:
         raise ContractError(f"page width {page_w} is not positive")
-    if not (0 < margin_fraction < 1):
-        raise ContractError(f"margin fraction {margin_fraction} is not between 0 and 1")
-    boundary = page_w * margin_fraction
+    if not (0 < margin_px < page_w):
+        raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
+    boundary = margin_px
     margin: list[dict] = []
     body: list[dict] = []
     for component in components:
@@ -195,10 +193,10 @@ def group_page(
     page_w: int,
     page_h: int,
     *,
-    margin_fraction: float = DEFAULT_MARGIN_FRACTION,
-    chain_gap_px: int = DEFAULT_CHAIN_GAP_PX,
-    anchor_reach_px: int = DEFAULT_ANCHOR_REACH_PX,
-    brace_min_height_px: int = DEFAULT_BRACE_MIN_HEIGHT_PX,
+    margin_px: int,
+    chain_gap_px: int,
+    anchor_reach_px: int,
+    brace_min_height_px: int,
 ) -> list[ActGroup]:
     """Group one page's raw candidate regions into acts.
 
@@ -213,7 +211,7 @@ def group_page(
     if not components:
         return []
 
-    margin, body = assign_columns(components, page_w, margin_fraction=margin_fraction)
+    margin, body = assign_columns(components, page_w, margin_px=margin_px)
     anchors_sorted = sorted(
         margin, key=lambda component: (component["bounds"]["y"], component["bounds"]["x"])
     )
@@ -286,7 +284,8 @@ def find_continuation_candidate(
     page_a_h: int,
     page_b_groups: list[ActGroup],
     *,
-    edge_reach_px: int = DEFAULT_PAGE_EDGE_REACH_PX,
+    edge_reach_a_px: int,
+    edge_reach_b_px: int,
     column_overlap_px: int = 0,
 ) -> dict[str, Any] | None:
     """A page-break continuation candidate, found by geometry alone.
@@ -298,15 +297,19 @@ def find_continuation_candidate(
     none reads a character of text, and none exists to guess whether the
     *content* actually continues -- that judgement belongs to the Recensor.
     This function only proposes that the geometry is consistent with one.
+
+    `edge_reach_a_px` and `edge_reach_b_px` are each page's own resolved edge
+    reach -- one value serving both pages silently assumed they shared a
+    height, which a real corpus does not guarantee.
     """
     if not page_a_groups or not page_b_groups:
         return None
     trailing = max(page_a_groups, key=lambda group: group["bounds"]["y"] + group["bounds"]["h"])
     leading = min(page_b_groups, key=lambda group: group["bounds"]["y"])
     trailing_bottom = trailing["bounds"]["y"] + trailing["bounds"]["h"]
-    if page_a_h - trailing_bottom > edge_reach_px:
+    if page_a_h - trailing_bottom > edge_reach_a_px:
         return None
-    if leading["bounds"]["y"] > edge_reach_px:
+    if leading["bounds"]["y"] > edge_reach_b_px:
         return None
     if leading["anchors"]:
         return None
