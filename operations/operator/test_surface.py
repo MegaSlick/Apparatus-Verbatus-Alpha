@@ -21,6 +21,7 @@ from typing import Callable
 import pytest
 
 from common.contracts.canonical import canonical_bytes
+from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
@@ -613,6 +614,80 @@ def test_status_reads_an_open_lease_without_writing_beside_it(tmp_path: Path) ->
 
     assert any(lease.name in line for line in lines), lines
     assert {entry.name for entry in leases.iterdir()} == before
+
+
+def test_status_reads_a_supervisor_identity_without_writing_its_lock(tmp_path: Path) -> None:
+    """`supervise.peek_running` must be a pure read too: a supervisor identity
+
+    file surviving a restore or sync, with its `.lock` file absent, must not
+    have `status` re-create `leases/supervisors/supervisor-<id>.lock` -- that
+    would turn the same read-only state tree this file's sibling test guards
+    into a write the moment a lease happens to have supervisor telemetry.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.release_lock(leases_root, lease_id)
+    supervisors_dir = leases_root / "supervisors"
+    # `establish_identity` above created the lock file as its own side
+    # effect; releasing the flock does not delete it. Model the restore/sync
+    # state this test is actually about -- the identity file present, its
+    # `.lock` file genuinely absent -- by removing it explicitly.
+    (supervisors_dir / f"supervisor-{lease_id}.lock").unlink()
+    before = _tree_listing(leases_root)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: absent" in line for line in lines), lines
+    assert _tree_listing(leases_root) == before
+
+
+def _tree_listing(root: Path) -> set[str]:
+    return {str(path.relative_to(root)) for path in root.rglob("*")}
+
+
+def test_status_survives_a_read_only_supervisors_directory_with_no_lock_file(
+    tmp_path: Path,
+) -> None:
+    """A `leases/supervisors` this process can read but not write into --
+
+    what a restore, a sync, or a read-only medium presents -- must not
+    swallow the open-lease and "may still be billing" lines below it. The old
+    `peek_running` tried to create the missing `.lock` file to check it,
+    which raised a bare `PermissionError` straight out of `status` before
+    those lines were ever printed; the non-creating read must not.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.release_lock(leases_root, lease_id)
+    supervisors_dir = leases_root / "supervisors"
+    (supervisors_dir / f"supervisor-{lease_id}.lock").unlink()
+    supervisors_dir.chmod(0o555)
+    try:
+        lines = _surface(tmp_path, provider=provider).status()
+    finally:
+        supervisors_dir.chmod(0o755)
+
+    assert any("A pod may still be billing" in line for line in lines), lines
+    assert any(lease_id in line for line in lines), lines
+    assert any("supervisor: absent" in line for line in lines), lines
 
 
 def test_a_prepared_launch_without_a_preview_refuses_in_plain_language(tmp_path: Path) -> None:
@@ -4167,3 +4242,237 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
     # two you can run any time (`status` and `spend show`).
     assert f"## The {total} words" in readme
     assert f"\n{doers} things this tool can do," in readme
+
+
+def test_status_reports_supervisor_absent_when_no_identity_file_exists(tmp_path: Path) -> None:
+    """The 04-1 status extension: an open lease with no supervisor yet says so."""
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    _open_lease_path(surface, provider, spend)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: absent" in line for line in lines), lines
+    assert any("no identity file has been written" in line for line in lines), lines
+
+
+def test_status_reports_a_running_supervisor_its_last_tick_and_the_volume_rate(
+    tmp_path: Path,
+) -> None:
+    """The status block reads `supervise.py`'s identity file and the lease's
+
+    own close record -- no new verb, no provider call, exactly what
+    `operations/pod/README.md`'s 04-1 row promises. "running" here is decided
+    by `supervise.peek_running` taking the lease's own kernel lock; the
+    holder this test observes is this test process itself, which
+    `establish_identity` below left holding that lock -- not a separate
+    supervisor process. See the sibling test below for the crashed-supervisor
+    case, where the lock is released and the surface must say "absent"
+    instead.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: running" in line and str(os.getpid()) in line for line in lines), lines
+    assert any(
+        "last tick: active" in line and "steady-state heartbeat" in line for line in lines
+    ), lines
+    assert any("last close record: none" in line for line in lines), lines
+    assert any("volume's ongoing hourly price" in line for line in lines), lines
+
+
+def test_status_reports_a_crashed_supervisor_as_absent_even_with_a_live_identity_file(
+    tmp_path: Path,
+) -> None:
+    """`peek_running` answers from the kernel lock, not the recorded pid.
+
+    Model a supervisor that died by releasing the lock `establish_identity`
+    took, while leaving its identity file (with a real pid and a real last
+    tick) on disk untouched -- exactly what a killed process leaves behind.
+    The surface must call this "absent", not "running": nothing is holding
+    the ownership lock any more, so nothing is watching this lease's pod.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+    pod_supervise.release_lock(leases_root, lease_id)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any(f"supervisor: absent (pid {os.getpid()} not found)" in line for line in lines), lines
+    assert any(
+        "last tick: active" in line and "steady-state heartbeat" in line for line in lines
+    ), lines
+    assert any("volume's ongoing hourly price" in line for line in lines), lines
+
+
+def test_status_reports_unknown_never_running_when_the_ownership_lock_cannot_be_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If `peek_running` cannot decide (item 7's fail-open fix), the surface
+
+    must say "UNKNOWN" and go look -- never fall back to printing "running",
+    which would tell an operator a lease is watched when nobody can tell.
+    The open-lease and "may still be billing" lines that follow must still
+    survive.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    monkeypatch.setattr(surface_module, "_supervisor_peek_running", lambda *a, **k: None)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: UNKNOWN" in line for line in lines), lines
+    assert not any("supervisor: running" in line for line in lines), lines
+    assert any("treat this pod as unsupervised and go look" in line for line in lines), lines
+    assert any("may still be billing" in line for line in lines), lines
+    assert any("volume's ongoing hourly price" in line for line in lines), lines
+
+
+def test_status_reports_unreadable_when_the_ownership_lock_check_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same fail-open guard, pinned on its `except Exception` branch:
+
+    a `peek_running` that raises must not crash `status` or fall back to
+    "running" -- it reports UNREADABLE and the rest of the block still
+    prints.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    def raises(*args: object, **kwargs: object) -> bool:
+        raise OSError("lock probe failed")
+
+    monkeypatch.setattr(surface_module, "_supervisor_peek_running", raises)
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any("supervisor: UNREADABLE" in line for line in lines), lines
+    assert not any("supervisor: running" in line for line in lines), lines
+    assert any("volume's ongoing hourly price" in line for line in lines), lines
+
+
+def test_status_never_calls_the_provider_while_reading_supervisor_telemetry(
+    tmp_path: Path,
+) -> None:
+    """Reading the identity file and the lease's own close record is a pure
+
+    read; the money-path rule ("reading costs nothing") must stay true of
+    this extension exactly as it is of the rest of `status`.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+    pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    provider.calls.clear()
+
+    _surface(tmp_path, provider=provider).status()
+
+    assert provider.calls == []
+
+
+def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
+    """The status extension is built from `SupervisorIdentity.telemetry()`,
+
+    never from the identity object itself, so the capability that closes
+    this lease structurally cannot reach a terminal (`ps` is public) through
+    this read path -- see supervise.py's own module docstring on the token's
+    two permitted homes.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease_path = _open_lease_path(surface, provider, spend)
+    lease_id = lease_path.stem
+    leases_root = lease_path.parent
+
+    identity = pod_supervise.establish_identity(
+        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+    )
+    pod_supervise.record_tick(
+        pod_supervise.identity_path(leases_root, lease_id),
+        identity,
+        state="active",
+        detail="steady-state heartbeat",
+        now=START + timedelta(seconds=5),
+    )
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert identity.owner_token not in "\n".join(lines)

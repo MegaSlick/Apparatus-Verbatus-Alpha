@@ -75,6 +75,15 @@ from operations.pod.spend import (
     SpendPolicy,
     load_spend_policy,
 )
+from operations.pod.supervise import (
+    identity_path as _supervisor_identity_path,
+)
+from operations.pod.supervise import (
+    peek_running as _supervisor_peek_running,
+)
+from operations.pod.supervise import (
+    read_identity as _read_supervisor_identity,
+)
 from operations.pod.transfer import ChecksummedTransfer, TransferFailure, TransferTarget
 from operations.submit import submit as submission_door
 
@@ -1240,6 +1249,7 @@ class OperatorSurface:
                 "  No verified close is recorded for it. A pod may still be billing; "
                 "the lease-backed safety controllers own it until that deadline."
             )
+            lines.extend(self._supervisor_status_lines(lease))
         for reason in lease_unreadable:
             lines.append(f"- safety lease: UNREADABLE; it was not treated as closed. {reason}")
         if descriptor is not None and descriptor["actions"]:
@@ -1577,6 +1587,62 @@ class OperatorSurface:
                 continue
             open_leases.append((path, lease))
         return open_leases, unreadable
+
+    def _supervisor_status_lines(self, lease: PodLease) -> list[str]:
+        """Read-only supervisor telemetry for one open lease -- no new verb.
+
+        Every fact here comes from the durable identity file `supervise.py`
+        writes beside the lease and from the lease's own close record; this
+        never asks the provider anything, which keeps `status` a pure read.
+        """
+
+        leases_root = self.state_root / "leases"
+        path = _supervisor_identity_path(leases_root, lease.lease_id)
+        try:
+            identity = _read_supervisor_identity(path)
+        except Exception as error:
+            return [f"  supervisor: identity file UNREADABLE ({error})."]
+        if identity is None:
+            return ["  supervisor: absent -- no identity file has been written for this lease yet."]
+        # Built from the token-free projection, never from `identity` itself,
+        # so the capability that closes this lease structurally cannot reach
+        # a terminal (`ps` is public) through this read path.
+        telemetry = identity.telemetry()
+        try:
+            running = _supervisor_peek_running(leases_root, lease.lease_id)
+        except Exception as error:
+            # Never let a failure in the lock check swallow the lines below --
+            # "a pod may still be billing" must still be printed.
+            running = f"UNREADABLE ({error})"
+        age = max((self.now() - telemetry["started_at"]).total_seconds(), 0.0)
+        if running is True:
+            word = "running"
+        elif running is False:
+            word = "absent (pid " + str(telemetry["pid"]) + " not found)"
+        elif running is None:
+            word = (
+                "UNKNOWN -- the ownership lock could not be checked; "
+                "treat this pod as unsupervised and go look"
+            )
+        else:
+            word = str(running)
+        lines = [f"  supervisor: {word}, identity file age {age:.0f}s (pid {telemetry['pid']})."]
+        if telemetry["last_tick_at"] is not None:
+            lines.append(
+                f"  last tick: {telemetry['last_tick_state']} at "
+                f"{utc_stamp(telemetry['last_tick_at'])} -- {telemetry['last_tick_detail']}"
+            )
+        else:
+            lines.append("  last tick: none recorded yet.")
+        if lease.close_record is not None:
+            lines.append(
+                "  last close record: "
+                + json.dumps(lease.close_record, sort_keys=True, separators=(",", ":"))
+            )
+        else:
+            lines.append("  last close record: none; this lease has not closed.")
+        lines.append(f"  volume's ongoing hourly price: ${lease.volume_hourly_usd}.")
+        return lines
 
     def _refuse_if_open_lease(self) -> None:
         """Refuse durable paid intent whose provider outcome may be unknown.

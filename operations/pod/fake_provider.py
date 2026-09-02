@@ -8,6 +8,7 @@ requests.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable
@@ -79,6 +80,20 @@ class FakeProvider:
 
     def set_billing(self, capture: CostCapture) -> None:
         self._billing[capture.pod_id] = capture
+
+    def set_pod_state(self, pod_id: str, state: str) -> None:
+        """Move an existing fake pod's observed lifecycle word, e.g. to EXITED.
+
+        Presence and lifecycle are independent facts here as everywhere else:
+        this never removes the pod from ``_present``, so a caller can put a
+        pod in exactly the shape a real EXITED pod has -- PRESENT to `status`
+        and still billing its attached volume.
+        """
+
+        record = self.pods.get(pod_id)
+        if record is None:
+            raise ProviderFailure(f"fake provider cannot set state on unknown pod {pod_id!r}")
+        self.pods[pod_id] = replace(record, state=state)
 
     def set_account_balance(self, available_usd: Decimal | str) -> None:
         self._account_balance_usd = as_decimal(available_usd, "fake available account balance")
@@ -171,12 +186,27 @@ class FakeProvider:
     def status(self, pod_id: str) -> ProviderStatus:
         self._call("status", pod_id)
         if self._present.get(pod_id, False):
-            return ProviderStatus(pod_id, Presence.PRESENT, self.now(), http_status=200)
+            # `_present[pod_id]` is only ever set True immediately after
+            # `self.pods[pod_id] = record` (in `create`), so the record it
+            # names cannot be missing here.
+            record = self.pods[pod_id]
+            return ProviderStatus(
+                pod_id, Presence.PRESENT, self.now(), http_status=200, provider_state=record.state
+            )
         lag = self._get_lag[pod_id]
         if lag > 0:
             self._get_lag[pod_id] = lag - 1
+            record = self.pods.get(pod_id)
+            # A real EXITED-then-terminated pod still carries its lifecycle
+            # word while its disappearance propagates; report that word here
+            # too, rather than the shape of an adapter that never had one.
             return ProviderStatus(
-                pod_id, Presence.PRESENT, self.now(), "termination propagating", 200
+                pod_id,
+                Presence.PRESENT,
+                self.now(),
+                "termination propagating",
+                200,
+                provider_state=record.state if record is not None else None,
             )
         return ProviderStatus(pod_id, Presence.ABSENT, self.now(), http_status=404)
 
@@ -185,6 +215,7 @@ class FakeProvider:
         self.terminate_calls.append(pod_id)
         if pod_id not in self.pods:
             return
+        self.pods[pod_id] = replace(self.pods[pod_id], state="TERMINATED")
         self._present[pod_id] = False
 
     def verify_absent(self, pod_id: str) -> AbsenceObservation:

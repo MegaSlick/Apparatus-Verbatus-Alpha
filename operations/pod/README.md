@@ -72,16 +72,39 @@ observations the fake suite cannot establish and the first response-as-arrival d
 check.
 
 - `provider.py` is the seven-verb provider seam; `provider_runpod.py` is the sole
-  RunPod adapter and speaks **REST v1** (`rest.runpod.io/v1`), the route spec 04
-  names and the only one whose published pod-create schema proves the two facts
-  this runtime must have before it can spend: an explicit `interruptible=false`
-  and a primary `dockerStartCmd`. REST v2 (`api.runpod.io/v2`) is not used: its
-  own overview still says it is in beta and may change before general
-  availability. Every endpoint whose response *shape* the adapter parses is
-  named, with its documentation URL and the date it was checked, in that file's
-  module docstring; DELETE's response body is never parsed, only its status
-  code, so it is not on that list. `fake_provider.py` has a fixed local price sheet, exact-token crash
-  recovery, and injected failures only.
+  RunPod adapter and, as the code on this branch still stands, speaks **REST
+  v1** (`rest.runpod.io/v1`) — the only route whose published pod-create schema
+  proves the two facts this runtime must have before it can spend: an explicit
+  `interruptible=false` and a primary `dockerStartCmd`. Every endpoint whose
+  response *shape* the adapter parses is named, with its documentation URL and
+  the date it was checked, in that file's module docstring; DELETE's response
+  body is never parsed, only its status code, so it is not on that list.
+  **This v1 posture is superseded, not settled.** The module docstring's "v2 is
+  beta, so not the route" reasoning is dated 2026-08-09; Tyrel ruled two days
+  later, quoted in `workbench/standing/TYREL_RULINGS_2026-08-10_SPEND.md:122-126`:
+  *"V2 should be what we use."* The 2026-09-01 documentation research
+  (`workbench/active/RESEARCH_RUNPOD_API_2026-09-01.md`) adds that RunPod's own
+  docs banner now retires v1 on 2026-11-15. The v1 code in this file is
+  therefore a session decision that **predates and contradicts** that ruling,
+  left as-is by this record-only unit rather than migrated: no v2 field name is
+  asserted anywhere in this repository, and writing one in without fetching
+  v2's actual create-body schema would trade one unverified assumption for
+  another on a money path. The migration is its own section of work — record
+  each v2 page and its check date the way the four v1 pages are recorded here
+  today, then touch code — not something this unit does.
+
+  **A second, independent gap the ruling does not close on its own: there is no
+  account-balance observer anywhere in this tree.** `RunPodProvider.balance_observer`
+  is an injected callable with no default; `observe_account_balance` raises
+  "RunPod account balance source was not configured" until one is supplied, and
+  `spend.py`'s balance-floor gate then refuses every paid action. The
+  2026-09-01 research found balance and spend observability only in GraphQL
+  (`myself { clientBalance currentSpendPerHr }`) and located no REST v1 or v2
+  equivalent in that pass — documented absence, not a verified negative; on
+  that reading the version move does not touch balance. No live pod — not even the Boot A
+  drill below — can be created until this observer exists. `fake_provider.py`
+  has a fixed local price sheet, exact-token crash recovery, and injected
+  failures only.
 - `shutdown.py` is written before launch. Its only green close result requires a
   termination request, exact-pod GET-404, independent pod-list absence, and a
   non-empty provider billing capture through its named window and cutoff. The
@@ -109,6 +132,181 @@ check.
   started. Pod close makes no volume retention/deletion
   decision; either choice requires separate authorization, and the unchanged
   volume's ongoing price is in the close report. This runtime has no volume-delete operation.
+- `supervise.py`, run as `python -m operations.pod.supervise`, is the tracked
+  runtime for `controllers.LaptopSupervisor` — **deferral 04-1 is closed.**
+  Ownership of a lease is decided by a non-blocking `fcntl.flock` on a
+  dedicated lock file beside it (`supervisors/supervisor-<lease>.lock`), never
+  by a recorded pid: a pid is reused by an unrelated process after a laptop
+  reboot, which would make a bare `os.kill(pid, 0)` check find that unrelated
+  process alive and refuse forever to supervise a pod still billing. The
+  kernel releases the lock the instant the holding process dies, however it
+  dies. A companion identity file (`supervisors/supervisor-<lease>.json`)
+  carries the owner token a restart resumes once it holds the lock — the lock
+  is the proof the prior holder is gone, so a crash and its restart never read
+  as a rival to reconcile, and two live drivers can never both reach for the
+  same pod. Every tick also re-reads `provider.status()` and closes on any
+  lifecycle word other than `RUNNING`, naming the observed state in the close
+  reason: this is the actual 04-4 fix (see the rewritten row below — the old
+  "closes when 04-1 lands" line was wrong about the mechanism, not the
+  outcome). A provider that cannot answer `status` this tick is read as
+  neither `RUNNING` nor a reason to close; the heartbeat above still holds and
+  the loop keeps ticking rather than crash-looping or guessing. The operator
+  `status` verb gains a read-only supervisor block per open lease — running,
+  absent, or unknown (by peeking the lock, never creating it and never
+  trusting a recorded pid, and classifying only `BlockingIOError` as proof of
+  a holder — exactly as `OperatorSurface._exclusive_paid_launch` already does
+  for the paid-launch claim; any other lock-check failure prints an honest
+  "unknown", never "running"), identity file age, last tick result, last
+  close record, and the volume's ongoing hourly price — with no new verb.
+  Exit status follows `cli.py`'s convention
+  (0 guarded, 2 nothing touched, 3 go and look) with one addition: a durable
+  lease this run confirmed active going missing or unreadable exits 3, not 2,
+  since the pod it guarded may still be billing. `main()` catches
+  `BaseException`, not only its own refusal type, so a bad `--provider-factory`
+  reference or a malformed `spend.toml` still attempts a durable final record
+  before exiting, and names a failed record write in its printed exit record
+  rather than letting it vanish — a detached process's traceback on stderr
+  goes unwatched otherwise. Seven offline drills against `FakeProvider` and an injected clock
+  prove it: a crash mid-heartbeat resuming ownership with no close; a lost
+  identity file reporting `BUSY` inside the timeout and closing after it,
+  naming which; a provider unreachable on `status`/`verify_absent`/
+  `capture_cost` reporting non-green without ever fabricating a verified
+  close; an `EXITED` pod closing on a fresh heartbeat, naming the volume's
+  ongoing rate; an already-`closed-verified` lease exiting without touching
+  the provider; a second driver refused before it ever reaches the lease;
+  and a foreign owner's deadline passing while the supervisor breaks rather
+  than spinning.
+  **A session that starts `supervise.py` is running a long-lived process
+  while a pod bills — `~/.claude/WAKE_PLAYBOOK.md` applies to it exactly as to
+  any other unattended long-running work.**
+- `controller_armer.py` is the two-controller armer — **deferral 04-2 is
+  partly closed.** `ChannelControllerArmer.arm` starts the laptop supervisor
+  first, detached, and records its start *before* polling begins: a launcher
+  that dies mid-poll then leaves a live supervisor over an `active` lease
+  whose `controller_record` is `None`, which `controllers.run_once` closes
+  once the launch owner's heartbeat goes stale. The reverse order — poll
+  first, start the supervisor on success — would leave a billing pod with no
+  laptop-side controller at all for the whole polling window.
+
+  **The owner-token handover is this module's own decision, not something the
+  spec dictated.** `supervise.establish_identity` resumes whatever token it
+  finds in a lease's identity file and mints a fresh one only when none
+  exists; if the armer let the supervisor it starts mint its own token, that
+  supervisor would not match the lease's expected owner and could only ever
+  reach the pod through `LeaseStore.claim_if_orphan` — closing, one heartbeat
+  timeout after the launcher exits, the very pod it was started to guard. So
+  the armer writes the identity file itself, carrying *this launch's* owner
+  token, before starting the process (0600, `durable.exclusive_write`, never
+  overwriting): the supervisor resumes it and becomes the lease's legitimate
+  heartbeating owner. On `FileExistsError` the armer reads the existing file
+  back and compares its `owner_token` to this launch's — a matching token (a
+  retried arming attempt over the same lease) still arms exactly as before; a
+  foreign or unreadable token refuses with `SUPERVISOR_FAILED` before the
+  supervisor starts or any channel read happens. The token never rides in
+  argv (`ps` is public) and never in a receipt.
+
+  **The armer heartbeats the lease on every poll wait.** The lease's heartbeat
+  was last refreshed when the pod was bound, and the supervisor above is now
+  live over an unarmed lease: without this, the supervisor would close the pod
+  mid-poll at the ordinary heartbeat timeout while the launcher was doing
+  exactly what it is supposed to do — `controllers.run_once`'s own branch here
+  says as much: *"its launch owner is still heartbeating."* A heartbeat that
+  fails — the lease was claimed, closed, or damaged by something else — stops
+  the poll at once and refuses. A preflight check refuses before any of this
+  when `poll_seconds * 3 >= laptop_heartbeat_timeout_seconds`, since
+  `SpendPolicy` accepts any positive heartbeat timeout and a misconfigured one
+  would otherwise be a silent guarantee that every launch dies mid-arming; and
+  when the configured supervisor command does not resolve on `PATH` or as a
+  file, or its `--spend` file does not exist — both free reads before the
+  paid `create`. It refuses before starting anything, too, when the request,
+  the produced pod record, and the lease disagree about the pod id or hard
+  deadline: no receipt could satisfy both `launch._validate_arming_binding`
+  and `lease._validate_controller_record`, and finding that out after minutes
+  of polling would waste the whole window. A pod clock a little ahead of the
+  laptop's is waited out inside a small skew bound rather than papered over by
+  back- or forward-dating either clock; past that bound the two clocks
+  disagree by more than a safety receipt can absorb and the launch refuses.
+
+  **The channel is documented, not observed — that is why 04-2 stays only
+  partly closed.** The pod writes its report to its mounted volume; the
+  laptop has no filesystem there and must read it back through RunPod's
+  S3-compatible network-volume view — a `GetObject` read beside the existing
+  `HeadObject` in `operations/operator/volume_s3.py`, reusing `_means_absent`.
+  `TimerReportChannel.read` returns bytes, or `None` **only** when the object
+  is proven absent; a refused credential or any answer the channel cannot
+  classify raises instead — an unreachable channel must never read as "not
+  yet", or a supervised pod could be closed for a report it actually wrote.
+  Whether an object written through a pod's mount appears in that view, under
+  which key, and after how long is **a designed path, not an observed one**:
+  no offline test can measure it, only a live boot can. **New closes-when for
+  04-2:** the first authorized boot observes an object written through the
+  pod's mount appearing in the network volume's S3 view, and records the
+  delay.
+
+  **And the drill armer.** `ObservingControllerArmer` runs the identical
+  procedure — same handover, same supervisor start, same read — and
+  hard-codes `pod_timer_acknowledged` to `False`, so `ControllerArming.armed`
+  is `False` by construction whatever it observes and `launch._arm_or_close`
+  closes the pod at once. Its laptop-supervisor flag stays honest: the
+  supervisor really did start, and a false statement in a durable record is
+  not a safety property. What it actually saw, and how long it waited, goes
+  to a local evidence file — the measurement the first authorized boot exists
+  to take. It is what Boot A below runs.
+- `bootstrap_main.py`, run as `python -m operations.pod.bootstrap_main`, is
+  bootstrap-and-hold — **deferral 04-3 is closed**, and the sentence that
+  matters is this: **the entrypoint holds.** `pod_timer.run_with_bootstrap`
+  treats any child exit before the hard deadline, exit 0 included, as
+  `completed-early` and closes the pod, so a script-shaped entrypoint that ran
+  bootstrap and exited was precisely the artifact the runtime refuses. On
+  green this process holds until the pod is destroyed, re-journaling a
+  liveness line at the monitoring interval; a red step exits non-zero at once,
+  the correct immediate close. `ChairCacheBootstrapAction` is constructed here
+  for the first time in the tracked tree, using the real Hugging Face fetchers
+  already in `common/chairs/registry.py` for both chair-cache verification and
+  model-store materialization — **deferral 04-8 is only partly closed**: the
+  class is constructed, but `refetch_same_pin=None` (the registry has no
+  cache-clear verb), so the at-most-one same-pin re-fetch still does not ship,
+  and no test exercises the action. See the 04-8 row below. The transfer
+  target stays optional: no submission manifest on the volume is a vacuous
+  success and this process needs no object-store client at all; a manifest
+  present with no configured target is a refusal, never a silently skipped
+  upload. `PREFLIGHT` stays honestly red: no production `ChairCacheVerifier` or
+  `SmokeReader` exists anywhere in this repository, only fixture adapters in
+  tests and the operator's offline surface — Spec 05 owns that real assembly,
+  and this file wires named stand-ins rather than borrow a fixture pass into a
+  live pod's preflight. Both the ordinary hold and the `--hold-only` drill
+  hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer
+  factory reads), so this process's own end approximately coincides with the
+  pod-side timer closing the pod regardless. Refusals precede any action: a
+  journal or report path outside the mounted volume, a lockfile that is not
+  the checked-out repository's `uv.lock`, a volume that fails a real write
+  probe (probes by writing and reading back, never by creating the mount
+  point it is supposed to require), a missing hard deadline, and a
+  credential-looking argv value. At startup the environment is scrubbed by
+  the shared credential-shaped predicate, not by vendor name, except an
+  explicit `--keep-env` allowlist. `--dry-run` resolves, validates, and prints
+  the plan without running or holding — it does not mean run against fakes,
+  since a fake-actions flag in a production entrypoint is a green journal
+  waiting to happen. `--hold-only` is a named drill mode: no bootstrap steps,
+  journal a `hold-only` record, hold to the deadline; it refuses if any plan
+  argument is supplied and the README names it drill-only.
+
+  **How the journal reaches the laptop: the same channel, and the same
+  caveat.** The journal is written to the volume under the launch-bound name.
+  No laptop-side reader for it exists yet — nothing in the tree calls
+  `TimerReportChannel.read` on the journal key; the armer reads only the
+  sealed pod-report path. Reading the journal back (`SPEC_POD.md` §4.5's
+  `supervise --show-bootstrap`) is unbuilt, and the S3 view it would use is in
+  any case **a designed path, not an observed one.**
+
+  **Where this unit's tests differ from what the spec predicted, said plainly.**
+  `test_bootstrap_main.py` states in its own module docstring that "no git,
+  uv, Hugging Face, or GPU probe is ever invoked here" — every test drives
+  `bootstrap_main` through a fakes-only `actions_factory`, never through
+  `SubprocessBootstrapActions` or a real subprocess. `SPEC_POD.md`'s §4.5
+  predicted this unit's tests would close three of deferral 04-5's five
+  untested seams; verified against the code as it stands, they do not. See
+  the rewritten 04-5 row below for what is and is not actually covered.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use
@@ -182,9 +380,10 @@ check.
   verified rows, and refuses conflicting target bytes rather than overwriting them.
   `bootstrap.py` journals idempotent exact-commit, locked-`uv`, transfer, chair-cache,
   and preflight steps. A cache digest mismatch is *specified* to receive at most one
-  same-pin re-fetch — see deferral 04-8: the class implementing it is constructed nowhere
-  and tested nowhere, so this describes the design rather than a shipped behaviour;
-  another mismatch is red and names the chair.
+  same-pin re-fetch — see deferral 04-8: the class implementing it is now constructed
+  once, in `bootstrap_main.py`, but wired with `refetch_same_pin=None` and covered by
+  no test, so the at-most-one same-pin re-fetch itself still does not ship; another
+  mismatch is red and names the chair.
 - `preflight.py` measures or receives CUDA/driver/capability/VRAM/disk facts, selects a
   single-resident plan only from `config/pod_placement.toml`, verifies every configured
   chair, and validates a stochastic proof-page read by shape, non-emptiness, and format.
@@ -221,18 +420,22 @@ termination capability. Its behavior is fake-proven, including both death drills
 green fake launch handshake. Delivery of that capability, a real pod identity at boot,
 the acknowledgement channel, and the provider's post-delete/billing behavior remain part
 of Tyrel's gated live demonstration; this repository makes no claim that they have
-occurred. The tracked tree also does not yet supply the durable laptop-supervisor driver,
-the controller armer that observes the real timer report, or a runnable bootstrap/service
-entrypoint: `bootstrap.py` is a finite library module, while `pod_timer.py` deliberately
-closes when its child exits. Those integration pieces are therefore blockers before the
-gated demonstration, not capabilities this fake suite proves. A pod-side process may be
-destroyed by its own DELETE before it can observe GET-404, list absence, or lagging billing;
+occurred. **The tracked tree now does supply a durable laptop-supervisor driver
+(`supervise.py`), a controller armer that performs the real read against a
+documented-not-observed channel (`controller_armer.py`, both `ChannelControllerArmer`
+and the never-arming `ObservingControllerArmer`), and a runnable bootstrap/service
+entrypoint (`bootstrap_main.py`)** — see the three bullets above. What remains
+before the gated demonstration is not their absence but their live observation:
+whether the pod-report channel actually behaves the way `TimerReportChannel`'s
+contract requires is unproven by any offline test, which is why the drill armer
+and Boot A exist. A pod-side process may be destroyed by its own DELETE before
+it can observe GET-404, list absence, or lagging billing;
 the real controller design must leave final verification and reconciliation to surviving
 laptop/restart machinery rather than infer it from the pod process. If `pod_timer.py`'s
 own startup fails **before a provider-backed timer exists** (a missing environment value,
 a deadline already passed) it can terminate nothing; the pod goes `EXITED`, which bills
-volume disk at double the running rate, and the laptop supervisor above is the only
-backstop for that case until it exists. A refusal raised *after* the timer is built now
+volume disk at double the running rate, and the laptop supervisor above (`supervise.py`)
+is the only backstop for that case. A refusal raised *after* the timer is built now
 spends that capability on an immediate close and files a receipt. A non-green close at
 the hard deadline is re-attempted a small fixed number of times before the timer exits;
 the durable report records the attempt count and the final close's evidence (not each
@@ -246,7 +449,16 @@ python3 -m pytest operations/pod
 ```
 
 They include deliberately broken confirmation, ceiling, status, billing, transfer,
-cache, smoke-read, laptop-controller, and pod-timer paths. A full real-chair preflight
+cache, smoke-read, laptop-controller, and pod-timer paths, plus (as of `supervise.py`,
+`controller_armer.py`, and `bootstrap_main.py` landing) the seven `supervise` drills named
+above, the arming states in `test_controller_armer.py`, and the hold/refusal/scrub paths
+in `test_bootstrap_main.py`. `test_launch_drill.py` adds seven further offline drills that
+run one real `PodRuntime.create` through the real armer, the pod's own report, and the
+`supervise` driver together: a green launch, a launcher that dies mid-poll, a report that
+never appears, an `EXITED` pod under a fresh heartbeat, both close-ordering directions
+(supervisor-first and launch-side-first), and the observing armer -- against
+`FakeProvider`, a directory standing in for the volume's network view, a fake clock, and
+an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
@@ -258,15 +470,18 @@ pod. Record the exact pod id, timestamps, provider response, and whether each it
 documented shapes, not observed behavior; no unchecked item may be reported as a pass.
 
 - [ ] Record Tyrel's current-session authorization, the synthetic workload, the
-  configured spend ceilings, and `account_balance_floor_usd`. Record the configured
-  observed-balance source, that it reports US dollars rather than credits or another
-  currency, and its actual observation separately, including active obligations and the
-  maximum additional liability of this run. Record the one durable lease root used by
-  every paid action against this provider account; separate roots cannot see or reserve
-  one another's future liability.
+  configured spend ceilings, and `account_balance_floor_usd`. Record the balance
+  observation itself (see the dedicated balance-source row below) separately from the
+  ceilings, including active obligations and the maximum additional liability of this
+  run. Record the one durable lease root used by every paid action against this
+  provider account; separate roots cannot see or reserve one another's future
+  liability.
 - [ ] Confirm whether the pod-scoped API key actually holds **delete** and **billing**
   rights. DELETE must be accepted for this exact pod, and the billing query must return
   usable, exact-pod records. Do not infer either right from successful creation or GET.
+- [ ] Record whether the provider offers any pod-side TTL / maxRuntime field on create
+  under the version actually used (none appears in the documented v1 create input; 04-4
+  has no provider-side belt without one).
 - [ ] Exercise **a pod that fails field validation and cannot then be auto-terminated**.
   Record any returned identity, the exact launch-token recovery result, whether the
   automatic close path could act, and the manual provider-console recovery if it could
@@ -290,9 +505,31 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact
   there, read both back, and record the filesystem result.
+- [ ] Run **Boot A, the drill**, before Boot B: the cheapest available card, a short
+  `hard_lifetime_seconds` (roughly 900), `ObservingControllerArmer`, and
+  `bootstrap_main --hold-only`. It closes its pod immediately by construction — the
+  arming verdict is False whatever it observes — and, as with any close, the result is
+  only green when GET-404, list absence and exact-pod billing all agree; a non-verified
+  close is reported as such and the supervisor keeps guarding it. Record whether the
+  pod-written object appears in the S3 view, under
+  which key, after how long, and whether the pod-scoped key actually holds delete and
+  billing rights. See "The boot plan" below for the full split and what it needs from
+  Tyrel.
+- [ ] Record the account-balance source and that it reports US dollars rather than
+  credits or another currency. **This item cannot be run at all yet**: no GraphQL
+  balance observer (`myself { clientBalance currentSpendPerHr }`) exists anywhere in
+  this tree, so `RunPodProvider.observe_account_balance` raises and every paid action
+  refuses before either boot can happen. Building that observer is next-section work,
+  not something either boot can substitute for.
 - [ ] Before the first real response, prove the durable laptop supervisor, controller
   armer, acknowledgement channel, and long-running bootstrap/service entrypoint work
-  together. The tracked Stage 04 tree does not currently supply those live integrations.
+  together. The tracked Stage 04 tree now supplies `supervise.py`, `controller_armer.py`,
+  and `bootstrap_main.py`. `test_launch_drill.py` drives the supervisor and the armer
+  together offline with the timer's first durable write; it names
+  `bootstrap_main` only as the argv handed to a fake starter and never runs it.
+  `bootstrap_main.py` is proven separately, by `test_bootstrap_main.py` against
+  fakes-only actions. The three have not run together anywhere, and the channel
+  they share is unobserved against a real pod — Boot A above is that proof.
 - [ ] Verify the pod-side timer receives the real pod identity, its ephemeral termination
   capability, and the sealed billing-cutoff margin; verify it writes an acknowledgement to
   the token-bound report path. The laptop controller must retain a receipt bound to the
@@ -323,32 +560,84 @@ Nine rows in all: six items Tyrel accepted as deferred on the express condition 
 record survives to the pull request, then two disclosed by the pre-push review, then one
 disclosed by the 2026-08-12 independent audit. The first six are accepted deferrals
 carried by his ruling, not oversights — each closes on the named condition, not on being
-noticed again.
+noticed again. **This table now records this branch's work against them; rows are kept
+even once closed, marked, so the history of what closed each one is not lost.**
 
-| # | What is deferred | Closes when |
+| # | What is deferred | Status |
 |---|---|---|
-| 04-1 | No durable laptop-supervisor driver in the tracked tree | live-integration pieces are built |
-| 04-2 | No controller armer that observes the real timer report | same |
-| 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | same |
-| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | 04-1 lands |
-| 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | the live pieces above exist to test against |
-| 04-6 | Every RunPod field name is documented, not observed — no live call has been made | the first authorised live run |
+| 04-1 | No durable laptop-supervisor driver in the tracked tree | **Closed.** `supervise.py` is that driver: a kernel-lock-owned, restart-safe process per lease, the `EXITED`-closes provider-lifecycle check, and seven offline drills against `FakeProvider` (crash-mid-heartbeat resume, lost-identity `BUSY`-then-close, provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed-verified no-op, second-driver refusal, foreign-owner-past-deadline break). |
+| 04-2 | No controller armer that observes the real timer report | **Partly closed.** `controller_armer.py`'s `ChannelControllerArmer` performs the real read, arms only on a complete observation, and is fake-proven against every refusal state; `ObservingControllerArmer` performs the identical read and never arms. **New closes-when:** the first authorized boot observes an object written through the pod's mount appearing in the network volume's S3 view, and records the delay. Until then the channel is a designed path, not an observed one. |
+| 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | **Closed.** `bootstrap_main.py` is bootstrap-and-hold: on green it does not exit, because `pod_timer.run_with_bootstrap` treats any child exit before the hard deadline — exit 0 included — as `completed-early` and closes the pod. Holding, not exiting, is the fix. |
+| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input — and the first-boot checklist asks whether v2 offers one (see the checklist row above). |
+| 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | **Mostly still open — verified against the code, not assumed from the plan.** `SPEC_POD.md` §4.5 predicted `bootstrap_main`'s tests would close three of these five; `test_bootstrap_main.py`'s own module docstring says otherwise ("no git, uv, Hugging Face, or GPU probe is ever invoked here" — every test runs through a fakes-only `actions_factory`). Checked against the tree as it stands: `SubprocessBootstrapActions.checkout_commit`'s success path *is* covered, pre-existing in `test_pod_runtime.py` (`test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment`, an injected-subprocess success). The other four remain untested — `sync_uv_environment`'s success path, `pod_timer.main`/`load_timer_context`'s success path, `cli.main`'s success path through the real `module:callable` factory resolution (`test_cli.py` exercises `cli._controller_armer`'s module:callable resolution on its own; what is untested is `cli.main`'s green path end to end, where existing tests monkeypatch `cli._provider`/`cli._controller_armer` before the call), and `UrllibRunPodTransport`'s ordinary success (only its redirect-refusal is exercised against real loopback servers). Closes when: the live pieces this branch adds (`supervise.py`, `controller_armer.py`, `bootstrap_main.py`) now exist to test against; writing those tests is not yet done. |
+| 04-6 | Every RunPod field name is documented, not observed — no live call has been made | Open. Closes when: the first authorised live run. |
 
 Two more, found by the pre-push review of this branch and disclosed here rather than
 fixed on an assumption. Both are Tyrel's to accept or send back:
 
-| # | What is deferred | Closes when |
+| # | What is deferred | Status |
 |---|---|---|
-| 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | the first authorised live run observes the two instants |
-| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | the live bootstrap path is built, or the class is removed |
+| 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | **Amended to the v2 route**, not closed on this branch. Tyrel ruled on 2026-08-11: *"V2 should be what we use"* — REST v2 documents `createdAt`, a `startTime` snap, and a per-pod cost breakdown, which the ruling itself names as closing this finding. The migration is next-section work (see the v1/v2 paragraph above); until it lands, this row's original text still describes the code, and the first authorised live run still observes the two instants under whichever version is live at the time. |
+| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Partly closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree (`_build_cache`), closing the "constructed nowhere" half. It is still exercised by no test — `test_bootstrap_main.py` is fakes-only and never calls `_build_cache` — and the at-most-one same-pin re-fetch is deliberately left unwired (`refetch_same_pin=None`) because `ChairRegistry` has no cache-clear verb, so the behaviour the deferral is about still does not ship. |
 
 One more, found by the 2026-08-12 independent audit of this package and disclosed here
 rather than papered over with a check that guesses at unobserved provider behaviour.
 Tyrel's to accept or send back:
 
-| # | What is deferred | Closes when |
+| # | What is deferred | Status |
 |---|---|---|
-| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | the first authorised live run observes real bucket posting, then the coverage check is written against observations |
+| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | Open. Closes when: the first authorised live run observes real bucket posting, then the coverage check is written against observations. |
+
+## The boot plan: Boot A, the drill, before Boot B, the real thing
+
+Roadmap item 7 (the checklist above) is one authorized live boot as written. This
+branch's recommendation is to split it into two, because the checklist's most
+load-bearing item — the acknowledgement channel — is also the one item no offline test
+can measure, and a single boot that turns out unarmed both wastes the image pull and
+the session and teaches a human to relax the safety check that just did its job.
+
+**Boot A, the drill.** Cheapest available card. `hard_lifetime_seconds` around 900.
+`ObservingControllerArmer`, never `ChannelControllerArmer`. `bootstrap_main --hold-only`,
+never a real bootstrap plan. It closes its pod immediately by construction — the
+arming verdict is False whatever it observes — and, as with any close, the result is
+only green when GET-404, list absence and exact-pod billing all agree; a non-verified
+close is reported as such and the supervisor keeps guarding it. It buys the four facts
+no offline test can buy:
+does the pod-written object appear in the S3 view, under which key, after how long, and
+does the pod-scoped key actually hold delete and billing rights. Cost is minutes of a
+cheap card.
+
+**Boot B, the real thing.** Roadmap item 7 as written: `ChannelControllerArmer` with its
+poll bound set from Boot A's measured delay, materialize, preflight, the full checklist,
+no reading yet.
+
+The argument for the split costs nothing in the failure case: Boot B alone would have
+ended in the same immediate close, having also wasted the image pull and the session.
+It costs a few dollars in the success case, for the drill's own minutes on a cheap card.
+
+**What this needs from Tyrel, named plainly, and nothing else in U1–U6 does:**
+
+- `config/spend.toml` values and the GPU class for both boots.
+- The S3 access/secret keys in the launching shell (needed before either boot's
+  `TimerReportChannel` can be constructed).
+- In-session permission for Boot A, and **separately**, in-session permission for
+  Boot B — GOVERNANCE 8 and hard rule 2 read as one gate per exact action, not one
+  gate for "the boot."
+- Whether he accepts the two-boot split at all, rather than the single boot the
+  roadmap names.
+- The GraphQL account-balance observer described above must exist before either boot
+  can create anything — that is engineering, not a decision reserved for him, but no
+  boot is possible until it is built.
+
+**Alternatives considered and declined, one line each.** Push the acknowledgement out
+of the pod over the notify topic — no; it puts a bearer secret in the pod and turns a
+safety receipt into an unauthenticated message whose delivery this README already says
+must never change a decision. SSH or exec into the pod to read the report — no; a
+second transport and a second credential to prove a fact the volume already holds.
+Keep `arming.FailClosedControllerArmer` and defer 04-2 past the first boot — no; the
+boot cannot be green, and this README already names arming a blocker. Do the v2
+migration inside this section — no; it buries ruling-compliance work under controller
+work and contradicts the working style of larger sections done one at a time.
 
 ## If your task seems to need one
 
