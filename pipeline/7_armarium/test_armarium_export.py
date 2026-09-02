@@ -1202,6 +1202,58 @@ def test_a_manifest_run_binding_requires_string_identities(field, tmp_path):
         verify_delivered_bundle(_resealed_manifest(replace_identity), tmp_path / "delivered")
 
 
+def test_a_projection_may_carry_a_submission_identity_instead_of_a_fixture_one(tmp_path):
+    """A real submission's identity projects and verifies exactly like a fixture's.
+
+    Never the same field: `fixture_id` is `None` on this projection, and the
+    manifest's `run` block names `submission_id` instead, never both.
+    """
+    projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+
+    assert manifest["run"] == {
+        "submission_id": "a" * 64,
+        "scenario": projection.scenario,
+        "config_digest": projection.config_digest,
+    }
+    verify_delivered_bundle(bundle.data, tmp_path / "delivered")
+
+
+def test_a_projection_with_no_run_identity_at_all_is_refused(tmp_path):
+    """Neither identity is not a legal projection, whatever else it carries."""
+    projection = replace(_projection(), fixture_id=None)
+    with pytest.raises(SchemaRefusal, match="neither a fixture identifier nor a submission"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
+def test_a_projection_with_both_run_identities_is_refused(tmp_path):
+    """One field per concept: a projection may not name a fixture and a submission."""
+    projection = replace(_projection(), submission_id="a" * 64)
+    with pytest.raises(SchemaRefusal, match="both a fixture identifier and a submission"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
+def test_a_manifest_run_binding_naming_both_identities_is_refused(tmp_path):
+    """A resealed manifest cannot smuggle both identity fields past the closure check."""
+
+    def add_submission(manifest):
+        manifest["run"]["submission_id"] = "a" * 64
+
+    with pytest.raises(SchemaRefusal, match="both a fixture identifier and a submission"):
+        verify_delivered_bundle(_resealed_manifest(add_submission), tmp_path / "delivered")
+
+
+def test_a_manifest_run_binding_naming_neither_identity_is_refused(tmp_path):
+    """A resealed manifest cannot drop its run identity entirely and still verify."""
+
+    def drop_fixture(manifest):
+        del manifest["run"]["fixture_id"]
+
+    with pytest.raises(SchemaRefusal, match="neither a fixture identifier nor a submission"):
+        verify_delivered_bundle(_resealed_manifest(drop_fixture), tmp_path / "delivered")
+
+
 def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_format_set(tmp_path):
     """sources.json is the citation carrier shared by every format selection."""
     projection = _projection()
