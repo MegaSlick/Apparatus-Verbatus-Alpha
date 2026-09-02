@@ -2075,17 +2075,16 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     carry ("exited 2"), so the run stops at the stage that still had the
     filenames in hand.
 
-    **What the door's refusal does not do is bar a hand-driven Exemplar**, and
-    this test says so rather than implying otherwise: no stage in this tree
-    requires its predecessor's completion seal, so a caller who runs the
-    programs one by one past a non-zero exit still gets a sealed merged page.
-    That is not this refusal's job and is left as it stands — the last assertion
-    here is that such a page is still refused by name at the first consumer that
-    would read it twice, which is the second line of defence
-    (`common/exemplar_boundary._refuse_a_merged_page_no_consumer_reads_yet`).
+    A hand-driven Exemplar run over this same door is no longer reachable: the
+    real route now opens through the shared constructor, which checks the
+    door's completion seal before anything else, so this door-level refusal is
+    the whole story on this route. `test_exemplar_seal.py::
+    test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
+    pins that check directly, and `test_exemplar_seal.py::
+    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
+    keeps the second-line-of-defence coverage a hand-built Exemplar context used
+    to exercise here.
     """
-    from common.exemplar_boundary import verify_exemplar_corpus_seal
-
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1234.png": data, "iPhone/FS-1234 copy.png": data}
@@ -2116,30 +2115,6 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     assert [item for item in artifacts if item["kind"] == "stage-seal"] == [], (
         "the door refused, so it never completed its own boundary"
     )
-
-    sealed = subprocess.run(
-        [sys.executable, str(EXEMPLAR_CLI), "--run-root", str(run_root), "--run-id", "merged"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0, sealed.stderr
-    run = tree.read_run()
-    manifest = tree.build_manifest(EXEMPLAR)
-    entry = next(item for item in manifest["artifacts"] if item["kind"] == "page")
-    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-    assert sorted(row["ordinal"] for row in page["payload"]["submission_rows"]) == [1, 2], (
-        "the two files are one sealed page, which is exactly what the door refused"
-    )
-    with pytest.raises(ContractError, match="would mint each act on it twice"):
-        verify_exemplar_corpus_seal(
-            tree,
-            run,
-            manifest,
-            {row["ordinal"]: row for row in run["source_manifest"]},
-            {1: page},
-            {1: entry},
-        )
 
 
 def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, monkeypatch):
