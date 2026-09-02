@@ -41,6 +41,7 @@ SIDECAR_REFUSAL_REASONS = frozenset(
         "wrong-corpus",
         "unknown-split",
         "self-hash-mismatch",
+        "region-outside-page",
     }
 )
 
@@ -106,6 +107,12 @@ def _non_negative_int(value: Any, what: str) -> int:
     return value
 
 
+def _positive_int(value: Any, what: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise CorpusRefusal(f"malformed-record: {what} must be a positive integer")
+    return value
+
+
 def build_sidecar(
     *,
     source: str,
@@ -163,8 +170,8 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
     page = _closed(sidecar["page"], _PAGE_FIELDS, "page")
     if not is_sha256(page["sha256"]):
         raise CorpusRefusal("malformed-record: page.sha256 must be a lowercase sha256 hex digest")
-    _non_negative_int(page["width"], "page.width")
-    _non_negative_int(page["height"], "page.height")
+    page_width = _positive_int(page["width"], "page.width")
+    page_height = _positive_int(page["height"], "page.height")
 
     splits_present = sidecar["splits_present"]
     if not isinstance(splits_present, list) or splits_present != sorted(set(splits_present)):
@@ -196,6 +203,11 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
         if region["x"] < 0 or region["y"] < 0 or region["w"] <= 0 or region["h"] <= 0:
             raise CorpusRefusal(
                 f"malformed-record: record {record_id!r} region is not a positive rectangle"
+            )
+        if region["x"] + region["w"] > page_width or region["y"] + region["h"] > page_height:
+            raise CorpusRefusal(
+                f"region-outside-page: record {record_id!r} region {region} exceeds "
+                f"the page's {page_width}x{page_height} bounds"
             )
         if not isinstance(record["text"], str) or not record["text"]:
             raise CorpusRefusal(f"malformed-record: record {record_id!r} carries no text")

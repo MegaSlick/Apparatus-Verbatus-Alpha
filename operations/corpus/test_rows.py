@@ -180,6 +180,20 @@ def test_validate_snapshot_refuses_a_duplicate_record_id():
         validate_snapshot(body)
 
 
+def test_validate_snapshot_refuses_a_non_digest_parquet_sha256():
+    source_facts = _source_facts()
+    source_facts["parquet_sha256"]["val"] = "unknown"
+    body = {
+        "schema": SCHEMA,
+        "corpus_id": CORPUS_ID,
+        "source_facts": source_facts,
+        "rows": [_row("r1")],
+    }
+    body["self_hash"] = _self_hash(body)
+    with pytest.raises(CorpusRefusal, match="^malformed-field:"):
+        validate_snapshot(body)
+
+
 def test_validate_snapshot_refuses_a_self_hash_mismatch():
     snapshot = build_snapshot(_source_facts(), [_row("r1")])
     tampered = dict(snapshot)

@@ -30,7 +30,12 @@ filename (`designation`); everything before it is the volume path. Those two,
 joined with the row's `source`, feed `common.contracts.identities.physical_page_id`
 — the `pac_`-ladder anchor `SPEC.md` §5.3(c) requires, because a RecordGold box
 must never be minted as an `act_*` identity (those bind *originally minted*
-bounds; the Designator will never mint this exact rectangle).
+bounds; the Designator will never mint this exact rectangle). `source` is joined
+into the volume string as `f"{source}/{volume}"`, so a `source` carrying its own
+`/` would collide with a different `source`/`volume` split that flattens to the
+same string — this module refuses a row whose `source` is not a safe single path
+segment (`unsafe-source-value`) rather than let two distinct pages mint one
+identity.
 
 `identifier_encoded` — the raw, already-percent-escaped path segment as it appears
 in `record_url` — is threaded through unchanged into `info_url` and every
@@ -80,6 +85,7 @@ PLAN_REFUSAL_REASONS = frozenset(
         "unsupported-format-parameter",
         "non-positive-region",
         "unsafe-identifier-segment",
+        "unsafe-source-value",
         "unmintable-page-identity",
         "inconsistent-source-for-identifier",
         "inconsistent-encoding-for-identifier",
@@ -275,6 +281,19 @@ def build_fetch_plan(
             _refuse(reason, str(error), record_id, record_url, split, source)
             continue
 
+        if not isinstance(source, str) or _unsafe_segment(source) or "/" in source:
+            _refuse(
+                "unsafe-source-value",
+                f"unsafe-source-value: source {source!r} on record {record_id!r} is not "
+                "a safe single path segment — it must carry no '/' since source and volume "
+                "are joined into one physical page identity",
+                record_id,
+                record_url,
+                split,
+                source,
+            )
+            continue
+
         volume, designation = _volume_and_designation(parsed.identifier)
         existing_page = pages.get(parsed.identifier)
         if existing_page is not None:
@@ -389,6 +408,12 @@ def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
     return value
 
 
+def _listed(value: Any, what: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise CorpusRefusal(f"malformed-record: {what} must be a list")
+    return value
+
+
 def validate_plan(plan: Any) -> dict[str, Any]:
     """Refuse a plan that is not exactly `recordgold-fetch-plan.v1`, closed and self-consistent."""
     plan = _closed(plan, _TOP_FIELDS, "fetch plan")
@@ -401,8 +426,13 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
         )
 
-    for page in plan["pages"]:
-        page = _closed(page, _PAGE_FIELDS, f"page {page.get('identifier')!r}")
+    for index, page in enumerate(_listed(plan["pages"], "fetch plan pages")):
+        what = (
+            f"page {page['identifier']!r}"
+            if isinstance(page, dict) and "identifier" in page
+            else f"page at index {index}"
+        )
+        page = _closed(page, _PAGE_FIELDS, what)
         if not isinstance(page["splits_present"], list) or page["splits_present"] != sorted(
             set(page["splits_present"])
         ):
@@ -414,12 +444,13 @@ def validate_plan(plan: Any) -> dict[str, Any]:
                 raise CorpusRefusal(
                     f"malformed-record: page {page['identifier']!r} names unknown split {split!r}"
                 )
-        if not page["records"]:
+        records = _listed(page["records"], f"page {page['identifier']!r} records")
+        if not records:
             raise CorpusRefusal(f"malformed-record: page {page['identifier']!r} carries no records")
-        for record in page["records"]:
+        for record in records:
             _closed(record, _RECORD_FIELDS, f"record on page {page['identifier']!r}")
 
-    for refusal in plan["refusals"]:
+    for refusal in _listed(plan["refusals"], "fetch plan refusals"):
         _closed(refusal, _REFUSAL_FIELDS, "refusal entry")
 
     if not verify_self_hash(plan):

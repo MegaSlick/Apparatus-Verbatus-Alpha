@@ -26,6 +26,7 @@ not concurrency, but "atomic" here means "survives being killed between the
 write and the rename," not "safe under concurrent writers."
 """
 
+import errno
 import json
 import os
 import tempfile
@@ -40,8 +41,23 @@ CACHE_REFUSAL_REASONS = frozenset(
     {
         "malformed-digest",
         "duplicate-request-record",
+        "no-hard-link-support",
     }
 )
+
+# `os.link` on a cache root that cannot hold hard links (EPERM, EOPNOTSUPP,
+# ENOSYS — a filesystem with them disabled, or one that never supports them)
+# is a constraint on the cache root itself, not on the one file being written.
+# Any other `OSError` (ENOSPC, EIO, ...) keeps its native diagnostics and is
+# left to propagate unchanged — this set names only the case that has its own
+# recovery story ("point --cache-root at a filesystem that supports hard
+# links").
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+
+
+class CacheUnusable(CorpusRefusal):
+    """The cache root itself cannot hold the store — not one page's problem."""
+
 
 # The general request-key formula from `SPEC.md` §5.1 covers every kind of
 # request this package issues, not only image fetches. `info.json` has no
@@ -129,6 +145,12 @@ def write_new_file(path: Path, data: bytes) -> bool:
     onto the destination: `os.link` raises `FileExistsError` atomically if the
     destination is already there, which `os.replace` would not — it silently
     overwrites. The temp file is always removed afterward, whichever branch ran.
+
+    Raises `CacheUnusable` (`"no-hard-link-support"`) if the cache root's
+    filesystem refuses hard links outright (EPERM/EOPNOTSUPP/ENOSYS) — that is
+    a constraint on the cache root, not on this one file, and the caller should
+    let it propagate rather than treat it as one failed write. Any other
+    `OSError` (ENOSPC, EIO, ...) propagates unchanged.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".partial")
@@ -142,6 +164,16 @@ def write_new_file(path: Path, data: bytes) -> bool:
             return True
         except FileExistsError:
             return False
+        except OSError as error:
+            if error.errno in _NO_HARD_LINKS:
+                raise CacheUnusable(
+                    f"no-hard-link-support: the cache root at {path.parent} is on a "
+                    f"filesystem that refuses hard links ({error.strerror}); cache entries "
+                    "are published by atomic link so a partly written file can never take "
+                    "its final name, and the cache root has to be on a filesystem that "
+                    "supports it"
+                ) from error
+            raise
     finally:
         try:
             os.unlink(tmp_name)

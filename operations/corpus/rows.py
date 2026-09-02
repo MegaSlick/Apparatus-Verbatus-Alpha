@@ -19,7 +19,7 @@ change to the URL grammar never touches the snapshot's own validity.
 
 from typing import Any
 
-from common.contracts.canonical import digest_bytes, self_hash, verify_self_hash
+from common.contracts.canonical import digest_bytes, is_sha256, self_hash, verify_self_hash
 
 from . import CorpusRefusal
 
@@ -131,8 +131,12 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
     parquet_sha256 = _closed(
         source_facts["parquet_sha256"], _PARQUET_SHA256_FIELDS, "source_facts.parquet_sha256"
     )
-    for split in _PARQUET_SHA256_FIELDS:
-        _non_empty_str(parquet_sha256[split], f"source_facts.parquet_sha256.{split}")
+    for split in sorted(_PARQUET_SHA256_FIELDS):
+        if not is_sha256(parquet_sha256[split]):
+            raise CorpusRefusal(
+                f"malformed-field: source_facts.parquet_sha256.{split} must be a "
+                f"lowercase sha256 hex digest, got {parquet_sha256[split]!r}"
+            )
 
     rows = snapshot["rows"]
     if not isinstance(rows, list) or not rows:

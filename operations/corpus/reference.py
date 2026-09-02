@@ -85,6 +85,7 @@ REFERENCE_REFUSAL_REASONS = frozenset(
         "wrong-identity-family",
         "unmintable-physical-act",
         "duplicate-physical-act-id",
+        "unsafe-source-value",
         "self-hash-mismatch",
     }
 )
@@ -174,6 +175,12 @@ def build_reference_page(
     height = _positive_int(page["height"], "page.height")
     for name, value in (("source", source), ("volume", volume), ("designation", designation)):
         _non_empty_str(value, name)
+    if "/" in source:
+        raise CorpusRefusal(
+            f"unsafe-source-value: source {source!r} is not a safe single path segment "
+            "— it must carry no '/' since source and volume are joined into one "
+            "physical page identity"
+        )
     if split not in SPLITS:
         raise CorpusRefusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
     if not records:
@@ -294,6 +301,12 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
 
     for name in ("source", "volume", "designation"):
         _non_empty_str(reference[name], name)
+    if "/" in reference["source"]:
+        raise CorpusRefusal(
+            f"unsafe-source-value: source {reference['source']!r} is not a safe single "
+            "path segment — it must carry no '/' since source and volume are joined "
+            "into one physical page identity"
+        )
 
     try:
         physical_page = physical_page_id(

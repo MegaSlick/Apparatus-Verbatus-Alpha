@@ -43,6 +43,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash,
 from . import CorpusRefusal
 from . import cache as cache_module
 from . import plan as plan_module
+from .cache import CacheUnusable
 from .holdout import load_holdout, refuse_held_out_page, validate_holdout
 
 # `SPEC.md` §5.1's closed refusal vocabulary, verbatim. A caller that wants to
@@ -60,6 +61,18 @@ FETCH_REFUSAL_REASONS = frozenset(
         "unsupported-size-parameter",
         "holdout-page",
         "cross-split-page",
+    }
+)
+
+# Refusals that stop a *run* before it fetches a single page — a misconfigured
+# `run_fetch`/`main` call, not a per-page outcome. These never reach a
+# fetch-log entry (both raise sites below run before `FetchSession` exists),
+# so they are declared in their own closed set rather than widening
+# `FETCH_REFUSAL_REASONS`, which is `SPEC.md` §5.1's per-page log vocabulary,
+# verbatim.
+FETCH_RUN_REFUSAL_REASONS = frozenset(
+    {
+        "holdout-ledger-required",
     }
 )
 
@@ -172,11 +185,15 @@ def _read_bounded(response: Any, max_bytes: int, expected_length: int | None) ->
     """Read a response body in chunks, bounded above and verified below.
 
     Refuses a body over `max_bytes` rather than keep reading it, and — when the
-    server declared a `Content-Length` — refuses a body that came up short: a
-    server or connection that closes mid-transfer must not be mistaken for one
-    that finished, or a truncated JPEG would be cached and recorded as a
-    completed fetch (`SPEC.md` §5.1's "an interrupt loses at most one in-flight
-    body" requires the interrupted one to leave no record at all).
+    server declared a `Content-Length` — refuses a body whose length disagrees
+    with it in either direction. Short: a server or connection that closes
+    mid-transfer must not be mistaken for one that finished, or a truncated
+    JPEG would be cached and recorded as a completed fetch (`SPEC.md` §5.1's
+    "an interrupt loses at most one in-flight body" requires the interrupted
+    one to leave no record at all). Long: a proxy or misbehaving origin that
+    concatenates bytes past the declared length must not have the overrun
+    silently folded into the cached body — a decoder that tolerates trailing
+    bytes would hash and store the wrong page without complaint.
     """
     chunks: list[bytes] = []
     total = 0
@@ -191,10 +208,10 @@ def _read_bounded(response: Any, max_bytes: int, expected_length: int | None) ->
                 "rather than kept reading"
             )
         chunks.append(chunk)
-    if expected_length is not None and total < expected_length:
+    if expected_length is not None and total != expected_length:
         raise CorpusRefusal(
-            f"http-error: response body truncated — received {total} of {expected_length} "
-            "declared bytes"
+            f"http-error: response body length disagrees with Content-Length — received "
+            f"{total} of {expected_length} declared bytes"
         )
     return b"".join(chunks)
 
@@ -443,6 +460,12 @@ def _fetch_image_bytes(
                 body_path = cache_module.body_path(
                     session.config.cache_root, record["response_sha256"]
                 )
+                if not body_path.exists():
+                    raise CorpusRefusal(
+                        f"http-error: cached body missing for {identifier!r} — request "
+                        f"record ({key}) says this size was already fetched but {body_path} "
+                        f"is gone; delete cache/requests/{key}.json to force a re-fetch"
+                    )
                 return (
                     body_path.read_bytes(),
                     size_parameter,
@@ -587,6 +610,12 @@ def fetch_page(
             }
         )
         return entry
+    except CacheUnusable:
+        # A cache-root filesystem constraint (e.g. no hard-link support) is not
+        # one page's problem — let it escape and halt the run rather than
+        # relabel it `http-error` and log it as a per-page refusal, which would
+        # repeat identically on every remaining page.
+        raise
     except CorpusRefusal as error:
         detail = str(error)
         reason = detail.split(":", 1)[0]
@@ -781,6 +810,13 @@ def main(argv: list[str] | None = None) -> RunResult:
     §5.4 asks for is simply whichever `--cache-root`/`--info-root`/`--output-dir`
     the operator passes for that run — this module keeps no default of its own
     that would let a `val` and a `test` run collide on one directory by accident.
+
+    A run that halted (403, or the per-run request ceiling) before covering the
+    whole split exits nonzero, once both ledger files are sealed to disk: a
+    wrapper script, cron job, or Makefile target that only checks the exit
+    status must not be told a partial fetch completed. `run_fetch` itself still
+    returns a `RunResult` with `halted` set — it is the library entry point,
+    and this halt-to-`SystemExit` step is `main`'s alone.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True, help="Path to a recordgold-fetch-plan.v1 file.")
@@ -826,6 +862,12 @@ def main(argv: list[str] | None = None) -> RunResult:
     }
     refusals_body["self_hash"] = self_hash(refusals_body)
     (output_dir / "refusals.json").write_bytes(canonical_bytes(refusals_body))
+
+    if result.halted is not None:
+        raise SystemExit(
+            f"halted: {result.halted} — the {args.split!r} split was not fetched in full; "
+            f"see {output_dir / 'fetch-log.json'}"
+        )
 
     return result
 

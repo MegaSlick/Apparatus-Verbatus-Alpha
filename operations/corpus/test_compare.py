@@ -227,6 +227,59 @@ def test_load_pipeline_proposal_acts_refuses_an_unresolvable_page_ordinal(tmp_pa
         load_pipeline_proposal_acts(tree)
 
 
+def test_load_pipeline_proposal_acts_refuses_a_region_with_no_usable_ordinal(tmp_path):
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
+    act_identity = act_id(page_identity, "proposal", bounds)
+    attempt = attempt_id(act_identity, "crop", 1)
+    # transform carries no source_page_ordinal at all -- a shape an earlier
+    # Designator revision could have sealed.
+    _publish(
+        tree,
+        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
+        subject_id=act_identity,
+        stage=DESIGNATOR,
+        kind="region",
+        outcome="proposed",
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        attempt=attempt,
+        payload={"origin": "proposal", "transform": {"operation": "crop"}, "raw_bounds": bounds},
+    )
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        load_pipeline_proposal_acts(tree)
+
+
+def test_load_pipeline_proposal_acts_refuses_a_region_with_no_raw_bounds(tmp_path):
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
+    act_identity = act_id(page_identity, "proposal", bounds)
+    attempt = attempt_id(act_identity, "crop", 1)
+    transform = {
+        "operation": "crop",
+        "source_page_ordinal": 1,
+        "source_page_id": page_identity,
+        "bounds": bounds,
+    }
+    # raw_bounds is entirely absent from the payload.
+    _publish(
+        tree,
+        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
+        subject_id=act_identity,
+        stage=DESIGNATOR,
+        kind="region",
+        outcome="proposed",
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        attempt=attempt,
+        payload={"origin": "proposal", "transform": transform},
+    )
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        load_pipeline_proposal_acts(tree)
+
+
 def test_reads_only_through_a_read_only_wrapper(tmp_path):
     """The functions this module exposes over a run tree touch only read methods.
 
@@ -321,22 +374,27 @@ def test_below_threshold_iou_is_not_an_eligible_match():
 def test_assignment_maximises_total_iou_not_a_greedy_first_match():
     """Two reference acts, two pipeline acts, and a greedy match would pick worse.
 
-    `pact-a` overlaps `ref-1` fully (IoU 1) and `ref-2` partially (IoU >= 0.5).
-    `pact-b` overlaps only `ref-2`, fully. A greedy scan in pipeline-act order
-    would consider `pact-a` first and might bind it to `ref-2` first depending on
-    iteration order, stranding `ref-1`; the exact assignment must choose the
-    pairing worth more in total, matching every act correctly.
+    `pact-a`'s own best partner is `ref-2` (IoU 17/23, the largest edge on the
+    page); its edge to `ref-1` is worse (3/5). `pact-b`'s only eligible partner
+    is `ref-2` (2/3) -- its edge to `ref-1` (1/4) falls below the predeclared
+    1/2 threshold, so that pair is not an edge at all. A greedy scan -- whether
+    it walks pipeline acts in order or simply takes the largest edge first --
+    binds `pact-a` to `ref-2` for 17/23 and stops there: `pact-b` has nowhere
+    left to go, so `ref-1` goes unmatched and `pact-b` is reported unmatched.
+    The exact assignment gives up `pact-a`'s own best partner in favour of the
+    pairing worth more in total (`3/5 + 2/3 = 19/15` beats `17/23`), matching
+    every act.
     """
     ref1_region = {"x": 0, "y": 0, "w": 100, "h": 100}
-    ref2_region = {"x": 200, "y": 0, "w": 100, "h": 100}
+    ref2_region = {"x": 40, "y": 0, "w": 100, "h": 100}
     reference = _reference(
         [
             _record("ref-1", ref1_region, text="premier"),
             _record("ref-2", ref2_region, text="second"),
         ]
     )
-    pact_a_bounds = dict(ref1_region)  # exact match with ref-1
-    pact_b_bounds = dict(ref2_region)  # exact match with ref-2
+    pact_a_bounds = {"x": 25, "y": 0, "w": 100, "h": 100}
+    pact_b_bounds = {"x": 60, "y": 0, "w": 100, "h": 100}
     pipeline_acts = [
         _pipeline_act("act_000000000000000a", pact_a_bounds),
         _pipeline_act("act_000000000000000b", pact_b_bounds),
@@ -445,14 +503,64 @@ def test_compare_page_refuses_a_non_closed_pipeline_act():
         compare_page(reference, [malformed], hypotheses={})
 
 
-def test_compare_page_refuses_too_many_acts_for_one_page():
-    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10})])
-    pipeline_acts = [
-        _pipeline_act(f"act_{index:016x}", {"x": 0, "y": 0, "w": 10, "h": 10})
+def test_compare_page_refuses_too_many_reference_acts_for_one_page():
+    """The DP's `2**R` state space is driven by reference_count, so that is the arm the cap fires on.
+
+    Each reference act gets its own non-overlapping box so none of this is
+    incidentally about pipeline-side crowding -- there is exactly one pipeline
+    act here, and it alone can never make the state space unbounded.
+    """
+    records = [
+        _record(f"rec-{index}", {"x": index * 20, "y": 0, "w": 10, "h": 10})
         for index in range(MAX_ACTS_PER_PAGE + 1)
     ]
+    reference = _reference(records)
+    pipeline_acts = [_pipeline_act("act_0000000000000001", {"x": 0, "y": 0, "w": 10, "h": 10})]
     with pytest.raises(CorpusRefusal, match="too-many-acts-for-page"):
         compare_page(reference, pipeline_acts, hypotheses={})
+
+
+def test_compare_page_scores_normally_despite_many_non_overlapping_pipeline_proposals():
+    """A crowded index-style page must not lose its reference comparison.
+
+    `pipeline_count` alone does not drive the DP's exponent -- only acts with
+    an eligible edge into a reference act do. `MAX_ACTS_PER_PAGE + 5` pipeline
+    proposals sit far from every reference box (no eligible edge at all), well
+    over the cap by raw count, alongside two ordinary pipeline acts that do
+    match. The page must be scored, not refused, and every far-away proposal
+    must come back reported as unmatched, not silently dropped.
+    """
+    ref1_region = {"x": 0, "y": 0, "w": 100, "h": 100}
+    ref2_region = {"x": 300, "y": 0, "w": 100, "h": 100}
+    reference = _reference(
+        [
+            _record("rec-1", ref1_region, text="premier"),
+            _record("rec-2", ref2_region, text="second"),
+        ]
+    )
+    pipeline_acts = [
+        _pipeline_act("act_000000000000000a", dict(ref1_region)),
+        _pipeline_act("act_000000000000000b", dict(ref2_region)),
+    ]
+    far_away_ids = []
+    for index in range(MAX_ACTS_PER_PAGE + 5):
+        far_id = f"act_fa{index:014x}"
+        far_away_ids.append(far_id)
+        pipeline_acts.append(
+            _pipeline_act(far_id, {"x": 5000 + index * 200, "y": 5000, "w": 50, "h": 50})
+        )
+    hypotheses = {
+        "act_000000000000000a": (OutputStatus.COMPLETE, "premier"),
+        "act_000000000000000b": (OutputStatus.COMPLETE, "second"),
+    }
+
+    comparison = compare_page(reference, pipeline_acts, hypotheses)
+
+    pairs = {pair["pipeline_act_id"]: pair["record_id"] for pair in comparison["matched_pairs"]}
+    assert pairs == {"act_000000000000000a": "rec-1", "act_000000000000000b": "rec-2"}
+    assert comparison["misses"] == []
+    unmatched_ids = {entry["act_id"] for entry in comparison["unmatched_pipeline_acts"]}
+    assert unmatched_ids == set(far_away_ids)
 
 
 def test_validate_comparison_refuses_wrong_schema():

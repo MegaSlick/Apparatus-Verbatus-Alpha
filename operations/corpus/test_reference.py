@@ -220,6 +220,28 @@ def test_build_refuses_a_whitespace_only_designation_as_unmintable():
         _build(designation="   ")
 
 
+def test_build_refuses_a_source_carrying_a_slash():
+    # A source with its own "/" would flatten into the same "<source>/<volume>"
+    # string as a different source/volume split, colliding two distinct pages
+    # onto one physical page identity.
+    with pytest.raises(CorpusRefusal, match="^unsafe-source-value:"):
+        _build(source="Tours/geneanet")
+
+
+def test_validate_refuses_a_resealed_source_carrying_a_slash():
+    # `build_reference_page` already refuses a slash-bearing source (tested
+    # above); this exercises `validate_reference_page`'s own mirror of that
+    # guard, on the load/re-read door — the shape a re-sealed or externally
+    # produced reference page could take even though `build_reference_page`
+    # itself never produces one.
+    reference = _build()
+    tampered = dict(reference)
+    tampered["source"] = "Tours/geneanet"
+    tampered["self_hash"] = _self_hash(tampered)
+    with pytest.raises(CorpusRefusal, match="^unsafe-source-value:"):
+        validate_reference_page(tampered)
+
+
 def test_reference_refusal_reasons_covered_here_are_a_subset_of_the_declared_vocabulary():
     exercised = {
         "malformed-record",
@@ -237,6 +259,7 @@ def test_reference_refusal_reasons_covered_here_are_a_subset_of_the_declared_voc
         "wrong-identity-family",
         "unmintable-physical-act",
         "duplicate-physical-act-id",
+        "unsafe-source-value",
         "self-hash-mismatch",
     }
     assert exercised <= REFERENCE_REFUSAL_REASONS

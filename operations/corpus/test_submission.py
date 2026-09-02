@@ -449,10 +449,59 @@ def test_refused_page_does_not_taint_a_later_page_with_a_phantom_duplicate(scrat
 
 
 def test_refuses_unsafe_source_segment(scratch):
+    # A source carrying "/" is now refused as `unsafe-source-value` when the
+    # fetch plan is built (plan.py), before this page ever reaches submission's
+    # own `_unsafe_page_segment` admission-time screen — the row never mints a
+    # page at all, so nothing for `build_submission` to admit or refuse.
     rows = [_row("rec-1", "val", VAL_PAGE_URL, source="../../escaped")]
     page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
     fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    assert plan["pages"] == []
+    assert plan["refusals"][0]["reason"] == "unsafe-source-value"
     report = _build(scratch, rows, fetched)
+    assert report["admitted_page_count"] == 0
+    for root, _dirnames, filenames in os.walk(scratch):
+        for filename in filenames:
+            assert "escaped" not in str(Path(root) / filename)
+
+
+def test_refuses_unsafe_identifier_segment_at_admission(scratch):
+    # `plan.py`'s own `unsafe-source-value` screen (exercised above) stops a
+    # row's `source` before a page is ever minted, so it can never drive
+    # submission's own `_unsafe_page_segment` admission-time guard. That guard
+    # is still defence in depth (verdict #21): a re-sealed or hand-built plan
+    # can carry an already-minted page whose `source` was mutated after the
+    # fact, with a `self_hash` recomputed to match. This test builds exactly
+    # that plan and asserts submission's own screen — not plan.py's — is what
+    # refuses it.
+    import copy
+
+    from common.contracts.canonical import self_hash as recompute_self_hash
+
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+
+    tampered = copy.deepcopy(dict(plan))
+    del tampered["self_hash"]
+    tampered["pages"][0]["source"] = "../../escaped"
+    tampered["self_hash"] = recompute_self_hash(tampered)
+
+    page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
+    fetched = {"geneanet/Ardennes_BMS/380403/00026.jpg": _fetched(page_path, digest)}
+    report = build_submission(
+        tampered,
+        snapshot,
+        holdout,
+        fetched,
+        submissions_root=scratch / "submissions",
+        sidecars_root=scratch / "sidecars",
+        ledger_root=scratch / "ledger",
+        shard_prefix="val",
+    )
     assert report["admitted_page_count"] == 0
     assert report["refusals"][0]["reason"] == "unsafe-identifier-segment"
     for root, _dirnames, filenames in os.walk(scratch):
@@ -579,7 +628,7 @@ def test_refuses_same_sidecars_and_submissions_root_before_either_exists(scratch
     snapshot = _snapshot(rows)
     plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
     holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
-    with pytest.raises(CorpusRefusal, match="sidecars root"):
+    with pytest.raises(CorpusRefusal, match=r"^malformed-record: the sidecars root"):
         build_submission(
             plan,
             snapshot,
@@ -729,6 +778,80 @@ def test_validate_sidecar_refuses_extra_field():
     del with_ordinal["self_hash"]
     with pytest.raises(CorpusRefusal, match="malformed-record"):
         validate_sidecar(with_ordinal)
+
+
+def test_validate_sidecar_refuses_zero_sized_page():
+    from operations.corpus.sidecar import build_sidecar
+
+    with pytest.raises(CorpusRefusal, match="^malformed-record: page.width"):
+        build_sidecar(
+            source="Ardennes",
+            volume_id="geneanet/Ardennes_BMS/380403",
+            designation="00026.jpg",
+            iiif={
+                "identifier": "geneanet/Ardennes_BMS/380403/00026.jpg",
+                "info_url": "https://europe.iiif.teklia.com/iiif/2/x/info.json",
+                "image_url": "https://europe.iiif.teklia.com/iiif/2/x/full/full/0/default.jpg",
+                "size_parameter": "full",
+                "response_sha256": "a" * 64,
+                "bytes": 100,
+                "http_status": 200,
+                "fetched_at_utc": "2026-09-01T00:00:00Z",
+                "declared_width": 4000,
+                "declared_height": 6000,
+            },
+            page={"sha256": "a" * 64, "width": 0, "height": 6000},
+            splits_present=["val"],
+            records=[
+                {
+                    "record_id": "rec-1",
+                    "split": "val",
+                    "region": {"x": 1, "y": 1, "w": 10, "h": 10},
+                    "text": "hello",
+                    "text_sha256": digest_bytes(b"hello"),
+                    "start_date": None,
+                    "end_date": None,
+                    "parish": None,
+                }
+            ],
+        )
+
+
+def test_validate_sidecar_refuses_region_outside_page():
+    from operations.corpus.sidecar import build_sidecar
+
+    with pytest.raises(CorpusRefusal, match="^region-outside-page:"):
+        build_sidecar(
+            source="Ardennes",
+            volume_id="geneanet/Ardennes_BMS/380403",
+            designation="00026.jpg",
+            iiif={
+                "identifier": "geneanet/Ardennes_BMS/380403/00026.jpg",
+                "info_url": "https://europe.iiif.teklia.com/iiif/2/x/info.json",
+                "image_url": "https://europe.iiif.teklia.com/iiif/2/x/full/full/0/default.jpg",
+                "size_parameter": "full",
+                "response_sha256": "a" * 64,
+                "bytes": 100,
+                "http_status": 200,
+                "fetched_at_utc": "2026-09-01T00:00:00Z",
+                "declared_width": 4000,
+                "declared_height": 6000,
+            },
+            page={"sha256": "a" * 64, "width": 4000, "height": 6000},
+            splits_present=["val"],
+            records=[
+                {
+                    "record_id": "rec-1",
+                    "split": "val",
+                    "region": {"x": 3995, "y": 1, "w": 10, "h": 10},
+                    "text": "hello",
+                    "text_sha256": digest_bytes(b"hello"),
+                    "start_date": None,
+                    "end_date": None,
+                    "parish": None,
+                }
+            ],
+        )
 
 
 # --- integrate.fetched_pages_from_log: the U2/U3 seam --------------------------------

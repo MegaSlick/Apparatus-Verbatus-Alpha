@@ -223,6 +223,51 @@ def test_build_fetch_plan_refuses_inconsistent_encoding_for_one_identifier():
         build_fetch_plan(rows, SNAPSHOT_HASH)
 
 
+def test_build_fetch_plan_refuses_a_source_carrying_a_slash():
+    # A source with its own "/" would flatten into the same "<source>/<volume>"
+    # string as a different source/volume split, colliding two distinct pages
+    # onto one physical page identity.
+    rows = [_row("r1", "val", ONE_PAGE_URL, source="Tours/geneanet")]
+    plan = build_fetch_plan(rows, SNAPSHOT_HASH)
+    assert plan["pages"] == []
+    assert len(plan["refusals"]) == 1
+    assert plan["refusals"][0]["reason"] == "unsafe-source-value"
+    assert plan["refusals"][0]["record_id"] == "r1"
+
+
+def test_build_fetch_plan_does_not_collide_two_distinct_source_volume_splits():
+    # Without the "/" screen, source="Tours", volume="geneanet/X" and
+    # source="Tours/geneanet", volume="X" would both flatten to
+    # "Tours/geneanet/X" and mint the same physical_page_id.
+    rows = [
+        _row(
+            "r1",
+            "val",
+            "https://europe.iiif.teklia.com/iiif/2/geneanet%2FX%2F00026.jpg/"
+            "1,1,10,10/full/0/default.jpg",
+            source="Tours",
+        ),
+    ]
+    plan = build_fetch_plan(rows, SNAPSHOT_HASH)
+    assert len(plan["pages"]) == 1
+    good_page_id = plan["pages"][0]["physical_page_id"]
+
+    colliding_rows = [
+        _row(
+            "r2",
+            "val",
+            "https://europe.iiif.teklia.com/iiif/2/X%2F00026.jpg/1,1,10,10/full/0/default.jpg",
+            source="Tours/geneanet",
+        ),
+    ]
+    colliding_plan = build_fetch_plan(colliding_rows, SNAPSHOT_HASH)
+    assert colliding_plan["pages"] == []
+    assert colliding_plan["refusals"][0]["reason"] == "unsafe-source-value"
+    # The would-be colliding page never mints anything, so no page shares
+    # `good_page_id` with the legitimate one.
+    assert good_page_id not in {page["physical_page_id"] for page in colliding_plan["pages"]}
+
+
 def test_build_fetch_plan_stores_identifier_encoded_on_the_page():
     rows = [_row("r1", "val", ONE_PAGE_URL)]
     plan = build_fetch_plan(rows, SNAPSHOT_HASH)
@@ -358,22 +403,8 @@ def _write_snapshot(tmp_path, rows):
     return snapshot_path
 
 
-def _snapshot_row(record_id, split, url, text="quelque texte"):
-    return {
-        "split": split,
-        "source": "Ardennes",
-        "record_id": record_id,
-        "record_url": url,
-        "start_date": None,
-        "end_date": None,
-        "parish": "Rethel",
-        "text": text,
-        "text_sha256": digest_bytes(text.encode("utf-8")),
-    }
-
-
 def test_main_builds_and_writes_a_validated_plan(tmp_path):
-    snapshot_path = _write_snapshot(tmp_path, [_snapshot_row("r1", "val", ONE_PAGE_URL)])
+    snapshot_path = _write_snapshot(tmp_path, [_row("r1", "val", ONE_PAGE_URL)])
     output_path = tmp_path / "fetch-plan.json"
     plan = main(snapshot_path, output_path)
     assert plan["schema"] == "recordgold-fetch-plan.v1"
@@ -381,15 +412,49 @@ def test_main_builds_and_writes_a_validated_plan(tmp_path):
 
 
 def test_load_plan_returns_a_byte_identical_validated_plan(tmp_path):
-    snapshot_path = _write_snapshot(tmp_path, [_snapshot_row("r1", "val", ONE_PAGE_URL)])
+    snapshot_path = _write_snapshot(tmp_path, [_row("r1", "val", ONE_PAGE_URL)])
     output_path = tmp_path / "fetch-plan.json"
     built = main(snapshot_path, output_path)
     loaded = load_plan(output_path)
     assert loaded == built
 
 
+def test_validate_plan_refuses_a_non_list_pages():
+    plan = build_fetch_plan([_row("r1", "val", ONE_PAGE_URL)], SNAPSHOT_HASH)
+    tampered = dict(plan)
+    tampered["pages"] = "not-a-list"
+    with pytest.raises(CorpusRefusal, match="^malformed-record: fetch plan pages"):
+        validate_plan(tampered)
+
+
+def test_validate_plan_refuses_a_non_dict_page_entry():
+    plan = build_fetch_plan([_row("r1", "val", ONE_PAGE_URL)], SNAPSHOT_HASH)
+    tampered = dict(plan)
+    tampered["pages"] = ["not-a-dict"]
+    with pytest.raises(CorpusRefusal, match="^malformed-record: page at index 0"):
+        validate_plan(tampered)
+
+
+def test_validate_plan_refuses_a_non_list_records():
+    plan = build_fetch_plan([_row("r1", "val", ONE_PAGE_URL)], SNAPSHOT_HASH)
+    tampered = dict(plan)
+    tampered_pages = [dict(page) for page in tampered["pages"]]
+    tampered_pages[0]["records"] = "not-a-list"
+    tampered["pages"] = tampered_pages
+    with pytest.raises(CorpusRefusal, match="^malformed-record:.*records must be a list"):
+        validate_plan(tampered)
+
+
+def test_validate_plan_refuses_a_non_list_refusals():
+    plan = build_fetch_plan([_row("r1", "val", ONE_PAGE_URL)], SNAPSHOT_HASH)
+    tampered = dict(plan)
+    tampered["refusals"] = "not-a-list"
+    with pytest.raises(CorpusRefusal, match="^malformed-record: fetch plan refusals"):
+        validate_plan(tampered)
+
+
 def test_load_plan_refuses_a_tampered_file(tmp_path):
-    snapshot_path = _write_snapshot(tmp_path, [_snapshot_row("r1", "val", ONE_PAGE_URL)])
+    snapshot_path = _write_snapshot(tmp_path, [_row("r1", "val", ONE_PAGE_URL)])
     output_path = tmp_path / "fetch-plan.json"
     main(snapshot_path, output_path)
     tampered = json.loads(output_path.read_text())

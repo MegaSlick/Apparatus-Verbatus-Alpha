@@ -32,15 +32,18 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `refuse_held_out_page` is the predicate later units call before writing a page
   anywhere. This is the strongest of the hold-out's three layers (§ Hold-out below).
 - `fetch.py`, `cache.py` (Unit 2) — the polite, resumable, never-re-fetch fetcher.
+- `integrate.py` (the U2/U3 seam) — turns a sealed fetch log into the `FetchedPage`
+  objects `submission.py` takes, verifying each cache file against the digest its
+  own log entry declares.
 - `submission.py`, `sidecar.py` (Unit 3) — the submission builder: hard-links cached
   bytes into a Door-shaped folder, writes sidecars outside it, and invokes
   `operations/submit/submit.py`.
 - `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
   offline IoU comparator.
 
-As of this commit only `rows.py`, `plan.py` and `holdout.py` exist; the fetch
-protocol, comparator, and hold-out-fetcher sections below describe the shape the
-later units are built to, not behaviour that runs today.
+All four units exist as of this commit; the fetch protocol, comparator, and
+hold-out sections below describe behaviour that runs, not a shape still to be
+built.
 
 ## `private/` and the fetch protocol
 
@@ -75,15 +78,16 @@ The fetch protocol's closed refusal vocabulary is `http-error`, `non-image-body`
 `duplicate-page-bytes`, `unexpected-host`, `unsupported-size-parameter`,
 `holdout-page`, `cross-split-page`.
 
-The modules that exist today carry their own closed refusal sets, not that one:
-`rows.ROW_REFUSAL_REASONS` (`text-sha256-mismatch`, `duplicate-record-id`,
-`unknown-split`, `empty-text`, `self-hash-mismatch`, and the rest — `rows.py:53-67`),
-`plan.PLAN_REFUSAL_REASONS` (`unparseable-record-url`, `unsupported-rotation-parameter`,
-`unsafe-identifier-segment`, `unmintable-page-identity`,
-`inconsistent-source-for-identifier`, and the rest — `plan.py:73-91`), and
-`holdout.HOLDOUT_REFUSAL_REASONS` (`holdout.py:45-54`). Every refusal in this package
-is a `CorpusRefusal` whose message leads with its reason token, dispatched by
-`str(error).split(":", 1)[0]` (`__init__.py:30-37`).
+Every module in this package carries its own closed refusal set, not that one:
+`rows.ROW_REFUSAL_REASONS`, `plan.PLAN_REFUSAL_REASONS`,
+`holdout.HOLDOUT_REFUSAL_REASONS`, `cache.CACHE_REFUSAL_REASONS`,
+`fetch.FETCH_REFUSAL_REASONS` plus `fetch.FETCH_RUN_REFUSAL_REASONS` (a second,
+run-level set — a request-ceiling or 403-stop refusal never reaches a fetch-log
+entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASONS`,
+`submission.SUBMISSION_REFUSAL_REASONS`, `sidecar.SIDECAR_REFUSAL_REASONS`,
+`reference.REFERENCE_REFUSAL_REASONS`, and `compare.COMPARE_REFUSAL_REASONS`.
+Every refusal in this package is a `CorpusRefusal` whose message leads with its
+reason token, dispatched by `str(error).split(":", 1)[0]` (`__init__.py`).
 
 **Politeness is not optional.** One connection, sequential, at least a one-second
 delay between requests, `Retry-After` honoured, bounded exponential backoff on
@@ -125,7 +129,14 @@ mean nothing. Reference acts are keyed instead by
 `physical_act_id(physical_page_id("recordgold", "<source>/<volume>",
 "<page>"), record_id)` — a `pac_` identity, disjoint from `act_*` by prefix,
 minted by declaration rather than by structure, and stable across re-fetch and
-re-shard.
+re-shard. That ladder joins `source` and `volume` into one string before
+minting the physical page identity, so `source` must itself be a safe single
+path segment carrying no `/` — `plan.py` refuses such a row per-row as
+`unsafe-source-value` before a page is ever minted, and `reference.py` raises
+the same name on both the build and the load path; without that screen, two
+distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
+`"Tours"` joined with `"geneanet/..."`) would flatten to the identical
+`ppg_` identity.
 
 ## The comparator is not a picker
 
@@ -148,11 +159,11 @@ scoring; and it drops nothing from either side of that pairing — a miss stays 
 miss, an unmatched pipeline act stays reported. The mechanical boundary, not
 just the docstring, is the import graph: `pipeline/` may not import
 `operations.corpus`, and `operations/corpus/` may not import `pipeline/` — the
-same one-way rule `operations/submit/` already carries — to be pinned by an
-import-graph test in U4. Without that test in place this reads as a picker at review; CodeRabbit has
+same one-way rule `operations/submit/` already carries — pinned by
+`test_compare.py::test_no_pipeline_module_imports_operations_corpus`, which
+walks `pipeline/` and fails on any import of this package. CodeRabbit has
 already flagged one picker instruction elsewhere in this repository's planning
-documents, and the import-graph test is what keeps this module from being the
-next one.
+documents; that test is what keeps this module from being the next one.
 
 ## Hold-out
 

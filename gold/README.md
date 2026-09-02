@@ -133,8 +133,10 @@ Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
 GOVERNANCE 10 acceptance claim is a separate question, and it is Tyrel's, not
 this module's (`operations/corpus/README.md`'s "The acceptance corpus is
 Tyrel's call" gets this right; his 2026-09-01 direction on RecordGold reads
-the other way and is not yet reconciled with it — see
-`workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`).  If he rules
+the other way and is not yet reconciled with it — see the workbench ledger
+at `workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`, local and
+gitignored like `workbench/standing/SUSPENSIONS.md`, not a file a clone of
+this repository carries).  If he rules
 RecordGold in for that claim, the route is a named substitution recorded
 where the acceptance corpus is chosen, never a forged entry through this
 module's custody chain.

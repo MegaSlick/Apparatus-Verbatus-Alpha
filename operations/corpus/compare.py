@@ -14,6 +14,11 @@ drops nothing on either side: every unmatched reference act is reported as a MIS
 and every unmatched pipeline act is reported, not scored. `SPEC.md` Section
 5.3(d) names this boundary exactly this way.
 
+`SPEC.md` Section 5.6 is explicit that its 2.5-3.5 records/page figure is an
+estimate, not a measurement -- so `MAX_ACTS_PER_PAGE` bounds this DP by the
+side its `2**R` state space actually depends on, not on the page's raw
+proposal count (see `_best_assignment`).
+
 **IoU assignment.** For one page, every sealed proposal region's *raw* bounds
 (`origin: "proposal"`, `2_designator`'s own structural crop rectangle from
 `payload["raw_bounds"]` — the detected rectangle, before any padding is applied)
@@ -31,9 +36,11 @@ exact `Fraction`, never a float — nothing here is a canonical artifact until t
 final record is built, and that record stores areas, not the ratio, because
 `common.contracts.canonical` refuses floats outright. The assignment itself is a
 small bitmask DP (`_best_assignment`), exact for the page sizes this corpus
-actually has (`SPEC.md` Section 5.6: 2-4 records/page measured; `MAX_ACTS_PER_PAGE`
-bounds the DP's `2**R` state space and refuses rather than silently degrading to
-an approximation on an unexpectedly crowded page).
+actually has (`SPEC.md` Section 5.6 estimates 2.5-3.5 records/page; `MAX_ACTS_PER_PAGE`
+bounds the DP's `2**R` state space -- driven by reference acts, and by pipeline
+acts only insofar as they carry an eligible edge into that state space -- and
+refuses rather than silently degrading to an approximation on an unexpectedly
+crowded page).
 
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
@@ -73,10 +80,14 @@ SCHEMA = "reference-comparison.v1"
 # per run would make "how many misses" a knob rather than a measurement.
 PREDECLARED_IOU_THRESHOLD = Fraction(1, 2)
 
-# Bounds the assignment DP's `2**R` state space. `SPEC.md` Section 5.6 measures
-# 2-4 records/page; this is a wide, deliberately round margin above that, not a
-# tuned figure — a page that actually exceeds it is refused by name rather than
-# silently handed to an assignment that would stop being exact.
+# Bounds the assignment DP's `2**R` state space, where R is reference_count --
+# the exponent the DP actually pays, since pipeline acts only cost it a linear
+# scan. `SPEC.md` Section 5.6 estimates (not measures) 2.5-3.5 records/page;
+# this is a wide, deliberately round margin above that, not a tuned figure — a
+# page whose reference or eligible-pipeline count actually exceeds it is
+# refused by name rather than silently handed to an assignment that would stop
+# being exact. Also caps the eligible-pipeline side (see `_best_assignment`)
+# so a densely proposalled page can't grow the DP's row count without bound.
 MAX_ACTS_PER_PAGE = 20
 
 COMPARE_REFUSAL_REASONS = frozenset(
@@ -167,15 +178,19 @@ def _best_assignment(
     include one. Deterministic given a fixed input order: ties are broken toward
     the lexicographically-earliest reference mask, which is why every caller sorts
     both lists by id before calling this.
+
+    The DP's state space is `2**reference_count`, over which it does a linear
+    scan of pipeline acts -- doubling the pipeline side doubles the work, it
+    does not square it. A pipeline act with no eligible edge to any reference
+    act can never be chosen regardless of state-space size, so it is dropped
+    before the cap is applied (and always comes back unmatched); only the
+    *eligible* pipeline acts are counted against `MAX_ACTS_PER_PAGE`, alongside
+    `reference_count`, and the returned indices are mapped back onto the
+    original `pipeline_acts` ordering. This still bounds the DP's memory --
+    `(eligible_count + 1) * 2**reference_count` cells -- to something finite on
+    a densely proposalled page, without refusing a page the DP is exact for.
     """
-    pipeline_count = len(pipeline_acts)
     reference_count = len(reference_acts)
-    if pipeline_count > MAX_ACTS_PER_PAGE or reference_count > MAX_ACTS_PER_PAGE:
-        raise CorpusRefusal(
-            "too-many-acts-for-page: "
-            f"{pipeline_count} pipeline acts / {reference_count} reference acts exceeds "
-            f"the predeclared cap of {MAX_ACTS_PER_PAGE} the assignment DP is exact for"
-        )
     weight: dict[tuple[int, int], Fraction] = {}
     for p, pact in enumerate(pipeline_acts):
         for r, ract in enumerate(reference_acts):
@@ -183,13 +198,34 @@ def _best_assignment(
             if iou >= threshold:
                 weight[(p, r)] = iou
 
+    eligible_pipeline = sorted({p for p, _ in weight})
+    eligible_count = len(eligible_pipeline)
+    if eligible_count > MAX_ACTS_PER_PAGE or reference_count > MAX_ACTS_PER_PAGE:
+        raise CorpusRefusal(
+            "too-many-acts-for-page: "
+            f"{eligible_count} pipeline acts with an eligible reference edge / "
+            f"{reference_count} reference acts exceeds the predeclared cap of "
+            f"{MAX_ACTS_PER_PAGE} the assignment DP's 2**R state space and candidate "
+            "rows are exact for"
+        )
+
+    # Compact indexing over only the eligible pipeline acts -- everything else
+    # can never be matched, so it costs the DP nothing and is simply reported
+    # unmatched by the caller.
+    compact_weight: dict[tuple[int, int], Fraction] = {
+        (compact_p, r): weight[(original_p, r)]
+        for compact_p, original_p in enumerate(eligible_pipeline)
+        for r in range(reference_count)
+        if (original_p, r) in weight
+    }
+
     size = 1 << reference_count
-    dp: list[list[Fraction | None]] = [[None] * size for _ in range(pipeline_count + 1)]
+    dp: list[list[Fraction | None]] = [[None] * size for _ in range(eligible_count + 1)]
     choice: list[list[tuple[str, int | None] | None]] = [
-        [None] * size for _ in range(pipeline_count + 1)
+        [None] * size for _ in range(eligible_count + 1)
     ]
     dp[0][0] = Fraction(0)
-    for p in range(pipeline_count):
+    for p in range(eligible_count):
         for mask in range(size):
             current = dp[p][mask]
             if current is None:
@@ -200,7 +236,7 @@ def _best_assignment(
             for r in range(reference_count):
                 if mask & (1 << r):
                     continue
-                edge = weight.get((p, r))
+                edge = compact_weight.get((p, r))
                 if edge is None:
                     continue
                 new_mask = mask | (1 << r)
@@ -211,22 +247,22 @@ def _best_assignment(
                     choice[p + 1][new_mask] = ("match", r)
 
     best_mask = 0
-    best_value = dp[pipeline_count][0]
+    best_value = dp[eligible_count][0]
     for mask in range(size):
-        value = dp[pipeline_count][mask]
+        value = dp[eligible_count][mask]
         if value is not None and (best_value is None or value > best_value):
             best_value = value
             best_mask = mask
 
     matches: dict[int, int] = {}
     mask = best_mask
-    for p in range(pipeline_count, 0, -1):
+    for p in range(eligible_count, 0, -1):
         decision = choice[p][mask]
         if decision is None:
             continue
         kind, r = decision
         if kind == "match":
-            matches[p - 1] = r
+            matches[eligible_pipeline[p - 1]] = r
             mask ^= 1 << r
     return matches
 
@@ -257,6 +293,12 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     request, not a detected act, and `SPEC.md` Section 5.3(d) is explicit that the
     matrix runs over "sealed proposal regions." Returns
     `[{"act_id", "bounds", "page_sha256"}, ...]`.
+
+    This reads a tree it did not produce, so a proposal region's shape is
+    checked, not assumed: a region sealed by an earlier revision that carries
+    no usable `transform.source_page_ordinal` or `raw_bounds` is refused by
+    name (`malformed-record`) rather than left to leave this function as a bare
+    `KeyError`, the way every other read in this package refuses.
     """
     page_shas = load_exemplar_page_shas(tree)
     acts: list[dict[str, Any]] = []
@@ -268,7 +310,13 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
         payload = record["payload"]
         if payload.get("origin") != "proposal":
             continue
-        ordinal = payload["transform"]["source_page_ordinal"]
+        transform = payload.get("transform")
+        ordinal = transform.get("source_page_ordinal") if isinstance(transform, dict) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise CorpusRefusal(
+                f"malformed-record: region {record['subject_id']!r} carries no integer "
+                "transform.source_page_ordinal, so its page cannot be resolved"
+            )
         page_sha256 = page_shas.get(ordinal)
         if page_sha256 is None:
             raise CorpusRefusal(
@@ -278,7 +326,11 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
         acts.append(
             {
                 "act_id": record["subject_id"],
-                "bounds": dict(payload["raw_bounds"]),
+                "bounds": dict(
+                    _bounds(
+                        payload.get("raw_bounds"), f"region {record['subject_id']!r} raw_bounds"
+                    )
+                ),
                 "page_sha256": page_sha256,
             }
         )

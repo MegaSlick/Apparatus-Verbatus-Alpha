@@ -389,9 +389,9 @@ def test_duplicate_page_bytes_refused_across_sessions(tmp_path, server):
 
 
 def test_duplicate_page_bytes_owner_is_stable_across_reordered_reruns(tmp_path, server):
-    """The winner is the first identifier to pass *verification*, permanently —
-    not whichever identifier's request record a later run's filesystem glob
-    happens to read first.
+    """The winner is the identifier that first passed verification, recorded in
+    `cache/owners/` after the checks — a later run reaches the same verdict
+    whichever page it visits first.
     """
     _script(server, "aa/000", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     _script(server, "bb/000", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
@@ -403,13 +403,13 @@ def test_duplicate_page_bytes_owner_is_stable_across_reordered_reruns(tmp_path, 
     assert second["status"] == "refused"
     assert second["reason"] == "duplicate-page-bytes"
 
-    # A fresh session, re-run in the exact same order over the exact same cache:
-    # the outcome must be identical, not flipped by `requests/*.json` glob order.
-    third = fetch_page(FetchSession(config), _page(server, "aa/000"))
-    fourth = fetch_page(FetchSession(config), _page(server, "bb/000"))
-    assert third["status"] == "fetched"
-    assert fourth["status"] == "refused"
-    assert fourth["reason"] == "duplicate-page-bytes"
+    # A fresh session, re-run over the exact same cache but in the *reverse*
+    # order: the outcome must still be `aa/000` fetched, `bb/000` refused.
+    rerun_bb = fetch_page(FetchSession(config), _page(server, "bb/000"))
+    rerun_aa = fetch_page(FetchSession(config), _page(server, "aa/000"))
+    assert rerun_aa["status"] == "fetched"
+    assert rerun_bb["status"] == "refused"
+    assert rerun_bb["reason"] == "duplicate-page-bytes"
 
 
 def test_unsupported_size_parameter_refused_by_name(tmp_path, server):
@@ -687,6 +687,54 @@ def test_truncated_body_leaves_no_request_record(tmp_path, server):
     assert not any((config.cache_root).glob("*.jpg"))
 
 
+class _FakeResponse:
+    """A minimal stand-in for `http.client.HTTPResponse.read`, for driving
+    `_read_bounded` directly with bytes the loopback server itself cannot
+    produce (it always declares a correct `Content-Length` and only ever
+    short-writes) — here, more bytes than the declared length.
+    """
+
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = list(chunks)
+
+    def read(self, _size: int) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+def test_read_bounded_refuses_a_body_longer_than_content_length():
+    response = _FakeResponse([b"x" * 20])
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="http-error") as excinfo:
+        fetch_module._read_bounded(response, max_bytes=1000, expected_length=5)
+
+    assert "disagrees with Content-Length" in str(excinfo.value)
+
+
+def test_fetch_page_refuses_cached_body_missing_from_disk(tmp_path, server):
+    """A 'fetched' request record whose body file is gone (disk cleared, a
+    partial cache restore) must refuse the page by name, not crash the run —
+    `_fetch_info` already handles the equivalent case for `info.json`.
+    """
+    _script(server, "vol/029", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/029")
+
+    first = fetch_page(FetchSession(config), page)
+    assert first["status"] == "fetched"
+    body_path = cache_module.body_path(config.cache_root, first["response_sha256"])
+    body_path.unlink()
+
+    second = fetch_page(FetchSession(config), page)
+
+    assert second["status"] == "refused"
+    assert second["reason"] == "http-error"
+    key = fetch_module._image_request_key("vol/029", "full")
+    assert key in second["detail"]
+    assert str(body_path) in second["detail"]
+
+
 def test_truncated_body_is_retried_on_the_next_run(tmp_path, server):
     """No request record means the next attempt asks the server again, not skips it."""
     server.script["/iiif/2/vol/015/info.json"] = [{"body": INFO_JSON}]
@@ -810,8 +858,15 @@ def test_run_fetch_requires_a_holdout_ledger_for_split_val_by_default(tmp_path, 
     """
     plan = _valid_plan([_page(server, "vol/024", splits_present=["val"])])
 
-    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required"):
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
         run_fetch(plan, _config(tmp_path), split="val")
+
+    # This refusal fires before a `FetchSession` exists, so it never reaches a
+    # fetch-log entry — it belongs to its own closed run-level set, not the
+    # per-page `FETCH_REFUSAL_REASONS`.
+    reason = str(excinfo.value).split(":", 1)[0]
+    assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
+    assert reason not in FETCH_REFUSAL_REASONS
 
 
 def test_run_fetch_val_proceeds_with_a_holdout_ledger(tmp_path, server):
@@ -973,7 +1028,7 @@ def test_main_refuses_split_test_without_release_test_split(tmp_path, server):
     plan_path = tmp_path / "fetch-plan.json"
     plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
 
-    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required"):
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
         fetch_module.main(
             [
                 "--plan",
@@ -988,6 +1043,55 @@ def test_main_refuses_split_test_without_release_test_split(tmp_path, server):
                 "test",
             ]
         )
+
+    reason = str(excinfo.value).split(":", 1)[0]
+    assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
+
+
+def test_main_exits_nonzero_when_the_run_halted(tmp_path, server):
+    """A run that stops on a 403 before covering the whole split must not look
+    like a completed fetch to a caller that only checks the exit status — both
+    ledger files are still sealed to disk first.
+    """
+    _script(server, "vol/028a", info=[{"body": INFO_JSON}], full=[{"status": 403, "body": b""}])
+    _script(server, "vol/028b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    plan = _valid_plan(
+        [
+            _page(server, "vol/028a", splits_present=["val"]),
+            _page(server, "vol/028b", splits_present=["val"]),
+        ]
+    )
+    plan_path = tmp_path / "fetch-plan.json"
+    plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+    holdout_path = tmp_path / "holdout.json"
+    holdout_path.write_bytes(json.dumps(holdout).encode("utf-8"))
+    output_dir = tmp_path / "ledger"
+
+    with pytest.raises(SystemExit, match="halted: Http403Stop"):
+        fetch_module.main(
+            [
+                "--plan",
+                str(plan_path),
+                "--holdout",
+                str(holdout_path),
+                "--cache-root",
+                str(tmp_path / "cache"),
+                "--info-root",
+                str(tmp_path / "info"),
+                "--output-dir",
+                str(output_dir),
+                "--split",
+                "val",
+            ]
+        )
+
+    # The halt is visible to the caller now — but the ledger is still sealed
+    # to disk before the process dies, so rule 7 still holds.
+    log = json.loads((output_dir / "fetch-log.json").read_bytes())
+    assert log["halted"] == "Http403Stop"
+    refusals = json.loads((output_dir / "refusals.json").read_bytes())
+    assert refusals["refusals"][0]["status"] == "halted"
 
 
 # --------------------------------------------------------------------------- #
@@ -1027,3 +1131,49 @@ def test_cache_request_key_is_stable_and_distinguishes_size(tmp_path):
 
     assert key_full == key_full_again
     assert key_full != key_max
+
+
+def test_cache_write_new_file_refuses_by_name_when_hard_links_unsupported(tmp_path, monkeypatch):
+    import errno
+
+    def _no_hard_links(_src: str, _dst: str) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(cache_module.os, "link", _no_hard_links)
+    path = tmp_path / "cache" / "a.json"
+
+    with pytest.raises(cache_module.CacheUnusable, match="refuses hard links"):
+        cache_module.write_new_file(path, b"{}")
+
+
+def test_cache_write_new_file_lets_unrelated_oserror_propagate(tmp_path, monkeypatch):
+    import errno
+
+    def _no_space(_src: str, _dst: str) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(cache_module.os, "link", _no_space)
+    path = tmp_path / "cache" / "a.json"
+
+    with pytest.raises(OSError) as excinfo:
+        cache_module.write_new_file(path, b"{}")
+    assert not isinstance(excinfo.value, cache_module.CacheUnusable)
+
+
+def test_fetch_page_lets_cache_unusable_escape_uncaught(tmp_path, server, monkeypatch):
+    """A cache-root filesystem constraint is not a per-page outcome: it must
+    not come back as a `status: refused` log entry, relabelled `http-error`.
+    """
+    import errno
+
+    _script(server, "vol/030", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    page = _page(server, "vol/030")
+    session = FetchSession(_config(tmp_path))
+
+    def _no_hard_links(_src: str, _dst: str) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(cache_module.os, "link", _no_hard_links)
+
+    with pytest.raises(cache_module.CacheUnusable, match="no-hard-link-support"):
+        fetch_page(session, page)
