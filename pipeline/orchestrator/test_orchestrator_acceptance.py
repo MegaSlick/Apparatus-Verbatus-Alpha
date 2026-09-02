@@ -3574,6 +3574,19 @@ def _patch_conservation_with_extra_residual(
     same way `_reseal_with_extra_row` extends the seal — and returns the
     digest-checked reference a hold can then cite honestly, exactly as
     `pipeline/2_designator/run.py::hold_residual_act` does for a genuine one.
+
+    **Every field the added component moves is moved with it.** The record now
+    also carries the count, the bound and the enumeration (Section C's page
+    residual bound), and `common/stage.py` recomputes
+    `residual_component_count == len(residual_components)` on an enumerated
+    record. A helper that appended a component and left the count behind made
+    every test using it refuse for the record being internally inconsistent
+    rather than for the thing it was forged to test — the refusal arriving for
+    the wrong reason, which is the failure a pinned message exists to catch.
+    `residual_ink_fraction_bp` is recomputed by the producer's own round-half-up
+    rule for the same reason: nothing verifies it today, and a fixture that
+    quietly disagreed with the three integers beside it would be a lie waiting
+    for the first consumer that does.
     """
     conservation_id = artifact_id(DESIGNATOR, "conservation", page_id)
     relative_path = tree.artifact_path(DESIGNATOR, "conservation", conservation_id)
@@ -3587,6 +3600,12 @@ def _patch_conservation_with_extra_residual(
     components.append({"bounds": bounds, "pixel_count": pixel_count, "review_priority": "low"})
     record["payload"]["residual_pixel_count"] += pixel_count
     record["payload"]["total_ink_pixel_count"] += pixel_count
+    record["payload"]["residual_component_count"] = len(components)
+    residual = record["payload"]["residual_pixel_count"]
+    total = record["payload"]["total_ink_pixel_count"]
+    record["payload"]["residual_ink_fraction_bp"] = (
+        0 if total <= 0 else (2 * residual * 10_000 + total) // (2 * total)
+    )
     record["self_hash"] = self_hash(record)
     data = canonical_bytes(record)
     path.write_bytes(data)
