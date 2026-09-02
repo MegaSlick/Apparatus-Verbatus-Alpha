@@ -21,6 +21,7 @@ import json
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -554,6 +555,15 @@ def test_swapped_cache_body_wrong_length_refuses_the_page(tmp_path, server):
     tampering) with a different-length JPEG must be refused by name, not carried
     forward as a self-contradicting log entry whose `bytes` disagrees with the
     body actually on disk.
+
+    Proven at the guard's own boundary rather than through `fetch_page`'s
+    wrapping: `_fetch_image_bytes` is the function that reads the cached body
+    back and compares its length against the request record, so this calls it
+    directly and checks only the reason token (`http-error`, the closed
+    vocabulary this module actually contracts on) — a substring of
+    `entry["detail"]` would still pass if some unrelated check in this module
+    happened to raise a similarly worded `http-error`, which is not evidence
+    that *this* guard fired.
     """
     _script(server, "vol/021f", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     config = _config(tmp_path)
@@ -563,16 +573,23 @@ def test_swapped_cache_body_wrong_length_refuses_the_page(tmp_path, server):
     body_path = cache_module.body_path(config.cache_root, first["response_sha256"])
     body_path.write_bytes(WRONG_SIZE_JPEG)
 
-    entry = fetch_page(FetchSession(config), page)
-
-    assert entry["status"] == "refused"
-    assert entry["reason"] == "http-error"
-    assert "cached body length disagrees" in entry["detail"]
+    with pytest.raises(fetch_module.CorpusRefusal, match=r"^http-error:"):
+        fetch_module._fetch_image_bytes(FetchSession(config), page)
 
 
-def test_swapped_cache_body_same_length_refuses_the_page(tmp_path, server):
+def test_swapped_cache_body_same_length_refuses_the_page(tmp_path, server, monkeypatch):
     """A cache body swapped for different bytes of the same length (so the byte
     count alone would not catch it) must still be refused, on the digest.
+
+    Decoding, dimension, and EXIF checks are stubbed to always pass, so the
+    tampered bytes cannot be turned away by any check other than the digest
+    comparison `fetch_page` runs against the request record. If that
+    comparison were deleted, this arrangement is exactly what would let the
+    page come back `"fetched"` instead — which is what makes the assertion
+    below load-bearing on the digest check specifically, rather than on
+    whichever wording the refusal happens to carry. No field besides `reason`
+    distinguishes this refusal from any other `http-error`, so `detail` is
+    left unasserted.
     """
     _script(server, "vol/021g", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     config = _config(tmp_path)
@@ -585,11 +602,13 @@ def test_swapped_cache_body_same_length_refuses_the_page(tmp_path, server):
     assert len(tampered) == len(GOOD_JPEG)
     body_path.write_bytes(bytes(tampered))
 
+    stub_image = SimpleNamespace(size=(PAGE_WIDTH, PAGE_HEIGHT), getexif=lambda: {})
+    monkeypatch.setattr(fetch_module, "_decode_jpeg", lambda body: stub_image)
+
     entry = fetch_page(FetchSession(config), page)
 
     assert entry["status"] == "refused"
     assert entry["reason"] == "http-error"
-    assert "digest disagrees" in entry["detail"]
 
 
 def test_damaged_retained_info_refuses_the_page(tmp_path, server):
