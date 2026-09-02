@@ -15,12 +15,15 @@ from typing import Mapping
 
 import live_reader
 import prompts
+import protocol
 import pytest
 from live_reader import EngineSignalRefusal, VLLMReader
+from reader import FixtureReader
 
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.perlector_audit import audit_request as build_audit_request
 from operations.serving.client import ChairClient
 from operations.serving.config import (
@@ -42,6 +45,8 @@ from operations.serving.fakes import (
 )
 from operations.serving.manager import ServingManager
 from operations.serving.residency import FileResidencyLease
+
+ROOT = Path(__file__).resolve().parents[2]
 
 TIER = "generic-48gb"
 REVISION = "a" * 40
@@ -150,7 +155,62 @@ def _image_bytes(tag: bytes) -> bytes:
     return b"\x89PNG fixture image " + tag
 
 
+def _autopsia_and_refs(
+    *,
+    act_key: str,
+    region_images: list[bytes],
+    page_images: list[bytes],
+    region_paths: list[str] | None = None,
+    page_paths: list[str] | None = None,
+):
+    """One act's sealed ``cross_capture_autopsia`` plus the pre-sort refs
+    (one per given image, in the caller's own order) it was built from.
+
+    Mirrors production exactly: ``build_autopsia`` canonicalizes ``region_refs``
+    by ``(relative_path, sha256)`` -- a key independent of the order the
+    dossier's own ``regions`` row happens to declare -- and ``delivered_pixels``
+    (via ``atomic_delivered_pixels`` below) walks that same canonical view. A
+    caller that needs the two orders to diverge picks ``region_paths`` whose
+    sort order is not the caller's input order; every other caller may leave it
+    to the default, under which a single region or render trivially agrees with
+    itself.
+    """
+    store: dict[str, bytes] = {}
+    region_paths = region_paths or [f"blobs/region-{i}" for i in range(len(region_images))]
+    page_paths = page_paths or [f"blobs/page-{i}" for i in range(len(page_images))]
+
+    def _ref(path: str, image: bytes) -> dict[str, str]:
+        store[path] = image
+        return {"relative_path": path, "sha256": digest_bytes(image)}
+
+    region_refs = [
+        _ref(path, image) for path, image in zip(region_paths, region_images, strict=True)
+    ]
+    page_refs = [_ref(path, image) for path, image in zip(page_paths, page_images, strict=True)]
+    view = {
+        "view_id": "view-1",
+        "physical_page_id": "ppg_fixture",
+        "source_sha256": "a" * 64,
+        "page_ids": ["pg_1"],
+        "local_act_ids": [act_key],
+        "region_refs": region_refs,
+        "page_render_refs": page_refs,
+        "alignment_ref": "alignment-1",
+        "visibility_evidence_refs": [_ref("blobs/visibility-1", b"visibility-evidence")],
+    }
+    autopsia = build_autopsia(
+        logical_act_id=f"pac_{act_key}",
+        partition_ref={"relative_path": "blobs/partition", "sha256": digest_bytes(b"partition")},
+        required_capture_sha256s=["a" * 64],
+        views=[view],
+    )
+    return autopsia, region_refs, page_refs, store
+
+
 def _dossier(*, act_key: str = "a1", region_image: bytes, page_image: bytes) -> dict:
+    autopsia, region_refs, page_refs, _store = _autopsia_and_refs(
+        act_key=act_key, region_images=[region_image], page_images=[page_image]
+    )
     return {
         "act_id": "act_0000000000000000",
         "act_key": act_key,
@@ -158,30 +218,40 @@ def _dossier(*, act_key: str = "a1", region_image: bytes, page_image: bytes) -> 
         "regions": [
             {
                 "region_id": "r1",
-                "image_path": "transient-region",
-                "image_sha256": digest_bytes(region_image),
+                "image_path": region_refs[0]["relative_path"],
+                "image_sha256": region_refs[0]["sha256"],
             }
         ],
         "page_renders": [
             {
                 "source_page_id": "pg_0000000000000000",
                 "source_page_ordinal": 1,
-                "image_path": "transient-page",
-                "image_sha256": digest_bytes(page_image),
+                "image_path": page_refs[0]["relative_path"],
+                "image_sha256": page_refs[0]["sha256"],
             }
         ],
         "testimonia": [],
+        "cross_capture_autopsia": autopsia,
     }
 
 
 def _delivered_pixels(*, region_image: bytes, page_image: bytes) -> dict:
-    return {"region_images": [region_image], "page_render_images": [page_image]}
+    autopsia, _region_refs, _page_refs, store = _autopsia_and_refs(
+        act_key="a1", region_images=[region_image], page_images=[page_image]
+    )
+    return atomic_delivered_pixels(autopsia, read_bytes=store.__getitem__, max_images=64)
 
 
 def _reader(
-    client: ChairClient, chair: ChairIdentity, *, max_tokens: int | None = None
+    client: ChairClient,
+    chair: ChairIdentity,
+    *,
+    max_tokens: int | None = None,
+    protocol_config: Mapping[str, str | int] | None = None,
 ) -> VLLMReader:
-    return VLLMReader(client=client, chair=chair, protocol_config=None, max_tokens=max_tokens)
+    return VLLMReader(
+        client=client, chair=chair, protocol_config=protocol_config, max_tokens=max_tokens
+    )
 
 
 # --- pass_kind: the closed refusal, and nowhere else it matters --------------
@@ -324,6 +394,46 @@ def test_a_malformed_response_refuses_by_its_parse_problem_code_with_bytes_retai
     assert blob_store.has(excinfo.value.raw_response_ref["sha256"])
 
 
+def test_missing_delivered_pixels_is_refused_before_the_wire(tmp_path: Path) -> None:
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        with pytest.raises(ContractError, match="no delivered pixels"):
+            _reader(client, chair).read(
+                _dossier(region_image=region_image, page_image=page_image),
+                pass_kind="perlectio",
+                delivered_pixels=None,
+            )
+    assert endpoint.requests == []
+
+
+def test_text_is_returned_exactly_never_stripped(tmp_path: Path) -> None:
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        endpoint.script(ScriptedAnswer(content="  ragged edge \n", finish_reason="stop"))
+        result = _reader(client, chair).read(
+            _dossier(region_image=region_image, page_image=page_image),
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    assert result["text"] == "  ragged edge \n"
+
+
+def test_genuinely_empty_text_with_stop_is_reported_empty_not_refused(tmp_path: Path) -> None:
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        endpoint.script(ScriptedAnswer(content="", finish_reason="stop"))
+        result = _reader(client, chair).read(
+            _dossier(region_image=region_image, page_image=page_image),
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    assert result["text"] == ""
+    assert result["stop_reason"] == "stop"
+
+
 # --- image order and digest binding -------------------------------------------
 
 
@@ -374,6 +484,75 @@ def test_image_sha256s_are_the_dossiers_own_digests_in_the_same_order(tmp_path: 
         dossier["regions"][0]["image_sha256"],
         dossier["page_renders"][0]["image_sha256"],
     ]
+
+
+def test_two_regions_whose_region_id_order_reverses_their_blob_path_order(tmp_path: Path) -> None:
+    """The seam finding: ``dossier['regions']`` sorts on ``region_id``
+    (``dossier.py``); ``cross_capture_autopsia`` sorts region refs on
+    ``(relative_path, sha256)`` (``cross_capture_autopsia.py``'s ``_ref_list``)
+    -- independent keys, since a region's blob path is content-addressed. This
+    act's two regions are built so the two orders are exact reverses of one
+    another: ``r1`` (declared first, by ``region_id``) is the region whose blob
+    path sorts *last*. A live read must post images in the order
+    ``delivered_pixels`` actually carries them (always the autopsia's own walk)
+    and derive ``image_sha256s`` from that same walk, or the two disagree and
+    the read is refused by the client's own "exactly and in order" check on
+    every act with more than one region.
+    """
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    image_r1, image_r2 = _image_bytes(b"R1-IMAGE"), _image_bytes(b"R2-IMAGE")
+    page_image = _image_bytes(b"PAGE")
+    autopsia, region_refs, page_refs, store = _autopsia_and_refs(
+        act_key="a1",
+        region_images=[image_r1, image_r2],
+        page_images=[page_image],
+        # r1's blob path sorts after r2's: the declared region_id order
+        # (r1, r2) is the exact reverse of the path-sorted autopsia order.
+        region_paths=["blobs/region-z-for-r1", "blobs/region-a-for-r2"],
+    )
+    dossier = {
+        "act_id": "act_0000000000000000",
+        "act_key": "a1",
+        "witness_regime": "named",
+        "regions": [
+            {
+                "region_id": "r1",
+                "image_path": region_refs[0]["relative_path"],
+                "image_sha256": region_refs[0]["sha256"],
+            },
+            {
+                "region_id": "r2",
+                "image_path": region_refs[1]["relative_path"],
+                "image_sha256": region_refs[1]["sha256"],
+            },
+        ],
+        "page_renders": [
+            {
+                "source_page_id": "pg_0000000000000000",
+                "source_page_ordinal": 1,
+                "image_path": page_refs[0]["relative_path"],
+                "image_sha256": page_refs[0]["sha256"],
+            }
+        ],
+        "testimonia": [],
+        "cross_capture_autopsia": autopsia,
+    }
+    pixels = atomic_delivered_pixels(autopsia, read_bytes=store.__getitem__, max_images=64)
+    # The pixels are in path order (r2's image first), the opposite of the
+    # dossier's declared region_id order -- exactly the divergence the finding
+    # named.
+    assert pixels["region_images"] == [image_r2, image_r1]
+    with client:
+        endpoint.script(ScriptedAnswer(content="ok", finish_reason="stop"))
+        _reader(client, chair).read(dossier, pass_kind="perlectio", delivered_pixels=pixels)
+    posted = endpoint.requests[0]
+    image_parts = [
+        part for part in posted["messages"][0]["content"] if part.get("type") == "image_url"
+    ]
+    posted_bytes = [
+        base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) for part in image_parts
+    ]
+    assert posted_bytes == [image_r2, image_r1, page_image]
 
 
 def test_a_drifted_image_is_refused_before_anything_is_sent(tmp_path: Path) -> None:
@@ -490,10 +669,58 @@ def test_no_max_tokens_sends_none_and_the_client_never_adds_one(tmp_path: Path) 
     assert "max_tokens" not in endpoint.requests[0]
 
 
+# --- FixtureReader carries no engine, so it must never publish engine_call ----
+
+
+def test_a_fixture_reading_never_publishes_the_engine_call_key() -> None:
+    """`reader.py`'s own docstring claim: `FixtureReader` has no engine behind
+    it and never sets `engine_call`. `LectioResult`'s key set is otherwise open
+    (`total=False`), so nothing but a test closes it -- a `FixtureReader` that
+    started emitting a synthetic `engine_call` would publish fabricated engine
+    provenance on a fixture Perlectio with every other check green."""
+    fixture = {
+        "act": [{"key": "a1", "text": "final one"}],
+        "page": [],
+        "scenario": [{"name": "happy"}],
+    }
+    result = FixtureReader(fixture, "happy").read(
+        {"act_id": "act_0000000000000000", "act_key": "a1", "regions": [], "page_renders": []},
+        pass_kind="perlectio",
+    )
+    assert set(result) == {"text", "stop_reason"}
+
+
 # --- prompt fidelity: every pass kind sends exactly the byte-exact template --
 
 
 _ORDINARY_PASS_KINDS = ("perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior")
+
+_TESTIMONIUM = {
+    "witness_label": "attestator_1",
+    "model_name": "fixture/attestator-1",
+    "resolved_provenance": {"resolved_revision": "fixture-v1"},
+    "training_domain": "a synthetic fixture witness",
+    "outcome": "read",
+    "reported": "alpha beta gamma",
+}
+
+
+def _witnessed_dossier(*, region_image: bytes, page_image: bytes, pass_kind: str) -> dict:
+    """A dossier carrying a testimonium on every pass, and -- for `perlectio`,
+    the one production pass a prior draft is actually fed to -- a fed prior
+    draft too. The degenerate all-defaults dossier the fidelity check used to
+    run against never rendered the testimonium row or the sealed Pass-B
+    fragment for any pass kind, so it proved fidelity only on the least
+    interesting bytes the builder can produce."""
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    dossier["testimonia"] = [dict(_TESTIMONIUM)]
+    if pass_kind == "perlectio":
+        dossier["prior_draft"] = {
+            "reference": {"relative_path": "4_perlector/artifacts/x.json", "sha256": "0" * 64},
+            "text": "PRIOR DRAFT TEXT",
+        }
+        dossier["prior_draft_view"] = "fed"
+    return dossier
 
 
 @pytest.mark.parametrize("pass_kind", _ORDINARY_PASS_KINDS)
@@ -504,13 +731,20 @@ def test_the_rendered_prompt_sent_matches_prompt_evidences_own_digest(
     to exactly the `rendered_sha256` `prompts.prompt_evidence` would compute
     for the same chair and dossier -- proving the byte-exact template claim
     against the request that really went out, not only against the builder
-    called in isolation."""
+    called in isolation. The dossier carries a testimonium (every pass) and a
+    fed prior draft (`perlectio`), and the reader is given the sealed R5a
+    protocol config, so the wire check covers the testimonia and Pass-B
+    fragment branches `_neutral_dossier_lines` renders, not only the
+    no-witness, no-prior default."""
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
-    dossier = _dossier(region_image=region_image, page_image=page_image)
+    dossier = _witnessed_dossier(
+        region_image=region_image, page_image=page_image, pass_kind=pass_kind
+    )
+    protocol_config, _protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
     with client:
         endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
-        _reader(client, chair).read(
+        _reader(client, chair, protocol_config=protocol_config).read(
             dossier,
             pass_kind=pass_kind,
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
@@ -520,7 +754,7 @@ def test_the_rendered_prompt_sent_matches_prompt_evidences_own_digest(
         part["text"] for part in posted["messages"][0]["content"] if part.get("type") == "text"
     )
     sealed_dossier = dossier | {"dossier_digest": "d" * 64}
-    evidence = prompts.prompt_evidence(chair, sealed_dossier, None)
+    evidence = prompts.prompt_evidence(chair, sealed_dossier, protocol_config)
     assert digest_bytes(sent_text.encode("utf-8")) == evidence["rendered_sha256"]
 
 

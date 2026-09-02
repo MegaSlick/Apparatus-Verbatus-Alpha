@@ -112,7 +112,7 @@ class VLLMReader:
         *,
         client: ChairClient,
         chair: ChairIdentity,
-        protocol_config: dict[str, str] | None,
+        protocol_config: Mapping[str, str | int] | None,
         max_tokens: int | None,
     ) -> None:
         self._client = client
@@ -153,10 +153,39 @@ class VLLMReader:
             )
         region_images = list(delivered_pixels.get("region_images", []))
         page_render_images = list(delivered_pixels.get("page_render_images", []))
+        # `delivered_pixels` was built by `atomic_delivered_pixels` walking the
+        # dossier's own `cross_capture_autopsia` -- region refs across every
+        # view, then page-render refs across every view (both already sorted
+        # onto that record). `dossier['regions']`/`['page_renders']` sort on
+        # `region_id`/`source_page_id` instead, an independent key from a
+        # content-addressed `image_path`, so claiming those two lists' order
+        # here would name digests in an order the pixels were never sent in --
+        # refused half the time by `ChairClient`'s own "exactly and in order"
+        # check for any act with more than one region or page render. Walking
+        # the same autopsia the same way is the only way the claimed order can
+        # ever agree with the sent order.
+        autopsia = dossier.get("cross_capture_autopsia")
+        if not isinstance(autopsia, dict) or not isinstance(autopsia.get("views"), list):
+            raise ContractError(
+                "the live Perlector reader received a dossier with no cross-capture autopsia; "
+                "the order delivered pixels were sent in cannot be recovered from region_id or "
+                "source_page_id order alone"
+            )
         image_sha256s = tuple(
-            [region["image_sha256"] for region in dossier.get("regions", [])]
-            + [render["image_sha256"] for render in dossier.get("page_renders", [])]
+            [ref["sha256"] for view in autopsia["views"] for ref in view["region_refs"]]
+            + [ref["sha256"] for view in autopsia["views"] for ref in view["page_render_refs"]]
         )
+        declared_sha256s = [region["image_sha256"] for region in dossier.get("regions", [])] + [
+            render["image_sha256"] for render in dossier.get("page_renders", [])
+        ]
+        if sorted(image_sha256s) != sorted(declared_sha256s):
+            raise ContractError(
+                f"act {dossier.get('act_key')!r}: the cross-capture autopsia names different "
+                "evidence than the dossier's own regions and page_renders -- the dossier and "
+                "the presentation it was delivered beside must name the same images, whatever "
+                f"order each sorts them in (autopsia {sorted(image_sha256s)!r}, dossier "
+                f"{sorted(declared_sha256s)!r})"
+            )
 
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         content.extend(_image_content_blocks(region_images + page_render_images))
