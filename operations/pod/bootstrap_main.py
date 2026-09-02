@@ -36,6 +36,20 @@ bootstrap-and-hold path and the ``--hold-only`` drill hold until
 process's own exit approximately coincides with the pod-side timer closing the
 pod at the same instant regardless.  A missing or unparseable deadline is a
 startup refusal: holding with no bound cannot be tested and cannot be trusted.
+
+**A refusal leaves a durable reason, not just a stderr line nobody can read
+after the container is gone.**  Once ``--report-path`` has passed containment,
+every later refusal best-effort writes its reason there before exiting
+(GOVERNANCE 2 -- nothing is lost silently).  Two refusals necessarily precede
+a usable report path and stay stderr-only residue: the credential-argv scan
+(before argv is even parsed) and ``--report-path`` itself failing containment.
+
+**A gated chair repository needs its Hugging Face token kept.**  The
+environment scrub pops anything credential-shaped, including ``HF_TOKEN`` and
+``HUGGING_FACE_HUB_TOKEN``, before the chair cache or model store ever fetch
+anything.  A launch that pins any gated repository must pass
+``--keep-env HF_TOKEN`` (and/or ``--keep-env HUGGING_FACE_HUB_TOKEN``), or the
+fetch fails on a pod that is already billing.
 """
 
 from __future__ import annotations
@@ -49,7 +63,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable, MutableMapping, Sequence
+from typing import Callable, Mapping, MutableMapping, Sequence
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
@@ -111,7 +125,17 @@ any of these is supplied, because a drill runs no bootstrap step at all."""
 
 
 class PlanRefusal(ValueError):
-    """A named, pre-execution refusal; nothing has been fetched, cloned, or held."""
+    """A named, pre-execution refusal; nothing has been fetched, cloned, or held.
+
+    ``report_path`` is set only when the refusal is raised after ``--report-path``
+    itself has passed containment, so ``main`` can best-effort leave the reason
+    durable on the volume even though ``resolve_plan`` never got to return a
+    ``Plan``.
+    """
+
+    def __init__(self, message: str, *, report_path: Path | None = None) -> None:
+        super().__init__(message)
+        self.report_path = report_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,13 +285,24 @@ def _factory(reference: str) -> Callable[[], object]:
     return getattr(importlib.import_module(module_name), name)
 
 
-def resolve_plan(args: argparse.Namespace) -> Plan:
-    """Validate every argument and combination before anything runs or holds."""
+def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None = None) -> Plan:
+    """Validate every argument and combination before anything runs or holds.
+
+    ``environment`` is read only for ``VERBATUS_LAUNCH_TOKEN`` -- the launch
+    token binds ``--report-path`` (and, for a full plan, ``--journal``) to this
+    launch, mirroring ``models._required_timer_arguments``'s guard against a
+    second launch on the same retained volume silently overwriting the first
+    launch's evidence (GOVERNANCE 4).  It must be read here, before ``main``
+    scrubs the environment, because the token's own name is credential-shaped
+    and would otherwise be popped before this ever ran.
+    """
 
     volume_mount_path = Path(args.volume_mount_path)
     if not PurePosixPath(args.volume_mount_path).is_absolute():
         raise PlanRefusal("--volume-mount-path must be an absolute path")
     report_path = _require_contained(args.report_path, volume_mount_path, "--report-path")
+    launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
 
     plan_supplied = [
         name for name in _PLAN_ONLY_FLAGS if getattr(args, name, None) not in (None, [])
@@ -275,7 +310,8 @@ def resolve_plan(args: argparse.Namespace) -> Plan:
     if args.hold_only:
         if plan_supplied:
             raise PlanRefusal(
-                "--hold-only refuses a plan argument: " + ", ".join(sorted(plan_supplied))
+                "--hold-only refuses a plan argument: " + ", ".join(sorted(plan_supplied)),
+                report_path=report_path,
             )
         return Plan(
             volume_mount_path=volume_mount_path,
@@ -300,26 +336,56 @@ def resolve_plan(args: argparse.Namespace) -> Plan:
         if value is None
     ]
     if missing:
-        raise PlanRefusal("missing required plan argument(s): " + ", ".join(missing))
+        raise PlanRefusal(
+            "missing required plan argument(s): " + ", ".join(missing), report_path=report_path
+        )
 
     repository = args.repository.resolve()
     lockfile = args.lockfile.resolve()
     expected_lockfile = (repository / "uv.lock").resolve()
     if lockfile != expected_lockfile:
         raise PlanRefusal(
-            f"--lockfile {lockfile} is not the checked-out repository uv.lock {expected_lockfile}"
+            f"--lockfile {lockfile} is not the checked-out repository uv.lock {expected_lockfile}",
+            report_path=report_path,
         )
-    journal = _require_contained(args.journal, volume_mount_path, "--journal")
+    journal = _require_contained(
+        args.journal, volume_mount_path, "--journal", report_path=report_path
+    )
+    _require_launch_token_named(journal, launch_token, "--journal", report_path=report_path)
     commit = args.repository_commit
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
-        raise PlanRefusal("--repository-commit must be a full lowercase Git SHA-1")
+        raise PlanRefusal(
+            "--repository-commit must be a full lowercase Git SHA-1", report_path=report_path
+        )
 
     try:
         capacity = json.loads(args.model_store_capacity_json or "{}")
     except json.JSONDecodeError as error:
-        raise PlanRefusal(f"--model-store-capacity-json is not valid JSON: {error}") from error
+        raise PlanRefusal(
+            f"--model-store-capacity-json is not valid JSON: {error}", report_path=report_path
+        ) from error
     if not isinstance(capacity, dict):
-        raise PlanRefusal("--model-store-capacity-json must decode to a JSON object")
+        raise PlanRefusal(
+            "--model-store-capacity-json must decode to a JSON object", report_path=report_path
+        )
+
+    store_root = _require_contained(
+        args.store_root.resolve(), volume_mount_path, "--store-root", report_path=report_path
+    )
+    models_config = _require_contained(
+        args.models_config.resolve(),
+        repository,
+        "--models-config",
+        base_label="the checked-out repository",
+        report_path=report_path,
+    )
+    placement_config = _require_contained(
+        args.placement_config.resolve(),
+        repository,
+        "--placement-config",
+        base_label="the checked-out repository",
+        report_path=report_path,
+    )
 
     cache_root = args.cache_root or (volume_mount_path / "chair-cache")
     fixture = args.fixture or (
@@ -341,9 +407,9 @@ def resolve_plan(args: argparse.Namespace) -> Plan:
         repository_commit=commit,
         lockfile=lockfile,
         journal=journal,
-        store_root=args.store_root,
-        models_config=args.models_config,
-        placement_config=args.placement_config,
+        store_root=store_root,
+        models_config=models_config,
+        placement_config=placement_config,
         cache_root=cache_root,
         fixture=fixture,
         submission_manifest=submission_manifest,
@@ -360,22 +426,96 @@ def _positive_interval(value: float) -> float:
     return float(value)
 
 
-def _require_contained(path: Path, volume_mount_path: Path, flag: str) -> Path:
+def _require_contained(
+    path: Path,
+    base_path: Path,
+    flag: str,
+    *,
+    base_label: str | None = None,
+    report_path: Path | None = None,
+) -> Path:
+    """Refuse a path that escapes ``base_path`` -- a symlink or ``..`` included.
+
+    ``base_label`` names the base in the refusal for a human; it defaults to
+    "the mounted volume" so every existing volume-relative call keeps its
+    established wording unchanged. ``report_path`` is passed through to the
+    refusal wherever it is already known, so a durable reason can be left on
+    the volume even for this refusal (see ``PlanRefusal.report_path``).
+    """
+
+    label = base_label if base_label is not None else "the mounted volume"
     raw = str(path)
     posix_path = PurePosixPath(raw)
-    posix_volume = PurePosixPath(str(volume_mount_path))
+    posix_base = PurePosixPath(str(base_path))
     if (
         ".." in raw.split("/")
         or not posix_path.is_absolute()
-        or posix_path == posix_volume
-        or not posix_path.is_relative_to(posix_volume)
+        or posix_path == posix_base
+        or not posix_path.is_relative_to(posix_base)
     ):
-        raise PlanRefusal(f"{flag} {raw!r} must be inside the mounted volume {volume_mount_path}")
+        raise PlanRefusal(
+            f"{flag} {raw!r} must be inside {label} {base_path}", report_path=report_path
+        )
     return path
+
+
+def _require_launch_token_named(
+    path: Path, launch_token: str | None, flag: str, *, report_path: Path
+) -> None:
+    """Mirror ``models._required_timer_arguments``'s guard, on the bootstrap side.
+
+    A volume is retained across pods by design (GOVERNANCE 4): an unbound
+    ``--report-path`` or ``--journal`` would let a second launch's evidence on
+    the same volume silently replace the first's.  A launch with no token set
+    gets no protection here, same as the pod-timer launch path when
+    ``VERBATUS_LAUNCH_TOKEN`` is absent from its metadata.
+    """
+
+    if launch_token and launch_token not in path.name:
+        raise PlanRefusal(
+            f"{flag} must include this launch's token, "
+            "so a second launch on the same volume cannot overwrite its evidence",
+            report_path=report_path,
+        )
+
+
+_CREDENTIAL_VALUE_PREFIXES = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
+_CREDENTIAL_VALUE_SAFE_CHARACTERS = frozenset(" /\\.:@")
+
+
+def _looks_like_credential_value(value: str) -> bool:
+    """A shape check independent of ``looks_like_credential_field``'s name check.
+
+    That predicate asks whether a *name* names itself a secret; a real leaked
+    secret value carries no such name.  This catches a value shaped like one: a
+    known provider prefix, or an opaque, separator-free run of 20+ mixed
+    alphanumeric characters -- excluding a plain lowercase-hex identifier (a
+    git commit, a manifest digest), which this argv legitimately carries and
+    which a real credential essentially never is.
+    """
+
+    if value.startswith(_CREDENTIAL_VALUE_PREFIXES):
+        return True
+    if len(value) < 20 or any(
+        character in _CREDENTIAL_VALUE_SAFE_CHARACTERS for character in value
+    ):
+        return False
+    if all(character in "0123456789abcdef" for character in value):
+        return False
+    return any(character.isalpha() for character in value) and any(
+        character.isdigit() for character in value
+    )
 
 
 def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
     """Refuse before parsing spends a look at any value that reads like a secret.
+
+    Two independent checks: ``looks_like_credential_field`` asks whether the
+    *name* implied by the value looks like a secret's name (a marker word);
+    ``_looks_like_credential_value`` asks whether the value's own *shape* looks
+    like an opaque token, regardless of what it is named. Neither is a proof --
+    a value can be a real secret without either marker, and this refusal cannot
+    see into ``--transfer-target-factory``'s runtime capability at all.
 
     ``--keep-env`` values are environment variable *names* being retained, not
     discovered secrets -- ``HF_TOKEN`` is exactly the kind of name this flag
@@ -394,7 +534,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
         previous = ""
         if flag == "--keep-env":
             continue
-        if value and looks_like_credential_field(value):
+        if value and (looks_like_credential_field(value) or _looks_like_credential_value(value)):
             raise PlanRefusal(f"argv value looks like a credential and was refused: {value!r}")
 
 
@@ -433,12 +573,37 @@ def _hard_deadline(environment: MutableMapping[str, str]) -> datetime:
 
 
 def write_probe(volume_mount_path: Path) -> None:
-    """Probe the volume with a real write, not a stat -- a mount can exist and refuse writes."""
+    """Probe the volume with a real write, not a stat -- a mount can exist and refuse writes.
 
+    Refuses first, without writing anything, if ``volume_mount_path`` is not
+    already a directory -- ``atomic_write`` creates its target's parent
+    directories, so routing the probe through it would let an *unmounted*
+    volume pass by creating the very mount point the probe exists to require.
+    The marker write and read-back bypass ``atomic_write``/``exclusive_write``
+    for the same reason: neither may create ``volume_mount_path`` itself.
+    """
+
+    if not volume_mount_path.is_dir():
+        raise PlanRefusal(
+            f"volume write probe failed at {volume_mount_path}: not a mounted directory"
+        )
     marker = volume_mount_path / f".bootstrap-write-probe-{os.getpid()}-{secrets.token_hex(4)}"
+    payload = b"bootstrap write probe\n"
     try:
-        atomic_write(marker, b"bootstrap write probe\n")
-    except Exception as error:
+        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError as error:
+        raise PlanRefusal(f"volume write probe failed at {volume_mount_path}: {error}") from error
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        observed = marker.read_bytes()
+        if observed != payload:
+            raise PlanRefusal(
+                f"volume write probe failed at {volume_mount_path}: read-back did not match"
+            )
+    except OSError as error:
         raise PlanRefusal(f"volume write probe failed at {volume_mount_path}: {error}") from error
     finally:
         try:
@@ -535,6 +700,27 @@ def _build_preflight(plan: Plan) -> Callable[[], dict[str, object]]:
     return _run
 
 
+class _LazyChairCache:
+    """Defer ``_build_cache`` until the CHAIR_CACHE step actually verifies.
+
+    ``build_actions`` runs before ``Bootstrapper.run`` -- before REPOSITORY has
+    checked out ``--repository-commit`` and before UV_ENVIRONMENT has synced
+    the lockfile.  ``_build_cache`` eagerly reads ``--models-config`` off disk
+    and constructs the production Hugging Face fetcher; built eagerly, a
+    CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
+    on disk at container start, not to the commit the journal names
+    (GOVERNANCE 6).  The transfer and model-store actions are already lazy this
+    way (``materialize_model_store=lambda: ...``); this closes the one that
+    was not.
+    """
+
+    def __init__(self, plan: Plan) -> None:
+        self._plan = plan
+
+    def verify(self) -> dict[str, object]:
+        return _build_cache(self._plan).verify()
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real, tracked composition. Tests inject a fake instead of calling this."""
 
@@ -542,7 +728,7 @@ def build_actions(plan: Plan) -> BootstrapActions:
         repository=plan.repository,  # type: ignore[arg-type]
         transfer=_build_transfer(plan),
         materialize_model_store=lambda: _build_model_store(plan).materialize(),
-        cache=_build_cache(plan),
+        cache=_LazyChairCache(plan),  # type: ignore[arg-type]
         preflight=_build_preflight(plan),
     )
 
@@ -585,6 +771,43 @@ def hold(
         tick += 1
 
 
+REFUSAL_SCHEMA = "pod-bootstrap-refusal.v1"
+
+
+def _write_refusal_report(
+    report_path: Path | None, reason: str, *, now: Callable[[], datetime]
+) -> None:
+    """Best-effort: leave the refusal reason durable on the volume before exit.
+
+    Without this, a refusal is a stderr line that dies with the container --
+    unreachable from the laptop once the pod is destroyed (GOVERNANCE 2). Best
+    effort because the volume that would hold this report may itself be the
+    thing that just failed (an unwritable mount); a failed write here must not
+    mask or replace the refusal already printed and returned.
+
+    Never creates ``report_path``'s parent directory: ``atomic_write`` does,
+    and calling it unconditionally here would let exactly the write-probe
+    refusal this exists to record silently create the unmounted volume the
+    probe just proved was not there.
+    """
+
+    if report_path is None or not report_path.parent.is_dir():
+        return
+    try:
+        atomic_write(
+            report_path,
+            canonical_json(
+                {
+                    "schema": REFUSAL_SCHEMA,
+                    "reason": reason,
+                    "at": now().isoformat().replace("+00:00", "Z"),
+                }
+            ),
+        )
+    except OSError:
+        pass
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -596,10 +819,11 @@ def main(
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
     parser = build_parser()
+    plan: Plan | None = None
     try:
         refuse_credential_looking_argv(raw_argv)
         args = parser.parse_args(raw_argv)
-        plan = resolve_plan(args)
+        plan = resolve_plan(args, environment)
         write_probe(plan.volume_mount_path)
         scrubbed = scrub_environment(environment, keep=plan.keep_env)
         environment.clear()
@@ -607,6 +831,8 @@ def main(
         hard_deadline = _hard_deadline(environment)
     except PlanRefusal as refusal:
         print(f"bootstrap_main refused: {refusal}", file=sys.stderr)
+        report_path = plan.report_path if plan is not None else refusal.report_path
+        _write_refusal_report(report_path, str(refusal), now=now)
         return 2
 
     if plan.dry_run:
@@ -634,6 +860,7 @@ def main(
         actions = actions_factory(plan)
     except Exception as error:
         print(f"bootstrap_main could not build its actions: {error}", file=sys.stderr)
+        _write_refusal_report(plan.report_path, f"could not build actions: {error}", now=now)
         return 2
     report = Bootstrapper(journal, actions).run()
     if not report.green:
