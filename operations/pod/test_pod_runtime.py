@@ -60,6 +60,7 @@ from .models import (
     CostCapture,
     CostLine,
     LeaseFormatError,
+    PendingCreateIntent,
     PodCreateRequest,
     PodRecord,
     Presence,
@@ -6377,3 +6378,136 @@ def test_acknowledged_at_is_stamped_from_the_injected_clock_not_wall_time(tmp_pa
     assert context.acknowledged_at == expected
     real_wall_clock_year = datetime.now(timezone.utc).year
     assert clock.now().year != real_wall_clock_year
+
+
+def test_a_pending_create_lease_report_cannot_prove_a_pod(tmp_path: Path) -> None:
+    """A lease that never bound a pod (`phase="pending-create"`, `pod_id=None`)
+    must be refused by name, not accepted because `None == None` compares
+    equal -- the opposite of the posture `lease._validate_controller_record`
+    already takes at exact pod binding."""
+
+    clock = Clock()
+    hard_deadline = clock.now() + timedelta(seconds=60)
+    launch_token = "d" * 32
+    pending = PendingCreateIntent(
+        name="pod-runtime-test",
+        gpu_type="fake-48gb",
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="test-volume",
+        volume_mount_path="/workspace/private",
+        docker_start_cmd=(
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--timer-factory",
+            "operations.pod.provider_runpod:timer_context_from_environment",
+            "--bootstrap-command-json",
+            '["python","-m","operations.pod.bootstrap"]',
+            "--report-path",
+            f"/workspace/private/pod-runtime-report-{launch_token}.json",
+        ),
+        hard_deadline=hard_deadline,
+        repository_commit="b" * 40,
+        launch_token="d" * 32,
+        pod_hourly_usd=Decimal("0.77"),
+        volume_hourly_usd=Decimal("0.05"),
+        billing_cutoff_margin_seconds=3600,
+    )
+    lease = PodLease(
+        lease_id="c" * 32,
+        launch_token="d" * 32,
+        provider_name="fake",
+        pod_id=None,
+        volume_id="test-volume",
+        pod_hourly_usd=Decimal("0.77"),
+        volume_hourly_usd=Decimal("0.05"),
+        created_at=clock.now(),
+        started_at=None,
+        hard_deadline=hard_deadline,
+        owner_token="laptop",
+        heartbeat_at=clock.now(),
+        phase="pending-create",
+        pending_create=pending,
+    )
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(fake(clock), clock), now=clock.now))
+    report_path = tmp_path / "pending-create-report.json"
+    _persist_or_close(
+        context,
+        report_path,
+        {"bootstrap": {"argv": ["true"], "state": "running"}, "close": None, "green": False},
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["identity"]["pod_id"] is None
+
+    with pytest.raises(ValueError, match="cannot prove a pod before exact pod binding"):
+        validate_pod_report_identity(
+            report, lease_id=lease.lease_id, pod_id=lease.pod_id, hard_deadline=lease.hard_deadline
+        )
+
+
+def test_an_unparseable_acknowledged_at_is_refused_by_name() -> None:
+    lease_id = "a" * 32
+    pod_id = "pod-1"
+    hard_deadline = START + timedelta(seconds=60)
+    with pytest.raises(ValueError, match="not an RFC3339 UTC stamp"):
+        validate_pod_report_identity(
+            {
+                "schema": POD_REPORT_SCHEMA,
+                "identity": {
+                    "lease_id": lease_id,
+                    "pod_id": pod_id,
+                    "hard_deadline": hard_deadline.isoformat().replace("+00:00", "Z"),
+                },
+                "acknowledged_at": "not-a-timestamp-at-all",
+            },
+            lease_id=lease_id,
+            pod_id=pod_id,
+            hard_deadline=hard_deadline,
+        )
+
+
+def test_acknowledged_report_stamps_win_over_a_payload_that_carries_the_same_keys(
+    tmp_path: Path,
+) -> None:
+    """`_acknowledged_report` splices the caller's payload first, so the
+    authoritative schema/identity/acknowledged_at cannot be overridden by a
+    payload that happens to carry those keys."""
+
+    from .pod_timer import _acknowledged_report
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "splice-order.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    poisoned = {
+        "schema": "not-a-real-schema",
+        "identity": {"lease_id": "poisoned", "pod_id": "poisoned", "hard_deadline": "poisoned"},
+        "acknowledged_at": "poisoned",
+        "bootstrap": {"argv": ["true"], "state": "running"},
+    }
+
+    report = _acknowledged_report(context, poisoned)
+
+    assert report["schema"] == POD_REPORT_SCHEMA
+    assert report["identity"] == dict(context.identity)
+    assert report["acknowledged_at"] == context.acknowledged_at
+    assert report["bootstrap"] == {"argv": ["true"], "state": "running"}
+
+
+def test_timer_context_is_hashable(tmp_path: Path) -> None:
+    """A frozen dataclass with a dict-valued field must not silently lose its
+    default identity-based `__hash__` -- a supervisor or test that puts a
+    `TimerContext` in a set or dict key must not crash."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "hash-check.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    hash(context)
+    assert {context} == {context}

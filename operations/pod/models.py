@@ -157,7 +157,7 @@ def validate_pod_report_identity(
     value: Mapping[str, object],
     *,
     lease_id: str,
-    pod_id: str,
+    pod_id: str | None,
     hard_deadline: datetime,
 ) -> None:
     """Refuse a pod report unless its identity names this exact lease.
@@ -182,6 +182,8 @@ def validate_pod_report_identity(
         "hard_deadline",
     }:
         raise ValueError("pod report identity must contain exactly lease_id, pod_id, hard_deadline")
+    if pod_id is None or not isinstance(identity["pod_id"], str) or not identity["pod_id"].strip():
+        raise ValueError("pod report cannot prove a pod before exact pod binding")
     stamped_deadline = (
         require_utc(hard_deadline, "pod report hard_deadline").isoformat().replace("+00:00", "Z")
     )
@@ -194,6 +196,11 @@ def validate_pod_report_identity(
     acknowledged_at = value.get("acknowledged_at")
     if not isinstance(acknowledged_at, str) or not acknowledged_at:
         raise ValueError("pod report must carry a non-blank acknowledged_at stamp")
+    try:
+        parsed_acknowledged_at = datetime.fromisoformat(acknowledged_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("pod report acknowledged_at is not an RFC3339 UTC stamp") from error
+    require_utc(parsed_acknowledged_at, "pod report acknowledged_at")
 
 
 @dataclass(frozen=True, slots=True)

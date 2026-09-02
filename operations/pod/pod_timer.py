@@ -40,7 +40,7 @@ def _stamp(value: datetime) -> str:
     return require_utc(value, "pod timer timestamp").isoformat().replace("+00:00", "Z")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class TimerContext:
     """A generic timer already supplied with its provider-neutral close path.
 
@@ -363,10 +363,10 @@ def _acknowledged_report(context: TimerContext, value: dict[str, object]) -> dic
     """
 
     return {
+        **value,
         "schema": POD_REPORT_SCHEMA,
         "identity": dict(context.identity),
         "acknowledged_at": context.acknowledged_at,
-        **value,
     }
 
 
