@@ -88,6 +88,20 @@ def body_path(cache_root: Path, response_sha256: str) -> Path:
     return Path(cache_root) / f"{response_sha256}.jpg"
 
 
+def owner_path(cache_root: Path, response_sha256: str) -> Path:
+    """Where the first *verified* claim on a response digest is recorded.
+
+    Written only after a page has passed every check in `fetch.py:fetch_page`
+    (decode, dimensions, EXIF, region) — never from the raw request record, which
+    is written as soon as the bytes are down but before any of that verification
+    runs. `write_new_file` makes the first writer permanent: whichever identifier
+    claims a digest first, across any number of runs, owns it forever, regardless
+    of the order a later run happens to revisit identifiers in.
+    """
+    _require_sha256(response_sha256, "response digest")
+    return Path(cache_root) / "owners" / f"{response_sha256}.json"
+
+
 def request_record_path(cache_root: Path, request_key: str) -> Path:
     """Where the never-re-fetch marker for one request lives."""
     _require_sha256(request_key, "request key")

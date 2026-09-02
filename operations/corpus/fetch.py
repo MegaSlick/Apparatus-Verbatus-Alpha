@@ -23,6 +23,8 @@ subclasses (`Http403Stop`, `RequestCeilingReached`) are run-level: they escape
 per-run request ceiling" mean the *run*, not the page.
 """
 
+import argparse
+import email.utils
 import http.client
 import io
 import json
@@ -36,11 +38,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 
 from . import CorpusRefusal
 from . import cache as cache_module
-from .holdout import refuse_held_out_page
+from . import plan as plan_module
+from .holdout import load_holdout, refuse_held_out_page, validate_holdout
 
 # `SPEC.md` §5.1's closed refusal vocabulary, verbatim. A caller that wants to
 # dispatch on the reason reads `str(error).split(":", 1)[0]`, same convention as
@@ -145,12 +148,20 @@ class RateLimiter:
 
 
 def _retry_delay(retry_after_header: str | None, attempt: int, max_backoff_seconds: float) -> float:
-    """`Retry-After` (seconds form) if present and sane, else bounded exponential backoff."""
+    """`Retry-After`, either the seconds form or the HTTP-date form (RFC 7231), else backoff."""
     if retry_after_header:
         try:
             seconds = float(retry_after_header)
         except ValueError:
-            pass  # The HTTP-date form is not parsed; fall through to backoff.
+            try:
+                target = email.utils.parsedate_to_datetime(retry_after_header)
+            except (TypeError, ValueError):
+                target = None
+            if target is not None:
+                if target.tzinfo is None:
+                    target = target.replace(tzinfo=UTC)
+                remaining = (target - datetime.now(UTC)).total_seconds()
+                return min(max(0.0, remaining), max_backoff_seconds)
         else:
             if seconds >= 0:
                 return min(seconds, max_backoff_seconds)
@@ -220,15 +231,15 @@ class FetchSession:
     def _request(self, url: str) -> tuple[bytes, int]:
         """One polite GET: rate-limited, retried on 429/503, halted on 403 or ceiling."""
         config = self.config
-        if (
-            config.max_requests_per_run is not None
-            and self.request_count >= config.max_requests_per_run
-        ):
-            raise RequestCeilingReached(
-                f"per-run request ceiling {config.max_requests_per_run} reached before {url!r}"
-            )
         attempt = 0
         while True:
+            if (
+                config.max_requests_per_run is not None
+                and self.request_count >= config.max_requests_per_run
+            ):
+                raise RequestCeilingReached(
+                    f"per-run request ceiling {config.max_requests_per_run} reached before {url!r}"
+                )
             self.rate_limiter.wait(config.sleep)
             self.request_count += 1
             request = urllib.request.Request(url, headers={"User-Agent": config.user_agent})
@@ -264,22 +275,29 @@ class FetchSession:
 
 
 def _known_response_digests(cache_root: Path) -> dict[str, str]:
-    """Every response digest already claimed by an earlier image fetch, from disk.
+    """Every response digest already claimed by an earlier, *verified* image fetch.
 
     Maps digest -> the identifier that first claimed it, not just a set: a page
     re-fetched from cache on a later run must not be flagged as a duplicate of
     *itself*, only of some *other* identifier landing the same bytes. Makes
     `duplicate-page-bytes` detection survive across runs, not just within one
-    process — both fetches' request records are read back here.
+    process.
+
+    Reads `cache/owners/`, not `cache/requests/`: a request record is written as
+    soon as the bytes are down, before `fetch_page` has decoded them, checked
+    dimensions, EXIF, or regions — reading it back here would let which of two
+    duplicate pages is "first" flip between runs depending on filesystem glob
+    order (`sorted(requests_dir.glob(...))`), independent of fetch order. An
+    owner record is written only after a page passes every check, so the
+    identifier on disk is the one that actually earned the claim, permanently.
     """
-    requests_dir = Path(cache_root) / "requests"
+    owners_dir = Path(cache_root) / "owners"
     digests: dict[str, str] = {}
-    if not requests_dir.exists():
+    if not owners_dir.exists():
         return digests
-    for path in sorted(requests_dir.glob("*.json")):
+    for path in owners_dir.glob("*.json"):
         record = json.loads(path.read_bytes())
-        if record.get("kind") == "image" and record.get("response_sha256"):
-            digests.setdefault(record["response_sha256"], record["identifier"])
+        digests[path.stem] = record["identifier"]
     return digests
 
 
@@ -360,6 +378,12 @@ def _fetch_info(session: FetchSession, page: dict[str, Any]) -> dict[str, Any]:
     record = cache_module.load_request_record(session.config.cache_root, key)
     if record is not None:
         info_path = _info_path(session.config.info_root, identifier)
+        if not info_path.exists():
+            raise CorpusRefusal(
+                f"http-error: retained info.json missing for {identifier!r} — its request "
+                f"record ({key}) says this was already fetched but the retained copy is gone; "
+                "delete that request record to force a re-fetch"
+            )
         return json.loads(info_path.read_bytes())
 
     body, status = session._request(page["info_url"])
@@ -416,7 +440,11 @@ def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[byt
         try:
             body, status = session._request(candidates[size_parameter])
         except _HttpStatusError as error:
-            if size_parameter == "full" and error.status in _FALLBACK_STATUSES:
+            if error.status in _FALLBACK_STATUSES:
+                # A 400/501 here means only "this size parameter is unsupported" —
+                # for `full` that is expected fallback behaviour, for `max` it means
+                # the server accepted neither, which the loop's trailing raise below
+                # names as `unsupported-size-parameter` rather than a bare http-error.
                 cache_module.write_request_record(
                     session.config.cache_root,
                     key,
@@ -448,6 +476,11 @@ def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[byt
             },
         )
         return body, size_parameter
+    if isinstance(last_error, _HttpStatusError) and last_error.status in _FALLBACK_STATUSES:
+        raise CorpusRefusal(
+            f"unsupported-size-parameter: server accepted neither 'full' nor 'max' for "
+            f"{identifier!r} ({last_error})"
+        )
     raise CorpusRefusal(
         f"http-error: both 'full' and 'max' size requests failed for {identifier!r} ({last_error})"
     )
@@ -486,11 +519,29 @@ def fetch_page(
                 f"{response_sha256!r}, already claimed by identifier {owner!r}"
             )
 
-        image = _decode_jpeg(body)
-        _check_dimensions(image, width, height)
-        _check_exif_orientation(image)
-        _check_regions(page["records"], width, height)
+        image_key = _image_request_key(identifier, size_used)
+        try:
+            image = _decode_jpeg(body)
+            _check_dimensions(image, width, height)
+            _check_exif_orientation(image)
+            _check_regions(page["records"], width, height)
+        except CorpusRefusal as error:
+            # The request record for `image_key` was already written as "fetched"
+            # once the body landed (`_fetch_image_bytes`), before any of these
+            # checks ran, so a bad answer would otherwise be cached forever with
+            # no way back short of hand-editing the cache. Name the recovery path.
+            raise CorpusRefusal(
+                f"{error} — cached under request key {image_key!r}; delete "
+                f"cache/requests/{image_key}.json to force a re-fetch on the next run"
+            ) from error
 
+        # Claimed only now, after every check has passed: an owner record written
+        # from the raw request record (before verification) would let which of two
+        # duplicate pages "wins" flip between runs depending on filesystem order.
+        cache_module.write_new_file(
+            cache_module.owner_path(session.config.cache_root, response_sha256),
+            canonical_bytes({"identifier": identifier}),
+        )
         session.seen_response_digests.setdefault(response_sha256, identifier)
         entry.update(
             {
@@ -503,8 +554,15 @@ def fetch_page(
         )
         return entry
     except CorpusRefusal as error:
-        reason = str(error).split(":", 1)[0]
-        entry.update({"status": "refused", "reason": reason, "detail": str(error)})
+        detail = str(error)
+        reason = detail.split(":", 1)[0]
+        if reason not in FETCH_REFUSAL_REASONS:
+            # `cache.py` and other collaborators raise their own, differently
+            # closed refusal vocabularies (e.g. `malformed-digest`); a log entry's
+            # `reason` must stay inside this module's own closed set, so anything
+            # else is relabelled — the original text survives in `detail`.
+            reason = "http-error"
+        entry.update({"status": "refused", "reason": reason, "detail": detail})
         return entry
 
 
@@ -529,7 +587,23 @@ def run_fetch(
     passes `split="test"` explicitly (and, per §5.4, should also pass
     `enforce_holdout=False` — deliberately fetching the held split is not the
     same mistake as a `val` build accidentally including a held page).
+
+    Rule 6, nothing enters uninspected: `plan` and `holdout` are revalidated here
+    against their own `self_hash`, not trusted merely because a caller already
+    ran them through `plan.load_plan`/`holdout.load_holdout` once — a tampered
+    plan (a swapped host in `image_url_candidates`, a dropped page) fails its own
+    self-hash check and is refused before a single request is made, rather than
+    fetched from silently.
     """
+    plan = plan_module.validate_plan(plan)
+    if holdout is not None:
+        holdout = validate_holdout(holdout)
+    if split == "val" and enforce_holdout and holdout is None:
+        raise CorpusRefusal(
+            "holdout-ledger-required: split='val' requires a hold-out ledger — pass "
+            "`holdout=...` or, to deliberately skip the defence, `enforce_holdout=False`"
+        )
+
     session = FetchSession(config)
     result = RunResult()
     for page in plan["pages"]:
@@ -539,6 +613,119 @@ def run_fetch(
             entry = fetch_page(session, page, holdout=holdout if enforce_holdout else None)
         except FetchHalt as halt:
             result.halted = type(halt).__name__
+            result.entries.append(
+                {
+                    "identifier": page["identifier"],
+                    "physical_page_id": page["physical_page_id"],
+                    "status": "halted",
+                    "reason": type(halt).__name__,
+                    "detail": str(halt),
+                }
+            )
             break
         result.entries.append(entry)
     return result
+
+
+FETCH_LOG_SCHEMA = "recordgold-fetch-log.v1"
+FETCH_REFUSALS_SCHEMA = "recordgold-fetch-refusals.v1"
+_FETCH_LOG_FIELDS = frozenset(
+    {"schema", "split", "plan_self_hash", "holdout_self_hash", "entries", "halted", "self_hash"}
+)
+
+
+def _seal_fetch_log(
+    result: RunResult, *, split: str, plan: dict[str, Any], holdout: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Close `result` into a canonical, self-hashed `recordgold-fetch-log.v1` record."""
+    body: dict[str, Any] = {
+        "schema": FETCH_LOG_SCHEMA,
+        "split": split,
+        "plan_self_hash": plan["self_hash"],
+        "holdout_self_hash": holdout["self_hash"] if holdout is not None else None,
+        "entries": result.entries,
+        "halted": result.halted,
+    }
+    body["self_hash"] = self_hash(body)
+    return body
+
+
+def validate_fetch_log(record: Any) -> dict[str, Any]:
+    """Refuse a fetch log that is not exactly `recordgold-fetch-log.v1`, closed and self-consistent."""
+    if not isinstance(record, dict) or set(record) != _FETCH_LOG_FIELDS:
+        raise CorpusRefusal(
+            f"malformed-record: fetch log must be the closed record {sorted(_FETCH_LOG_FIELDS)}"
+        )
+    if record["schema"] != FETCH_LOG_SCHEMA:
+        raise CorpusRefusal(
+            f"wrong-schema: expected {FETCH_LOG_SCHEMA!r}, got {record['schema']!r}"
+        )
+    if not verify_self_hash(record):
+        raise CorpusRefusal(
+            "self-hash-mismatch: fetch log self_hash does not verify against its own content"
+        )
+    return record
+
+
+def main(argv: list[str] | None = None) -> RunResult:
+    """Run one fetch pass from the CLI, writing a sealed `ledger/fetch-log.json` and
+    `ledger/refusals.json`.
+
+    `--split test` additionally requires `--release-test-split`: deliberately
+    fetching the held-out split is not the same mistake as a `val` build silently
+    including a held page (`SPEC.md` §5.4 point 2), so it needs a second,
+    explicit flag rather than falling out of `--split` alone. The distinct root
+    §5.4 asks for is simply whichever `--cache-root`/`--info-root`/`--output-dir`
+    the operator passes for that run — this module keeps no default of its own
+    that would let a `val` and a `test` run collide on one directory by accident.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", required=True, help="Path to a recordgold-fetch-plan.v1 file.")
+    parser.add_argument("--holdout", help="Path to a recordgold-holdout.v1 file.")
+    parser.add_argument("--cache-root", required=True)
+    parser.add_argument("--info-root", required=True)
+    parser.add_argument(
+        "--output-dir", required=True, help="Where fetch-log.json/refusals.json land."
+    )
+    parser.add_argument("--split", default="val", choices=("train", "val", "test"))
+    parser.add_argument(
+        "--release-test-split",
+        action="store_true",
+        help="Required to fetch --split test; also disables hold-out enforcement.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.split == "test" and not args.release_test_split:
+        raise CorpusRefusal(
+            "holdout-ledger-required: --split test requires --release-test-split as well — "
+            "fetching the held-out split must be a deliberate, separate act"
+        )
+
+    plan = plan_module.load_plan(args.plan)
+    holdout = load_holdout(args.holdout) if args.holdout else None
+    enforce_holdout = not args.release_test_split
+    config = FetchConfig(cache_root=Path(args.cache_root), info_root=Path(args.info_root))
+
+    result = run_fetch(
+        plan, config, split=args.split, holdout=holdout, enforce_holdout=enforce_holdout
+    )
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log = _seal_fetch_log(result, split=args.split, plan=plan, holdout=holdout)
+    (output_dir / "fetch-log.json").write_bytes(canonical_bytes(log))
+
+    refusals = [entry for entry in result.entries if entry.get("status") in ("refused", "halted")]
+    refusals_body: dict[str, Any] = {
+        "schema": FETCH_REFUSALS_SCHEMA,
+        "split": args.split,
+        "refusals": refusals,
+    }
+    refusals_body["self_hash"] = self_hash(refusals_body)
+    (output_dir / "refusals.json").write_bytes(canonical_bytes(refusals_body))
+
+    return result
+
+
+if __name__ == "__main__":
+    main()

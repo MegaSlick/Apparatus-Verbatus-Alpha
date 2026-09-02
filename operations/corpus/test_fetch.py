@@ -19,25 +19,31 @@ project's one synthetic-page convention even though its bytes do not.
 import http.server
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from PIL import Image
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, self_hash
+from common.contracts.identities import physical_act_id, physical_page_id
 from proof.synthetic_pages import PAGES
 
 from . import cache as cache_module
 from . import fetch as fetch_module
+from . import plan as plan_module
 from .fetch import (
+    FETCH_REFUSAL_REASONS,
     FetchConfig,
     FetchSession,
     Http403Stop,
     fetch_page,
     run_fetch,
+    validate_fetch_log,
 )
 from .holdout import build_holdout
+from .rows import CORPUS_ID
 
 PAGE_WIDTH = PAGES[0]["width"]
 PAGE_HEIGHT = PAGES[0]["height"]
@@ -130,20 +136,61 @@ def _page(
     records: list[dict[str, Any]] | None = None,
     splits_present: list[str] | None = None,
 ) -> dict[str, Any]:
+    """A fetch-plan-shaped page dict, carrying every field `plan.py`'s closed
+    `_PAGE_FIELDS`/`_RECORD_FIELDS` require — not just the ones `fetch_page`
+    itself reads — so the same dict works both as a bare argument to
+    `fetch_page` and, wrapped in `_valid_plan`, as a page inside a plan that
+    `run_fetch` will run through `plan.validate_plan`.
+    """
     base = f"{_base_url(httpd)}/iiif/2/{identifier}"
+    splits_present = splits_present or ["val"]
+    volume, _, designation = identifier.rpartition("/")
+    page_physical_id = physical_page_id(CORPUS_ID, f"test-source/{volume}", designation)
     if records is None:
         records = [{"record_id": f"{identifier}-r0", "region": {"x": 5, "y": 5, "w": 10, "h": 10}}]
+    full_records = [
+        {
+            "record_id": record["record_id"],
+            "physical_act_id": record.get("physical_act_id")
+            or physical_act_id(page_physical_id, record["record_id"]),
+            "region": record["region"],
+            "split": record.get("split", splits_present[0]),
+        }
+        for record in records
+    ]
     return {
         "identifier": identifier,
+        "identifier_encoded": identifier,
         "info_url": f"{base}/info.json",
         "image_url_candidates": {
             "full": f"{base}/full/full/0/default.jpg",
             "max": f"{base}/full/max/0/default.jpg",
         },
-        "physical_page_id": f"pac-{identifier}",
-        "splits_present": splits_present or ["val"],
-        "records": records,
+        "source": "test-source",
+        "volume": volume,
+        "designation": designation,
+        "physical_page_id": page_physical_id,
+        "splits_present": splits_present,
+        "records": full_records,
     }
+
+
+def _valid_plan(pages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wrap `_page(...)` dicts into a full, self-hashed `recordgold-fetch-plan.v1`
+    — what `run_fetch` now requires, since it runs every plan through
+    `plan.validate_plan` before touching a page (rule 6: nothing enters
+    uninspected).
+    """
+    body = {
+        "schema": plan_module.SCHEMA,
+        "corpus_id": CORPUS_ID,
+        "source_row_snapshot_self_hash": digest_bytes(b"test-snapshot"),
+        "pages": pages,
+        "refusals": [],
+        "measurements": {},
+    }
+    body["self_hash"] = self_hash(body)
+    return body
 
 
 def _script(
@@ -308,6 +355,116 @@ def test_duplicate_page_bytes_refused_across_sessions(tmp_path, server):
     assert second["reason"] == "duplicate-page-bytes"
 
 
+def test_duplicate_page_bytes_owner_is_stable_across_reordered_reruns(tmp_path, server):
+    """The winner is the first identifier to pass *verification*, permanently —
+    not whichever identifier's request record a later run's filesystem glob
+    happens to read first.
+    """
+    _script(server, "aa/000", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    _script(server, "bb/000", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+
+    first = fetch_page(FetchSession(config), _page(server, "aa/000"))
+    second = fetch_page(FetchSession(config), _page(server, "bb/000"))
+    assert first["status"] == "fetched"
+    assert second["status"] == "refused"
+    assert second["reason"] == "duplicate-page-bytes"
+
+    # A fresh session, re-run in the exact same order over the exact same cache:
+    # the outcome must be identical, not flipped by `requests/*.json` glob order.
+    third = fetch_page(FetchSession(config), _page(server, "aa/000"))
+    fourth = fetch_page(FetchSession(config), _page(server, "bb/000"))
+    assert third["status"] == "fetched"
+    assert fourth["status"] == "refused"
+    assert fourth["reason"] == "duplicate-page-bytes"
+
+
+def test_unsupported_size_parameter_refused_by_name(tmp_path, server):
+    """Neither `full` nor `max` accepted (both 400/501) is its own named refusal,
+    distinct from a bare `http-error` — SPEC.md's closed vocabulary reserves
+    `unsupported-size-parameter` for exactly this.
+    """
+    _script(
+        server,
+        "vol/018",
+        info=[{"body": INFO_JSON}],
+        full=[{"status": 400, "body": b""}],
+        max_=[{"status": 501, "body": b""}],
+    )
+    page = _page(server, "vol/018")
+    session = FetchSession(_config(tmp_path))
+
+    entry = fetch_page(session, page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "unsupported-size-parameter"
+
+
+def test_non_image_body_refused(tmp_path, server):
+    _script(
+        server,
+        "vol/019",
+        info=[{"body": INFO_JSON}],
+        full=[{"body": b"not a jpeg", "content_type": "text/plain"}],
+    )
+    page = _page(server, "vol/019")
+    session = FetchSession(_config(tmp_path))
+
+    entry = fetch_page(session, page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "non-image-body"
+
+
+def test_unexpected_host_redirect_refused(tmp_path, server):
+    other = _Server(("127.0.0.1", 0), _Handler)
+    other_thread = threading.Thread(target=other.serve_forever, daemon=True)
+    other_thread.start()
+    try:
+        _script(server, "vol/020", info=[{"body": INFO_JSON}])
+        server.script["/iiif/2/vol/020/full/full/0/default.jpg"] = [
+            {
+                "status": 302,
+                "body": b"",
+                "headers": {"Location": f"{_base_url(other)}/elsewhere.jpg"},
+            }
+        ]
+        page = _page(server, "vol/020")
+        session = FetchSession(_config(tmp_path))
+
+        entry = fetch_page(session, page)
+
+        assert entry["status"] == "refused"
+        assert entry["reason"] == "unexpected-host"
+    finally:
+        other.shutdown()
+        other_thread.join(timeout=5)
+
+
+def test_refused_reason_is_always_in_the_closed_vocabulary(tmp_path, server):
+    """A collaborator's own refusal vocabulary (`cache.py`'s `malformed-digest`,
+    surfaced when a cached request record's response digest is corrupt) must not
+    leak past `fetch_page` as a `reason` outside this module's closed set.
+    """
+    _script(server, "vol/021", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/021")
+
+    fetch_page(FetchSession(config), page)  # populates the request record
+    key = fetch_module._image_request_key("vol/021", "full")
+    record_path = cache_module.request_record_path(config.cache_root, key)
+    record = json.loads(record_path.read_bytes())
+    record["response_sha256"] = "not-a-digest"
+    record_path.write_bytes(json.dumps(record).encode("utf-8"))
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] in FETCH_REFUSAL_REASONS
+    assert entry["reason"] == "http-error"
+    assert "malformed-digest" in entry["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # Politeness: retries, backoff, and the stop-on-403 run halt
 
@@ -332,6 +489,62 @@ def test_429_with_retry_after_then_success(tmp_path, server):
     assert len(sleeps) >= 1
 
 
+def test_retry_after_http_date_form_is_honoured(tmp_path, server):
+    """`Retry-After` may be a seconds count or an HTTP-date (RFC 7231); the date
+    form must be parsed, not silently dropped in favour of exponential backoff.
+    """
+    import email.utils
+
+    target = email.utils.format_datetime(datetime.now(UTC) + timedelta(seconds=5), usegmt=True)
+    _script(
+        server,
+        "vol/009b",
+        info=[{"body": INFO_JSON}],
+        full=[
+            {"status": 429, "body": b"", "headers": {"Retry-After": target}},
+            {"body": GOOD_JPEG},
+        ],
+    )
+    page = _page(server, "vol/009b")
+    sleeps: list[float] = []
+    session = FetchSession(_config(tmp_path, sleep=sleeps.append, max_backoff_seconds=60.0))
+
+    entry = fetch_page(session, page)
+
+    assert entry["status"] == "fetched"
+    assert len(sleeps) == 1
+    # The date is ~5s out; a fallen-through exponential backoff would sleep 1s
+    # (2**0) instead — the gap between those two is wide enough to distinguish.
+    assert 3.0 < sleeps[0] <= 5.5
+
+
+def test_rate_limiter_delays_between_requests(tmp_path, server):
+    _script(server, "vol/009c", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    page = _page(server, "vol/009c")
+    sleeps: list[float] = []
+    clock = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["t"] += 0.1
+        return clock["t"]
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["t"] += seconds
+
+    session = FetchSession(
+        _config(tmp_path, min_interval_seconds=1.0, monotonic=fake_monotonic, sleep=fake_sleep)
+    )
+
+    entry = fetch_page(session, page)
+
+    assert entry["status"] == "fetched"
+    # Two requests (info, then image) with a 1.0s floor between starts: the
+    # second must wait out most of the interval.
+    assert len(sleeps) == 1
+    assert sleeps[0] > 0.8
+
+
 def test_503_exhausts_retries_then_refused(tmp_path, server):
     _script(
         server,
@@ -353,16 +566,22 @@ def test_503_exhausts_retries_then_refused(tmp_path, server):
 def test_403_halts_the_whole_run(tmp_path, server):
     _script(server, "vol/011a", info=[{"body": INFO_JSON}], full=[{"status": 403, "body": b""}])
     _script(server, "vol/011b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
-    plan = {
-        "pages": [
+    plan = _valid_plan(
+        [
             _page(server, "vol/011a"),
             _page(server, "vol/011b"),
         ]
-    }
+    )
     result = run_fetch(plan, _config(tmp_path), split="val", enforce_holdout=False)
 
     assert result.halted == "Http403Stop"
-    assert result.entries == []  # never even reached the second page
+    # Rule 7, nothing lost silently: the page that caused the halt is still
+    # named, not just the exception class — but the run still never reached
+    # the second page.
+    assert len(result.entries) == 1
+    assert result.entries[0]["identifier"] == "vol/011a"
+    assert result.entries[0]["status"] == "halted"
+    assert result.entries[0]["reason"] == "Http403Stop"
     assert server.hit_counts.get("/iiif/2/vol/011b/info.json") is None
 
 
@@ -378,7 +597,7 @@ def test_fetch_page_raises_http403stop_directly(tmp_path, server):
 def test_request_ceiling_halts_the_run(tmp_path, server):
     _script(server, "vol/012a", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     _script(server, "vol/012b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
-    plan = {"pages": [_page(server, "vol/012a"), _page(server, "vol/012b")]}
+    plan = _valid_plan([_page(server, "vol/012a"), _page(server, "vol/012b")])
     # One page's happy path costs two requests (info + image); a ceiling of 2
     # must halt before the second page is touched at all.
     result = run_fetch(
@@ -386,7 +605,11 @@ def test_request_ceiling_halts_the_run(tmp_path, server):
     )
 
     assert result.halted == "RequestCeilingReached"
-    assert len(result.entries) == 1
+    assert len(result.entries) == 2  # page 1 fetched, page 2 recorded as halted
+    assert result.entries[0]["status"] == "fetched"
+    assert result.entries[1]["identifier"] == "vol/012b"
+    assert result.entries[1]["status"] == "halted"
+    assert result.entries[1]["reason"] == "RequestCeilingReached"
     assert server.hit_counts.get("/iiif/2/vol/012b/info.json") is None
 
 
@@ -498,7 +721,7 @@ def test_cross_split_page_refused_by_fetcher(tmp_path, server):
 def test_run_fetch_with_split_test_explicit_skips_holdout_enforcement(tmp_path, server):
     holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
     _script(server, "held/001.jpg", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
-    plan = {"pages": [_page(server, "held/001.jpg", splits_present=["test"])]}
+    plan = _valid_plan([_page(server, "held/001.jpg", splits_present=["test"])])
 
     result = run_fetch(
         plan, _config(tmp_path), split="test", holdout=holdout, enforce_holdout=False
@@ -510,17 +733,133 @@ def test_run_fetch_with_split_test_explicit_skips_holdout_enforcement(tmp_path, 
 
 def test_run_fetch_filters_pages_to_the_requested_split(tmp_path, server):
     _script(server, "vol/016", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
-    plan = {
-        "pages": [
+    plan = _valid_plan(
+        [
             _page(server, "vol/016", splits_present=["val"]),
             _page(server, "vol/017", splits_present=["train"]),
         ]
-    }
+    )
 
     result = run_fetch(plan, _config(tmp_path), split="val", enforce_holdout=False)
 
     assert len(result.entries) == 1
     assert result.entries[0]["identifier"] == "vol/016"
+
+
+# --------------------------------------------------------------------------- #
+# run_fetch's own boundary: plan/holdout self-hash, and the mandatory val hold-out
+
+
+def test_run_fetch_refuses_a_plan_that_fails_its_own_self_hash(tmp_path, server):
+    plan = _valid_plan([_page(server, "vol/022", splits_present=["val"])])
+    plan["pages"][0]["identifier"] = "tampered"  # mutate after self_hash was sealed
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="self-hash-mismatch"):
+        run_fetch(plan, _config(tmp_path), split="val", enforce_holdout=False)
+
+
+def test_run_fetch_refuses_a_holdout_that_fails_its_own_self_hash(tmp_path, server):
+    plan = _valid_plan([_page(server, "vol/023", splits_present=["val"])])
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+    holdout = dict(holdout)
+    # A structurally valid but different sha256 — passes every shape check,
+    # only the self-hash catches that the sealed content changed.
+    holdout["source_row_snapshot_self_hash"] = digest_bytes(b"a-different-snapshot")
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="self-hash-mismatch"):
+        run_fetch(plan, _config(tmp_path), split="val", holdout=holdout)
+
+
+def test_run_fetch_requires_a_holdout_ledger_for_split_val_by_default(tmp_path, server):
+    """SPEC.md §5.4 point 2: the hold-out defence must not default to off — a
+    `val` run with no ledger and no explicit opt-out is refused, not silently
+    unprotected.
+    """
+    plan = _valid_plan([_page(server, "vol/024", splits_present=["val"])])
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required"):
+        run_fetch(plan, _config(tmp_path), split="val")
+
+
+def test_run_fetch_val_proceeds_with_a_holdout_ledger(tmp_path, server):
+    _script(server, "vol/025", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    plan = _valid_plan([_page(server, "vol/025", splits_present=["val"])])
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+
+    result = run_fetch(plan, _config(tmp_path), split="val", holdout=holdout)
+
+    assert result.halted is None
+    assert result.entries[0]["status"] == "fetched"
+
+
+# --------------------------------------------------------------------------- #
+# The sealed fetch log and `main`
+
+
+def test_main_writes_a_self_hashed_fetch_log_and_refusals(tmp_path, server):
+    _script(server, "vol/026a", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    _script(server, "vol/026b", info=[{"body": INFO_JSON}], full=[{"status": 404, "body": b""}])
+    plan = _valid_plan(
+        [
+            _page(server, "vol/026a", splits_present=["val"]),
+            _page(server, "vol/026b", splits_present=["val"]),
+        ]
+    )
+    plan_path = tmp_path / "fetch-plan.json"
+    plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+    holdout_path = tmp_path / "holdout.json"
+    holdout_path.write_bytes(json.dumps(holdout).encode("utf-8"))
+    output_dir = tmp_path / "ledger"
+
+    result = fetch_module.main(
+        [
+            "--plan",
+            str(plan_path),
+            "--holdout",
+            str(holdout_path),
+            "--cache-root",
+            str(tmp_path / "cache"),
+            "--info-root",
+            str(tmp_path / "info"),
+            "--output-dir",
+            str(output_dir),
+            "--split",
+            "val",
+        ]
+    )
+
+    assert len(result.entries) == 2
+    log = json.loads((output_dir / "fetch-log.json").read_bytes())
+    assert validate_fetch_log(log) == log
+    assert log["split"] == "val"
+    assert log["plan_self_hash"] == plan["self_hash"]
+    assert log["holdout_self_hash"] == holdout["self_hash"]
+    refusals = json.loads((output_dir / "refusals.json").read_bytes())
+    assert refusals["schema"] == fetch_module.FETCH_REFUSALS_SCHEMA
+    assert [entry["identifier"] for entry in refusals["refusals"]] == ["vol/026b"]
+
+
+def test_main_refuses_split_test_without_release_test_split(tmp_path, server):
+    plan = _valid_plan([_page(server, "vol/027", splits_present=["test"])])
+    plan_path = tmp_path / "fetch-plan.json"
+    plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+
+    with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required"):
+        fetch_module.main(
+            [
+                "--plan",
+                str(plan_path),
+                "--cache-root",
+                str(tmp_path / "cache"),
+                "--info-root",
+                str(tmp_path / "info"),
+                "--output-dir",
+                str(tmp_path / "ledger"),
+                "--split",
+                "test",
+            ]
+        )
 
 
 # --------------------------------------------------------------------------- #
