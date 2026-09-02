@@ -598,9 +598,14 @@ def captured_page_attempt(
     is ``failed`` with "not a confirmed blank page" rather than the emptier
     and wrong ``genuinely-empty``; an unparseable response is ``failed`` with
     its bytes retained. Runs for both page-scoped adapters today (``churro.v1``,
-    ``chandra.v1``); Chandra's real wire shape is unverified
-    (`pipeline/3_attestatores/chandra.py`'s module docstring), so it lands on
-    the unparseable branch honestly, naming ``unverified-response-schema``.
+    ``chandra.v1``). Chandra parses the closed shape its own prompt asks for
+    (`pipeline/3_attestatores/chandra_response.py`) or the fixture placeholder;
+    every other body -- Chandra's native output mode has no vendor specimen to
+    parse against -- lands on the unparseable branch, naming its shape
+    (``unverified-response-schema`` and the rest of that module's closed set).
+    A parsed Chandra response also carries its bytes forward as
+    ``observation_payload``, because `run.py` derives the page's block geometry
+    from those same bytes rather than from the text.
 
     ``page_ordinal`` and ``chair`` are not read by this function's own logic;
     they are accepted to keep this call site self-describing at the one place

@@ -945,13 +945,47 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     assert blob_store.has(response.response_sha256)
 
 
-def test_captured_page_attempt_real_chandra_adapter_is_honest_about_the_unverified_wire_shape(
+def test_captured_page_attempt_real_chandra_adapter_reads_the_wire_contract(tmp_path: Path):
+    """Chandra live: a body in the shape its own prompt asks for is a reading.
+
+    The page text is the block texts joined, and the bytes ride along as
+    `observation_payload` so `run.py` can derive the page's block geometry
+    from the very response the text came from.
+    """
+    body = (
+        '{"schema":"verbatus-chandra-page-response.v1","blocks":['
+        '{"box_1000":[100,77,900,385],"text":"SYNTHETIC ACT ONE"},'
+        '{"box_1000":[100,462,900,846],"text":"SYNTHETIC ACT TWO"}]}'
+    )
+    response, _, blob_store = _read_one(
+        tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop")
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "chandra.v1", adapter, response
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO"
+    assert attempt.native_capture["parse"] == {
+        "state": "parsed",
+        "parser": "json",
+        "text": "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO",
+    }
+    assert attempt.native_capture["view"] == {"prompt": adapter.prompt()}
+    assert attempt.observation_payload == body.encode("utf-8")
+    assert attempt.health["truncated"] is False
+    assert attempt.raw_response_kind == "model-output"
+    assert blob_store.has(response.response_sha256)
+
+
+def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecognized_shape(
     tmp_path: Path,
 ):
-    """Chandra live: transported and retained, `chandra.parse` recognizes only
-    the fixture schema, so a real model's markdown/JSON output that is not
-    that exact placeholder lands as a named, honest parse failure -- never a
-    fabricated reading."""
+    """Chandra live: a body in neither declared shape -- a real model's own
+    markdown/JSON output, say -- lands as a named, honest failure with its bytes
+    retained, never a fabricated reading."""
     response, _, blob_store = _read_one(
         tmp_path,
         script=ScriptedAnswer(
@@ -989,14 +1023,16 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_the_unverifi
 def test_captured_page_attempt_real_chandra_adapter_reads_the_fixture_placeholder_schema(
     tmp_path: Path,
 ):
-    """The one shape `chandra.parse` accepts is the fixture's own stand-in
-    schema string, not a real vendor wire shape (its companion test above pins
-    that a genuine vendor schema is honestly refused). This module is the
-    first thing to route *live* bytes into `chandra.parse`, so this pins the
-    placeholder's reach into live mode -- not a design this module chose. U6
-    owes a HANDOFF.md line naming that Unit 11 must remove the placeholder
-    acceptance once the real wire schema lands, rather than inheriting it
-    silently."""
+    """The fixture's own stand-in schema still parses on the live path.
+
+    One parser derives the retained model view in both postures
+    (`feeding.retain_model_view` has no posture flag), so the placeholder the
+    committed fixture declares its responses in reaches `chandra.parse` from
+    live bytes too. Pinned deliberately rather than inherited silently: a
+    served chair answering in this shape is answering a question its prompt
+    never asked, and `pipeline/3_attestatores/HANDOFF.md` names the acceptance
+    as the offline posture's, kept because the fixture's pinned bytes depend
+    on it."""
     body = f'{{"schema":"{CHANDRA_FIXTURE_SCHEMA}","markdown":"chandra text","blocks":[]}}'
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop"))
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
