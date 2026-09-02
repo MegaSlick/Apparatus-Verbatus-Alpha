@@ -56,12 +56,14 @@ def test_a_real_overrun_past_a_witness_derived_flag_still_refuses():
     Here the re-proof changes two trailing words, not one, so its envelope
     reaches two characters past the flag's suffix-trimmed end rather than
     one. That is a genuine escape from the flagged location, and the one-byte
-    slack the fix adds must not swallow it.
+    slack the fix adds must not swallow it. The flag starts exactly where the
+    re-proof's own change span starts (19), so it is the gap bound — not the
+    `start <= location["start"]` overlap check — that must do the refusing.
     """
     before = "reading alpha beta gamma kappa"
     after = "reading alpha beta ZZZZZ YYYYY"
     flag_end = before.index("gamma") + len("gamma")  # only "gamma" was ever flagged
-    flags = [_flag("testimony-diff", 20, flag_end)]
+    flags = [_flag("testimony-diff", 19, flag_end)]
 
     with pytest.raises(SchemaRefusal, match="changed text outside every flagged location"):
         change_record(before, after, flags)
@@ -92,6 +94,25 @@ def test_a_gap_that_does_not_reach_the_true_end_of_the_text_still_refuses():
     after = "reading alpha beta epsilon trailing tail"
     flag_end = before.index("kappa") + len("kappa") - 1  # one byte short, mid-string
     flags = [_flag("testimony-diff", 19, flag_end)]
+
+    with pytest.raises(SchemaRefusal, match="changed text outside every flagged location"):
+        change_record(before, after, flags)
+
+
+def test_a_change_disjoint_from_the_flag_still_refuses_despite_the_slack():
+    """The slack credits a re-proof that reaches *into* the flag through the
+    coincidental byte, not one that starts where the flag already ended.
+
+    `before` and `after` differ only in their final byte, so the re-proof's
+    own change span is a single character sitting immediately after the
+    flag's end -- disjoint from the disagreement the flag located, not an
+    extension through it. The one-byte gap-at-`len(before)` shape is
+    identical to the credited coincidence; only the envelope's failure to
+    overlap the flag distinguishes it, so this pins that overlap check.
+    """
+    before = "abXa"
+    after = "abXb"
+    flags = [_flag("testimony-diff", 2, 3)]
 
     with pytest.raises(SchemaRefusal, match="changed text outside every flagged location"):
         change_record(before, after, flags)

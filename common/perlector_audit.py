@@ -534,9 +534,13 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     than the change. So a witness-derived flag whose end sits exactly one
     character short of an envelope that reaches `len(before)` is still treated
     as containing it — one byte of slack for one coincidental byte, nothing
-    wider. A flag any other class, or any wider gap, still refuses: this does
-    not loosen the posture that a change outside every flag is refused, it
-    only stops the trimming algorithm from refusing itself.
+    wider. The envelope must still reach into the flag (`start < flag end`):
+    a change that starts at or past the flag's own end is disjoint from the
+    disagreement the flag located, not an extension through it, so the slack
+    never credits a re-proof no witness placed. A flag any other class, or
+    any wider gap, still refuses: this does not loosen the posture that a
+    change outside every flag is refused, it only stops the trimming
+    algorithm from refusing itself.
     """
     if before == after:
         return []
@@ -553,6 +557,7 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
         # is where that trimming can fall short — see the docstring above.
         return (
             flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
+            and start < location["end"]
             and end == len(before)
             and end - location["end"] == 1
         )

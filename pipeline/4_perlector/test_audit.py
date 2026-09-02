@@ -66,6 +66,10 @@ def test_a_flag_shy_by_a_shared_final_character_still_contains_a_tail_rewrite():
 def test_a_tail_rewrite_that_reaches_past_the_shared_character_still_refuses():
     """Two trailing words rewritten, not one: a genuine escape from the flag,
     not the one-byte coincidence above, and still refused.
+
+    The re-proof's change span starts exactly at the flag's own start (not
+    past its end), so it is the gap bound -- not the `start <=
+    location["start"]` overlap check -- that must do the refusing here.
     """
     text = "reading alpha beta gamma kappa"
     testimony = "reading alpha beta gamma zappa"
@@ -78,6 +82,6 @@ def test_a_tail_rewrite_that_reaches_past_the_shared_character_still_refuses():
     # already short by four bytes, not one -- the shape this test is for.
     assert testimony_flags[0]["location"]["end"] == len(text) - 4
 
-    after = "reading alpha beta ZZZZZ YYYYY"
+    after = "reading alpha beta gamma ZZZZZ"
     with pytest.raises(SchemaRefusal, match="changed text outside every flagged location"):
         change_record(text, after, flags)

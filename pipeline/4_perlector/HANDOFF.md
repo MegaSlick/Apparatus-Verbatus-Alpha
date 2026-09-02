@@ -591,12 +591,21 @@ not an escape) produces an envelope one byte wider than every flag —
 `change_record` used to refuse it outright, on the strength of a single
 witness's coincidental last character rather than the content of the change.
 `change_record` now credits a witness-derived flag with the one trailing byte
-its own trim could have coincidentally eaten, and only there: the gap must
-reach exactly `len(before)` (suffix trimming can only ever fall short at the
-true end of a string) and be exactly one byte, or the change still refuses as
-a real escape from every flagged location — this loosens the coincidence, not
-the posture. `common/test_perlector_audit.py` and `pipeline/4_perlector/
-test_audit.py` pin both the one-byte credit and its boundary.
+its own trim could have coincidentally eaten, and only there: the envelope
+must actually reach into the flag, the gap must reach exactly `len(before)`
+(suffix trimming can only ever fall short at the true end of a string) and be
+exactly one byte, or the change still refuses as a real escape from every
+flagged location — this loosens the coincidence, not the posture.
+`common/test_perlector_audit.py` and `pipeline/4_perlector/test_audit.py` pin
+the one-byte credit, the requirement that the envelope overlap the flag, and
+the boundary. **The credit is flat at one byte, not general to the trim
+width**: a real act text and testimony that happen to share two or more
+trailing characters still produce a flag short by that many bytes, and a
+re-proof rewriting through to the true end still refuses as an escape —
+`change_record` has no way to tell a two-byte coincidence from two bytes of
+real content without carrying the flag's own trim width alongside it. A
+re-proof caught this way must be re-planned to a span the flag actually
+covers; widening the credit past one byte is a later call, not this one.
 
 ## Live reader
 
