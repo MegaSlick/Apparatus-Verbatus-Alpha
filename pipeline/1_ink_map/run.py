@@ -13,25 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
-from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.residual_ink import ink_runs, page_edge_ink, page_residual_ink  # noqa: E402
-from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
-    StageContext,
-    adapter_recipe_for,
-    open_context,
+    open_stage_context,
     run_stage,
     stage_parser,
-    verify_predecessor_seal,
-)
-from common.stage import (  # noqa: E402
-    refuse_halted_run as _refuse_halted_run,
 )
 
 
@@ -127,31 +118,12 @@ def artifact_finding(finding: dict) -> dict:
     return recorded
 
 
-def _open(args, registry_factory) -> StageContext:
-    """Real ingress skips fixture loading but retains every run-integrity guard."""
-    tree = RunTree(Path(args.run_root), args.run_id)
-    run = tree.read_run()
-    if parse_ingress_record(run.get("ingress")) != REAL_INGRESS:
-        return open_context(args, INK_MAP, registry_factory=registry_factory)
-    verify_snapshot_is_current(run, args.corpus_register)
-    read_snapshot(tree, run)
-    verify_predecessor_seal(tree, INK_MAP)
-    _refuse_halted_run(tree, INK_MAP, args.hard_failure_config)
-    return StageContext(
-        tree=tree,
-        run=run,
-        fixture={},
-        scenario="real-submission",
-        stage=INK_MAP,
-        adapter_revision=adapter_recipe_for(run, INK_MAP),
-        args=args,
-        registry=None,
-    )
-
-
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = _open(args, registry_factory)
+    # Both ingress routes open through the shared constructor, which keeps every
+    # direct-entry guard -- register drift, the sealed snapshot, the Exemplar's
+    # completion seal, the run-level cap -- on the real route as well.
+    context = open_stage_context(args, INK_MAP, registry_factory=registry_factory)
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:

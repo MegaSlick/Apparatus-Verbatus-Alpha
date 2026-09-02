@@ -39,29 +39,30 @@ and `require_some_admitted` raise — so the evidence is on disk and no `stage-s
 is, and the Exemplar's "predecessor door has no stage-seal" names a refused
 submission rather than a missing file.
 
-**A real submission takes a different branch through `_open`, and that branch now
-proves the same boundary by hand.** `run.py::_open` takes the real-ingress branch,
-which builds a `StageContext` directly instead of going through
-`common.stage.open_context` — the fixture/scenario binding `open_context` checks
-has nothing to compare on a real run, so this branch cannot simply call it. What
-it does instead is call `refuse_halted_run` and `verify_predecessor_seal` itself
-— the same two calls `open_context` makes (in the other order: `open_context`
-proves the predecessor seal before it checks the run-level cap, and this
-branch's own halted-run guard already ran first, so `verify_predecessor_seal`
-is appended after it rather than the two being reordered) — before it builds
-its own `StageContext`, so a real submission gets the identical
-predecessor-seal proof a fixture run gets, just assembled by hand instead of
-through the shared function. A Door that refused publishes no `stage-seal`,
-so `verify_predecessor_seal` refuses the Exemplar before it opens, whether
-the programs are driven one at a time or through
-`pipeline/orchestrator/run.py::invoke`. See
-`pipeline/1_exemplar/test_exemplar_seal.py`'s
+**That sentence now holds on a real submission too, and it was a gap before it
+did.** Until the shared constructor landed, `run.py` built its real-ingress
+`StageContext` by hand instead of going through `common.stage.open_context` —
+the fixture/scenario binding it exists to check has nothing to compare on a real
+run — and `verify_predecessor_seal` was called from `open_context` alone, so a
+real run whose Door refused still sealed its Exemplar pages when the programs
+were driven one at a time; only `pipeline/orchestrator/run.py::invoke`, which
+refuses any stage exit outside complete/held/halted, stood between a refused
+Door and a sealed corpus. The gap is closed here: the Exemplar, the Ink Map and
+the Designator all open through `common.stage.open_stage_context`, which decides
+the route from one read of the run authority and asks for the predecessor's
+completion seal on both routes, in the same order, before anything writes. A
+hand-driven Exemplar over a Door that never sealed its boundary now refuses with
+"predecessor door has no stage-seal" and leaves the tree byte-identical
+(`test_exemplar_seal.py`'s
 `test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page` and
-`test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar`, and
-`test_door.py`'s
-`test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`:
-a real-ingress run whose Door left no stage-seal refuses before publishing
-anything, and a successful Door still lets the Exemplar open.
+`test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar` pin both,
+and `test_door.py`'s
+`test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`
+drives the refusing Door that leaves that state). Two consequences ride the same
+change: the real Exemplar's `scenario` is `REAL_SCENARIO`, never the unchecked
+argv value it used to store, and its context carries the roster and the sealed
+digest map like every later stage's, checked name by name against the run before
+the seal check.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
