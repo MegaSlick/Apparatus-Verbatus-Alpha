@@ -102,9 +102,7 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     config = load_grouping_config()
     resolved = resolve_thresholds(config, width, height)
 
-    assert resolved.margin_px == round(
-        width * 0.15
-    )  # DEFAULT_MARGIN_FRACTION, half-up tie n/a here
+    assert resolved.margin_px == 30  # DEFAULT_MARGIN_FRACTION 0.15 * 200
     assert resolved.chain_gap_px == 6  # DEFAULT_CHAIN_GAP_PX
     assert resolved.anchor_reach_px == 2  # DEFAULT_ANCHOR_REACH_PX
     assert resolved.brace_min_height_px == 30  # DEFAULT_BRACE_MIN_HEIGHT_PX
@@ -145,6 +143,25 @@ def test_resolve_thresholds_returns_a_frozen_dataclass_of_plain_ints():
         resolved.max_residual_components,
     ):
         assert isinstance(value, int) and not isinstance(value, bool)
+
+
+def test_resolve_thresholds_breaks_an_exact_half_up_not_by_truncation(tmp_path):
+    """A tie case: 2 * 2500 / 10000 = 0.5, half-up 1, truncation 0.
+
+    Every case in the two tests above lands just above its integer, so floor
+    division and round-half-up agree on all of them -- a `resolve_thresholds`
+    rewritten to use plain integer truncation (`dimension * bp //
+    BP_DENOMINATOR`) instead of calling `geometry._pad_amount` would still
+    pass every assertion above it in this file. This tie is the one case that
+    tells the two rules apart, which is the whole point of routing every
+    resolution through `_pad_amount` instead of writing a second rounding
+    rule (see this module's own docstring).
+    """
+    body = _valid_toml().replace("chain_gap_bp = 231", "chain_gap_bp = 2500")
+    path = _write(tmp_path, body)
+    config = load_grouping_config(path)
+    resolved = resolve_thresholds(config, width=200, height=2)
+    assert resolved.chain_gap_px == 1  # half-up; truncation would give 0
 
 
 def test_resolve_thresholds_refuses_non_positive_dimensions():

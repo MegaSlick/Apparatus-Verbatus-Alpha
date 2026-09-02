@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from geometry import _is_plain_int, _pad_amount, _validate_dimensions
+from geometry import _PROVENANCE_FIELDS, _is_plain_int, _pad_amount, _validate_dimensions
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
@@ -59,19 +59,6 @@ _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 # hunting for *why* these two names are forbidden should find the reason at
 # the refusal site, not have to already know it.
 _FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
-
-# Reused verbatim from `geometry._PROVENANCE_FIELDS`: this file's provenance
-# answers the same questions a padding config's provenance does, for the same
-# reason -- a policy value with no declared source may not ship as a default.
-_PROVENANCE_FIELDS: Final = (
-    "source",
-    "corpus",
-    "sample_unit",
-    "sample_count",
-    "statistic",
-    "calibrated_for_this_corpus",
-    "caveat",
-)
 
 _GROUPING_TOP_FIELDS: Final = (
     "max_residual_components",
@@ -249,9 +236,10 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
 
     `margin_px` resolves against `width`; every other page_fraction_bp field
     resolves against `height` -- the basis each field's config comment
-    declares, matching what the retired module constant it replaces actually
-    measured against. `gap_tolerance_px` and `max_residual_components` pass
-    through unresolved: neither is a page-fraction quantity.
+    declares as a design decision (SPEC_C section 2), not a property
+    recovered from the retired pixel constant it replaces.
+    `gap_tolerance_px` and `max_residual_components` pass through unresolved:
+    neither is a page-fraction quantity.
 
     Uses `geometry._pad_amount` for every basis-point resolution -- the same
     round-half-up integer rule the padding config already uses -- so this
