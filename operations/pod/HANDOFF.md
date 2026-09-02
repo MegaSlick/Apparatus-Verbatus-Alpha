@@ -132,10 +132,10 @@ In order, because each depends on the one before it existing to observe against:
    restart, the pod-side timer's real acknowledgement write, the timer-startup
    backstop, real preflight, and verified shutdown against provider state and
    billing — with the poll bound tuned from what Boot A measured.
-3. **Neither boot can happen at all** until a GraphQL account-balance observer
-   exists — `RunPodProvider.balance_observer` has no default and
-   `observe_account_balance` raises without one. This is engineering work, not a
-   decision reserved for Tyrel, but it blocks both boots equally.
+3. **Both boots now have a balance source.** U-C below built the GraphQL observer
+   as `RunPodProvider`'s default over a live transport; what Boot A must observe
+   about it is the figure it reads against the console's, and whether the pod-scoped
+   key is accepted by the GraphQL endpoint at all.
 
 ## The `supervise` drills, by name
 
@@ -221,18 +221,115 @@ regressions in. If the host wants the full `operations/pod` suite run anyway as 
 sanity check on the branch as a whole (not on this unit's own diff), that is a
 separate ask.
 
+## U-C — the money path to Boot A (on `work/pod-money-path`)
+
+The consult of 2026-09-02 (`workbench/active/CONSULT_FIRST_REAL_RUN_2026-09-02.md`
+§5 U-C) named this unit: build the balance observer the two blockers above turn on,
+record the v2 migration before writing v2 code, add `--record-fixture`, and render
+the Boot A request for Tyrel. Every line was proven offline; RunPod was never called
+and no pod exists. RunPod's public documentation was read online, and every fact taken
+from it is cited with its page and its date in the file that relies on it.
+
+**What landed.**
+
+- `provider_runpod.py` — `GraphQLBalanceObserver`, the default `balance_observer`
+  whenever the provider is built over a live `UrllibRunPodTransport`. The transport
+  gained a `credential_placement` of `"header"` (REST, unchanged) or `"query"`
+  (GraphQL's documented `?api_key=`), a `sibling()` that derives the GraphQL transport
+  so the provider never touches the key, and error messages that carry `reason` rather
+  than a URL. The observer refuses by name every doubt the README lists, including any
+  credential-shaped key anywhere in the answer. `record_exchanges` routes both its
+  transports through a fixture recorder.
+- `fixture.py` (new, vendor-neutral) — `FixtureRecorder` (append-only JSON lines, 0600,
+  fsynced per line, money as numbers via `Decimal`), `RecordingTransport`, and
+  `read_fixture`. Verbatim bodies unless a credential-shaped key forces a scrub, and
+  then the record says so and names the paths.
+- `cli.py --record-fixture PATH` — duck-typed on `record_exchanges`; refuses a provider
+  without it before any preview; names the path in the result record.
+- `boot_a_request.py` (new) — renders the drill request from the sealed policy and the
+  reviewed card table; refuses on `unconfigured`; `python -m` entrypoint exits 2 on a
+  refusal.
+- `V2_MIGRATION.md` (new) — every v1 call mapped to v2 with a citation each; what v2
+  adds; what has no counterpart; the plan the next unit executes. Admitted to the
+  document allowlist by exact path (`.githooks/doc-allowlist.sh`), the same way the
+  autoclave brief is.
+- `README.md` — the v1/v2 and balance paragraphs rewritten to the code as it now
+  stands; the `--record-fixture` and Boot A paragraphs; the balance checklist row made
+  runnable; deferral rows 04-4, 04-6, 04-7 and 04-9 updated to what the migration
+  record actually established.
+
+**What this unit found that it did not fix, and why.**
+
+- **The nested bootstrap `--report-path` is never token-bound.** `launch.py` folds
+  the launch token into the timer's `--report-path` only; `bootstrap_main` refuses a
+  report path without the token when `VERBATUS_LAUNCH_TOKEN` is in the pod's
+  environment, and the create payload puts every metadata key there. So a real
+  `bootstrap_main --hold-only` refuses at plan time and exits non-zero, the timer reads
+  `completed-early` and closes. For Boot A that is the same immediate close the drill
+  armer forces anyway, so the drill's four measurements are unaffected — but the
+  hold-only journal is never written, and Boot B cannot bootstrap at all until
+  `_bind_report_path_to_launch` also binds the path inside `--bootstrap-command-json`.
+  `launch.py` is outside this unit's ownership; the fix is one function and its test.
+- **v2 has no `interruptible` and no `dockerStartCmd`** (`V2_MIGRATION.md` §2.2, §4).
+  The next unit either finds a v2 page stating the rental type and a start-command
+  field (the template page was not read in this pass), or puts the conflict to Tyrel
+  under rule 9: the ruling says v2, the goal says on-demand only with the timer as the
+  primary process, and the documentation read cannot yet satisfy both.
+- **GraphQL retires in early 2027** (`sdks/graphql/configurations`), and neither v2
+  billing endpoint reports a balance. The observer is built on the only documented
+  source and carries its own sunset.
+- **`supervise.py` would close a v2 pod that is still `PROVISIONING`/`STARTING`**
+  (`V2_MIGRATION.md` §2.5). Not a v1 problem; recorded so the migration plans for it.
+
+**Rule-13 decisions this unit made.**
+
+- The key goes in the GraphQL query string because that is the only placement the
+  GraphQL documentation publishes. Sending an undocumented `Authorization` header, or
+  trying one and falling back on 401, would make a credential-placement guess on a
+  money path and mask a revoked key; the documented form, with the query scrubbed from
+  every error string and fixture record and the redirect refusal measured on loopback
+  in that placement, is the honest choice. If the first live run shows the header is
+  accepted, switching is one constant.
+- The recorder scrubs `VERBATUS_LAUNCH_TOKEN` with no exemption, unlike
+  `PodCreateRequest`'s metadata scan. One predicate with no carve-outs is checkable by
+  reading the predicate; replay of the recovery path re-substitutes the token from the
+  lease, which the record's `scrubbed` list makes possible.
+- The recorder is its own small module rather than living in `cli.py` or `models.py`:
+  two modules that must not import each other (`cli.py`, `provider_runpod.py`) need the
+  same seam.
+- A scrubbed body is re-serialized with `Decimal` written back as the same digits (a NUL
+  marker that no JSON body can contain), so a fixture never turns money into a float or
+  a string. An unscrubbed body is stored verbatim.
+- A negative `clientBalance` is refused by name rather than clamped or read as zero:
+  `AccountBalanceObservation` cannot carry one, and the refusal denies paid actions,
+  which is the safe direction.
+- `boot_a_request.py` bounds the drill at `min(900, policy.hard_lifetime_seconds)`,
+  takes the cheapest card by reviewed `hourly_usd`, and renders the coming preview
+  refusals (card above `max_hourly_usd`, cost above the metered ceiling) as a section
+  rather than hiding them or refusing to render.
+- `V2_MIGRATION.md` is admitted to the allowlist by exact path, with its deletion
+  condition written beside the admission, rather than widened to a glob.
+
+**Verification run.** `ruff format` and `ruff check` on every `.py` touched, clean.
+Tests through the shared test lock only, as the brief required — see the commit
+messages for the exact runs and exit codes.
+
 ## Blockers before either boot
 
-1. The GraphQL account-balance observer does not exist. No paid action can run
-   without it, drill included.
+1. ~~The GraphQL account-balance observer does not exist.~~ Built by U-C; it is the
+   adapter's default over a live transport. What remains is the live observation the
+   README's balance checklist row now describes.
 2. Tyrel has not been asked for `config/spend.toml` values, the GPU class, the S3
    keys, or in-session permission for either boot. All are named explicitly in the
-   README's boot-plan section.
-3. The v1/v2 posture is unresolved in code — Boot A and Boot B can run against
-   either v1 (as the code stands) or v2 (per the ruling), but building the balance
-   observer against v1's adapter now and migrating later means building it twice.
-   Whether to build the observer before or after the v2 migration is next-section
-   engineering, not named here as a decision for Tyrel.
+   README's boot-plan section, and `boot_a_request.py` renders the request the moment
+   the policy is configured. The VRAM fact that bears on the card: a bf16 27B
+   Perlector fits only the 96 GB tier (`config/pod_placement.toml`, RTX PRO 6000
+   Blackwell at $1.99/h); Boot A itself needs only the cheapest card.
+3. The v1/v2 posture is now recorded, not resolved: `V2_MIGRATION.md` is the plan,
+   and its §4 names two facts (`interruptible`, the start command) the v2 pages read
+   do not supply. The observer was built against the seam, not against v1's REST
+   route, so the migration does not rebuild it.
+4. The nested bootstrap report path (above) must be token-bound before Boot B.
 
 ## Provenance correction
 

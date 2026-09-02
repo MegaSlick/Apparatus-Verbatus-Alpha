@@ -103,6 +103,12 @@ while IFS= read -r f; do
     # it and believe it was inside a container. The Dockerfile renames it on the
     # way into the image, which is the only place it is true.
     operations/autoclave/agent-brief.md) ;;
+    # The RunPod v1 -> v2 migration record: every call the adapter makes today,
+    # mapped to v2 with a documentation citation each, and the plan the next
+    # unit executes. Admitted by exact path, like the brief above, so the pod
+    # directory does not become a notes drawer; it is deleted with the v1
+    # adapter once the migration has landed and been observed live.
+    operations/pod/V2_MIGRATION.md) ;;
     # The standing briefs a dispatched agent is given for its role — what
     # `.claude/agents/worker.md` and its two siblings held before writing work
     # moved off this machine. Harness documents by the same logic as the agent
