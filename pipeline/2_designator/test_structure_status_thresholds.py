@@ -187,4 +187,66 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     assert scanned["resolved_thresholds"]["margin_px"] == thresholds.margin_px
 
 
+def test_two_pages_of_different_size_each_publish_their_own_numbers():
+    """A per-page record, proven by two pages that cannot agree by accident.
+
+    Every fixture page in the happy scenario is 200x260, and `resolve_thresholds`
+    is a pure function of (policy, width, height): a stage that published one
+    page's resolved numbers on every page's record would still pass a test built
+    entirely from same-sized pages. This test resolves against two distinct
+    sizes -- a fixture-sized page and a full scan-sized page -- so a mix-up
+    between the two records fails on both the dimensions and the eight integers,
+    not just one or the other.
+    """
+    import grouping_config
+
+    designator = _load_designator()
+    context = _Recorder()
+    policy = grouping_config.load_grouping_config(str(SHIPPED_GROUPING_CONFIG))
+    small = grouping_config.resolve_thresholds(policy, 200, 260)
+    large = grouping_config.resolve_thresholds(policy, 2480, 3508)
+    assert small != large, "the two sizes must resolve to different thresholds"
+
+    designator.publish_structure_status(
+        context,
+        {
+            2: {"relative_path": "exemplar/page-2.json"},
+            3: {"relative_path": "exemplar/page-3.json"},
+        },
+        {2: {"subject_id": "page-two"}, 3: {"subject_id": "page-three"}},
+        {"chair": "test"},
+        {},
+        {
+            2: {"width": 200, "height": 260, "thresholds": small, **_ANALYSIS_FIELDS},
+            3: {"width": 2480, "height": 3508, "thresholds": large, **_ANALYSIS_FIELDS},
+        },
+    )
+
+    small_page = context.payloads[2]
+    large_page = context.payloads[3]
+    assert (small_page["page_width"], small_page["page_height"]) == (200, 260)
+    assert (large_page["page_width"], large_page["page_height"]) == (2480, 3508)
+    assert small_page["resolved_thresholds"] == {
+        "margin_px": small.margin_px,
+        "chain_gap_px": small.chain_gap_px,
+        "anchor_reach_px": small.anchor_reach_px,
+        "brace_min_height_px": small.brace_min_height_px,
+        "page_edge_reach_px": small.page_edge_reach_px,
+        "review_priority_min_dimension_px": small.review_priority_min_dimension_px,
+        "gap_tolerance_px": small.gap_tolerance_px,
+        "max_residual_components": small.max_residual_components,
+    }
+    assert large_page["resolved_thresholds"] == {
+        "margin_px": large.margin_px,
+        "chain_gap_px": large.chain_gap_px,
+        "anchor_reach_px": large.anchor_reach_px,
+        "brace_min_height_px": large.brace_min_height_px,
+        "page_edge_reach_px": large.page_edge_reach_px,
+        "review_priority_min_dimension_px": large.review_priority_min_dimension_px,
+        "gap_tolerance_px": large.gap_tolerance_px,
+        "max_residual_components": large.max_residual_components,
+    }
+    assert small_page["resolved_thresholds"] != large_page["resolved_thresholds"]
+
+
 _ANALYSIS_FIELDS = {"background_source": "inferred-modal", "structure_evidence": "detected"}
