@@ -12,6 +12,7 @@ reading ``models.toml``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -857,6 +858,253 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
     assert exit_code == 2
     assert not ws.report_path.exists()
+
+
+# --- PREFLIGHT is wired to the real registry and the serving seam ----------
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PROVEN_TIER = "generic-48gb"
+WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+
+
+def _toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f'"{key}" = {_toml_value(item)}' for key, item in value.items()) + " }"
+        )
+    text = str(value)
+    return f"'{text}'" if '"' in text else f'"{text}"'
+
+
+def _render_recipes(rows: list[dict[str, object]]) -> str:
+    lines = ['schema = "serving-recipes.v1"', ""]
+    for row in rows:
+        lines.append("[[profiles]]")
+        lines.extend(f"{key} = {_toml_value(value)}" for key, value in row.items())
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspace, dict]:
+    """A checked-out repository whose fixture roster has launchable vLLM rows.
+
+    The committed catalogue holds fixture rows only, which the manager refuses
+    by name, so the roster's five configured chairs get a vLLM row at every
+    tier here -- proven or unproven as the test asks -- and the real
+    ``config/models.toml``, manifests and model fixtures are copied in so
+    ``ChairRegistry.ensure`` verifies real local snapshots.
+    """
+
+    import shutil
+
+    from common.chairs.config import load_models_toml
+    from common.chairs.models import AbsentChair
+    from operations.serving.test_manager import profile_row, seal_rows
+
+    ws = _workspace(tmp_path)
+    shutil.copytree(ROOT / "config", ws.repository / "config")
+    for stray in ("serving_recipes.toml", "serving_recipes_real.toml", "models-real.toml"):
+        (ws.repository / "config" / stray).unlink()
+    models = load_models_toml(ws.models_config)
+    identities = {
+        role: chair for role, chair in models.chairs.items() if not isinstance(chair, AbsentChair)
+    }
+    rows = []
+    for port, (role, chair) in enumerate(sorted(identities.items()), start=8100):
+        for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus"):
+            row = profile_row(
+                recipe=chair.serving_recipe,
+                chair=role,
+                served_model_id=f"{role}-api",
+                port=port,
+                tier=tier,
+            )
+            row["gpu_memory_utilization"] = "0.50"
+            row["preflight_state"] = preflight_state
+            rows.append(row)
+    recipes = ws.repository / "config" / "serving_recipes.toml"
+    recipes.write_text(
+        _render_recipes(seal_rows(rows, identities)),
+        encoding="utf-8",
+    )
+    return ws, identities
+
+
+def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS):  # type: ignore[no-untyped-def]
+    from decimal import Decimal
+
+    from operations.pod.preflight import GpuProfile, UtilizationSample
+    from operations.serving.test_manager import FakeHttp, FakeLauncher, FakePackages
+
+    from .bootstrap_main import PreflightSeams
+
+    http = FakeHttp(
+        model_ids=tuple(f"{role}-api" for role in identities),
+        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+    )
+    launcher = FakeLauncher(http)
+
+    class Probe:
+        def profile(self, dtype: str) -> GpuProfile:
+            return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
+
+    seams = PreflightSeams(
+        page_witness=lambda: witness,
+        utilization=lambda: (UtilizationSample(Decimal("71"), Decimal("31")),),
+        gpu_probe=Probe(),
+        launcher=launcher,
+        http=http,
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        residency_lock=tmp_path / "pod-gpu.lock",
+    )
+    return seams, http, launcher
+
+
+def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
+    tmp_path: Path,
+) -> None:
+    """The fixture roster, the real ``ChairRegistry``, and the serving fakes.
+
+    Nothing here is a fixture pass borrowed into preflight: every chair's cache
+    is verified by ``ChairRegistry.ensure`` against the committed model
+    fixtures, every chair is started through ``ServingManager`` (a fake
+    launcher and loopback), and every smoke answer is the witness this
+    preflight rendered onto its own golden page moments before.
+    """
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    seams, http, launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["placement_tier"] == PROVEN_TIER
+    assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities)
+    assert {receipt["chair"] for receipt in record["smoke_receipts"]} == set(identities)
+    assert all(
+        receipt["page_witness_matches"] is True and "PAGE-WITNESS" not in json.dumps(receipt)
+        for receipt in record["smoke_receipts"]
+    )
+    # One vLLM child per chair, started and stopped in turn; the witness never
+    # left the pod in a prompt -- it reached the chair only as pixels.
+    assert len(launcher.calls) == len(identities)
+    assert all(process.poll() is not None for process in launcher.processes)
+    assert not any(WITNESS in json.dumps(body) for _method, _url, body in http.calls if body)
+    # The evidence is on the volume under this launch's preflight directory,
+    # content-addressed, three records per chair, beside the golden page.
+    preflight_root = ws.volume / "preflight" / ws.report_path.stem
+    assert (preflight_root / "golden-page.png").is_file()
+    assert (
+        record["golden_page_sha256"]
+        == hashlib.sha256((preflight_root / "golden-page.png").read_bytes()).hexdigest()
+    )
+    for kind in ("receipts", "launch-audits", "serving-evidence"):
+        assert len(list((preflight_root / kind / "sha256").glob("*.json"))) == len(identities)
+    assert not record["assembly_proven"], "fakes are not a real assembly claim"
+
+
+def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
+    tmp_path: Path,
+) -> None:
+    """The code as it stands: an unproven row refuses launch before any process.
+
+    Every row in ``config/serving_recipes_real.toml`` is unproven today, so this
+    is exactly the first real preflight's shape -- red at ``smoke-read-failed``
+    for every chair, with the refusal naming the row, and nothing launched.
+    """
+
+    from .bootstrap import BootstrapStepFailure
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="unproven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        _build_preflight(plan, seams)()
+
+    detail = failure.value.detail
+    assert "smoke-read-failed" in detail
+    assert "preflight_state='unproven'" in detail
+    assert all(role in detail for role in identities)
+    assert launcher.calls == []
+
+
+def test_a_supplied_golden_page_needs_its_witness_file_and_the_reverse(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    page_only = main(
+        _argv(ws, extra=("--fixture", str(ws.volume / "page.png"))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+    witness_only = main(
+        _argv(ws, extra=("--page-witness-file", str(ws.volume / "witness.txt"))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+
+    assert (page_only, witness_only) == (2, 2)
+    err = capsys.readouterr().err
+    assert err.count("--fixture and --page-witness-file name one golden page together") == 2
+
+
+def test_a_serving_recipes_config_outside_the_repository_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    elsewhere = tmp_path / "elsewhere" / "serving_recipes.toml"
+
+    exit_code = main(
+        _argv(ws, extra=("--serving-recipes-config", str(elsewhere))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+
+    assert exit_code == 2
+    assert "--serving-recipes-config" in capsys.readouterr().err
+
+
+def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
+    tmp_path: Path,
+) -> None:
+    """The operator-rendered route: both halves come from the volume, verbatim."""
+
+    from operations.serving.smoke import render_golden_page
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    witness = "operatorRenderedWitness0123456789abcdefXYZ"
+    page = ws.volume / "operator-golden-page.png"
+    render_golden_page(page, witness)
+    witness_file = ws.volume / "operator-witness.txt"
+    witness_file.write_text(witness + "\n", encoding="utf-8")
+    clock = Clock()
+    argv = _argv(ws, extra=("--fixture", str(page), "--page-witness-file", str(witness_file)))
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities, witness=witness)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
+    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page.png").exists()
 
 
 class _NotCalled(BaseException):

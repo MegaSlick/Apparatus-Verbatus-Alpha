@@ -11,17 +11,32 @@ fixture request and :class:`~.preflight.ServingSmokeReader` corroborates that
 state after this call returns; concurrent calls would cross those records.
 ``ServingManager.start`` and ``PreflightRunner`` currently enforce sequential
 use outside this class.
+
+The pod's own golden page.  ``operations/pod/bootstrap_main.py`` is the one
+production caller of this callable, and it has no fixture author standing by:
+``fresh_page_witness`` draws the witness from the CSPRNG and
+``render_golden_page`` puts it into pixels, once per preflight, so the value a
+chair must read back was never in a committed file, a prompt, or an earlier
+run's report.  ``NvidiaSmiUtilization`` is the sampler that same caller wires:
+one ``nvidia-smi`` read after the answer, and the process's own load average
+for the CPU figure.  A sampler that cannot measure returns no samples, which
+``PreflightRunner`` turns into ``utilization-missing`` -- an empty instrument
+is red, never a quiet green.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
+import secrets
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from common.chairs.models import ChairIdentity
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
@@ -36,6 +51,103 @@ _MAXIMUM_UTILIZATION_SAMPLES = 1_024
 _MAXIMUM_PNG_BYTES = 64 * 1024 * 1024
 _FIXTURE_MIME_TYPE = "image/png"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# 32 bytes of CSPRNG output, URL-safe: 43 characters, all inside the witness
+# alphabet `VisionSmokeCall` accepts and comfortably inside its length bound.
+_WITNESS_ENTROPY_BYTES = 32
+# The rendered page. Large type on a wide page, so the witness is a line of
+# text a vision model reads rather than a strip of bitmap glyphs, and the whole
+# page still sits under the smallest tier's longest-edge cap (1344 pixels,
+# config/pod_placement.toml) so `_verify_png` never refuses it.
+_GOLDEN_PAGE_SIZE = (1280, 400)
+_GOLDEN_PAGE_FONT_SIZE = 40
+_NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
+
+
+def fresh_page_witness() -> str:
+    """One unguessable witness for one golden page, from the CSPRNG.
+
+    ``VisionSmokeCall`` states that entropy and rotation are the fixture
+    author's job; on the pod that author is this function, called once per
+    preflight by ``bootstrap_main`` immediately before the page is rendered.
+    """
+
+    return secrets.token_urlsafe(_WITNESS_ENTROPY_BYTES)
+
+
+def render_golden_page(path: Path, witness: str) -> bytes:
+    """Put ``PAGE-WITNESS: <witness>`` into the pixels of a fresh PNG at ``path``.
+
+    The witness is validated the way the callable validates it, before any
+    pixel is drawn, so a page cannot be rendered for a value the smoke would
+    later refuse. The rendered bytes are decoded again before being returned:
+    a page the decoder cannot read would reach the chair as a request it could
+    only fail, and this is where that would be found.
+    """
+
+    VisionSmokeCall(witness)
+    page = Image.new("L", _GOLDEN_PAGE_SIZE, color="white")
+    font = ImageFont.load_default(size=_GOLDEN_PAGE_FONT_SIZE)
+    ImageDraw.Draw(page).text(
+        (48, 160),
+        f"{_WITNESS_PREFIX}{witness}",
+        fill="black",
+        font=font,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    page.save(path, format="PNG")
+    encoded = path.read_bytes()
+    _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
+    return encoded
+
+
+class NvidiaSmiUtilization:
+    """The production utilization sampler ``bootstrap_main`` hands ``VisionSmokeCall``.
+
+    One sample per call: ``utilization.gpu`` from ``nvidia-smi`` and the
+    one-minute load average per CPU for the CPU figure. Both are measurements
+    taken *after* the smoke answer, so they say what the card and the host were
+    doing around the read, and nothing more -- no threshold here claims a card
+    is saturated. A failed or unparseable read returns an empty tuple, which
+    ``PreflightRunner`` reports as ``utilization-missing``.
+    """
+
+    def __init__(
+        self,
+        *,
+        runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+        load_average: Callable[[], tuple[float, float, float]] | None = None,
+        cpu_count: Callable[[], int | None] | None = None,
+    ) -> None:
+        self.runner = runner or self._run
+        self.load_average = load_average or os.getloadavg
+        self.cpu_count = cpu_count or os.cpu_count
+
+    def __call__(self) -> tuple[UtilizationSample, ...]:
+        try:
+            query = self.runner(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]
+            )
+            if query.returncode != 0:
+                return ()
+            gpu_percent = Decimal(query.stdout.strip().splitlines()[0].strip())
+            cpus = self.cpu_count() or 0
+            if cpus <= 0:
+                return ()
+            load = Decimal(str(self.load_average()[0])) / Decimal(cpus) * Decimal(100)
+            cpu_percent = min(load, Decimal(100)).quantize(Decimal("0.1"))
+            return (UtilizationSample(gpu_percent, cpu_percent),)
+        except (OSError, ValueError, IndexError, InvalidOperation, subprocess.SubprocessError):
+            return ()
+
+    @staticmethod
+    def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_NVIDIA_SMI_TIMEOUT_SECONDS,
+        )
 
 
 @dataclass(frozen=True, slots=True)
