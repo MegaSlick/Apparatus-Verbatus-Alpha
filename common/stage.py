@@ -60,6 +60,7 @@ from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
     DESIGNATOR,
+    DOOR,
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
@@ -134,6 +135,22 @@ MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
 # an approval record's own content address in the configuration it approves.
 NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
 PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
+
+# The one scenario name a real submission runs under. A constant, never argv:
+# the fixture path seals `--scenario` into `config_digest` and refuses a resumed
+# run under another, but the real `config_digest` binds no scenario at all, so
+# an argv value there would be the one run-shaping fact nothing ever checked.
+# Every real-ingress context carries this and nothing else.
+REAL_SCENARIO: Final = "real-submission"
+
+# The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
+# fake adapter. Bumped deliberately whenever source behaviour changes so a real
+# run cannot resume under pixels made by a different Door implementation. Named
+# here rather than in `pipeline/1_exemplar/door.py`, because the downstream
+# open-time recheck (`_refuse_incompatible_real_reuse`) has to compare the run
+# authority's Door recipe against it, and `common/` may never import a stage.
+# The Door imports it from here.
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
 
 # The Designator's capture padding decides how many pixels a witness is actually
 # shown around each act, so two runs under different padding produce different
@@ -419,7 +436,7 @@ class StageContext:
     __slots__ = (
         "tree",
         "run",
-        "fixture",
+        "_fixture",
         "scenario",
         "stage",
         "adapter_revision",
@@ -449,7 +466,10 @@ class StageContext:
     ):
         self.tree = tree
         self.run = run
-        self.fixture = fixture
+        # `None` on a real submission, behind the refusing `fixture` property
+        # below; a loaded declaration on the fixture path. The parameter keeps
+        # its name so every existing construction is untouched.
+        self._fixture = fixture
         self.scenario = scenario
         self.stage = stage
         self.adapter_revision = adapter_revision
@@ -462,8 +482,9 @@ class StageContext:
         # the stage would then work under a policy the run never sealed while
         # every other check still passed. `require_sealed_config` is the
         # point-of-use comparison that makes the second read prove it saw the
-        # first read's bytes. Empty for a context built without one (real
-        # ingress, which reaches no configuration-driven work).
+        # first read's bytes. Both ingress routes carry it: `open_context` on a
+        # fixture run and `_open_real_context` on a real one, where five stages
+        # require these names before their first line of work.
         self.sealed_config_digests = dict(sealed_config_digests or {})
         # A stage that opens a fixture run receives the already-parsed values
         # from the exact bytes that participated in its sealed config digest.
@@ -485,6 +506,26 @@ class StageContext:
         # use so a reintroduced second read cannot pass silently.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
         self.sealed = False
+
+    @property
+    def fixture(self) -> dict[str, Any]:
+        """The declared synthetic fixture, or a named refusal on a real submission.
+
+        `None`, not `{}` and not a Mapping-shaped sentinel: the failure this
+        guards against is `context.fixture.get("act", [])` returning `[]` on a
+        real run and a fixture-shaped check *passing* over it. Anything that
+        supports `.get` reproduces exactly that. Refusing at first touch turns
+        every unconverted fixture reader in the pipeline into a refusal that
+        names the stage, and makes the audit mechanical: `rg 'context\\.fixture'`
+        is the complete list of readers a real-mode branch had to decide about.
+        """
+        if self._fixture is None:
+            raise ContractError(
+                f"{self.stage} asked its context for fixture declarations on a real "
+                "submission. Real ingress carries no fixture; this reader must derive the "
+                "fact from sealed upstream evidence or refuse by name"
+            )
+        return self._fixture
 
     @property
     def config_digest(self) -> str:
@@ -1777,6 +1818,47 @@ def validate_witness_context_bindings(
     return witness_context_config_digest
 
 
+def real_run_policy_digest(
+    *,
+    witness_context: str,
+    witness_context_declaration_sha256: str,
+    nuda_per_mille: int,
+    nuda_approval_ref: str,
+    perlector_instrument_per_mille: int,
+    perlector_instrument_approval_ref: str,
+    draft_fed: bool,
+) -> str:
+    """The digest a real run seals its run-level reading knobs under.
+
+    On the fixture path these seven facts live inside `config_digest`, and
+    `open_context`'s reuse check refuses a resumed run that supplies a different
+    value. The real `config_digest` cannot be recomputed downstream
+    (`_open_real_context` says why), so on that path they need a *named* seal of
+    their own, or `--witness-context blinded` on a resume would reach the
+    Perlector unchecked while every other refusal stayed green. One function,
+    called by `door._real_bindings` when the run is created and by
+    `real_run_bindings` at every later stage's open, so the two sides cannot
+    drift on which fields the name covers. The field set is closed: a knob added
+    to one caller and not the other is a run-policy digest that never moves.
+
+    Values are validated by `validate_witness_context_bindings` on both paths
+    before this is called; this only closes the set and hashes it.
+    """
+    if not isinstance(draft_fed, bool):
+        raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
+    return digest_of(
+        {
+            "witness_context_regime": witness_context,
+            "witness_context_declaration_sha256": witness_context_declaration_sha256,
+            "nuda_per_mille": nuda_per_mille,
+            "nuda_approval_ref": nuda_approval_ref,
+            "perlector_instrument_per_mille": perlector_instrument_per_mille,
+            "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
+            "draft_fed": draft_fed,
+        }
+    )
+
+
 def run_config_bindings(
     models: ModelsConfig,
     fixture: dict[str, Any],
@@ -2044,6 +2126,123 @@ def run_config_bindings(
         # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
         # carried into `StageContext` so the Recensor and the Designator recovery
         # pass never open the file a second time (audit S3).
+        "recovery_policy": recovery_policy,
+    }
+
+
+def _read_config_digest(path: str | Path, description: str) -> str:
+    """Digest one configuration file's bytes, refusing an unreadable one by name.
+
+    The same read-and-name shape `run_config_bindings` spells out inline for
+    each file; shared here by the real path so its refusals say the same thing
+    about the same file. `run_config_bindings` is deliberately left as written:
+    the fixture path's bytes are pinned by the acceptance digests, and a
+    behaviour-neutral rewrite of it buys nothing those pins can measure.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(f"the {description} binding at {path} could not be read") from error
+
+
+# The names a real run seals that no stage after the Door can recompute. The
+# data-handling policy gated admission and is named by the Door alone
+# (`--data-gate-policy` is a Door-only flag the orchestrator forwards to no
+# other stage), so a later stage can require the name to be *present* — the
+# run was gated — but cannot say which bytes it should carry.
+_REAL_DOOR_ONLY_SEALED_NAMES: Final = ("data-handling",)
+
+
+def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
+    """The downstream-relevant subset of a real run's bindings, recomputed at open.
+
+    Reads the same files `run_config_bindings` reads, under the same names, and
+    returns what a stage after the Door needs: the sealed digest map to recheck
+    `run.json` against and to carry as `StageContext.sealed_config_digests`, the
+    parsed Armarium formats and recovery policy, the serving configuration
+    inputs, and the roster facts. It computes no `config_digest`: the real one
+    binds the submission ledger and the Door machine's decoder versions, which
+    this stage does not hold and must not bind to (`_open_real_context`).
+
+    Three names here exist only on the real path — `models`, `armarium-formats`
+    and `run-policy` — because on the fixture path the same facts are inside
+    `config_digest` and already rechecked whole. Here they are what stands in
+    for that check, name by name.
+    """
+    validate_witness_adapter_bindings(models)
+    witness_context_declaration_sha256 = validate_witness_context_bindings(
+        models,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
+        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+    )
+    _, alignment_config_digest = load_alignment_limits(args.alignment_config)
+    _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
+        DEFAULT_CORPUS_FRAME_CONFIG_PATH
+    )
+    _decoding_policy, decoding_config_digest = load_decoding_policy(args.decoding_config)
+    triage_modes_raw = _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    _validate_triage_modes_config(triage_modes_raw, DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(args.formats_config)
+    serving_recipes_config_digest = _read_config_digest(
+        args.serving_recipes_config, "serving recipes configuration"
+    )
+    pod_placement_config_digest = _read_config_digest(
+        DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
+    )
+    recovery_policy = load_recovery_policy(args.recovery_config)
+    hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
+    adapter_recipes = dict(sorted(models.adapter_recipes.items()))
+    adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
+    return {
+        "witness_chairs": list(models.witness_chairs),
+        "adapter_recipes": adapter_recipes,
+        "serving_config_inputs": {
+            "schema": SERVING_CONFIG_INPUTS_SCHEMA,
+            "serving_recipes_sha256": serving_recipes_config_digest,
+            "pod_placement_sha256": pod_placement_config_digest,
+        },
+        "sealed_config_digests": {
+            "designator-padding": _read_config_digest(
+                args.designator_padding_config, "Designator padding configuration"
+            ),
+            "designator-geometry": _read_config_digest(
+                args.designator_geometry_config, "Designator geometry configuration"
+            ),
+            "designator-grouping": _read_config_digest(
+                args.designator_grouping_config, "Designator grouping configuration"
+            ),
+            "alignment": alignment_config_digest,
+            "corpus-frame-shard": corpus_frame_config_digest,
+            "decoding": decoding_config_digest,
+            "perlector-protocol": _read_config_digest(
+                args.perlector_protocol_config, "Perlector protocol configuration"
+            ),
+            "perlector-audit": _read_config_digest(
+                args.perlector_audit_config, "Perlector audit configuration"
+            ),
+            "pdf-render": _read_config_digest(args.pdf_render_config, "PDF render configuration"),
+            "recovery": recovery_policy["config_sha256"],
+            "hard-failure": hard_failure_policy["config_sha256"],
+            "triage-modes": digest_bytes(triage_modes_raw),
+            "serving-recipes": serving_recipes_config_digest,
+            "pod-placement": pod_placement_config_digest,
+            "models": models.models_digest,
+            "armarium-formats": armarium_formats_digest,
+            "run-policy": real_run_policy_digest(
+                witness_context=args.witness_context,
+                witness_context_declaration_sha256=witness_context_declaration_sha256,
+                nuda_per_mille=args.nuda_per_mille,
+                nuda_approval_ref=args.nuda_approval_ref,
+                perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+                perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+                draft_fed=args.draft_fed,
+            ),
+        },
+        "armarium_formats": armarium_formats,
         "recovery_policy": recovery_policy,
     }
 
@@ -2459,9 +2658,147 @@ def expected_acts(context) -> list[dict[str, Any]]:
         act_ids.add(act["act_id"])
         act_keys.add(act["act_key"])
         classify(DESIGNATOR, act.get("outcome"))
-    _verify_synthetic_act_denominator(context, acts)
-    _verify_proposal_seal_evidence(context, seal, acts)
+    # Gated on the run authority's ingress record by name, never on the shape of
+    # the fixture. With `fixture={}` on a real run the synthetic floor did not
+    # skip: it read `[]`, found nothing missing, and sent every row to the
+    # minted-row check, which admits only a residual hold and a page-fallback --
+    # so a real Designator's ordinary structural act was refused with a sentence
+    # about a fixture the run never had. Real mode classifies each row from its
+    # own Designator evidence instead (`_verify_real_act_denominator`).
+    if _is_real_ingress(context.run):
+        by_subject = _proposal_evidence_by_subject(context, act_ids)
+        _verify_real_act_denominator(context, acts, by_subject)
+        _verify_proposal_seal_evidence(context, seal, acts, by_subject=by_subject)
+    else:
+        _verify_synthetic_act_denominator(context, acts)
+        _verify_proposal_seal_evidence(context, seal, acts)
     return acts
+
+
+def _is_real_ingress(run: Mapping[str, Any]) -> bool:
+    """Whether a run authority names the real route.
+
+    An absent ingress record reads as the synthetic walking skeleton, exactly as
+    `refuse_halted_run` reads it: the hand-built trees in this module's own unit
+    tests predate the record, and a present one must still parse or it refuses.
+    """
+    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+
+
+def _verify_real_act_denominator(
+    context, acts: list[dict[str, Any]], by_subject: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Every expected-act row on a real run, proven against its own evidence.
+
+    There is no declaration to check a real seal against, so the fixture floor
+    does not run. What replaces it is not trust: each row is classified by which
+    Designator record exists for it -- a `hold` naming `residual_bounds`, a
+    `hold` naming `page_bounds`, a `page-fallback` record, or a proposal-origin
+    `region` on the row's own page -- and then recomputed against that record
+    exactly as the fixture path recomputes its minted rows. The three minted
+    classes go through `_verify_minted_act_rows` unchanged. The fourth, the
+    structural proposal, is the one class the fixture path never had to
+    recompute (its declaration was the stronger check) and here is checked
+    against the producer's own crop rectangle (`_verify_structural_act_row`).
+
+    A row matching more than one minted class is refused as ambiguous, and a
+    row matching none and carrying no region is refused as unevidenced. Nothing
+    tries the classes in turn until one verifies: the evidence decides the
+    class, or nothing does (GOVERNANCE 3, hard rule 8).
+    """
+    fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
+    holds_by_subject: dict[str, dict[str, Any]] = {}
+    minted_rows: dict[str, dict[str, Any]] = {}
+    observed = {act["act_id"]: act for act in acts}
+    for act_id in sorted(observed):
+        row = observed[act_id]
+        records = by_subject.get(act_id, [])
+        holds = [record for record in records if record["kind"] == "hold"]
+        if len(holds) > 1:
+            raise FatalAccounting(
+                f"act {act_id} has {len(holds)} hold records; one act is held once, and "
+                "nothing may decide which hold speaks for it"
+            )
+        hold = holds[0] if holds else None
+        hold_payload = (
+            hold.get("payload")
+            if hold is not None and isinstance(hold.get("payload"), dict)
+            else {}
+        )
+        regions = [
+            record
+            for record in records
+            if record["kind"] == "region"
+            and isinstance(record["payload"].get("transform"), Mapping)
+            and record["payload"]["transform"].get("source_page_id") == row["page_id"]
+        ]
+        classes = []
+        if "residual_bounds" in hold_payload:
+            classes.append("residual")
+        if "page_bounds" in hold_payload:
+            classes.append("page-residual")
+        if act_id in fallbacks_by_subject:
+            classes.append("page-fallback")
+        # A structural proposal is the row with regions and no minted-class
+        # record at all. Regions alone do not name a class: a page-fallback act's
+        # predetermined crops are proposal regions too (`_publish_page_fallback`
+        # cuts them through `cut_minted_region`), and what says which unit they
+        # belong to is the `page-fallback` record beside them, whose own
+        # rectangle and premise `_verify_page_fallback_act_row` then recomputes.
+        if regions and not classes:
+            classes.append("proposal")
+        if len(classes) > 1:
+            raise FatalAccounting(
+                f"act {act_id}'s Designator evidence matches more than one act class "
+                f"({', '.join(classes)}); a row's class is decided by which evidence record "
+                "exists for it, and ambiguous evidence is not a choice to make"
+            )
+        if not classes:
+            raise FatalAccounting(
+                f"act {act_id} has no Designator evidence to recompute its identity from: no "
+                "proposal region on its page, no hold naming residual or page bounds, and no "
+                "page-fallback record; real ingress carries no declaration to admit it on"
+            )
+        if classes == ["proposal"]:
+            _verify_structural_act_row(act_id, row, regions)
+            continue
+        minted_rows[act_id] = row
+        if hold is not None:
+            holds_by_subject[act_id] = hold
+    _verify_minted_act_rows(context, minted_rows, holds_by_subject, fallbacks_by_subject)
+    _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
+
+
+def _verify_structural_act_row(
+    act_id: str, row: dict[str, Any], regions: list[dict[str, Any]]
+) -> None:
+    """A real structural act, recomputed from the rectangle it was minted over.
+
+    `cut_minted_region` publishes `raw_bounds` beside every proposal region: the
+    structural rectangle the act identity was bound to, before capture padding.
+    That is the one producer-independent fact a consumer can recompute the
+    identity against, so a real run's denominator is *verified* rather than
+    trusted. Exactly one proposal-origin region may sit on the row's own page; a
+    continuation is a second region on the far page and is not counted here.
+    """
+    if len(regions) != 1:
+        raise FatalAccounting(
+            f"act {act_id} has {len(regions)} proposal regions on page {row['page_id']}, not "
+            "exactly one; a structural act is minted over one rectangle on its own page"
+        )
+    bounds = regions[0]["payload"].get("raw_bounds")
+    if not isinstance(bounds, dict):
+        raise FatalAccounting(
+            f"act {act_id}'s proposal region carries no raw_bounds to recompute its identity "
+            "from; the real structural pass must publish the rectangle the act was minted over"
+        )
+    try:
+        verify_identity(act_id, "act", act_bindings(row["page_id"], "proposal", bounds))
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the proposal class and the raw_bounds its "
+            f"own region record names: {error}"
+        ) from error
 
 
 def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> None:
@@ -2721,6 +3058,7 @@ def _verify_minted_act_rows(
     context,
     extra_rows: dict[str, dict[str, Any]],
     holds_by_subject: dict[str, dict[str, Any]] | None = None,
+    fallbacks_by_subject: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Every expected-act row beyond the fixture's own denominator.
 
@@ -2760,9 +3098,10 @@ def _verify_minted_act_rows(
     """
     if holds_by_subject is None:
         holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
-    fallbacks_by_subject = (
-        _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
-    )
+    if fallbacks_by_subject is None:
+        fallbacks_by_subject = (
+            _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
+        )
     for act_id, row in extra_rows.items():
         if row["has_continuation"]:
             raise FatalAccounting(
@@ -3133,17 +3472,16 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
     }
 
 
-def _verify_proposal_seal_evidence(
-    context, seal: dict[str, Any], acts: list[dict[str, Any]]
-) -> None:
-    """Reconcile the immutable expected-act denominator to Designator evidence.
+def _proposal_evidence_by_subject(
+    context, expected_ids: set[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Every proposal-origin region and every hold, by the act it is evidence for.
 
-    The proposal seal is the sole downstream denominator, so it cannot be a
-    shorter producer-authored list than the regions and holds actually published.
-    Only original proposal regions belong to it; recovery regions are later,
-    append-only evidence and must not rewrite the denominator.
+    The one walk of the Designator's region and hold records. It is the walk
+    `_verify_proposal_seal_evidence` reconciles the seal against, and on a real
+    run it is also what `_verify_real_act_denominator` classifies each row from,
+    so the two share it rather than reading the stage twice.
     """
-    expected_ids = {act["act_id"] for act in acts}
     by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in expected_ids}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] not in {"region", "hold"}:
@@ -3158,6 +3496,25 @@ def _verify_proposal_seal_evidence(
         if entry["kind"] == "region" and record["payload"].get("origin") != "proposal":
             continue
         by_subject[subject].append(record)
+    return by_subject
+
+
+def _verify_proposal_seal_evidence(
+    context,
+    seal: dict[str, Any],
+    acts: list[dict[str, Any]],
+    *,
+    by_subject: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Reconcile the immutable expected-act denominator to Designator evidence.
+
+    The proposal seal is the sole downstream denominator, so it cannot be a
+    shorter producer-authored list than the regions and holds actually published.
+    Only original proposal regions belong to it; recovery regions are later,
+    append-only evidence and must not rewrite the denominator.
+    """
+    if by_subject is None:
+        by_subject = _proposal_evidence_by_subject(context, {act["act_id"] for act in acts})
 
     expected_seal_refs: list[dict[str, str]] = []
     for act in acts:
@@ -3204,8 +3561,22 @@ def open_context(
     stage: str,
     *,
     registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
+    tree: RunTree | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> StageContext:
-    """Open an existing run for a stage that is not the first to write."""
+    """Open an existing run for a stage that is not the first to write.
+
+    The synthetic-ingress branch of `open_stage_context`, which passes in the
+    tree and the run authority it already read to decide the branch. Supplied
+    together or not at all: a branch decided on one read and a binding checked
+    on another would be the two-read fault `_verify_stage_seal` names, with a
+    mode switch in it.
+    """
+    if (tree is None) != (run is None):
+        raise ContractError(
+            "open_context takes the run tree and its read authority together or neither; "
+            "a binding checked against a second read of run.json can straddle a rewrite"
+        )
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
     registry = registry_factory(args.models_config)
@@ -3234,8 +3605,9 @@ def open_context(
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
     )
-    tree = RunTree(Path(args.run_root), args.run_id)
-    run = tree.read_run()
+    if tree is None:
+        tree = RunTree(Path(args.run_root), args.run_id)
+        run = tree.read_run()
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     # `sealed_config_digests` is compared as a field of its own, not left to be
@@ -3304,6 +3676,219 @@ def open_context(
         serving_config_inputs=bindings["serving_config_inputs"],
         recovery_policy=bindings["recovery_policy"],
     )
+
+
+def open_stage_context(
+    args,
+    stage: str,
+    *,
+    registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
+) -> StageContext:
+    """Open an existing run for any stage after the Door, on either ingress route.
+
+    One read of the run authority decides the route and is then passed down,
+    never re-read: the ingress record is inside `run.json`'s own self-hash, so
+    which of the two routes created a run cannot be quietly switched, and a
+    branch decided on one read with a binding checked on another would be the
+    "two reads can straddle a rewrite" fault with a mode switch in it. The
+    synthetic route is `open_context`, unchanged; the real route is
+    `_open_real_context`.
+    """
+    tree = RunTree(Path(args.run_root), args.run_id)
+    run = tree.read_run()
+    if not _is_real_ingress(run):
+        return open_context(args, stage, registry_factory=registry_factory, tree=tree, run=run)
+    return _open_real_context(args, stage, tree, run, registry_factory)
+
+
+def _open_real_context(
+    args,
+    stage: str,
+    tree: RunTree,
+    run: Mapping[str, Any],
+    registry_factory: Callable[[str], StageChairProtocol],
+) -> StageContext:
+    """Open a real submission's run for a stage after the Door.
+
+    Mirrors `open_context` step for step, so the two routes refuse the same
+    things in the same order: the register snapshot, the roster, the binding
+    recheck, the predecessor seal, the run-level cap, then construction.
+
+    **The real `config_digest` is not recomputed here, and must not be.** The
+    Door composes it over the submission ledger's file list and self-hash, the
+    format policy, the data-handling policy that gated admission, the triage
+    documents, and `_door_execution_recipe` -- the PDFium and Pillow versions of
+    the machine that ran the Door. A later stage holds none of those inputs, and
+    for the execution recipe it must not: recomputing it would bind the
+    Armarium to the Door's decoder build and refuse a sound run after a library
+    upgrade. So `open_context`'s whole-digest comparison has no counterpart on
+    this route, and what stands in for it is the name-by-name recheck of the
+    sealed map (`_refuse_incompatible_real_reuse`), which is why the Door seals
+    `models`, `armarium-formats` and `run-policy` on the real path alone: they
+    are the facts stages 3-7 act on that the whole digest would otherwise have
+    been the only thing covering.
+
+    The context carries `fixture=None` (behind the refusing accessor) and
+    `REAL_SCENARIO`, never `args.scenario`: the real digest binds no scenario,
+    so an argv value there would be unchecked.
+    """
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
+    registry = registry_factory(args.models_config)
+    bindings = real_run_bindings(registry.config, args)
+    # Before any write and before the seal check, so a moved policy is named as
+    # a policy and not as a missing boundary.
+    _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
+    verify_predecessor_seal(tree, stage)
+    refuse_halted_run(tree, stage, args.hard_failure_config)
+    return StageContext(
+        tree=tree,
+        run=run,
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage=stage,
+        adapter_revision=adapter_recipe_for(run, stage),
+        args=args,
+        registry=registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
+        armarium_formats=bindings["armarium_formats"],
+        serving_config_inputs=bindings["serving_config_inputs"],
+        recovery_policy=bindings["recovery_policy"],
+    )
+
+
+def _refuse_incompatible_real_reuse(
+    run: Mapping[str, Any], bindings: Mapping[str, Any], *, run_id: str
+) -> None:
+    """Refuse a real run resumed under inputs other than the ones it sealed.
+
+    The same class `open_context` raises, so operators and the operator console
+    see one shape; the same closing sentence, because on this route the promise
+    that nothing was written is the whole value of checking at open time. Every
+    fact that moved is named in one sentence, and an absent name is named apart
+    from a changed one -- `require_sealed_config`'s distinction -- because they
+    need different operator actions: restore the file, versus create the run
+    again on a build that seals the name. A real run created before the three
+    real-only names existed therefore cannot be resumed under this build.
+    """
+    differing: list[str] = []
+    if list(run.get("witness_chairs", [])) != sorted(bindings["witness_chairs"]):
+        differing.append("witness_chairs")
+    if run.get("adapter_recipes") != bindings["adapter_recipes"]:
+        differing.append("adapter_recipes")
+    sealed = run_sealed_config_digests(run)
+    moved: list[str] = []
+    absent: list[str] = []
+    for name, digest in sorted(bindings["sealed_config_digests"].items()):
+        recorded = sealed.get(name)
+        if recorded is None:
+            absent.append(name)
+        elif recorded != digest:
+            moved.append(name)
+    absent.extend(name for name in _REAL_DOOR_ONLY_SEALED_NAMES if name not in sealed)
+    if not differing and not moved and not absent:
+        return
+    named = list(differing)
+    if moved:
+        named.append(f"sealed configuration {', '.join(moved)} moved")
+    if absent:
+        named.append(
+            f"this run sealed no digest for the {', '.join(absent)} configuration, so a "
+            "stage cannot prove which bytes it is bound to"
+        )
+    raise IncompatibleReuse(
+        f"run {run_id!r} is bound to different {'; '.join(named)} than the currently loaded "
+        "run inputs. No stage work was written. Resume with the original sealed inputs, or "
+        "start a new run for the changed inputs"
+    )
+
+
+def submission_identity(run: Mapping[str, Any]) -> str | None:
+    """The one identity a real submission carries: its filename ledger's self-hash.
+
+    Every real source row carries `ledger_sha256`, it is one value across the
+    run, and `pipeline/1_exemplar/run.py::_verify_source_ledger` already proves
+    it reproduces the self-hashed ledger that admitted the submission. `None` on
+    the fixture route, which has a fixture id instead; the two are different
+    concepts and are never written under one name.
+    """
+    if not _is_real_ingress(run):
+        return None
+    rows = run.get("source_manifest")
+    if not isinstance(rows, list) or not rows:
+        raise ContractError("run.json has no submitted source manifest to name a submission by")
+    hashes = {row.get("ledger_sha256") if isinstance(row, Mapping) else None for row in rows}
+    if len(hashes) != 1:
+        raise ContractError(
+            f"run.json source rows name {len(hashes)} filename ledgers, not one; a real "
+            "submission is one ledger and its identity cannot be chosen among several"
+        )
+    identity = next(iter(hashes))
+    if not is_sha256(identity):
+        raise ContractError(
+            "run.json source rows carry no filename-ledger sha256; a real submission's "
+            "identity is that ledger's self-hash and nothing may stand in for it"
+        )
+    return identity
+
+
+def exemplar_page_ids(context) -> dict[int, str]:
+    """Every Exemplar page by submitted ordinal, sealed and refused alike.
+
+    The one index of "which page is ordinal N" for both ingress routes: the
+    Exemplar's own `page` artifacts are the only correct source, because a
+    fanned container page binds its container digest, page index and render
+    contract into its identity, which neither the fixture declaration nor the
+    run authority's manifest row carries. A refused page keeps its ordinal so a
+    reader can tell "refused" from "never submitted". This is the Ink Map's
+    census generalised, minus the pixel verification that belongs to the Ink
+    Map: it says which page an ordinal names, not that the page's bytes are
+    sound.
+
+    A sealed page citing more than one submitted row would leave the other
+    rows' ordinals with no entry, so it refuses by name rather than dropping
+    them; the Door refuses such a submission before the Exemplar ever runs.
+    """
+    submitted = {
+        row.get("ordinal")
+        for row in context.run.get("source_manifest", [])
+        if isinstance(row, Mapping)
+    }
+    pages: dict[int, str] = {}
+    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+        if entry["kind"] != "page":
+            continue
+        page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        payload = page.get("payload")
+        ordinal = payload.get("ordinal") if isinstance(payload, Mapping) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                f"Exemplar page {page.get('artifact_id')!r} has no integer ordinal, so it "
+                "cannot be matched to one submitted source"
+            )
+        if ordinal in pages:
+            raise FatalAccounting(
+                f"more than one Exemplar page names ordinal {ordinal}; one submitted source "
+                "is one page, and nothing may decide which of two pages it became"
+            )
+        if ordinal not in submitted:
+            raise FatalAccounting(
+                f"Exemplar page {page['subject_id']!r} names ordinal {ordinal}, which the run "
+                "authority's source manifest never submitted"
+            )
+        cited = {
+            row.get("ordinal")
+            for row in payload.get("submission_rows", [])
+            if isinstance(row, Mapping)
+        } - {ordinal}
+        if cited:
+            raise FatalAccounting(
+                f"Exemplar page {page['subject_id']!r} for ordinal {ordinal} also cites "
+                f"submitted ordinal(s) {sorted(cited)}; one page per ordinal is the contract, "
+                "and those ordinals would otherwise leave this index silently"
+            )
+        pages[ordinal] = page["subject_id"]
+    return dict(sorted(pages.items()))
 
 
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:

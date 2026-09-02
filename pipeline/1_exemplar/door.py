@@ -108,10 +108,12 @@ from common.stage import (  # noqa: E402
     DEFAULT_TRIAGE_MODES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
+    REAL_DOOR_ADAPTER_REVISION,
     StageContext,
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
+    real_run_policy_digest,
     refuse_halted_run,
     require_corpus_frame_shard,
     require_triage_modes,
@@ -187,10 +189,11 @@ _SNIFF_BYTES: Final = 4096
 # partition validation.
 MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
 MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
-# The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
-# fake adapter. Bump this deliberately whenever source behavior changes so a real
-# run cannot resume under pixels made by a different Door implementation.
-REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
+# `REAL_DOOR_ADAPTER_REVISION` -- the real Door's own implementation revision,
+# bumped deliberately whenever source behaviour changes so a real run cannot
+# resume under pixels made by a different Door -- is defined in `common/stage.py`
+# and imported above, because every later stage's open-time recheck compares the
+# run authority's Door recipe against it and `common/` may not import this file.
 
 
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
@@ -2524,6 +2527,29 @@ def _real_bindings(
             "data-handling": data_handling_config_sha256,
             "serving-recipes": serving_recipes_config_digest,
             "pod-placement": pod_placement_config_digest,
+            # Real ingress only, for the opposite reason: on the fixture path
+            # these three facts are inside `config_digest`, which every later
+            # stage recomputes whole and `open_context` rechecks. The real
+            # `config_digest` above cannot be recomputed downstream -- it binds
+            # the submission ledger and this machine's decoder recipe -- so the
+            # facts stages 3-7 act on need names of their own for
+            # `common.stage._refuse_incompatible_real_reuse` to recheck at every
+            # open: the model roster down to each chair's revision (`run.json`'s
+            # `witness_chairs` and `adapter_recipes` do not move when only a
+            # revision does), the Armarium format projection, and the run-level
+            # reading knobs. Named here and NOT folded into `config_digest`, so
+            # the real digest does not move and no run in flight is invalidated.
+            "models": models.models_digest,
+            "armarium-formats": armarium_formats_digest,
+            "run-policy": real_run_policy_digest(
+                witness_context=witness_context,
+                witness_context_declaration_sha256=witness_context_declaration_sha256,
+                nuda_per_mille=nuda_per_mille,
+                nuda_approval_ref=nuda_approval_ref,
+                perlector_instrument_per_mille=perlector_instrument_per_mille,
+                perlector_instrument_approval_ref=perlector_instrument_approval_ref,
+                draft_fed=draft_fed,
+            ),
         },
     }
 
