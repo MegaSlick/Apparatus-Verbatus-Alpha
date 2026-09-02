@@ -1286,16 +1286,24 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #
 # Measured rather than argued. A fixture happy tree built at 857d325181~15 (before
 # U3) was compared file by file against one built at this commit: 96 files on both
-# sides, 25 of them differing in content, plus one Armarium bundle blob that is the
-# same artifact under a new content-addressed name, and 118 changed JSON leaves
+# sides, 25 of them differing in content, plus one Armarium bundle blob whose own
+# bytes moved to a new content-addressed name -- not because it is a renamed copy
+# of the old blob, but because its own contents changed. That blob was opened on
+# both sides too: it is a zip of 7 entries, same names and metadata on both sides,
+# and four of the entries differ -- EXPORT_MANIFEST.json (three `members[].sha256`
+# leaves and `self_hash`), sources.json and acts.jsonl (`*_ref.sha256` leaves), and
+# acts.sqlite (`acts.evidence_json` on both rows) -- every changed leaf inside it a
+# 64-hex digest, same as everywhere else in the tree. And 118 changed JSON leaves
 # across those 25 files. Every one of those 118 is
 # either a 64-hex digest or a content-addressed blob path -- four of them are
 # `builder_sha256` itself (two lectio-prior, two Perlectio) and the other 114 are
 # the cascade those four force: `self_hash`, the `*_ref` digests that name the
 # changed records, the dossier and audit-request digests computed over them, each
 # stage's `artifact_inventory`/`blob_inventory`, the stage manifests, the Archetypus
-# index, the Recensor partition receipt, and one Armarium bundle blob whose name is
-# its own digest. Not one non-digest field changed anywhere in the tree. The two
+# index, and the Recensor partition receipt. (The bundle blob is excluded from that
+# 25-file/118-leaf count by construction -- it appears as one name-only-old plus one
+# name-only-new -- so its own four changed entries are recorded here instead.) Not
+# one non-digest field changed anywhere in the tree, inside the bundle blob included. The two
 # `builder_sha256` values are the two trees' own `prompts.py` bytes
 # (932f3d48... before, ad623c7d... now), and 10330bc189 (U3) is the only commit in
 # that range that touches the file.
