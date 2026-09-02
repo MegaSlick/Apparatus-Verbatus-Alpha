@@ -541,6 +541,34 @@ class TestAgentGovernance:
                 decide_as_agent("Write", {"file_path": str(WORKTREE / ".claude" / path)})
             ), path
 
+    def test_a_linked_worktree_under_the_clones_dot_claude_is_ordinary_work(self, tmp_path):
+        """Claude Code cuts agent worktrees at `<clone>/.claude/worktrees/<id>/`.
+
+        The `.claude/` arm was a substring test on the absolute path, so every write
+        inside such a worktree was refused as a governed path and a seat there could
+        write nothing — the Workflow tool's own isolation was unusable in this
+        repository (found 2026-09-01). The governed `.claude/` is the one belonging to
+        the checkout that contains the write: the worktree's own stays refused, and so
+        does the clone's when a write is addressed to it directly.
+        """
+        clone = checkout_on(tmp_path / "clone", "work/host")
+        worktree = clone / ".claude" / "worktrees" / "seat-1"
+        gitdir = clone / ".git" / "worktrees" / "seat-1"
+        worktree.mkdir(parents=True)
+        gitdir.mkdir(parents=True)
+        (gitdir / "HEAD").write_text("ref: refs/heads/work/unit\n", encoding="utf-8")
+        (worktree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+
+        assert decide_as_agent("Write", {"file_path": str(worktree / "pipeline" / "x.py")}) is None
+        assert decide_as_agent("Edit", {"file_path": str(worktree / "operations" / "y.py")}) is None
+        assert denied(
+            decide_as_agent("Write", {"file_path": str(worktree / ".claude" / "settings.json")})
+        )
+        assert denied(
+            decide_as_agent("Write", {"file_path": str(clone / ".claude" / "settings.json")})
+        )
+        assert denied(decide_as_agent("Write", {"file_path": str(worktree / "CLAUDE.md")}))
+
     def test_an_agent_may_not_reach_them_through_a_shell_either(self):
         # Explore and Plan hold Bash. Withholding Edit does not make a role read-only.
         assert denied(decide_as_agent("Bash", {"command": "echo x > CLAUDE.md"}, "Explore"))

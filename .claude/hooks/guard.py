@@ -132,6 +132,28 @@ def checkout_branch(start: Path) -> str | None:
     return None
 
 
+def checkout_containing(path: Path) -> Path | None:
+    """The nearest checkout at or above `path` — the worktree a write would land in."""
+    for directory in (path, *path.parents):
+        if git_head_ref(directory) is not None:
+            return directory
+    return None
+
+
+def governed_claude_dir(target: Path) -> Path:
+    """The `.claude/` that governs `target`: its own checkout's, not every ancestor's.
+
+    Claude Code cuts agent worktrees at `<clone>/.claude/worktrees/<id>/`, so a
+    substring test for `/.claude/` refused every write inside one — a seat in such a
+    worktree could write nothing, and the Workflow tool's own isolation was unusable
+    here (found 2026-09-01). The governed directory is the containing checkout's
+    `.claude/`; a worktree's own `.claude/` is still refused, and so is the parent
+    clone's when the write is addressed there directly.
+    """
+    checkout = checkout_containing(target)
+    return ((checkout or project_root()) / ".claude").resolve()
+
+
 def working_directory(payload: dict[str, Any]) -> Path:
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
@@ -977,7 +999,8 @@ def agent_editing_governance(tool: str, tool_input: Any, payload: dict[str, Any]
         if target is None:
             return None
         name = target.name.strip().lower()
-        if "/.claude/" in f"{target}/":
+        governed = governed_claude_dir(target)
+        if target == governed or governed in target.parents:
             return "deny", refusal
         if name in ROOT_ONLY_NAMES:
             # Governed at the project root and nowhere else. Compared against the
