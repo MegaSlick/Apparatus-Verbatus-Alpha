@@ -64,6 +64,7 @@ from common.stage import (
     stage_parser,
     submission_identity,
 )
+from common.test_stage_structure_proposals import _StructureDesignator
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,6 +215,7 @@ class _Designator:
     """
 
     def __init__(self, root: Path):
+        self.root = root
         self.tree = RunTree(root, RUN_ID)
         run = self.tree.read_run()
         self.context = StageContext(
@@ -226,6 +228,10 @@ class _Designator:
             args=None,
             registry=None,
         )
+        # Built lazily, and only by `propose_served`: a served chain writes a
+        # serving receipt the moment it exists, and most of this class's tests
+        # never serve a chair at all.
+        self._served: _StructureDesignator | None = None
         self.pages = {
             record["payload"]["ordinal"]: record
             for record in (
@@ -291,6 +297,29 @@ class _Designator:
                 [self.context.input_ref(published.relative_path)],
             )
         )
+        return act
+
+    def propose_served(self, ordinal: int, bounds: dict[str, int]) -> str:
+        """A structural proposal minted through the real served-chair chain.
+
+        D3 (892b1f951f) closed the route `propose`'s bare provenance used to
+        take: a real-ingress proposal-class row now owes `expected_acts` the
+        served call its seal provenance names, walked back to the page's
+        retained `structure-answer`. Built with
+        `test_stage_structure_proposals._StructureDesignator`'s own
+        structure-status -> structure-answer -> call-record chain rather than
+        re-deriving it here, so the two files describe the served route
+        identically. Any row this class's other tests need to stay reachable
+        past that check -- the ambiguous, unevidenced and malformed rows this
+        file exists to test -- must clear it too, exactly as a real seal would.
+        """
+        if self._served is None:
+            self._served = _StructureDesignator(
+                self.root, RUN_ID, scenario=REAL_SCENARIO, fixture=None
+            )
+        self._served.status(ordinal, self._served.answer(ordinal, [bounds]))
+        act = self._served.propose(ordinal, bounds)
+        self.rows.append(self._served.rows[-1])
         return act
 
     def propose_far_page_region(self, act: str, key: str, ordinal: int, bounds: dict[str, int]):
@@ -387,10 +416,20 @@ class _Designator:
         return act
 
     def seal(self) -> None:
+        # A served proposal (`propose_served`) owes the seal's own provenance an
+        # engine_call too (`_structure_chair_call` reads it from the *seal*, not
+        # from any one row): once one has been minted, the seal is the served
+        # designator's own provenance, engine_call included, rather than the
+        # bare marker every other test in this file still seals with.
+        provenance = (
+            self._served.provenance()
+            if self._served is not None
+            else {"kind": "hand-built proposal seal"}
+        )
         payload: dict[str, Any] = {
             "expected_acts": self.rows,
             "count": len(self.rows),
-            "provenance": {"kind": "hand-built proposal seal"},
+            "provenance": provenance,
         }
         payload["self_hash"] = self_hash(payload)
         self.context.publish(
@@ -418,9 +457,14 @@ def test_a_real_run_opens_with_bindings_and_a_structural_row_recomputes_from_raw
     a run that never had one. Now the floor is skipped by name and the row is
     recomputed against the rectangle its own region record says it was minted
     over.
+
+    D3 closed a second, later route for the same act: a real-ingress proposal
+    row now also owes the served call its seal provenance names, so this is
+    minted through `propose_served`'s structure-status -> structure-answer ->
+    call-record chain rather than the bare `propose`.
     """
     designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
+    act = designator.propose_served(1, designator.rectangle(1))
     designator.seal()
 
     # `--scenario` is argv nobody sealed on this route, so it is ignored, not
@@ -460,7 +504,7 @@ def test_altered_raw_bounds_refuse_by_name_and_never_mention_the_fixture(real_ro
 
 def test_a_row_with_no_designator_evidence_at_all_is_refused(real_root):
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     unevidenced = designator.unevidenced_row(2)
     designator.seal()
     context = _open(real_root, ATTESTATORES)
@@ -476,7 +520,7 @@ def test_a_row_with_both_a_hold_and_a_page_fallback_record_is_refused_as_ambiguo
     be a picker over the producer's own records (hard rule 8).
     """
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     residual = designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
     designator.fallback_record(residual, 2)
     designator.seal()
@@ -581,7 +625,7 @@ def test_a_malformed_real_minted_row_never_mentions_the_fixture(real_root):
     to be measured against.
     """
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
     designator.rows[-1]["outcome"] = "proposed"
     designator.seal()
