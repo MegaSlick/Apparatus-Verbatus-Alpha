@@ -657,6 +657,33 @@ cannot honestly mix a `happy`-sealed run tree with a different Perlector-only sc
 because `config_digest` binds the scenario too, so the test builds its own chain rather
 than pointing a `happy` run at a different `--scenario`.
 
+**Real ingress.** The stage opens through `common.stage.open_stage_context`, which
+decides the route from one read of the run authority and, on a real submission, carries
+the registry, the sealed digest map and the serving configuration inputs this stage
+requires before its first line of work (`decoding`, `perlector-protocol`,
+`perlector-audit`, and `bound_serving_recipes`). The route is read off `context.run`
+(`real_ingress`), the same reading `common.stage` makes for `expected_acts`. Two fixture
+concepts have no real-mode counterpart:
+
+- `reading_failure` -- `declared_reading_failure` answers `None` on a real run, by name,
+  not by an empty table. A real reading's non-completion is the engine's own stop reason,
+  reaching `truncation.classify` through the Section A mapping above; no declaration
+  stands in for it, and the live guard that refuses a declared outcome beside a live
+  answer is therefore unreachable there.
+- the fixture reader -- `fixture_reader_for` refuses a real submission whose sealed
+  serving-recipe row for a configured Perlector chair is not live, because a declared
+  text cannot stand in for a reading of real ink, and the catalogue is sealed at the Door
+  so the repair is a new run. An absent chair reads nothing and needs no reader: every act
+  publishes the same explicit `not-run` record it does on the fixture route. The selector
+  is still the sealed row, never a flag, and the fixture route constructs its reader
+  exactly as before.
+
+The context's fixture slot is `None` behind a refusing accessor and is not touched on
+the real route. No real Designator exists yet, so a real run refuses at `predecessor
+designator has no stage-seal` with its context already opened, writing nothing;
+`pipeline/5_recensor/test_real_ingress.py` pins that for this stage beside the Recensor
+and the Archetypus.
+
 **`engine_call`, and what it names.** A live reading's payload carries
 `engine_call = {call_record_ref, raw_response_ref, response_sha256, finish_reason,
 served_model_id}`, and the envelope binds both blobs as direct inputs, re-derived from

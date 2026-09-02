@@ -31,6 +31,7 @@ from common.act_visibility_geometry import (  # noqa: E402
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
@@ -84,7 +85,8 @@ from common.stage import (  # noqa: E402
     expected_acts,
     latest_attempt,
     latest_per_chair,
-    open_context,
+    open_context,  # noqa: F401  (re-export: this stage's tests open fixture trees through it)
+    open_stage_context,
     page_residual_act_key,
     reading_basis_regions,
     recovery_region_count,
@@ -3009,10 +3011,43 @@ def write_partition_receipt(context, budget: dict) -> None:
     context.tree.write_recensor_partition_receipt(receipt)
 
 
+def real_ingress(context) -> bool:
+    """Whether this context's run authority names the real route.
+
+    The same reading `common.stage` makes for `expected_acts` and the shared
+    constructor: an absent record is the synthetic walking skeleton (the
+    hand-built trees in this stage's own tests predate the record), and a
+    present one must parse or it refuses. Read off `context.run`, which the
+    constructor read once, never off a second read of `run.json`.
+    """
+    run = context.run
+    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+
+
+def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario holds this act as unreconciled.
+
+    `review_route_from_findings`'s `unreconciled` cause has exactly one feeder
+    in the tree: a synthetic scenario's declared `hold_acts`. It is not a
+    measurement this stage takes. On a real submission there is no scenario
+    (`scenario is None`) and therefore no producer of the cause at all, so this
+    is `False` there -- which says that nothing fed it, not that the act was
+    measured as reconciled. The only cross-act anomaly computation in the tree
+    is Pass C's flag pass at the Perlector, and its verdict reaches the review
+    through `audit_unresolved`. The HANDOFF says the same under `kind="review"`.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["hold_acts"]
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, RECENSOR, registry_factory=registry_factory)
+    # Either ingress route, decided from one read of the run authority; the
+    # real route carries the registry, the sealed digests and the parsed
+    # recovery policy the lines below require.
+    context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
     # The run's own sealed policy, parsed once when the run's binding was checked,
     # never reopened here. `config/recovery.toml` used to be read a second time at
     # this line: a rewrite landing between `open_context` and it published reviews
@@ -3026,7 +3061,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
 
-    scenario = scenario_for(context.fixture, context.scenario)
+    # The declared scenario on the fixture route; nothing on a real submission,
+    # which carries no fixture to declare one and whose refusing accessor is
+    # never touched here. The one thing read from it is `hold_acts`, below.
+    scenario = None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -3163,7 +3201,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             testimony_shortfall=content_coverage["shortfall"],
             audit_unresolved=audit_unresolved,
             under_witnessed=coverage["under_witnessed"],
-            unreconciled=act_key in scenario["hold_acts"],
+            unreconciled=declared_unreconciled(scenario, act_key),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
