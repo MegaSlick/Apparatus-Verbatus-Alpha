@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sqlite3
 import unicodedata
@@ -30,14 +31,19 @@ from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
+from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
+from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
 from common.residual_ink import MINIMUM_FRACTION_OUTSIDE_COVERAGE, MINIMUM_INK_PIXELS
+from common.stage import REAL_SCENARIO, StageContext
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
+ROOT = Path(__file__).resolve().parents[2]
+ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 
 
 def _pixels(value: int) -> bytes:
@@ -1123,6 +1129,59 @@ def _resealed_manifest(mutate):
     return _zip_bytes(members)
 
 
+def _real_resealed_manifest(mutate):
+    """`_resealed_manifest`'s twin over the `submission_id`-shaped real projection.
+
+    `_resealed_manifest` builds from the fixture-shaped `_projection()` only, so
+    every case run through it exercises `_verify_manifest_field_closure`'s
+    fixture branch and never its real one. This is the real-shape equivalent,
+    so the real branch's exact-field closure and non-blank refusal are proven
+    the same adversarial way the fixture shape already is.
+    """
+    projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    del manifest["self_hash"]
+    mutate(manifest)
+    _refresh_manifest(members, manifest)
+    return _zip_bytes(members)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda manifest: manifest["run"].update(submission_id=["not", "an", "identity"]),
+            id="a non-string submission identity",
+        ),
+        pytest.param(
+            lambda manifest: manifest["run"].update(submission_id="   "),
+            id="a blank submission identity",
+        ),
+        pytest.param(
+            lambda manifest: manifest["run"].update(operator="nobody"),
+            id="an unexpected extra key on the real run binding",
+        ),
+    ],
+)
+def test_a_real_manifest_run_binding_is_closed_and_non_blank(mutate, tmp_path):
+    """The real shape's field closure and blank-identity refusal, not only the fixture's.
+
+    Every existing manifest-run-binding refusal test above is built from
+    `_resealed_manifest`, which is always fixture-shaped: only the one green
+    `submission_id` test (`test_a_projection_may_carry_a_submission_identity...`)
+    ever reached `_MANIFEST_RUN_FIELDS_REAL`'s exact-field closure or the
+    `subject = "submission"` blank-identity refusal, so a mutation deleting
+    either would have survived undetected.
+    """
+    with pytest.raises(
+        SchemaRefusal,
+        match="non-blank submission and scenario identities|unrecognized field set",
+    ):
+        verify_delivered_bundle(_real_resealed_manifest(mutate), tmp_path / "delivered")
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -1252,6 +1311,89 @@ def test_a_manifest_run_binding_naming_neither_identity_is_refused(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="neither a fixture identifier nor a submission"):
         verify_delivered_bundle(_resealed_manifest(drop_fixture), tmp_path / "delivered")
+
+
+def test_a_manifest_run_binding_naming_a_non_sha256_submission_is_refused(tmp_path):
+    """The manifest boundary is at least as strict as the projection boundary.
+
+    Built under the real shape rather than mutating a fixture-shaped manifest --
+    the corrupted field only exists on the `submission_id` branch -- then
+    corrupted to a well-formed-but-not-sha256 string.
+    """
+    projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    del manifest["self_hash"]
+    manifest["run"]["submission_id"] = "not-a-lowercase-sha256"
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="submission identity is not a lowercase sha256"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def _armarium_run_module():
+    """Load `run.py` under a private name, mirroring `test_export.py`'s idiom.
+
+    Never a bare ``import run``: several stage directories define a module by
+    that name, and the import cache would decide which one this test got.
+    """
+    spec = importlib.util.spec_from_file_location("armarium_run_under_test_identity", ARMARIUM_CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_real_run():
+    """The unit's central claim, pinned rather than asserted only in prose and HANDOFF.md.
+
+    `StageContext.fixture` refuses on a real run (`common/stage.py`); if
+    `export_run_identity` read it unconditionally instead of deciding the route
+    from `submission_identity(context.run)` first, this would raise a
+    `ContractError` instead of returning a `submission_id`-shaped identity.
+    """
+    armarium = _armarium_run_module()
+    run = {
+        "ingress": real_ingress_record(),
+        "source_manifest": [{"ledger_sha256": "a" * 64}],
+    }
+    context = StageContext(
+        tree=None,
+        run=run,
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage=ARMARIUM,
+        adapter_revision="adapter-under-test",
+        args=None,
+        registry=None,
+    )
+
+    submission_id, fixture_id, run_identity = armarium.export_run_identity(context)
+
+    assert submission_id == "a" * 64
+    assert fixture_id is None
+    assert run_identity == {"submission_id": "a" * 64}
+
+
+def test_export_run_identity_reads_the_declared_fixture_id_on_a_fixture_run():
+    """The fixture route is unchanged: the identity is the loaded declaration's own."""
+    armarium = _armarium_run_module()
+    context = StageContext(
+        tree=None,
+        run={},
+        fixture={"fixture_id": "armarium-export-test-v1"},
+        scenario="happy",
+        stage=ARMARIUM,
+        adapter_revision="adapter-under-test",
+        args=None,
+        registry=None,
+    )
+
+    submission_id, fixture_id, run_identity = armarium.export_run_identity(context)
+
+    assert submission_id is None
+    assert fixture_id == "armarium-export-test-v1"
+    assert run_identity == {"fixture_id": "armarium-export-test-v1"}
 
 
 def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_format_set(tmp_path):

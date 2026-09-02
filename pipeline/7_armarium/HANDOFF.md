@@ -75,19 +75,33 @@ word" rule exists to prevent. `run.py` computes which shape applies once, from
 so the refusing fixture accessor is never asked a question on the route where
 it would refuse.
 
-**A known gap this unit did not close.** `bundle.py` (outside this unit's
-ownership) reconstructs the manifest's expected `run` binding to verify a
-published bundle against its sealed `export` artifact, and does so by hardcoding
-`fixture_id` as the key it reads off the artifact payload and compares. A real
-run's export artifact payload now carries `submission_id` instead (mirroring
-the manifest), so `bundle.py`'s comparison would refuse every real-mode publish,
-however sound. This is unreachable today — no real run reaches the Armarium at
-all, because the Designator refuses first — so no test exercises it and nothing
-here is silently wrong on a path any current run takes. It must be fixed
-before a real run can ever be published, which is roadmap item 4's problem, not
-this section's. Flagged rather than fixed here because `bundle.py` is not one
-of this unit's owned files and a one-line fix there would be an undeclared
-scope expansion into a file another unit may still touch.
+**The gap above is closed.** `bundle.py::_expected_run_binding` now reads
+whichever identity key the sealed `export` artifact's payload actually carries
+— `fixture_id` or `submission_id`, refusing by name if it carries both or
+neither — instead of hardcoding `fixture_id`. `test_bundle_publish.py` pins a
+real-shaped export payload publishing clean and a both-named payload being
+refused by name.
+
+**The manifest schema id is deliberately not versioned to this shape.** The
+real run identity travels under the existing `EXPORT_MANIFEST_SCHEMA`
+(`armarium-export-manifest.v3`) rather than a new schema id, unlike the
+clustered act-partition claim a few lines below, which does get its own id
+(`.v4`) with an id/shape refusal (`_verify_manifest_field_closure`, the
+`expected_schema` check). The two cases differ in what a consumer needs to
+decide first: a clustered manifest changes the *denominator* — a reader must
+know which counting convention a package uses before it can interpret
+`expected_count` at all, so the id has to carry that decision before the
+reader opens `claims`. A real-run manifest changes only *which run this
+package is,* the way a different `fixture_id` value already did before this
+unit — every consumer already had to branch on the identity field's value
+(there was never a fixed fixture id to compare against), and branching on
+which key is present (`"submission_id" in run` vs `"fixture_id" in run`) is
+the same kind of read. A fourth schema id would encode a distinction that
+existing consumers make correctly today by checking the fields the record
+actually has, which is what a closed two-shape union is for. Any future
+schema-versioning ruling belongs to Tyrel under the boundary this project's
+`CLAUDE.md` sets for governed change; this paragraph records the reasoned
+default rather than presupposing that ruling.
 
 ## Export contract
 

@@ -324,6 +324,74 @@ def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
+def test_a_submission_id_shaped_export_payload_publishes(tmp_path, happy_run):
+    """The publisher's run binding must accept the real-ingress shape, not only fixture's.
+
+    `_expected_run_binding` reads whichever key the sealed `export` payload
+    carries rather than hardcoding `fixture_id`, which is the only key a real
+    run's payload names (`run.py::export_run_identity`). Relabels the sealed
+    export artifact's payload and the package manifest to the `submission_id`
+    shape in place, consistently on both sides, then publishes for real through
+    the same clean-verification path an operator's publish takes.
+    """
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    submission_id = "a" * 64
+
+    def relabel_as_submission(_members, manifest):
+        manifest["run"].pop("fixture_id")
+        manifest["run"]["submission_id"] = submission_id
+
+    _reseal_export_bundle(tree, relabel_as_submission)
+
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    export["payload"].pop("fixture_id")
+    export["payload"]["submission_id"] = submission_id
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode == 0, result.stderr
+    assert (out / "armarium-export.zip").is_file()
+
+
+def test_an_export_payload_naming_both_identities_is_refused_by_name(tmp_path, happy_run):
+    """A payload that would let `bundle.py` guess between two identities is refused."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    export["payload"]["submission_id"] = "a" * 64
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "names both a fixture identifier and a submission identifier" in result.stderr
+    assert not out.exists()
+
+
 def test_a_partial_run_publishes_and_says_it_is_partial(tmp_path, review_run):
     """A held act must not stop the product leaving, and must not be hidden in it."""
     out = tmp_path / "delivery"
