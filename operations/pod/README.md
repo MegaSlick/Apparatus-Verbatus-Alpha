@@ -524,9 +524,12 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Before the first real response, prove the durable laptop supervisor, controller
   armer, acknowledgement channel, and long-running bootstrap/service entrypoint work
   together. The tracked Stage 04 tree now supplies `supervise.py`, `controller_armer.py`,
-  and `bootstrap_main.py`, and `test_launch_drill.py` now drives all three together
-  offline; what remains unproven is whether the channel they share behaves the way
-  `TimerReportChannel` requires against a real pod — Boot A above is that proof.
+  and `bootstrap_main.py`. `test_launch_drill.py` drives the supervisor and the armer
+  together offline with the timer's first durable write; it names
+  `bootstrap_main` only as the argv handed to a fake starter and never runs it.
+  `bootstrap_main.py` is proven separately, by `test_bootstrap_main.py` against
+  fakes-only actions. The three have not run together anywhere, and the channel
+  they share is unobserved against a real pod — Boot A above is that proof.
 - [ ] Verify the pod-side timer receives the real pod identity, its ephemeral termination
   capability, and the sealed billing-cutoff margin; verify it writes an acknowledgement to
   the token-bound report path. The laptop controller must retain a receipt bound to the
