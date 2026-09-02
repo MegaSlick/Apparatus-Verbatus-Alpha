@@ -63,6 +63,7 @@ from .errors import (
 )
 from .http import (
     EndpointUnavailable,
+    HttpResponse,
     HttpTransport,
     OpenAIResult,
     endpoint_for_probe,
@@ -313,6 +314,20 @@ class ServiceHandle:
         """Issue one exact-model, non-streaming OpenAI-compatible request."""
 
         return self._manager.request(self, kind, payload)
+
+    def request_reading(self, kind: str, body_bytes: bytes, timeout_seconds: float) -> HttpResponse:
+        """POST one already-built reading request and return the raw response.
+
+        Unparsed and unretained: the caller (a :class:`ChairClient`, not this
+        module) owns retaining the raw bytes before parsing and owns parsing
+        with :func:`operations.serving.http.parse_openai_reading`.  This is
+        the one wire-level primitive a reading needs beyond ``request`` —
+        which forces a manager-chosen non-deterministic payload shape and
+        parses with the readiness-probe parser, neither of which fits a
+        witness or reader call.
+        """
+
+        return self._manager.request_reading(self, kind, body_bytes, timeout_seconds)
 
     @property
     def requests_completed(self) -> int:
@@ -748,6 +763,27 @@ class ServingManager:
         handle._requests_completed += 1
         handle._last_request_was_fixture = False
         return result
+
+    def request_reading(
+        self, handle: ServiceHandle, kind: str, body_bytes: bytes, timeout_seconds: float
+    ) -> HttpResponse:
+        """POST a caller-built request body and return the unparsed response.
+
+        Same liveness gate as ``request``, deliberately narrower otherwise: no
+        request shape is imposed here (the caller already built and digested
+        it), and nothing is parsed — a malformed or refusal-worthy body must
+        reach the caller's own parser, never be turned into an exception this
+        module raises on the caller's behalf.
+        """
+
+        self._require_active(handle)
+        self._assert_process_live(handle.process)
+        return self.http.request(
+            "POST",
+            endpoint_for_probe(handle.endpoint, kind),
+            body=body_bytes,
+            timeout_seconds=timeout_seconds,
+        )
 
     def stop(self, handle: ServiceHandle) -> None:
         """Stop one exact owned process and verify its endpoint no longer responds."""
