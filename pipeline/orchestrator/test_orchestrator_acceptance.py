@@ -1486,6 +1486,10 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,
+        # `invoke` reads this by name like every sibling flag; a stand-in that
+        # omits it is not the argv surface it mirrors (U7p; pr/14 broke CI by
+        # missing exactly this for a different flag).
+        placement_tier=None,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
         nuda_per_mille=0,
