@@ -45,23 +45,6 @@ elsewhere — so `proven` means a reviewer asserted it, exactly as a profile's
 GPU figures are planning values rather than a measured fit (GOVERNANCE 10).
 There is deliberately no default: a row written before the field existed
 refuses at parse time rather than reading as proven.
-A profile whose `kind` is `captured` (`CapturedProfile`) says a witness chair
-is answered by another chair's retained response — `captured_from` names that
-chair — and is never launched: it carries no flags, no endpoint and no
-preflight mark, because it has no serving moment of its own to prove, and the
-manager refuses it at the same door as a fixture row, by that name. The row
-exists so that Chandra, asked once by the Designator structure chair, can be
-filed as Attestator 1's Testimonium without being served a second time; the
-Attestatores files that record with the *Designator's* receipt, since no
-Attestator-1 receipt exists to name. The parser refuses a row captured from
-itself and a captured row on a non-Attestator chair (a capture is a
-Testimonium; only a witness chair files one), and `verify_recipes_cover_chairs`
-reconciles the rest against the roster offline: the source chair must be
-configured with a `vllm` row at the same tier, the two chairs must pin the
-same model facts, and the captured chair's `witness_adapter` must be a capture
-adapter (`common/witness_adapters.py::CAPTURE_WITNESS_ADAPTER_NAMES`), with the
-reverse also held. Re-serving Attestator 1 instead is a config flip — `vllm`
-rows and `chandra.v1` — and moves no code.
 The recipe and `config/pod_placement.toml` byte digests are both part of the
 run configuration digest. Production assembly requires the `StageContext` that
 `open_context()` revalidated and the `StageContextReceiptPublisher` for that
@@ -368,21 +351,18 @@ real length returns nothing until it is done, and the manager's own
 readiness/adapter probes stay on their own short, hardcoded budgets — a slow
 reading must never be able to stretch those.
 
-`serving_mode_for(recipes, identity, tier)` is the live/fixture/captured
-selector: a three-name lookup (`recipe`, `chair`, `tier`) in the sealed
-serving-recipe catalogue, never a ranking. Every row for one `(recipe, chair)`
-is collected first — if all of them are fixture rows, the chair is fixture
-regardless of tier; if all of them are captured rows naming one source
-chair, it is `captured` regardless of tier (captured rows naming different
-sources across tiers refuse). Otherwise a tier is required
-(`SERVING_MODE_UNRESOLVED` without one); the profile at that exact tier
-decides, with an `UnsupportedProfile` refusing by its own recorded reason
-and a fixture or captured row at that tier refused when the same chair holds
-a different posture at another tier — a catalogue may not be half live, half
-fixture, or half captured for one chair, and the refusal names whichever
-posture the other tier actually holds rather than assuming it was live. A
-tier with no configured row at all for this chair is also this function's
-own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
+`serving_mode_for(recipes, identity, tier)` is the live/fixture selector: a
+three-name lookup (`recipe`, `chair`, `tier`) in the sealed serving-recipe
+catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
+first — if all of them are fixture rows, the chair is fixture regardless of
+tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
+the profile at that exact tier decides, with an `UnsupportedProfile` refusing
+by its own recorded reason and a fixture row at that tier refused when the
+same chair is live at another tier — a catalogue may not be half live for one
+chair, and that refusal names whichever posture the other tiers actually hold
+rather than asserting they are live. A tier with no configured row at all for
+this chair is also this function's own vocabulary:
+`config.ServingRecipes.for_identity`'s zero-match
 `ServingConfigurationError` is caught and re-raised as
 `ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
 this function's refusals to report a placement-tier problem never sees a

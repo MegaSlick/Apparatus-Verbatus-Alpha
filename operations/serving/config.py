@@ -23,12 +23,10 @@ digest alone cannot notice it, and ``manager._launchable`` refuses the
 mismatch at launch instead.
 
 A profile declares its ``kind``. ``vllm`` is a complete launch shape;
-``fixture`` is the offline walking skeleton's stand-in; ``unsupported``
+``fixture`` is the offline walking skeleton's stand-in; and ``unsupported``
 keeps a configured real chair covered without inventing launch flags for an
-engine this package does not implement; and ``captured`` says a witness chair
-is answered by the retained response of another chair (``captured_from``)
-rather than by a launch of its own. None of the latter three carry vLLM flags,
-and each must refuse launch by its actual cause before runtime checks.
+engine this package does not implement. The latter two carry no vLLM flags and
+must refuse by their actual cause before runtime checks.
 """
 
 from __future__ import annotations
@@ -42,28 +40,19 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from common.chairs.models import (
-    AbsentChair,
-    ChairIdentity,
-    ModelsConfig,
-    is_hf_revision,
-    is_sha256,
-    is_witness_role,
-)
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
-from common.witness_adapters import CAPTURE_WITNESS_ADAPTER_NAMES
 
 from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
-_KINDS = {"vllm", "fixture", "unsupported", "captured"}
+_KINDS = {"vllm", "fixture", "unsupported"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
-_CAPTURED_FIELDS = _PROFILE_COMMON | {"captured_from"}
 _PROFILE_FIELDS = {
     "kind",
     "recipe",
@@ -162,31 +151,6 @@ class UnsupportedProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class CapturedProfile:
-    """A witness chair served by capture: another chair's retained response.
-
-    The chair in this row is never launched.  Its Testimonium is the response
-    the ``captured_from`` chair already gave — retained once under custody by
-    the stage that asked, and filed by the Attestatores under this chair with
-    that chair's receipt.  A row of this kind therefore carries no flags, no
-    endpoint, and no preflight mark: there is no serving moment of its own to
-    prove, and inventing one would be a receipt for a start that never
-    happened (GOVERNANCE 6).  It stays in catalogue coverage so a captured
-    chair is a visible decision rather than a hole.
-    """
-
-    recipe: str
-    chair: str
-    tier: str
-    captured_from: str
-    kind: str = "captured"
-
-    @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.recipe, self.chair, self.tier)
-
-
-@dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One complete vLLM flag profile for one chair at one GPU tier.
 
@@ -238,22 +202,17 @@ class ServingProfile:
         return (self.recipe, self.chair, self.tier)
 
 
-# The closed union of row kinds.  Every consumer that narrows on it
-# (``manager._launchable``, ``client.serving_mode_for``) must name each member
-# by its own refusal; an unhandled member there is an ``AssertionError``, not a
-# fallback.
-AnyProfile = ServingProfile | FixtureProfile | UnsupportedProfile | CapturedProfile
-
-
 @dataclass(frozen=True, slots=True)
 class ServingRecipes:
     """The complete closed serving-profile catalogue."""
 
-    profiles: tuple[AnyProfile, ...]
+    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...]
     source_path: Path | None = None
     source_sha256: str | None = None
 
-    def for_identity(self, identity: ChairIdentity, tier: str) -> AnyProfile:
+    def for_identity(
+        self, identity: ChairIdentity, tier: str
+    ) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
         """Return the only profile configured for this identity and tier.
 
         This is lookup, not a ranking or fallback: zero or multiple matches are
@@ -457,7 +416,7 @@ def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
         ) from error
 
 
-def _parse_profile(raw: Any) -> AnyProfile:
+def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
     kind = raw.get("kind")
@@ -467,8 +426,6 @@ def _parse_profile(raw: Any) -> AnyProfile:
         )
     if kind == "fixture":
         return _parse_fixture_profile(raw)
-    if kind == "captured":
-        return _parse_captured_profile(raw)
     if kind == "unsupported":
         unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
         missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
@@ -623,56 +580,17 @@ def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
     )
 
 
-def _parse_captured_profile(raw: Mapping[str, Any]) -> CapturedProfile:
-    """A captured row names its chair, its source chair, and nothing else.
-
-    Two refusals are decidable from the row alone and are made here, before
-    any roster is in hand.  A chair cannot capture from itself: the row would
-    say "served by the response of a chair that is never served".  And only an
-    Attestator chair can be captured, because a capture *is* a Testimonium —
-    the retained response filed as one witness's report — and no other chair
-    files one.  A captured structure chair would be "nothing captures the
-    proposer"; a captured Perlector would be a reading nobody made.
-    """
-
-    unknown = sorted(set(raw) - _CAPTURED_FIELDS)
-    missing = sorted(_CAPTURED_FIELDS - set(raw))
-    if unknown or missing:
-        raise ServingConfigurationError(
-            f"captured serving profile has unknown field(s) {unknown} or missing field(s) "
-            f"{missing}; a captured row is never launched and carries only the chair it is "
-            "captured from"
-        )
-    chair = _text(raw["chair"], "chair")
-    captured_from = _text(raw["captured_from"], "captured_from")
-    if captured_from == chair:
-        raise ServingConfigurationError(
-            f"captured serving profile for chair {chair!r} names itself as captured_from; a "
-            "chair cannot be served by its own unserved response"
-        )
-    if not is_witness_role(chair):
-        raise ServingConfigurationError(
-            f"captured serving profile names chair {chair!r}, which is not an Attestator chair; "
-            "a capture is a Testimonium and only a witness chair files one"
-        )
-    return CapturedProfile(
-        recipe=_text(raw["recipe"], "recipe"),
-        chair=chair,
-        tier=_text(raw["tier"], "tier"),
-        captured_from=captured_from,
-    )
-
-
-def _validate_catalogue(profiles: tuple[AnyProfile, ...]) -> None:
+def _validate_catalogue(
+    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...],
+) -> None:
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):
         raise ServingConfigurationError("serving profiles duplicate a recipe/chair/tier key")
     endpoint_chairs: dict[tuple[str, int], set[str]] = {}
     served_chairs: dict[str, set[str]] = {}
     for profile in profiles:
-        # Fixture, unsupported and captured rows own neither endpoint nor API
-        # alias; applying launch-only collision rules would invent serving
-        # claims.
+        # Fixture and unsupported rows own neither endpoint nor API alias;
+        # applying launch-only collision rules would invent serving claims.
         if not isinstance(profile, ServingProfile):
             continue
         endpoint_chairs.setdefault((profile.host, profile.port), set()).add(profile.chair)
@@ -712,20 +630,6 @@ def verify_recipes_cover_chairs(
     real path is again the rented GPU.  A chair repointed in ``models.toml``
     without its profile being preflighted again is a configuration gap of
     exactly the shape above, so it fails in a test run too.
-
-    A ``captured`` row is reconciled against the roster here as well, because
-    every one of its preconditions is a fact of these same files: the chair it
-    is captured from must be configured (an absent or unknown source captures
-    nothing); that source must have a ``vllm`` row at the same tier (a fixture,
-    unsupported or captured source gives no response to retain); the two
-    chairs must pin the same model facts (a capture cannot stand in for a
-    different model); and the captured chair's ``witness_adapter`` must be a
-    capture adapter, with the reverse also held — a chair whose adapter reads
-    captured bytes has no serving row of its own to answer through.  The
-    Attestatores will repeat these checks at run time against the sealed
-    roster once it is taught to (unbuilt: the D5 mixed-posture reconciliation);
-    this is where they fail offline today, and the only place they fail at all
-    until then.
     """
 
     tier_values = tuple(tiers)
@@ -762,85 +666,6 @@ def verify_recipes_cover_chairs(
             "serving profile(s) are marked proven against a chair identity config/models.toml "
             f"no longer configures; preflight them again before launch: {repointed}"
         )
-
-    _verify_captured_rows(models, recipes)
-
-
-def _verify_captured_rows(models: ModelsConfig, recipes: ServingRecipes) -> None:
-    by_key = {profile.key: profile for profile in recipes.profiles}
-    for profile in recipes.profiles:
-        if not isinstance(profile, CapturedProfile):
-            continue
-        row = f"recipe={profile.recipe!r}, chair={profile.chair!r}, tier={profile.tier!r}"
-        chair = models.chairs.get(profile.chair)
-        source = models.chairs.get(profile.captured_from)
-        if not isinstance(chair, ChairIdentity):
-            # Coverage above already refused a row for an absent or unknown
-            # chair; this keeps the function honest if it is ever called alone.
-            raise ServingConfigurationError(
-                f"captured serving profile {row} names a chair config/models.toml does not "
-                "configure"
-            )
-        if not isinstance(source, ChairIdentity):
-            raise ServingConfigurationError(
-                f"captured serving profile {row} is captured from chair "
-                f"{profile.captured_from!r}, which config/models.toml does not configure; an "
-                "absent or unknown chair gives no response to capture"
-            )
-        source_row = by_key.get((source.serving_recipe, source.role, profile.tier))
-        if not isinstance(source_row, ServingProfile):
-            raise ServingConfigurationError(
-                f"captured serving profile {row} is captured from chair "
-                f"{profile.captured_from!r}, whose row at that tier is "
-                f"{type(source_row).__name__ if source_row is not None else 'missing'}; only a "
-                "chair with a vllm row at the same tier gives a response to capture"
-            )
-        chair_facts = _model_facts(chair)
-        source_facts = _model_facts(source)
-        if chair_facts != source_facts:
-            differing = sorted(
-                field for field in chair_facts if chair_facts[field] != source_facts[field]
-            )
-            raise ServingConfigurationError(
-                f"captured serving profile {row} is captured from chair "
-                f"{profile.captured_from!r}, but the two chairs pin different model facts "
-                f"{differing}; a capture cannot stand in for a different model"
-            )
-        if chair.witness_adapter not in CAPTURE_WITNESS_ADAPTER_NAMES:
-            raise ServingConfigurationError(
-                f"captured serving profile {row} names a chair whose witness_adapter is "
-                f"{chair.witness_adapter!r}, not a capture adapter "
-                f"{sorted(CAPTURE_WITNESS_ADAPTER_NAMES)}; the adapter would try to serve a "
-                "chair the catalogue says is never served"
-            )
-    for role, chair in sorted(models.chairs.items()):
-        if not isinstance(chair, ChairIdentity):
-            continue
-        if chair.witness_adapter not in CAPTURE_WITNESS_ADAPTER_NAMES:
-            continue
-        not_captured = sorted(
-            f"recipe={profile.recipe!r}, chair={profile.chair!r}, tier={profile.tier!r}"
-            for profile in recipes.profiles
-            if profile.chair == role and not isinstance(profile, CapturedProfile)
-        )
-        if not_captured:
-            raise ServingConfigurationError(
-                f"chair {role!r} declares capture adapter {chair.witness_adapter!r} but the "
-                f"catalogue would serve it through {not_captured}; a capture adapter reads "
-                "another chair's retained response and has nothing to serve through"
-            )
-
-
-def _model_facts(identity: ChairIdentity) -> dict[str, object]:
-    """The facts a capture must share with its source: the model, not the chair.
-
-    ``cache_descriptor()`` is "the immutable facts a cache must match" and
-    already excludes the serving recipe; dropping ``role`` from it leaves
-    exactly the artifact pin — source, repo or path, revision, digest manifest,
-    manifest, adapter base.
-    """
-
-    return {field: value for field, value in identity.cache_descriptor().items() if field != "role"}
 
 
 def _probe(raw: Any) -> ProbeSpec:

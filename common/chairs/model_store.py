@@ -124,15 +124,12 @@ REQUIRED_ARTIFACTS = (
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
         "other: qwen-research",
     ),
-    RequiredArtifact(
-        "secondary_proposer",
-        "yolo26-detection",
-        "huggingface",
-        "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
-        "0c57f057391113579e7af170b864542f049e67aa",
-        # Declared in the model card; the pinned revision ships no licence file.
-        "agpl-3.0",
-    ),
+    # No `secondary_proposer` row: the chair is absent from the real roster by
+    # Tyrel's ruling of 2026-08-12, so no chair this repository configures ever
+    # serves Teklia's AGPL YOLO detector.  Requiring its bytes here would make a
+    # store fetched for the real roster permanently incomplete against this
+    # list, which is a refusal nobody could clear.  A roster that configures the
+    # chair again adds the row back with it.
     RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
@@ -168,7 +165,7 @@ DAI_PROMPT_CITATION = (
     "system.txt and query.txt"
 )
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
-# The record has six unique roster artifacts and no payload bytes.  One MiB is
+# The record has five unique roster artifacts and no payload bytes.  One MiB is
 # deliberately generous while keeping a forged control document memory-bounded.
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Shard indexes name payloads but never contain them.  Real indexes remain well
@@ -1029,17 +1026,10 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
 
     ``verify_store`` proves the bytes that exist; it never invents the ones that
     do not, so it returns a partial inventory rather than refusing outright.
-    This is the door for a consumer that genuinely needs every artifact
-    :data:`REQUIRED_ARTIFACTS` names on disk — a pod materialization plan, or
-    any future caller that wants the whole store, not one roster's subset of
-    it. ``REQUIRED_ARTIFACTS`` is the store's own general policy and is not
-    filtered by any one roster's absences, so it is *not* the door for
-    "activating the real roster": the real roster names `secondary_proposer`
-    absent (Tyrel's ruling of 2026-08-12), and a store built for that roster
-    alone is expected to stay incomplete against this inventory until some
-    future roster configures that chair again. It accepts the store root
-    rather than an inventory-shaped mapping so a caller cannot flip a derived
-    ``complete`` flag while bytes are pending or missing.
+    This is the door for a consumer that genuinely needs every roster artifact
+    on disk — activating the real roster, or a pod materialization plan. It accepts the
+    store root rather than an inventory-shaped mapping so a caller cannot flip a
+    derived ``complete`` flag while bytes are pending or missing.
     """
 
     if isinstance(store_root, Mapping):

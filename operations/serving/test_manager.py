@@ -28,7 +28,13 @@ from PIL import Image, ImageDraw
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal, UnresolvedChairRefusal
-from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
+from common.chairs.models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    ServingDetails,
+    VerifiedSnapshot,
+)
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
 from common.runtree.store import RunTree
@@ -52,7 +58,6 @@ from .assembly import (
 )
 from .client import serving_mode_for
 from .config import (
-    CapturedProfile,
     FixtureProfile,
     ServingConfigInputs,
     ServingProfile,
@@ -2411,16 +2416,16 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
 
 
-def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_service():
-    """The real roster is opt-in; every row is launch-red for its actual cause.
+def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
+    """The real roster is opt-in, and every configured chair is served.
 
     `secondary_proposer` is absent from `config/models-real.toml` (Tyrel's
-    ruling of 2026-08-12), not a `ChairIdentity` an `UnsupportedProfile` needs
-    to explain, so it never reaches `configured` at all. `attestator_1` is
-    configured, but names Chandra's structure-chair checkpoint as its source
-    (D2's Testimonium ruling) and resolves to a `captured` row -- it never
-    proposes to serve a live process. Every other configured chair is still an
-    unproven vLLM row.
+    ruling of 2026-08-12), so it never reaches `configured` and needs no row.
+    Every chair that *is* configured has a live-shaped row at every tier,
+    `attestator_1` included: Chandra is served and read in the Attestatores'
+    own call rather than reusing the Designator's reading (Tyrel's ruling of
+    2026-09-02). Every row is `preflight_state = "unproven"` -- a planning
+    shape, never a claim that anything has started on real silicon.
     """
 
     root = Path(__file__).resolve().parents[2]
@@ -2445,19 +2450,20 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
         "attestator_3",
         "perlector",
     }
+    # The absence itself is a ruling, so the shipped roster must keep saying so
+    # and the catalogue must cover nothing for a chair no stage resolves.
+    secondary = real_models.chairs["secondary_proposer"]
+    assert isinstance(secondary, AbsentChair)
+    assert "2026-08-12" in secondary.reason
+    assert [row for row in real_catalogue.profiles if row.chair == "secondary_proposer"] == []
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
         for tier in tiers:
             profile = real_catalogue.for_identity(identity, tier)
-            if identity.role == "attestator_1":
-                assert isinstance(profile, CapturedProfile)
-                assert profile.captured_from == "designator_structure"
-                assert serving_mode_for(real_catalogue, identity, tier) == "captured"
-            else:
-                assert isinstance(profile, ServingProfile)
-                assert profile.preflight_state == "unproven"
-                assert profile.required_packages["vllm"] == "0.10.1"
-                assert serving_mode_for(real_catalogue, identity, tier) == "live"
+            assert isinstance(profile, ServingProfile)
+            assert profile.preflight_state == "unproven"
+            assert profile.required_packages["vllm"] == "0.10.1"
+            assert serving_mode_for(real_catalogue, identity, tier) == "live"
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

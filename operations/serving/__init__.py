@@ -4,8 +4,6 @@ from .assembly import assemble_serving_preflight_callback, assemble_serving_smok
 from .config import (
     CONFIG_INPUTS_SCHEMA,
     SCHEMA,
-    AnyProfile,
-    CapturedProfile,
     FixtureProfile,
     ProbeSpec,
     ServingConfigInputs,
@@ -32,8 +30,6 @@ __all__ = [
     "SCHEMA",
     "CONFIG_INPUTS_SCHEMA",
     "AdapterCalibration",
-    "AnyProfile",
-    "CapturedProfile",
     "FixtureProfile",
     "ProbeSpec",
     "ReceiptPublication",

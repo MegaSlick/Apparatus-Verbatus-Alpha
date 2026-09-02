@@ -29,14 +29,7 @@ from common.contracts.serving import (
     WIRE_DECIMAL_SCHEMA,
 )
 
-from .config import (
-    AnyProfile,
-    CapturedProfile,
-    FixtureProfile,
-    ServingProfile,
-    ServingRecipes,
-    UnsupportedProfile,
-)
+from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedProfile
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
@@ -554,12 +547,14 @@ def _peek_model(body: bytes) -> str | None:
     return model if isinstance(model, str) else None
 
 
-def _other_tiers_posture(rows: tuple[AnyProfile, ...], tier: str) -> str:
+def _other_tiers_posture(
+    rows: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...], tier: str
+) -> str:
     """Name the posture(s) the *other* tiers hold, for a mixed-posture refusal.
 
-    Never assumes "live": a mix can just as well be captured-and-fixture, so
-    the message names whatever kind is actually sitting at the other tiers
-    rather than a fixed guess.
+    Never assumes "live": the other tiers may just as well be unsupported, so
+    the message names whatever kind is actually sitting there rather than a
+    fixed guess a reader would then have to disbelieve.
     """
 
     others = tuple(row for row in rows if row.tier != tier)
@@ -575,17 +570,14 @@ def _other_tiers_posture(rows: tuple[AnyProfile, ...], tier: str) -> str:
 
 
 def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str | None) -> str:
-    """``"fixture"``, ``"captured"`` or ``"live"`` by the sealed row kind alone.
+    """``"fixture"`` or ``"live"`` by the sealed serving-recipe row kind alone.
 
     Three-name lookup, never a ranking: every row for this ``(recipe, chair)``
     is collected first. If every one of them is a fixture row, the chair is
-    fixture regardless of a supplied tier; if every one is a captured row
-    naming one source chair, the chair is captured regardless of tier, for the
-    same reason — neither posture has a serving moment a tier could shape.
-    Otherwise a live posture exists somewhere in the catalogue, so a tier is
-    required; the row at that exact tier decides, with no fallback to another
-    tier or to another posture in either direction (GOVERNANCE 3 / hard rule
-    8).
+    fixture regardless of a supplied tier. Otherwise a live posture exists
+    somewhere in the catalogue, so a tier is required; the row at that exact
+    tier decides, with no fallback to another tier or to fixture in either
+    direction (GOVERNANCE 3 / hard rule 8).
     """
 
     rows = tuple(
@@ -601,15 +593,6 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
         )
     if all(isinstance(row, FixtureProfile) for row in rows):
         return "fixture"
-    if all(isinstance(row, CapturedProfile) for row in rows):
-        sources = sorted({row.captured_from for row in rows})
-        if len(sources) != 1:
-            raise ServingModeRefusal(
-                "SERVING_MODE_UNRESOLVED",
-                f"chair={identity.role!r}, recipe={identity.serving_recipe!r} is captured from "
-                f"{sources} across its tiers; one chair is captured from exactly one source",
-            )
-        return "captured"
     if tier is None:
         raise ServingModeRefusal(
             "SERVING_MODE_UNRESOLVED",
@@ -632,13 +615,6 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
             f"chair={identity.role!r}, recipe={identity.serving_recipe!r} is a fixture row at "
             f"tier={tier!r} while {_other_tiers_posture(rows, tier)} in this catalogue; a "
             "catalogue may not be half fixture for one chair",
-        )
-    if isinstance(profile, CapturedProfile):
-        raise ServingModeRefusal(
-            "SERVING_MODE_UNRESOLVED",
-            f"chair={identity.role!r}, recipe={identity.serving_recipe!r} is a captured row at "
-            f"tier={tier!r} while {_other_tiers_posture(rows, tier)} in this catalogue; a "
-            "catalogue may not be half captured for one chair",
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingModeRefusal("SERVING_MODE_UNSUPPORTED", profile.reason)
