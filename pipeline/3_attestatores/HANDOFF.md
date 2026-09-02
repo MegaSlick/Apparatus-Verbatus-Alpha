@@ -79,9 +79,27 @@ describes it: the page Testimonium if the interrupted pass reached it, otherwise
 the act-scoped record of an act whose primary page it is, which carries the same
 capture. A page nothing sealed depends on — a continuation page after an
 interruption — is asked for again, because no sealed record contradicts a new
-answer. A record whose receipt says `fixture://`, or an act record naming no
-serving call, is refused rather than resumed over: a live pass cannot continue a
-fixture-posture run.
+answer. A record whose receipt says `fixture://`, or an *attempted* act record
+naming no serving call, is refused rather than resumed over: a live pass cannot
+continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
+— it names no serving call because no chair was ever shown pixels for it, which
+is an independent fact from a fixture-posture response, so it is skipped rather
+than raised on.
+
+Recovering a page's response is not the same as finishing every act view it
+owes: an interruption between two of a *single* page's own act publications
+(the happy fixture's `a1`/`a2`, both primary on page 1) used to leave the later
+one sealed nowhere and unreachable, because the resumed pass rebuilt the page's
+capture from the earlier act alone and never revisited the rest. `run.py`
+factors the per-act publish loop into `publish_page_act_views`, shared by
+`_serve_page_unit` (a response this pass just received) and `live_attempt_pass`
+(a response `resumed_page_captures` recovered), and calls it for every recovered
+page capture before the schedule is built — publishing exactly the pairs still
+pending on that page, from the very response the interrupted pass already
+retained, never asking the chair again. When more than one sealed act record
+could supply a page's resumed capture, every one of them is checked to agree
+(`raw_response_ref`, `native_capture`, `outcome`) rather than taking whichever
+sorts first; a disagreement is a named refusal, not a silent choice.
 
 **What a live record gains.** `native_capture` (the adapter's retained model
 view) and `serving_call_ref` (the `chair-call-record.v1` blob for the one
@@ -113,7 +131,11 @@ operator cannot mistake one posture's record for the other's. Fixture-declared
 Chandra anchors are not read either, so a live page witness's act attachment
 comes back `unaligned: missing-chandra-page-anchor` until R4 owns live
 alignment: aligning real witness text against declared act spans would place a
-reading on geometry nobody measured.
+reading on geometry nobody measured. `chandra_anchor` rows are counted on that
+same stderr line, separately from the chair-keyed families above: an anchor
+keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
+live_chairs` filter the others share, and every anchor the scenario declares is
+one the live pass discards regardless of which chair would have used it.
 
 **No live reread.** `--operation reread` is refused by name under a live roster.
 A reread asks one chair for one act again at a new ordinal; it needs its own
