@@ -392,6 +392,32 @@ def test_an_export_payload_naming_both_identities_is_refused_by_name(tmp_path, h
     assert not out.exists()
 
 
+def test_an_export_payload_naming_neither_identity_is_refused_by_name(tmp_path, happy_run):
+    """A payload with no identity field at all is refused, not silently misread."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    del export["payload"]["fixture_id"]
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "names neither a fixture identifier nor a submission identifier" in result.stderr
+    assert not out.exists()
+
+
 def test_a_partial_run_publishes_and_says_it_is_partial(tmp_path, review_run):
     """A held act must not stop the product leaving, and must not be hidden in it."""
     out = tmp_path / "delivery"
