@@ -59,16 +59,19 @@ this corpus's page counts (§5.6: val ≈ 225-315 pages, comfortably under the c
 in one shard), and it never invents a triage manifest to get there.
 """
 
+import argparse
+import json
 import os
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from common.contracts.canonical import digest_bytes, is_sha256
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from operations.submit import gate, submit
 
 from . import CorpusRefusal
-from .holdout import refuse_held_out_page, validate_holdout
-from .plan import _unsafe_segment, validate_plan
+from .fetch import validate_fetch_log
+from .holdout import load_holdout, refuse_held_out_page, validate_holdout
+from .plan import _unsafe_segment, load_plan, validate_plan
 from .rows import validate_snapshot
 from .sidecar import build_sidecar, write_sidecar
 
@@ -99,15 +102,19 @@ class FetchedPage(NamedTuple):
 
     U2 (`operations/corpus/{fetch,cache}.py`) is the tracked producer of the
     `private/corpora/recordgold/cache/<response-sha256>.jpg` files `SPEC.md`
-    §5.1 lays out, and it does not exist yet in this worktree. Rather than block
-    on it or invent a fetcher of its own — out of scope for this unit, and the
-    brief is explicit that a missing sibling gets worked around in this file and
-    named, not silently assumed — this module takes the one fact it actually
-    needs from a fetch: a local, already-cached JPEG file plus the response
-    metadata `sidecar.build_sidecar`'s `iiif` block requires. Once U2 lands, its
-    cache read is expected to construct exactly these tuples; nothing here reads
-    `private/corpora/recordgold/cache/` directly, so no coupling to U2's
-    internal layout is baked in.
+    §5.1 lays out. It did not exist when this module was first built, so this
+    stayed a locally-defined interface rather than a coupling to U2's cache
+    layout: the one fact this module actually needs from a fetch is a local,
+    already-cached JPEG file plus the response metadata `sidecar.build_sidecar`'s
+    `iiif` block requires — nothing here reads
+    `private/corpora/recordgold/cache/` directly.
+
+    U2 exists now, and `integrate.fetched_pages_from_log` is its cache read: it
+    turns a sealed `recordgold-fetch-log.v1` plus `cache_root` into exactly these
+    tuples, verifying each cache file against the digest its own log entry
+    declares. That coupling lives in `integrate.py`, not here, on purpose —
+    see that module's docstring for why the boundary stayed put instead of
+    collapsing into this file once U2 landed.
     """
 
     cache_path: Path
@@ -557,3 +564,74 @@ def build_submission(
         "admitted_page_count": len(admitted),
         "refused_page_count": len(refusals),
     }
+
+
+def main(argv: list[str] | None = None) -> dict[str, Any]:
+    """Build a real submission from the CLI — no throwaway script, no network.
+
+    Loads and validates every ledger this module needs through its own tracked
+    loader (`rows.validate_snapshot`, `plan.load_plan`, `holdout.load_holdout`,
+    `fetch.validate_fetch_log`), builds `FetchedPage`s from the fetch log via
+    `integrate.fetched_pages_from_log` — imported here, not at module load time,
+    so `submission.py` never carries a circular import back to `integrate.py`
+    merely to run this CLI — and calls `build_submission`. Every refusal
+    `build_submission` and `fetched_pages_from_log` raise is a `CorpusRefusal`
+    named by its own leading token; this function catches none of them; a bad
+    ledger stops the run rather than producing a silently partial submission.
+
+    The finished report — shards written, pages admitted, every refusal by name
+    — is written to `<ledger_root>/<shard_prefix>-submission-report.json`
+    (`canonical_bytes`, so it is a stable function of its content) and also
+    printed, so an operator sees the outcome without opening a file.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshot", required=True, help="Path to a recordgold-rows.v1 file.")
+    parser.add_argument("--plan", required=True, help="Path to a recordgold-fetch-plan.v1 file.")
+    parser.add_argument("--holdout", required=True, help="Path to a recordgold-holdout.v1 file.")
+    parser.add_argument(
+        "--fetch-log", required=True, help="Path to a recordgold-fetch-log.v1 file (U2's output)."
+    )
+    parser.add_argument(
+        "--cache-root", required=True, help="U2's cache root: cache/<response-sha256>.jpg."
+    )
+    parser.add_argument("--submissions-root", required=True)
+    parser.add_argument("--sidecars-root", required=True)
+    parser.add_argument("--ledger-root", required=True)
+    parser.add_argument(
+        "--shard-prefix", required=True, help="e.g. 'val' — shards land as <prefix>-0001, ..."
+    )
+    args = parser.parse_args(argv)
+
+    # Deferred: `integrate.py` imports `FetchedPage` from this module, so
+    # importing it back at this module's top level would be circular. By the
+    # time this function runs, `submission.py` has already finished defining
+    # everything `integrate.py` needs, so the import resolves cleanly here.
+    from .integrate import fetched_pages_from_log
+
+    snapshot = validate_snapshot(json.loads(Path(args.snapshot).read_bytes()))
+    plan = load_plan(args.plan)
+    holdout = load_holdout(args.holdout)
+    fetch_log = validate_fetch_log(json.loads(Path(args.fetch_log).read_bytes()))
+    fetched_pages = fetched_pages_from_log(fetch_log, Path(args.cache_root))
+
+    ledger_root = Path(args.ledger_root)
+    report = build_submission(
+        plan,
+        snapshot,
+        holdout,
+        fetched_pages,
+        submissions_root=Path(args.submissions_root),
+        sidecars_root=Path(args.sidecars_root),
+        ledger_root=ledger_root,
+        shard_prefix=args.shard_prefix,
+    )
+
+    report_path = ledger_root / f"{args.shard_prefix}-submission-report.json"
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    report_path.write_bytes(canonical_bytes(report))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return report
+
+
+if __name__ == "__main__":
+    main()

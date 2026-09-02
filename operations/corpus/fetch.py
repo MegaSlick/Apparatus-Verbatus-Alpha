@@ -419,8 +419,19 @@ def _info_path(info_root: Path, identifier: str) -> Path:
     return Path(info_root) / f"{digest_bytes(identifier.encode('utf-8'))}.json"
 
 
-def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[bytes, str]:
-    """Full-resolution image: try `full`, fall back to `max` on 400/501. Returns (body, size_used)."""
+def _fetch_image_bytes(
+    session: FetchSession, page: dict[str, Any]
+) -> tuple[bytes, str, int, int, str]:
+    """Full-resolution image: try `full`, fall back to `max` on 400/501.
+
+    Returns `(body, size_parameter_used, http_status, byte_count, fetched_at_utc)`.
+    The last three are always the facts of the completed fetch that actually
+    talked to the server: on a cache hit they come back from that request's own
+    recorded `request_record`, never re-measured "now" — a page answered from
+    cache on this run still carries the status and timestamp of the run that
+    earned it, which is what U3's `FetchedPage` (`submission.py`) needs to build
+    an honest sidecar `iiif` block regardless of which run fetched the bytes.
+    """
     identifier = page["identifier"]
     candidates = page["image_url_candidates"]
     last_error: Exception | None = None
@@ -432,7 +443,13 @@ def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[byt
                 body_path = cache_module.body_path(
                     session.config.cache_root, record["response_sha256"]
                 )
-                return body_path.read_bytes(), size_parameter
+                return (
+                    body_path.read_bytes(),
+                    size_parameter,
+                    record["http_status"],
+                    record["bytes"],
+                    record["fetched_at_utc"],
+                )
             # A previously recorded fallback (e.g. "full" recorded as unsupported)
             # means never ask that size again either — move straight to the next.
             last_error = _HttpStatusError(record.get("http_status", 0), candidates[size_parameter])
@@ -461,6 +478,7 @@ def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[byt
                 continue
             raise CorpusRefusal(f"http-error: {error}") from error
         response_sha256 = cache_module.store_response_body(session.config.cache_root, body)
+        fetched_at_utc = session.config.clock()
         cache_module.write_request_record(
             session.config.cache_root,
             key,
@@ -472,10 +490,10 @@ def _fetch_image_bytes(session: FetchSession, page: dict[str, Any]) -> tuple[byt
                 "response_sha256": response_sha256,
                 "http_status": status,
                 "bytes": len(body),
-                "fetched_at_utc": session.config.clock(),
+                "fetched_at_utc": fetched_at_utc,
             },
         )
-        return body, size_parameter
+        return body, size_parameter, status, len(body), fetched_at_utc
     if isinstance(last_error, _HttpStatusError) and last_error.status in _FALLBACK_STATUSES:
         raise CorpusRefusal(
             f"unsupported-size-parameter: server accepted neither 'full' nor 'max' for "
@@ -509,7 +527,7 @@ def fetch_page(
         info = _fetch_info(session, page)
         width, height = info["declared_width"], info["declared_height"]
 
-        body, size_used = _fetch_image_bytes(session, page)
+        body, size_used, http_status, byte_count, fetched_at_utc = _fetch_image_bytes(session, page)
         response_sha256 = digest_bytes(body)
 
         owner = session.seen_response_digests.get(response_sha256)
@@ -525,6 +543,7 @@ def fetch_page(
             _check_dimensions(image, width, height)
             _check_exif_orientation(image)
             _check_regions(page["records"], width, height)
+            decoded_width, decoded_height = image.size
         except CorpusRefusal as error:
             # The request record for `image_key` was already written as "fetched"
             # once the body landed (`_fetch_image_bytes`), before any of these
@@ -546,10 +565,25 @@ def fetch_page(
         entry.update(
             {
                 "status": "fetched",
+                # U3's `FetchedPage` (`submission.py`) needs a page's IIIF facts and
+                # this module is the only place that knows which candidate URL was
+                # actually used — carried here rather than re-derived downstream so
+                # `fetched_pages_from_log` never needs the fetch plan back.
+                "info_url": page["info_url"],
+                "image_url": page["image_url_candidates"][size_used],
                 "size_parameter_used": size_used,
                 "response_sha256": response_sha256,
+                "bytes": byte_count,
+                "http_status": http_status,
+                "fetched_at_utc": fetched_at_utc,
                 "declared_width": width,
                 "declared_height": height,
+                # Decoded, not merely declared: `_check_dimensions` already refused
+                # any page where these would differ, but the log entry carries both
+                # explicitly so a reader downstream never has to trust that a
+                # decode-time check ran rather than re-deriving the same fact.
+                "width": decoded_width,
+                "height": decoded_height,
             }
         )
         return entry
@@ -633,6 +667,42 @@ _FETCH_LOG_FIELDS = frozenset(
     {"schema", "split", "plan_self_hash", "holdout_self_hash", "entries", "halted", "self_hash"}
 )
 
+# A "fetched" entry's closed shape — everything `submission.FetchedPage` needs,
+# named on the wire so `submission.fetched_pages_from_log` can build a
+# `FetchedPage` from the log alone, with no fetch plan to consult back. Every
+# field here is one `fetch_page` actually writes; a log missing one is refused
+# `malformed-record` rather than read with a `KeyError` three modules away.
+_FETCHED_ENTRY_FIELDS = frozenset(
+    {
+        "identifier",
+        "physical_page_id",
+        "status",
+        "info_url",
+        "image_url",
+        "size_parameter_used",
+        "response_sha256",
+        "bytes",
+        "http_status",
+        "fetched_at_utc",
+        "declared_width",
+        "declared_height",
+        "width",
+        "height",
+    }
+)
+# "refused" and "halted" entries share one shape (`fetch_page`'s except-branch and
+# `run_fetch`'s halt branch write exactly these fields, no more).
+_REFUSED_OR_HALTED_ENTRY_FIELDS = frozenset(
+    {"identifier", "physical_page_id", "status", "reason", "detail"}
+)
+_ENTRY_STATUSES = frozenset({"fetched", "refused", "halted"})
+
+
+def _closed_entry(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+    return value
+
 
 def _seal_fetch_log(
     result: RunResult, *, split: str, plan: dict[str, Any], holdout: dict[str, Any] | None
@@ -651,7 +721,15 @@ def _seal_fetch_log(
 
 
 def validate_fetch_log(record: Any) -> dict[str, Any]:
-    """Refuse a fetch log that is not exactly `recordgold-fetch-log.v1`, closed and self-consistent."""
+    """Refuse a fetch log that is not exactly `recordgold-fetch-log.v1`, closed and self-consistent.
+
+    Every entry is checked against its own closed shape too, keyed by `status`:
+    rule 6 ("nothing enters uninspected") covers what a caller reads out of an
+    individual entry just as much as the log's own top-level fields, and
+    `submission.fetched_pages_from_log` reads `"fetched"` entries by field name —
+    a log entry silently missing one must be refused here, not three modules
+    downstream as a `KeyError`.
+    """
     if not isinstance(record, dict) or set(record) != _FETCH_LOG_FIELDS:
         raise CorpusRefusal(
             f"malformed-record: fetch log must be the closed record {sorted(_FETCH_LOG_FIELDS)}"
@@ -660,6 +738,31 @@ def validate_fetch_log(record: Any) -> dict[str, Any]:
         raise CorpusRefusal(
             f"wrong-schema: expected {FETCH_LOG_SCHEMA!r}, got {record['schema']!r}"
         )
+    entries = record["entries"]
+    if not isinstance(entries, list):
+        raise CorpusRefusal("malformed-record: fetch log entries must be a list")
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or "status" not in entry:
+            raise CorpusRefusal(
+                f"malformed-record: entries[{index}] must be a dict carrying a status"
+            )
+        status = entry["status"]
+        if status not in _ENTRY_STATUSES:
+            raise CorpusRefusal(
+                f"malformed-record: entries[{index}] status {status!r} is not one of "
+                f"{sorted(_ENTRY_STATUSES)}"
+            )
+        if status == "fetched":
+            _closed_entry(entry, _FETCHED_ENTRY_FIELDS, f"entries[{index}] (status=fetched)")
+        else:
+            _closed_entry(
+                entry, _REFUSED_OR_HALTED_ENTRY_FIELDS, f"entries[{index}] (status={status})"
+            )
+            if status == "refused" and entry["reason"] not in FETCH_REFUSAL_REASONS:
+                raise CorpusRefusal(
+                    f"malformed-record: entries[{index}] reason {entry['reason']!r} is not in "
+                    "the closed FETCH_REFUSAL_REASONS vocabulary"
+                )
     if not verify_self_hash(record):
         raise CorpusRefusal(
             "self-hash-mismatch: fetch log self_hash does not verify against its own content"

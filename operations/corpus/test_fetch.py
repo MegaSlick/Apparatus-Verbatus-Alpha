@@ -240,6 +240,39 @@ def test_fetch_page_full_succeeds(tmp_path, server):
     cached = cache_module.body_path(tmp_path / "cache", entry["response_sha256"])
     assert cached.read_bytes() == GOOD_JPEG
 
+    # Everything `submission.FetchedPage` needs, carried on the entry itself —
+    # the seam `integrate.fetched_pages_from_log` closes.
+    assert entry["info_url"] == page["info_url"]
+    assert entry["image_url"] == page["image_url_candidates"]["full"]
+    assert entry["bytes"] == len(GOOD_JPEG)
+    assert entry["http_status"] == 200
+    assert entry["fetched_at_utc"] == "2026-09-01T00:00:00+00:00"
+    assert entry["width"] == PAGE_WIDTH
+    assert entry["height"] == PAGE_HEIGHT
+
+
+def test_fetch_page_from_cache_carries_the_original_fetch_facts(tmp_path, server):
+    """A page answered from cache still carries the *original* status/timestamp.
+
+    Never "now": `_fetch_image_bytes` reads `http_status`/`bytes`/`fetched_at_utc`
+    back off the request record on a cache hit rather than re-measuring, so a
+    fetch log stays an honest record of when a page was actually fetched from the
+    server, independent of which run happened to answer it from cache.
+    """
+    _script(server, "vol/001b", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    page = _page(server, "vol/001b")
+    config = _config(tmp_path, clock=lambda: "2026-09-01T00:00:00+00:00")
+    first = fetch_page(FetchSession(config), page)
+    assert first["status"] == "fetched"
+
+    later_config = _config(tmp_path, clock=lambda: "2099-01-01T00:00:00+00:00")
+    second = fetch_page(FetchSession(later_config), page)
+    assert second["status"] == "fetched"
+    assert second["fetched_at_utc"] == first["fetched_at_utc"] == "2026-09-01T00:00:00+00:00"
+    assert second["http_status"] == first["http_status"]
+    assert second["bytes"] == first["bytes"]
+    assert second["image_url"] == first["image_url"]
+
 
 def test_full_falls_back_to_max_on_400(tmp_path, server):
     _script(
@@ -838,6 +871,101 @@ def test_main_writes_a_self_hashed_fetch_log_and_refusals(tmp_path, server):
     refusals = json.loads((output_dir / "refusals.json").read_bytes())
     assert refusals["schema"] == fetch_module.FETCH_REFUSALS_SCHEMA
     assert [entry["identifier"] for entry in refusals["refusals"]] == ["vol/026b"]
+
+    # `entries[0]` is `vol/026a`'s "fetched" entry — every field
+    # `submission.FetchedPage`/`integrate.fetched_pages_from_log` reads.
+    fetched_entry = next(e for e in log["entries"] if e["status"] == "fetched")
+    assert set(fetched_entry) == {
+        "identifier",
+        "physical_page_id",
+        "status",
+        "info_url",
+        "image_url",
+        "size_parameter_used",
+        "response_sha256",
+        "bytes",
+        "http_status",
+        "fetched_at_utc",
+        "declared_width",
+        "declared_height",
+        "width",
+        "height",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# `validate_fetch_log`'s per-entry closed-shape validation
+
+
+def test_validate_fetch_log_refuses_fetched_entry_missing_a_field():
+    entry = {
+        "identifier": "vol/x",
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "fetched",
+        "info_url": "http://x/info.json",
+        "image_url": "http://x/full/full/0/default.jpg",
+        "size_parameter_used": "full",
+        "response_sha256": "a" * 64,
+        "bytes": 10,
+        "http_status": 200,
+        "fetched_at_utc": "2026-09-01T00:00:00Z",
+        "declared_width": 10,
+        "declared_height": 10,
+        "width": 10,
+        # "height" missing
+    }
+    log = {
+        "schema": fetch_module.FETCH_LOG_SCHEMA,
+        "split": "val",
+        "plan_self_hash": digest_bytes(b"plan"),
+        "holdout_self_hash": None,
+        "entries": [entry],
+        "halted": None,
+    }
+    log["self_hash"] = self_hash(log)
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
+
+
+def test_validate_fetch_log_refuses_refused_entry_with_unrecognized_reason():
+    entry = {
+        "identifier": "vol/x",
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "refused",
+        "reason": "not-a-real-reason",
+        "detail": "not-a-real-reason: made up",
+    }
+    log = {
+        "schema": fetch_module.FETCH_LOG_SCHEMA,
+        "split": "val",
+        "plan_self_hash": digest_bytes(b"plan"),
+        "holdout_self_hash": None,
+        "entries": [entry],
+        "halted": None,
+    }
+    log["self_hash"] = self_hash(log)
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
+
+
+def test_validate_fetch_log_accepts_halted_entry_shape():
+    entry = {
+        "identifier": "vol/x",
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "halted",
+        "reason": "Http403Stop",
+        "detail": "stopped on first 403 fetching 'http://x'",
+    }
+    log = {
+        "schema": fetch_module.FETCH_LOG_SCHEMA,
+        "split": "val",
+        "plan_self_hash": digest_bytes(b"plan"),
+        "holdout_self_hash": None,
+        "entries": [entry],
+        "halted": "Http403Stop",
+    }
+    log["self_hash"] = self_hash(log)
+    assert validate_fetch_log(log) == log
 
 
 def test_main_refuses_split_test_without_release_test_split(tmp_path, server):

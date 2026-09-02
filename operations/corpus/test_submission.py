@@ -10,6 +10,7 @@ covers the whole tree regardless).
 """
 
 import hashlib
+import json
 import os
 import shutil
 import uuid
@@ -19,7 +20,9 @@ import pytest
 
 from common.contracts.canonical import digest_bytes
 from operations.corpus import CorpusRefusal
+from operations.corpus import fetch as fetch_module
 from operations.corpus.holdout import build_holdout
+from operations.corpus.integrate import fetched_pages_from_log
 from operations.corpus.plan import build_fetch_plan
 from operations.corpus.rows import build_snapshot
 from operations.corpus.sidecar import load_sidecar, validate_sidecar
@@ -29,6 +32,7 @@ from operations.corpus.submission import (
     partition_into_shards,
     refuse_non_image_files,
 )
+from operations.corpus.submission import main as submission_main
 from operations.submit import gate, inventory, submit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -94,6 +98,20 @@ def _cache_file(scratch, name: str, content: bytes) -> tuple[Path, str]:
     path = scratch / "cache" / name
     path.write_bytes(content)
     return path, hashlib.sha256(content).hexdigest()
+
+
+def _cache_body(scratch, content: bytes) -> str:
+    """Write `content` at the exact path `integrate.fetched_pages_from_log` expects.
+
+    Unlike `_cache_file`, the digest *is* the filename — `cache.body_path`'s own
+    `cache/<response-sha256>.jpg` convention — because `fetched_pages_from_log`
+    resolves a page's cache path from its logged `response_sha256` alone, never
+    from a name a caller chose.
+    """
+    digest = hashlib.sha256(content).hexdigest()
+    path = scratch / "cache" / f"{digest}.jpg"
+    path.write_bytes(content)
+    return digest
 
 
 def _fetched(
@@ -711,3 +729,265 @@ def test_validate_sidecar_refuses_extra_field():
     del with_ordinal["self_hash"]
     with pytest.raises(CorpusRefusal, match="malformed-record"):
         validate_sidecar(with_ordinal)
+
+
+# --- integrate.fetched_pages_from_log: the U2/U3 seam --------------------------------
+
+
+def _fetched_entry(identifier: str, response_sha256: str, **overrides) -> dict:
+    entry = {
+        "identifier": identifier,
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": "fetched",
+        "info_url": "https://europe.iiif.teklia.com/iiif/2/x/info.json",
+        "image_url": "https://europe.iiif.teklia.com/iiif/2/x/full/full/0/default.jpg",
+        "size_parameter_used": "full",
+        "response_sha256": response_sha256,
+        "bytes": 10,
+        "http_status": 200,
+        "fetched_at_utc": "2026-09-01T00:00:00Z",
+        "declared_width": 4000,
+        "declared_height": 6000,
+        "width": 4000,
+        "height": 6000,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _refused_entry(identifier: str, *, status: str = "refused", reason: str = "http-error") -> dict:
+    return {
+        "identifier": identifier,
+        "physical_page_id": "pac_" + "0" * 40,
+        "status": status,
+        "reason": reason,
+        "detail": f"{reason}: synthetic entry for a test",
+    }
+
+
+def _fetch_log(entries: list[dict], *, split: str = "val", halted=None) -> dict:
+    from common.contracts.canonical import self_hash as compute_self_hash
+
+    body = {
+        "schema": fetch_module.FETCH_LOG_SCHEMA,
+        "split": split,
+        "plan_self_hash": digest_bytes(b"plan"),
+        "holdout_self_hash": None,
+        "entries": entries,
+        "halted": halted,
+    }
+    body["self_hash"] = compute_self_hash(body)
+    return body
+
+
+def test_fetched_pages_from_log_builds_verified_fetched_pages(scratch):
+    digest = _cache_body(scratch, b"cached-bytes")
+    identifier = "geneanet/Ardennes_BMS/380403/00026.jpg"
+    entry = _fetched_entry(identifier, digest)
+    log = _fetch_log([entry])
+
+    fetched = fetched_pages_from_log(log, scratch / "cache")
+
+    assert set(fetched) == {identifier}
+    page = fetched[identifier]
+    assert page.cache_path == scratch / "cache" / f"{digest}.jpg"
+    assert page.response_sha256 == digest
+    assert page.info_url == entry["info_url"]
+    assert page.image_url == entry["image_url"]
+    assert page.size_parameter == "full"
+    assert page.bytes == entry["bytes"]
+    assert page.http_status == 200
+    assert page.fetched_at_utc == entry["fetched_at_utc"]
+    assert (page.declared_width, page.declared_height) == (4000, 6000)
+    assert (page.width, page.height) == (4000, 6000)
+
+
+def test_fetched_pages_from_log_refuses_missing_cache_file(scratch):
+    entry = _fetched_entry("geneanet/x/y/1.jpg", "a" * 64)
+    log = _fetch_log([entry])
+    with pytest.raises(CorpusRefusal, match="fetched-page-cache-missing"):
+        fetched_pages_from_log(log, scratch / "cache")
+
+
+def test_fetched_pages_from_log_refuses_digest_mismatch(scratch):
+    digest = _cache_body(scratch, b"actual-bytes")
+    # The cache file is tampered with after the log claimed this digest.
+    (scratch / "cache" / f"{digest}.jpg").write_bytes(b"tampered-bytes")
+    entry = _fetched_entry("geneanet/x/y/1.jpg", digest)
+    log = _fetch_log([entry])
+    with pytest.raises(CorpusRefusal, match="fetched-page-cache-digest-mismatch"):
+        fetched_pages_from_log(log, scratch / "cache")
+
+
+def test_fetched_pages_from_log_skips_refused_and_halted_entries_and_counts_them(scratch):
+    digest = _cache_body(scratch, b"good-bytes")
+    fetched_entry = _fetched_entry("geneanet/x/y/1.jpg", digest)
+    refused_entry = _refused_entry("geneanet/x/y/2.jpg", status="refused", reason="http-error")
+    halted_entry = _refused_entry("geneanet/x/y/3.jpg", status="halted", reason="Http403Stop")
+    log = _fetch_log([fetched_entry, refused_entry, halted_entry])
+
+    fetched = fetched_pages_from_log(log, scratch / "cache")
+
+    assert set(fetched) == {"geneanet/x/y/1.jpg"}
+    non_fetched = [entry for entry in log["entries"] if entry["status"] != "fetched"]
+    assert len(non_fetched) == 2
+    assert {entry["status"] for entry in non_fetched} == {"refused", "halted"}
+
+
+def test_fetched_pages_from_log_revalidates_the_log():
+    tampered = _fetch_log([_fetched_entry("geneanet/x/y/1.jpg", "a" * 64)])
+    tampered["split"] = "test"  # mutate after sealing: self_hash no longer verifies
+    with pytest.raises(CorpusRefusal, match="self-hash-mismatch"):
+        fetched_pages_from_log(tampered, Path("/does-not-matter"))
+
+
+# --- the tracked CLI: `python -m operations.corpus.submission` -----------------------
+
+
+def test_cli_builds_a_shard_from_a_synthetic_log_and_cache(scratch, tmp_path):
+    rows = [_row("rec-1", "val", VAL_PAGE_URL)]
+    snapshot = _snapshot(rows)
+    plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
+    holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+
+    digest = _cache_body(scratch, b"page-bytes")
+    entry = _fetched_entry("geneanet/Ardennes_BMS/380403/00026.jpg", digest)
+    log = _fetch_log([entry], split="val")
+
+    snapshot_path = tmp_path / "snapshot.json"
+    plan_path = tmp_path / "plan.json"
+    holdout_path = tmp_path / "holdout.json"
+    log_path = tmp_path / "fetch-log.json"
+    snapshot_path.write_bytes(json.dumps(snapshot).encode("utf-8"))
+    plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+    holdout_path.write_bytes(json.dumps(holdout).encode("utf-8"))
+    log_path.write_bytes(json.dumps(log).encode("utf-8"))
+
+    report = submission_main(
+        [
+            "--snapshot",
+            str(snapshot_path),
+            "--plan",
+            str(plan_path),
+            "--holdout",
+            str(holdout_path),
+            "--fetch-log",
+            str(log_path),
+            "--cache-root",
+            str(scratch / "cache"),
+            "--submissions-root",
+            str(scratch / "submissions"),
+            "--sidecars-root",
+            str(scratch / "sidecars"),
+            "--ledger-root",
+            str(scratch / "ledger"),
+            "--shard-prefix",
+            "val",
+        ]
+    )
+
+    assert report["admitted_page_count"] == 1
+    assert report["refused_page_count"] == 0
+    assert report["shards"][0]["shard_id"] == "val-0001"
+    image = (
+        Path(report["shards"][0]["folder"])
+        / "Ardennes"
+        / "geneanet"
+        / "Ardennes_BMS"
+        / "380403"
+        / "00026.jpg"
+    )
+    assert image.read_bytes() == b"page-bytes"
+
+    report_path = scratch / "ledger" / "val-submission-report.json"
+    assert report_path.exists()
+    on_disk = json.loads(report_path.read_bytes())
+    assert on_disk["schema"] == "recordgold-submission-report.v1"
+    assert on_disk["admitted_page_count"] == 1
+
+
+def test_cli_requires_every_flag():
+    with pytest.raises(SystemExit):
+        submission_main(["--snapshot", "x.json"])
+
+
+# --- full round trip: run_fetch (loopback server) -> seal log -> integrate -> build --
+
+
+def test_round_trip_fetch_log_to_submission(scratch, tmp_path):
+    import threading
+
+    from common.contracts.canonical import self_hash as compute_self_hash
+    from operations.corpus import plan as plan_module
+    from operations.corpus.fetch import FetchConfig, run_fetch
+    from operations.corpus.test_fetch import GOOD_JPEG, INFO_JSON, _Handler, _Server
+    from operations.corpus.test_fetch import _page as _fetch_test_page
+    from operations.corpus.test_fetch import _script as _fetch_script
+
+    httpd = _Server(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _fetch_script(
+            httpd, "vol/roundtrip.jpg", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}]
+        )
+
+        # A "val"-only row: `build_holdout` only ever parses `record_url` for a
+        # `test`-split row (`holdout.py`), so a placeholder URL here never has to
+        # satisfy `parse_record_url`'s real-IIIF-host requirement — only the
+        # hand-built plan page below, pointed at the loopback server, has to.
+        rows = [_row("rec-1", "val", "https://placeholder.example/unused")]
+        snapshot = _snapshot(rows)
+        holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
+
+        page = _fetch_test_page(
+            httpd,
+            "vol/roundtrip.jpg",
+            records=[{"record_id": "rec-1", "region": {"x": 5, "y": 5, "w": 10, "h": 10}}],
+        )
+        plan_body = {
+            "schema": plan_module.SCHEMA,
+            "corpus_id": plan_module.CORPUS_ID,
+            "source_row_snapshot_self_hash": snapshot["self_hash"],
+            "pages": [page],
+            "refusals": [],
+            "measurements": {},
+        }
+        plan_body["self_hash"] = compute_self_hash(plan_body)
+        plan = plan_module.validate_plan(plan_body)
+
+        fetch_cache_root = tmp_path / "fetch-cache"
+        config = FetchConfig(
+            cache_root=fetch_cache_root,
+            info_root=tmp_path / "fetch-info",
+            min_interval_seconds=0.0,
+            sleep=lambda seconds: None,
+            clock=lambda: "2026-09-01T00:00:00+00:00",
+        )
+        result = run_fetch(plan, config, split="val", holdout=holdout)
+        assert result.halted is None
+        assert result.entries[0]["status"] == "fetched"
+
+        log = fetch_module._seal_fetch_log(result, split="val", plan=plan, holdout=holdout)
+        log = fetch_module.validate_fetch_log(log)
+
+        fetched_pages = fetched_pages_from_log(log, fetch_cache_root)
+        assert set(fetched_pages) == {"vol/roundtrip.jpg"}
+
+        report = build_submission(
+            plan,
+            snapshot,
+            holdout,
+            fetched_pages,
+            submissions_root=scratch / "submissions",
+            sidecars_root=scratch / "sidecars",
+            ledger_root=scratch / "ledger",
+            shard_prefix="roundtrip",
+        )
+        assert report["admitted_page_count"] == 1
+        assert report["refused_page_count"] == 0
+        image = next(Path(report["shards"][0]["folder"]).rglob("*.jpg"))
+        assert image.read_bytes() == GOOD_JPEG
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
