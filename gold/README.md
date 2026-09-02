@@ -113,6 +113,20 @@ A name shaped like a pipeline identity is refused wherever a person is named:
 gold is what the pipeline is measured against, so gold made of its output would
 make the measurement circular.
 
+**RecordGold truth is never filed here.** `operations/corpus/` fetches a
+third-party expert-annotated corpus and gives it its own `reference.py` record
+family — one unnamed expert reading, no adjudication, `provenance:
+"third-party-expert-annotation"` — precisely because it cannot satisfy this
+module's shape: `_person` refuses a pipeline-shaped identity but not a
+Teklia-shaped one either, `adjudicate` derives `outcome` from two independently
+stored readings that RecordGold never has, and `validate_corpus` refuses
+closure without both. Forcing a reference record in as gold would mean
+inventing two transcriber names for one text and minting a fabricated `agreed`
+custody chain — the exact fabrication this module's two-reading requirement
+exists to make impossible. A reference record and a gold record may describe
+the same page; they are never the same kind of record, and neither directory
+is the right home for the other's.
+
 ## Custody
 
 The layout schema embeds its source `gold-page-sample.v2`, whose page carries

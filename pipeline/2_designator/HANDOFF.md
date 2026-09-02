@@ -671,6 +671,24 @@ reads the act, never a gate here.
 
 ## What this handoff does not settle
 
+**RecordGold cannot close padding calibration, and `calibrated_for_this_corpus`
+stays `false` regardless of how many of its pages are fetched.**
+`padding_calibration.py` needs `(detected, true_content)` pairs on this
+project's own material; RecordGold supplies `true_content` only, because the
+Designator refuses real ingress and nothing in this stage runs over fetched
+RecordGold pages to produce a `detected` half. Running `structure.py` /
+`grouping.py` offline over those pages and calibrating against that output is
+an honest route, but the result it would produce describes the walking
+skeleton's ink-scan stand-in, not this project's own structure model, and
+must be recorded as such rather than folded into the flag silently. The flag
+means "calibrated against this project's own pages" — swapping one
+third-party corpus's fractions (the config's current French-register
+provenance) for another third-party corpus's fractions, however cleaner or
+more plentiful, does not make that true. `~261` val pages clears the 120
+preferred sample floor `padding_calibration.py` already names comfortably;
+sample size was never the obstacle here, provenance is, and provenance is not
+a number a larger sample can fix.
+
 **An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
 limitation.** The Recensor reconciles only continuations this stage *proposed*, so
 an act split across a page break that was never declared produces no finding in
