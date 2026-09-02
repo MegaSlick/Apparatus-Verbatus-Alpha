@@ -329,8 +329,12 @@ alarm. Each fetched page is a single-frame JPEG, so it takes `admit-or-fan-out`
 and is sealed as its own original bytes, exactly as an iPhone-native HEIC
 frame or a single-page TIFF is; the record regions in `record_url` are already
 stated in that raster's own pixel coordinates, so nothing is transformed and
-nothing needs re-deriving. There is no triage decision manifest, no cluster,
-and no producer recipe behind any of it — these pages never go near the
+nothing needs re-deriving — provided the fetcher's own `dimension-mismatch`
+and `exif-orientation` refusals passed. This stage does not and cannot check
+the box-to-raster correspondence itself; the coordinate claim rests entirely
+on `operations/corpus/`'s decode-time verification against `info.json`. There
+is no triage decision manifest, no cluster, and no producer recipe behind any
+of it — these pages never go near the
 triage split/apply path, so `colour_mode` never applies to them; a builder
 that invents a triage manifest "to be safe" would move `config_digest` and put
 the pages on a re-encoding path they were never on. Each submission shard

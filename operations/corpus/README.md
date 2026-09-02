@@ -4,7 +4,7 @@ RecordGold in: a third-party expert-annotated corpus fetched, sealed, and joined
 to pipeline output without ever pretending to be `gold/`.
 
 `Teklia/DAI-CReTDHI-RecordGold-ATR` is 7,720 expert-annotated records over French
-parish and civil registers (1548–1806), shipped as three parquets of text and IIIF
+parish and civil registers (1548–1835), shipped as three parquets of text and IIIF
 references — no embedded images. This package turns that into fetched pages the
 Door can admit, a reference-truth record family the Designator and Perlector can be
 scored against, and a comparator that does the scoring after the fact. It never
@@ -21,9 +21,12 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `record_url` (a IIIF Image API 2 crop) into `{identifier, region}`, refusing any
   host, size, rotation, quality, or format it does not recognise by name rather than
   normalising it, and groups rows by the page identifier they share. Also mints each
-  page's `pac_` physical identity and prints the measured page count, records-per-page
-  distribution, and split-overlap count — turning the design consult's disk estimate
-  into a fact before a byte is fetched.
+  page's `pac_` physical identity and records the measured page count, records-per-page
+  distribution, and split-overlap count under the plan's own `measurements` field —
+  turning the design consult's disk estimate into a fact before a byte is fetched.
+  Measured against the sealed row snapshot: 1,165 distinct pages (val 113, test 113,
+  train 939), 0 cross-split pages, and 40 rows refused `unsupported-rotation-parameter`
+  — against the consult's 2,200–3,100-page estimate.
 - `holdout.py` — the hold-out ledger, `recordgold-holdout.v1`, built from the row
   snapshot alone: every IIIF identifier carrying a `test` record is held, and
   `refuse_held_out_page` is the predicate later units call before writing a page
@@ -34,6 +37,10 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `operations/submit/submit.py`.
 - `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
   offline IoU comparator.
+
+As of this commit only `rows.py`, `plan.py` and `holdout.py` exist; the fetch
+protocol, comparator, and hold-out-fetcher sections below describe the shape the
+later units are built to, not behaviour that runs today.
 
 ## `private/` and the fetch protocol
 
@@ -63,9 +70,20 @@ pixels and a silently downsized page makes every box wrong with nothing downstre
 positioned to notice; refuse an EXIF-rotated image (the Door seals the stored raster
 as the coordinate space, so a display-rotation tag would put boxes in a different
 frame from the pixels); and refuse any record whose region falls outside the page.
-The closed refusal vocabulary is `http-error`, `non-image-body`, `dimension-mismatch`,
-`exif-orientation`, `region-outside-page`, `duplicate-page-bytes`, `unexpected-host`,
-`unsupported-size-parameter`, `holdout-page`, `cross-split-page`.
+The fetch protocol's closed refusal vocabulary is `http-error`, `non-image-body`,
+`dimension-mismatch`, `exif-orientation`, `region-outside-page`,
+`duplicate-page-bytes`, `unexpected-host`, `unsupported-size-parameter`,
+`holdout-page`, `cross-split-page`.
+
+The modules that exist today carry their own closed refusal sets, not that one:
+`rows.ROW_REFUSAL_REASONS` (`text-sha256-mismatch`, `duplicate-record-id`,
+`unknown-split`, `empty-text`, `self-hash-mismatch`, and the rest — `rows.py:53-67`),
+`plan.PLAN_REFUSAL_REASONS` (`unparseable-record-url`, `unsupported-rotation-parameter`,
+`unsafe-identifier-segment`, `unmintable-page-identity`,
+`inconsistent-source-for-identifier`, and the rest — `plan.py:73-91`), and
+`holdout.HOLDOUT_REFUSAL_REASONS` (`holdout.py:45-54`). Every refusal in this package
+is a `CorpusRefusal` whose message leads with its reason token, dispatched by
+`str(error).split(":", 1)[0]` (`__init__.py:30-37`).
 
 **Politeness is not optional.** One connection, sequential, at least a one-second
 delay between requests, `Retry-After` honoured, bounded exponential backoff on
@@ -130,8 +148,8 @@ scoring; and it drops nothing from either side of that pairing — a miss stays 
 miss, an unmatched pipeline act stays reported. The mechanical boundary, not
 just the docstring, is the import graph: `pipeline/` may not import
 `operations.corpus`, and `operations/corpus/` may not import `pipeline/` — the
-same one-way rule `operations/submit/` already carries — pinned by a test.
-Without that test in place this reads as a picker at review; CodeRabbit has
+same one-way rule `operations/submit/` already carries — to be pinned by an
+import-graph test in U4. Without that test in place this reads as a picker at review; CodeRabbit has
 already flagged one picker instruction elsewhere in this repository's planning
 documents, and the import-graph test is what keeps this module from being the
 next one.
@@ -146,7 +164,7 @@ contamination control available (measure with `attestator_2` withheld). `val`
 default. `train` (6,178 records) is a fine-tune corpus per Tyrel's ruling and
 out of alpha measurement scope entirely.
 
-The hold-out is mechanical, in three layers of increasing strength: `holdout.py`
+The hold-out is mechanical, in three layers, strongest first: `holdout.py`
 derives the ledger from the row snapshot alone, before a single image is
 fetched; the fetcher defaults to `--split val`, and `--split test` requires an
 explicit second flag writing to a distinct root; and the submission builder
@@ -160,22 +178,39 @@ than decorative because a future re-export is not bound by today's measurement.
 Release from hold is an appended, named record — an `advance`, never a
 permanent bar.
 
-## The DAI contamination fact
+## The DAI contamination risk
 
-`config/models.toml` pins `attestator_2` (`Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`)
-and `secondary_proposer` (`Teklia/YOLOv26-DAI-CReTDHI-Record-Detection`) — both
-chairs trained on this exact corpus. A box or text score against RecordGold
-truth for either of those two is a model scored against its own training
-labels wearing an evaluation's name, and the parroting instrument this project
-uses to detect a candidate that has not learned to read (`ARCHITECTURE.md`'s
-priming delta, nuda vs primed) inverts on this corpus for exactly that reason:
-`attestator_2`'s testimony approximates the reference, so a Perlector that
-copies it looks like it is reading well. This is a fact about the corpus and
-the two chairs pinned against it, not an argument against RecordGold — Tyrel
-ruled RecordGold in, training included. It is the reason `test` is named the
-DAI-comparability set rather than an acceptance corpus, and the reason any
-number this package's comparator produces against `attestator_2` or
-`secondary_proposer` output needs that caveat stated beside it, not implied.
+The drafted real roster puts two Teklia repositories in these chairs —
+`attestator_2` = `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` and
+`secondary_proposer` = `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection` — named
+live in `common/chairs/model_store.py`'s materialization inventory and
+drafted in `config/models.toml`'s commented roster. Neither is bound today:
+the live `attestator_2` row is a local fixture identity (`source =
+"local-repository"`, `license_note = "fixture identity only; no model weights
+or model license apply"`) and `secondary_proposer` is `state = "absent"`. The
+contamination bites the day that roster is activated, and the belief behind
+it is inference, not a read of Teklia's training config: both repositories
+share the `DAI-CReTDHI` lineage in their names, and `attestator_2`'s
+dataset/model card carries its own fine-tuned-Qwen benchmark row against a
+DAI test split (CER 9.24 / WER 21.25) — `secondary_proposer` does not even
+carry `RecordGold` in its name, so the case against it is weaker still.
+Whether either chair actually trained or validated on this corpus's exact
+splits was never verified against Teklia's own training configuration; that
+gap is recorded, not glossed over. If the inference holds, a box or text
+score against RecordGold truth for either chair is a model scored against its
+own training labels wearing an evaluation's name, and the parroting
+instrument this project uses to detect a candidate that has not learned to
+read (`ARCHITECTURE.md`'s priming delta, nuda vs primed) would invert on this
+corpus for exactly that reason: `attestator_2`'s testimony would approximate
+the reference, so a Perlector that copies it would look like it is reading
+well. This is a risk about the corpus and the two drafted chairs, taken under
+that unresolved asymmetry, not a proven fact and not an argument against
+RecordGold — Tyrel ruled RecordGold in, training included. It is the reason
+`test` is named the DAI-comparability set rather than an acceptance corpus,
+and the reason any number this package's comparator produces against
+`attestator_2` or `secondary_proposer` output needs that caveat stated
+beside it, not implied. The finding, its evidence, and its limits are
+recorded in `workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`.
 
 ## The acceptance corpus is Tyrel's call
 

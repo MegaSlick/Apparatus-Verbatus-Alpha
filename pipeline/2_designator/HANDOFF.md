@@ -684,10 +684,12 @@ must be recorded as such rather than folded into the flag silently. The flag
 means "calibrated against this project's own pages" — swapping one
 third-party corpus's fractions (the config's current French-register
 provenance) for another third-party corpus's fractions, however cleaner or
-more plentiful, does not make that true. `~261` val pages clears the 120
-preferred sample floor `padding_calibration.py` already names comfortably;
-sample size was never the obstacle here, provenance is, and provenance is not
-a number a larger sample can fix.
+more plentiful, does not make that true. Val supplies 769 usable reference
+rectangles across 113 pages (784 records less the 15 refused for
+`rotation=180`); the ~120 preferred floor counts `(detected, true_content)`
+rectangle pairs, not pages, so sample size clears it comfortably. Sample size
+was never the obstacle here, provenance is, and provenance is not a number a
+larger sample can fix.
 
 **An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
 limitation.** The Recensor reconciles only continuations this stage *proposed*, so
