@@ -303,6 +303,11 @@ read from a start whose own record has already drifted. `__exit__` always
 stops the handle; a `ServiceStopError` from an unverified shutdown propagates
 rather than being swallowed.
 
+A refused receipt drift stops the handle before raising; if that shutdown
+itself cannot be verified (`ServiceStopError`), the drift refusal is what the
+caller sees — the stop failure is chained onto it (`__cause__`), never
+allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
+
 `ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
 in this order: refuse an unbuildable request (a `kind` other than
 `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
@@ -321,7 +326,14 @@ callable; only then parse content — a content/choices problem becomes
 because a malformed body from a witness or reader is retained evidence, not a
 stage abort; and finally write one `chair-call-record.v1` blob (the closed
 field set in `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`, canonical
-bytes) before returning.
+bytes) before returning. A body that names no model at all is retained and
+parsed the same as any other malformed body, but `parse_openai_reading`'s own
+comparison (`payload.get("model") != expected_model_id`) cannot distinguish
+"no model was named" from "the wrong model was named" — both come back as
+`CHAIR_RESPONSE_MODEL_MISMATCH`. `read` remaps that one ambiguous case to
+`CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
+the recorded `parse_problem` never asserts a foreign-source observation that
+was never made (GOVERNANCE 10).
 
 **The reading parser, against the probe parser.** `http.parse_openai_reading`
 is not `parse_openai_answer` reused: a readiness probe must prove the engine
@@ -347,7 +359,12 @@ tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
 the profile at that exact tier decides, with an `UnsupportedProfile` refusing
 by its own recorded reason and a fixture row at that tier refused when the
 same chair is live at another tier — a catalogue may not be half live for one
-chair.
+chair. A tier with no configured row at all for this chair is also this
+function's own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
+`ServingConfigurationError` is caught and re-raised as
+`ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
+this function's refusals to report a placement-tier problem never sees a
+bare configuration error instead.
 
 `fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
 `FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`) is a
@@ -363,7 +380,19 @@ reading is possible) without consuming a scripted answer, so every
 `ScriptedAnswer` a test schedules is consumed by an actual `ChairClient.read`
 call. Its optional `assert_retained_before_next_request` flag proves
 response-as-arrival by construction: when set, the fake refuses a reading
-request until the previous one's raw bytes are already on disk in the shared
-`FakeBlobStore` — the durability the client's own ordering (retain before
-parse) is supposed to guarantee, checked from outside the client rather than
-by reading its source.
+request until the *exact* raw bytes it served for the previous reading — its
+own sha256, checked through `FakeBlobStore.has`, not merely the store's
+overall size — are already on disk in the shared `FakeBlobStore`. A count
+alone is satisfied by any retention order, since the client also writes one
+`chair-call-record.v1` blob per read; naming the digest is what actually
+pins retain-before-parse from outside the client, without reading its
+source. The strongest proof of that ordering, though, lives in
+`test_client.py`: a test that monkeypatches `parse_openai_reading` itself to
+raise, and shows the raw bytes were already retained before that call ever
+ran — the one case a passing-response check like this fake's cannot reach,
+because retain-after-parse and retain-before-parse look identical whenever
+parsing succeeds. `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
+`test_manager.py`'s own fake: it keeps the loopback health endpoint answering
+after its bound process is told to exit, the exact ambiguity
+`ServingManager._assert_endpoint_absent` exists to catch, for a test that
+needs `ChairClient.__enter__`'s own `handle.stop()` to fail.

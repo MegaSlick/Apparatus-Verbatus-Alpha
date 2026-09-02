@@ -77,6 +77,11 @@ class FakeBlobStore:
         self.written.append(data)
         return {"relative_path": f"blobs/sha256/{sha256}.bin", "sha256": sha256}
 
+    def has(self, sha256: str) -> bool:
+        """True only when the exact digest named is already on disk."""
+
+        return (self.root / "blobs" / "sha256" / f"{sha256}.bin").exists()
+
     def __len__(self) -> int:
         return len(self.written)
 
@@ -133,9 +138,15 @@ class FakeEndpoint:
         served_model_id: str,
         blob_store: FakeBlobStore | None = None,
         assert_retained_before_next_request: bool = False,
+        sticky_after_stop: bool = False,
     ) -> None:
         self.served_model_id = served_model_id
         self.blob_store = blob_store
+        # A stopped process whose endpoint keeps answering — the exact
+        # ambiguity `ServingManager._assert_endpoint_absent` exists to catch
+        # (mirrors test_manager.py's own fake). Set true only where a test
+        # needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+        self.sticky_after_stop = sticky_after_stop
         # Deliberately opt-in, not a blanket invariant: a non-200 or
         # wrong-model reading is refused with *no* blob written by design
         # (`ChairClient._refuse_bytes_from_the_wrong_source`), so a test
@@ -147,6 +158,10 @@ class FakeEndpoint:
         self.requests: list[dict[str, object]] = []
         self._process: FakeProcess | None = None
         self._readiness_probe_answered = False
+        # The exact raw body this fake last served as a reading answer — not
+        # merely a count, so the check below can name the one blob that must
+        # already be retained, not just how many blobs exist in total.
+        self._last_served_reading_sha256: str | None = None
 
     def script(self, *answers: ScriptedAnswer) -> None:
         self._answers.extend(answers)
@@ -155,7 +170,9 @@ class FakeEndpoint:
         self._process = process
 
     def _available(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        return self._process is not None and (
+            self._process.poll() is None or self.sticky_after_stop
+        )
 
     def request(
         self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
@@ -184,32 +201,48 @@ class FakeEndpoint:
             self._readiness_probe_answered = True
             return self._auto_probe_response(decoded, url)
         if (
-            self.requests
+            self._last_served_reading_sha256 is not None
             and self.assert_retained_before_next_request
             and self.blob_store is not None
         ):
-            # Response-as-arrival: the previous reading's raw bytes must
-            # already be on disk before this, its second reading request,
-            # ever reaches the endpoint.
-            if len(self.blob_store) < len(self.requests):
+            # Response-as-arrival: the *exact* bytes this fake served as the
+            # previous reading must already be on disk, by their own digest,
+            # before this next reading request ever reaches the endpoint. A
+            # blob count alone would be satisfied by any retention order (the
+            # client also retains a call-record blob per read); naming the
+            # digest is what actually pins retain-before-parse.
+            if not self.blob_store.has(self._last_served_reading_sha256):
                 raise AssertionError(
-                    "the prior reading's raw response was not retained before "
-                    "the next reading request was sent"
+                    "the prior reading's raw response "
+                    f"(sha256={self._last_served_reading_sha256}) was not retained "
+                    "before the next reading request was sent"
                 )
         self.requests.append(decoded)
         answer = self._answers.pop(0)
         if answer.body is not None:
-            return HttpResponse(answer.status, answer.body)
-        choice: dict[str, object] = {"message": {"content": answer.content}}
-        if answer.finish_reason is not ABSENT:
-            choice["finish_reason"] = answer.finish_reason
-        payload: dict[str, object] = {
-            "model": answer.model if answer.model is not None else self.served_model_id,
-            "choices": [choice],
-        }
-        if answer.usage is not None:
-            payload["usage"] = dict(answer.usage)
-        return HttpResponse(answer.status, json.dumps(payload).encode())
+            body = answer.body
+        else:
+            choice: dict[str, object] = {"message": {"content": answer.content}}
+            if answer.finish_reason is not ABSENT:
+                choice["finish_reason"] = answer.finish_reason
+            payload: dict[str, object] = {
+                "model": answer.model if answer.model is not None else self.served_model_id,
+                "choices": [choice],
+            }
+            if answer.usage is not None:
+                payload["usage"] = dict(answer.usage)
+            body = json.dumps(payload).encode()
+        if answer.status == 200 and _peeked_model(body) in (None, self.served_model_id):
+            # `ChairClient._refuse_bytes_from_the_wrong_source` retains only a
+            # 200 response naming this endpoint's own model (or no model at
+            # all — a malformed body is still legitimate retained evidence);
+            # a non-200 or wrong-model answer is refused with no blob written
+            # by design (see the class docstring), so this fake must not
+            # expect one for those either.
+            self._last_served_reading_sha256 = hashlib.sha256(body).hexdigest()
+        else:
+            self._last_served_reading_sha256 = None
+        return HttpResponse(answer.status, body)
 
     def _auto_probe_response(self, decoded: dict[str, object] | None, url: str) -> HttpResponse:
         model_id = decoded.get("model") if isinstance(decoded, dict) else None
@@ -221,6 +254,24 @@ class FakeEndpoint:
             200,
             json.dumps({"model": model_id or self.served_model_id, "choices": [choice]}).encode(),
         )
+
+
+def _peeked_model(body: bytes) -> str | None:
+    """Mirrors ``client._peek_model``: the declared ``model``, or ``None``.
+
+    Kept local rather than imported so this fake predicts retention from the
+    wire shape alone, the same way the client's own pre-retention check does,
+    without depending on the client's private helper.
+    """
+
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("model")
+    return model if isinstance(model, str) else None
 
 
 class FakeLauncher:
