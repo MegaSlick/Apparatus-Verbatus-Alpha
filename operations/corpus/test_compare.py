@@ -509,9 +509,10 @@ def test_assignment_maximises_total_iou_not_a_greedy_first_match():
 def test_tied_total_iou_breaks_toward_the_lower_reference_id():
     """No DP mask survives to break a tie; the replacement rule is pinned here.
 
-    Both pipeline acts share one bounding box, offset so it overlaps `ref-1`
-    and `ref-2` by different amounts individually -- but because the two
-    pipeline acts are identical, the two candidate total-weight assignments
+    Both pipeline acts share one bounding box, placed symmetrically between
+    `ref-1` and `ref-2` so it meets each by the same geometry -- intersection
+    8000, union 12000, IoU exactly 2/3 on both edges. With the two pipeline
+    acts identical as well, the two candidate total-weight assignments
     (`a`-`ref-1`/`b`-`ref-2` vs. `a`-`ref-2`/`b`-`ref-1`) tie exactly. The
     compare.py docstring states the replacement rule -- rows (pipeline acts,
     already sorted by `act_id`) processed in ascending index, lowest reference

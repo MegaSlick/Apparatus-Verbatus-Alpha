@@ -549,6 +549,49 @@ def test_truncated_request_record_refuses_the_page(tmp_path, server):
     assert "unreadable-request-record" in entry["detail"]
 
 
+def test_swapped_cache_body_wrong_length_refuses_the_page(tmp_path, server):
+    """A cache body overwritten out of band (a partly copied cache root, or
+    tampering) with a different-length JPEG must be refused by name, not carried
+    forward as a self-contradicting log entry whose `bytes` disagrees with the
+    body actually on disk.
+    """
+    _script(server, "vol/021f", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/021f")
+
+    first = fetch_page(FetchSession(config), page)
+    body_path = cache_module.body_path(config.cache_root, first["response_sha256"])
+    body_path.write_bytes(WRONG_SIZE_JPEG)
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "http-error"
+    assert "cached body length disagrees" in entry["detail"]
+
+
+def test_swapped_cache_body_same_length_refuses_the_page(tmp_path, server):
+    """A cache body swapped for different bytes of the same length (so the byte
+    count alone would not catch it) must still be refused, on the digest.
+    """
+    _script(server, "vol/021g", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
+    config = _config(tmp_path)
+    page = _page(server, "vol/021g")
+
+    first = fetch_page(FetchSession(config), page)
+    body_path = cache_module.body_path(config.cache_root, first["response_sha256"])
+    tampered = bytearray(body_path.read_bytes())
+    tampered[-1] ^= 0xFF
+    assert len(tampered) == len(GOOD_JPEG)
+    body_path.write_bytes(bytes(tampered))
+
+    entry = fetch_page(FetchSession(config), page)
+
+    assert entry["status"] == "refused"
+    assert entry["reason"] == "http-error"
+    assert "digest disagrees" in entry["detail"]
+
+
 def test_damaged_retained_info_refuses_the_page(tmp_path, server):
     _script(server, "vol/021e", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     config = _config(tmp_path)
@@ -1021,16 +1064,29 @@ def test_cross_split_page_refused_in_a_train_run_with_a_ledger(tmp_path, server)
 def test_main_refuses_release_test_split_flag_on_a_val_run(tmp_path, server):
     """`--release-test-split` releases the held split only — passing it with any
     other `--split` must be refused by name, not silently ignored.
+
+    A real `--holdout` ledger is supplied and the page is scripted so that only
+    the flag-mismatch guard (not the separate missing-ledger guard, which
+    shares the same `holdout-ledger-required` reason) can be the source of the
+    refusal: without this, weakening the flag guard to accept
+    `--release-test-split` on a non-held split leaves this test green, because
+    the run falls through to the missing-ledger guard instead.
     """
+    _script(server, "vol/024c", info=[{"body": INFO_JSON}], full=[{"body": GOOD_JPEG}])
     plan = _valid_plan([_page(server, "vol/024c", splits_present=["val"])])
     plan_path = tmp_path / "fetch-plan.json"
     plan_path.write_bytes(json.dumps(plan).encode("utf-8"))
+    holdout = build_holdout(_sample_rows(), digest_bytes(b"snapshot"))
+    holdout_path = tmp_path / "holdout.json"
+    holdout_path.write_bytes(json.dumps(holdout).encode("utf-8"))
 
     with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
         fetch_module.main(
             [
                 "--plan",
                 str(plan_path),
+                "--holdout",
+                str(holdout_path),
                 "--cache-root",
                 str(tmp_path / "cache"),
                 "--info-root",
@@ -1260,6 +1316,27 @@ def test_validate_fetch_log_refuses_a_refused_and_a_fetched_entry_for_one_identi
         "detail": "http-error: transport failure",
     }
     log = _sealed_log([refused_entry, _fetched_entry("vol/y", "c" * 64)])
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
+
+
+def test_validate_fetch_log_refuses_non_string_identifier():
+    """An identifier that is not a string must be refused by name before it is
+    ever used as a `seen_identifiers` dict key — an unhashable type there (a
+    list, a dict) would otherwise crash with a bare `TypeError` naming no
+    entry, no field, and no file.
+    """
+    log = _sealed_log([{**_fetched_entry("vol/x", "a" * 64), "identifier": []}])
+    with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
+        validate_fetch_log(log)
+
+
+def test_validate_fetch_log_refuses_null_identifier():
+    """A hashable but non-string identifier (`None`, an int, a bool) must also
+    be refused, not accepted outright and later mis-key
+    `integrate.fetched_pages_from_log`'s mapping.
+    """
+    log = _sealed_log([{**_fetched_entry("vol/x", "a" * 64), "identifier": None}])
     with pytest.raises(fetch_module.CorpusRefusal, match="malformed-record"):
         validate_fetch_log(log)
 

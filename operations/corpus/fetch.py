@@ -502,16 +502,21 @@ def _info_path(info_root: Path, identifier: str) -> Path:
 
 def _fetch_image_bytes(
     session: FetchSession, page: dict[str, Any]
-) -> tuple[bytes, str, int, int, str]:
+) -> tuple[bytes, str, int, int, str, str]:
     """Full-resolution image: try `full`, fall back to `max` on 400/501.
 
-    Returns `(body, size_parameter_used, http_status, byte_count, fetched_at_utc)`.
-    The last three are always the facts of the completed fetch that actually
-    talked to the server: on a cache hit they come back from that request's own
-    recorded `request_record`, never re-measured "now" — a page answered from
-    cache on this run still carries the status and timestamp of the run that
-    earned it, which is what U3's `FetchedPage` (`submission.py`) needs to build
-    an honest sidecar `iiif` block regardless of which run fetched the bytes.
+    Returns `(body, size_parameter_used, http_status, byte_count, fetched_at_utc,
+    response_sha256)`. `http_status` and `fetched_at_utc` are always the facts of
+    the completed fetch that actually talked to the server: on a cache hit they
+    come back from that request's own recorded `request_record`, never
+    re-measured "now" — a page answered from cache on this run still carries the
+    status and timestamp of the run that earned it, which is what U3's
+    `FetchedPage` (`submission.py`) needs to build an honest sidecar `iiif` block
+    regardless of which run fetched the bytes. `byte_count` and `response_sha256`
+    are different: they describe the body actually in hand, so on a cache hit
+    they are checked against the body read off disk rather than trusted from the
+    record — a cache file overwritten out of band must be refused, not carried
+    forward as a self-contradicting log entry.
     """
     identifier = page["identifier"]
     candidates = page["image_url_candidates"]
@@ -534,12 +539,21 @@ def _fetch_image_bytes(
                         f"record ({key}) says this size was already fetched but {body_path} "
                         f"is gone; delete cache/requests/{key}.json to force a re-fetch"
                     )
+                cached_body = body_path.read_bytes()
+                if len(cached_body) != record["bytes"]:
+                    raise CorpusRefusal(
+                        f"http-error: cached body length disagrees with the request record "
+                        f"for {identifier!r} — cache/requests/{key}.json declares "
+                        f"{record['bytes']} bytes but {body_path} has {len(cached_body)}; "
+                        f"delete cache/requests/{key}.json to force a re-fetch"
+                    )
                 return (
-                    body_path.read_bytes(),
+                    cached_body,
                     size_parameter,
                     record["http_status"],
                     record["bytes"],
                     record["fetched_at_utc"],
+                    record["response_sha256"],
                 )
             if status_value == "unsupported":
                 _require_closed_record(
@@ -596,7 +610,7 @@ def _fetch_image_bytes(
                 "fetched_at_utc": fetched_at_utc,
             },
         )
-        return body, size_parameter, status, len(body), fetched_at_utc
+        return body, size_parameter, status, len(body), fetched_at_utc, response_sha256
     if isinstance(last_error, _HttpStatusError) and last_error.status in _FALLBACK_STATUSES:
         raise CorpusRefusal(
             f"unsupported-size-parameter: server accepted neither 'full' nor 'max' for "
@@ -630,8 +644,22 @@ def fetch_page(
         info = _fetch_info(session, page)
         width, height = info["declared_width"], info["declared_height"]
 
-        body, size_used, http_status, byte_count, fetched_at_utc = _fetch_image_bytes(session, page)
+        (
+            body,
+            size_used,
+            http_status,
+            byte_count,
+            fetched_at_utc,
+            declared_sha256,
+        ) = _fetch_image_bytes(session, page)
         response_sha256 = digest_bytes(body)
+        if response_sha256 != declared_sha256:
+            raise CorpusRefusal(
+                f"http-error: cached body digest disagrees with the request record for "
+                f"{identifier!r} — the cache body does not match its own recorded "
+                f"response_sha256; delete cache/requests/{_image_request_key(identifier, size_used)}.json "
+                "to force a re-fetch"
+            )
 
         owner = session.seen_response_digests.get(response_sha256)
         if owner is not None and owner != identifier:
@@ -857,6 +885,11 @@ def validate_fetch_log(record: Any) -> dict[str, Any]:
                 f"malformed-record: entries[{index}] must be a dict carrying a status"
             )
         identifier = entry.get("identifier")
+        if not isinstance(identifier, str):
+            raise CorpusRefusal(
+                f"malformed-record: entries[{index}] identifier must be a string, "
+                f"got {identifier!r}"
+            )
         if identifier in seen_identifiers:
             raise CorpusRefusal(
                 f"malformed-record: entries[{index}] names identifier {identifier!r}, "
