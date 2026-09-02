@@ -84,6 +84,7 @@ REFERENCE_REFUSAL_REASONS = frozenset(
         "text-sha256-mismatch",
         "wrong-identity-family",
         "unmintable-physical-act",
+        "duplicate-physical-act-id",
         "self-hash-mismatch",
     }
 )
@@ -186,6 +187,7 @@ def build_reference_page(
     splits_present: set[str] = set()
     seen_record_ids: set[str] = set()
     seen_regions: set[tuple[int, int, int, int]] = set()
+    seen_physical_act_ids: set[str] = set()
     acts: list[dict[str, Any]] = []
     for entry in records:
         entry = _closed(
@@ -230,6 +232,14 @@ def build_reference_page(
             act_identity = physical_act_id(physical_page, record_id)
         except IdentityRefusal as error:
             raise CorpusRefusal(f"unmintable-physical-act: {error}") from None
+        if act_identity in seen_physical_act_ids:
+            raise CorpusRefusal(
+                f"duplicate-physical-act-id: record {record_id!r} mints {act_identity!r}, "
+                "already minted by another record_id on this page -- two record_ids that "
+                "fold to the same declared text (NFC/whitespace) are not distinguishable "
+                "join keys"
+            )
+        seen_physical_act_ids.add(act_identity)
         acts.append(
             {
                 "record_id": record_id,
@@ -285,11 +295,24 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
     for name in ("source", "volume", "designation"):
         _non_empty_str(reference[name], name)
 
+    try:
+        physical_page = physical_page_id(
+            reference["corpus_id"],
+            f"{reference['source']}/{reference['volume']}",
+            reference["designation"],
+        )
+    except IdentityRefusal as error:
+        raise CorpusRefusal(f"unmintable-physical-act: {error}") from None
+
     if reference["split"] not in SPLITS:
         raise CorpusRefusal(f"unknown-split: {reference['split']!r} is not one of {sorted(SPLITS)}")
 
     splits_present = reference["splits_present"]
-    if not isinstance(splits_present, list) or splits_present != sorted(set(splits_present)):
+    if not isinstance(splits_present, list) or not all(
+        isinstance(split, str) for split in splits_present
+    ):
+        raise CorpusRefusal("malformed-record: splits_present must be a list of strings")
+    if splits_present != sorted(set(splits_present)):
         raise CorpusRefusal("malformed-record: splits_present must be a sorted, deduplicated list")
     for split in splits_present:
         if split not in SPLITS:
@@ -310,6 +333,7 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
 
     seen_record_ids: set[str] = set()
     seen_regions: set[tuple[int, int, int, int]] = set()
+    seen_physical_act_ids: set[str] = set()
     for act in acts:
         act = _closed(act, _ACT_FIELDS, "reference act")
         record_id = _non_empty_str(act["record_id"], "reference act record_id")
@@ -323,6 +347,25 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
                 f"wrong-identity-family: reference act {record_id!r} carries "
                 f"{act['physical_act_id']!r}, which is not a well-formed pac_ identity"
             )
+        try:
+            expected_physical_act_id = physical_act_id(physical_page, record_id)
+        except IdentityRefusal as error:
+            raise CorpusRefusal(f"unmintable-physical-act: {error}") from None
+        if act["physical_act_id"] != expected_physical_act_id:
+            raise CorpusRefusal(
+                f"wrong-identity-family: reference act {record_id!r} carries "
+                f"{act['physical_act_id']!r}, which does not recompute from this page's "
+                f"declared corpus_id/source/volume/designation and record_id (expected "
+                f"{expected_physical_act_id!r}) -- a pac_ id minted for a different page "
+                "or record must never verify against this one"
+            )
+        if expected_physical_act_id in seen_physical_act_ids:
+            raise CorpusRefusal(
+                f"duplicate-physical-act-id: record {record_id!r} mints "
+                f"{expected_physical_act_id!r}, already minted by another record_id on "
+                "this page"
+            )
+        seen_physical_act_ids.add(expected_physical_act_id)
         region = _region(act["region"], f"reference act {record_id!r} region")
         if region["x"] + region["w"] > width or region["y"] + region["h"] > height:
             raise CorpusRefusal(

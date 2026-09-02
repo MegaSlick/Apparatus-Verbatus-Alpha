@@ -5,10 +5,17 @@ from __future__ import annotations
 import pytest
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import self_hash as _self_hash
 from common.contracts.identities import physical_act_id, physical_page_id
 
 from . import CorpusRefusal
-from .reference import CORPUS_ID, SCHEMA, build_reference_page, validate_reference_page
+from .reference import (
+    CORPUS_ID,
+    REFERENCE_REFUSAL_REASONS,
+    SCHEMA,
+    build_reference_page,
+    validate_reference_page,
+)
 
 PAGE_SHA256 = "a" * 64
 
@@ -154,8 +161,11 @@ def test_validate_refuses_non_null_adjudicated_by():
 def test_validate_refuses_tampered_self_hash():
     reference = _build()
     tampered = dict(reference)
-    tampered["expected_act_count"] = reference["expected_act_count"]
-    tampered["designation"] = "00099"
+    # A field no other check depends on, so this exercises self-hash verification
+    # alone rather than tripping over an earlier, more specific refusal.
+    tampered_page = dict(reference["page"])
+    tampered_page["height"] = reference["page"]["height"] + 1
+    tampered["page"] = tampered_page
     with pytest.raises(CorpusRefusal, match="self-hash-mismatch"):
         validate_reference_page(tampered)
 
@@ -166,3 +176,123 @@ def test_validate_refuses_extra_field():
     tampered["extra"] = True
     with pytest.raises(CorpusRefusal, match="malformed-record"):
         validate_reference_page(tampered)
+
+
+# --- Every declared refusal reason actually fires -------------------------------
+
+
+def test_validate_refuses_wrong_schema():
+    reference = _build()
+    tampered = dict(reference)
+    tampered["schema"] = "some-other.v1"
+    with pytest.raises(CorpusRefusal, match="^wrong-schema:"):
+        validate_reference_page(tampered)
+
+
+def test_validate_refuses_wrong_corpus():
+    reference = _build()
+    tampered = dict(reference)
+    tampered["corpus_id"] = "some-other-corpus"
+    with pytest.raises(CorpusRefusal, match="^wrong-corpus:"):
+        validate_reference_page(tampered)
+
+
+def test_validate_refuses_act_count_mismatch():
+    reference = _build()
+    tampered = dict(reference)
+    tampered["expected_act_count"] = len(reference["acts"]) + 1
+    with pytest.raises(CorpusRefusal, match="^act-count-mismatch:"):
+        validate_reference_page(tampered)
+
+
+def test_validate_refuses_empty_text_on_an_act():
+    reference = _build()
+    tampered = dict(reference)
+    tampered_acts = [dict(act) for act in reference["acts"]]
+    tampered_acts[0]["text"] = ""
+    tampered["acts"] = tampered_acts
+    with pytest.raises(CorpusRefusal, match="^empty-text:"):
+        validate_reference_page(tampered)
+
+
+def test_build_refuses_a_whitespace_only_designation_as_unmintable():
+    with pytest.raises(CorpusRefusal, match="^unmintable-physical-act:"):
+        _build(designation="   ")
+
+
+def test_reference_refusal_reasons_covered_here_are_a_subset_of_the_declared_vocabulary():
+    exercised = {
+        "malformed-record",
+        "wrong-schema",
+        "wrong-corpus",
+        "unknown-split",
+        "split-not-present",
+        "empty-acts",
+        "duplicate-record-id",
+        "duplicate-region",
+        "act-count-mismatch",
+        "region-outside-page",
+        "empty-text",
+        "text-sha256-mismatch",
+        "wrong-identity-family",
+        "unmintable-physical-act",
+        "duplicate-physical-act-id",
+        "self-hash-mismatch",
+    }
+    assert exercised <= REFERENCE_REFUSAL_REASONS
+
+
+# --- The pac_ identity binds this page and this record_id, not the box ---------
+
+
+def test_validate_refuses_a_well_formed_pac_id_minted_for_a_different_page():
+    """A forged-but-well-formed `pac_` that verifies against its own bindings must
+    still be refused: it was minted for a page, or a record, this reference page
+    never declares.
+
+    This is the exact forgery the module docstring names: well-formed, verifies
+    against its own bindings, means nothing.
+    """
+    reference = _build()
+    foreign_physical_page = physical_page_id("recordgold", "SOMEWHERE/ELSE", "99999")
+    foreign_id = physical_act_id(foreign_physical_page, "not-this-record")
+
+    tampered_acts = [dict(act) for act in reference["acts"]]
+    tampered_acts[0]["physical_act_id"] = foreign_id
+    tampered = dict(reference)
+    tampered["acts"] = tampered_acts
+    tampered["self_hash"] = _self_hash(tampered)
+
+    with pytest.raises(CorpusRefusal, match="^wrong-identity-family:"):
+        validate_reference_page(tampered)
+
+
+def test_validate_refuses_a_non_string_element_in_splits_present_by_name():
+    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`.
+
+    `splits_present != sorted(set(splits_present))` sorts before checking element
+    types; mixing `str` and `int` raises an unguarded `TypeError` in CPython.
+    """
+    reference = _build()
+    tampered = dict(reference)
+    tampered["splits_present"] = [1, "val"]
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        validate_reference_page(tampered)
+
+
+def test_validate_refuses_duplicate_physical_act_ids_from_whitespace_variant_record_ids():
+    """Two record_ids that fold to the same declared text mint one join key.
+
+    `physical_act_bindings` NFC-normalises and collapses whitespace runs
+    (`common/contracts/identities.py`), so `"rec 1"` and `"rec  1"` are one
+    declaration by that fold even though they are two distinct raw record_ids
+    here -- and `misses`/`matched_pairs` in `compare.py` key on `physical_act_id`,
+    so a silent collision would make two acts indistinguishable rows.
+    """
+    with pytest.raises(CorpusRefusal, match="^duplicate-physical-act-id:"):
+        _build(
+            records=[
+                _record("rec 1", {"x": 0, "y": 0, "w": 10, "h": 10}),
+                _record("rec  1", {"x": 100, "y": 100, "w": 10, "h": 10}),
+            ]
+        )

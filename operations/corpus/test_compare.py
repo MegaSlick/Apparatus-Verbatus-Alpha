@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import self_hash as _self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import act_id, artifact_id, attempt_id, page_id
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
@@ -18,10 +19,14 @@ from operations.spike_perlector.models import OutputStatus
 
 from . import CorpusRefusal
 from .compare import (
+    COMPARE_REFUSAL_REASONS,
+    MAX_ACTS_PER_PAGE,
     ReadOnlyRunTree,
     compare_page,
+    count_excluded_designator_artifacts,
     load_exemplar_page_shas,
     load_pipeline_proposal_acts,
+    validate_comparison,
 )
 from .reference import build_reference_page
 
@@ -54,6 +59,10 @@ def _reference(records: list[dict]) -> dict:
         split="val",
         records=records,
     )
+
+
+def _pipeline_act(act_id: str, bounds: dict, page_sha256: str = PAGE_SOURCE_SHA256) -> dict:
+    return {"act_id": act_id, "bounds": bounds, "page_sha256": page_sha256}
 
 
 # --- Building a minimal, real run tree ---------------------------------------
@@ -116,7 +125,7 @@ def _propose_region(tree: RunTree, page_identity: str, *, ordinal: int, bounds: 
         adapter_revision="fake-designator-v0",
         inputs=[],
         attempt=attempt,
-        payload={"origin": "proposal", "transform": transform},
+        payload={"origin": "proposal", "transform": transform, "raw_bounds": bounds},
     )
     return act_identity
 
@@ -141,7 +150,7 @@ def _recovery_region(tree: RunTree, page_identity: str, *, ordinal: int, bounds:
         adapter_revision="fake-designator-v0",
         inputs=[],
         attempt=attempt,
-        payload={"origin": "recovery", "transform": transform},
+        payload={"origin": "recovery", "transform": transform, "raw_bounds": bounds},
     )
     return act_identity
 
@@ -167,6 +176,44 @@ def test_load_pipeline_proposal_acts_excludes_recovery_regions(tmp_path):
     assert [act["act_id"] for act in acts] == [proposal_act]
     assert acts[0]["bounds"] == proposal_bounds
     assert acts[0]["page_sha256"] == PAGE_SOURCE_SHA256
+
+
+def test_load_pipeline_proposal_acts_reads_raw_bounds_not_the_padded_capture_rectangle(tmp_path):
+    """The IoU term must be the structural rectangle, never the padded capture crop.
+
+    `raw_bounds` and `transform.bounds` deliberately differ here, the way a real
+    padded proposal cut's do (`2_designator/run.py`'s `apply_padding`) -- if this
+    read the padded rectangle instead, `acts[0]["bounds"]` would come back as the
+    larger, padded box rather than the detected one.
+    """
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    raw_bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
+    padded_bounds = {"x": 50, "y": 50, "w": 300, "h": 180}
+    act_identity = act_id(page_identity, "proposal", raw_bounds)
+    attempt = attempt_id(act_identity, "crop", 1)
+    transform = {
+        "operation": "crop",
+        "source_page_ordinal": 1,
+        "source_page_id": page_identity,
+        "bounds": padded_bounds,
+    }
+    _publish(
+        tree,
+        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
+        subject_id=act_identity,
+        stage=DESIGNATOR,
+        kind="region",
+        outcome="proposed",
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        attempt=attempt,
+        payload={"origin": "proposal", "transform": transform, "raw_bounds": raw_bounds},
+    )
+
+    acts = load_pipeline_proposal_acts(tree)
+    assert acts[0]["bounds"] == raw_bounds
+    assert acts[0]["bounds"] != padded_bounds
 
 
 def test_load_pipeline_proposal_acts_refuses_an_unresolvable_page_ordinal(tmp_path):
@@ -224,8 +271,8 @@ def test_matched_pair_is_scored_and_miss_and_unmatched_are_reported():
     matched_pipeline_bounds = {"x": 100, "y": 100, "w": 200, "h": 80}  # exact overlap with rec-1
     unmatched_pipeline_bounds = {"x": 900, "y": 900, "w": 50, "h": 50}  # nowhere near either act
     pipeline_acts = [
-        {"act_id": "act_0000000000000001", "bounds": matched_pipeline_bounds},
-        {"act_id": "act_0000000000000002", "bounds": unmatched_pipeline_bounds},
+        _pipeline_act("act_0000000000000001", matched_pipeline_bounds),
+        _pipeline_act("act_0000000000000002", unmatched_pipeline_bounds),
     ]
     hypotheses = {"act_0000000000000001": (OutputStatus.COMPLETE, "Baptisé Jean")}
 
@@ -262,9 +309,7 @@ def test_unmatched_reference_act_is_never_dropped_even_with_no_pipeline_acts():
 def test_below_threshold_iou_is_not_an_eligible_match():
     reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
     # Overlaps only slightly -- far below the predeclared 0.5 threshold.
-    pipeline_acts = [
-        {"act_id": "act_0000000000000001", "bounds": {"x": 90, "y": 90, "w": 100, "h": 100}}
-    ]
+    pipeline_acts = [_pipeline_act("act_0000000000000001", {"x": 90, "y": 90, "w": 100, "h": 100})]
     comparison = compare_page(reference, pipeline_acts, hypotheses={})
     assert comparison["matched_pairs"] == []
     assert comparison["misses"][0]["record_id"] == "rec-1"
@@ -293,8 +338,8 @@ def test_assignment_maximises_total_iou_not_a_greedy_first_match():
     pact_a_bounds = dict(ref1_region)  # exact match with ref-1
     pact_b_bounds = dict(ref2_region)  # exact match with ref-2
     pipeline_acts = [
-        {"act_id": "act_000000000000000a", "bounds": pact_a_bounds},
-        {"act_id": "act_000000000000000b", "bounds": pact_b_bounds},
+        _pipeline_act("act_000000000000000a", pact_a_bounds),
+        _pipeline_act("act_000000000000000b", pact_b_bounds),
     ]
     hypotheses = {
         "act_000000000000000a": (OutputStatus.COMPLETE, "premier"),
@@ -309,9 +354,7 @@ def test_assignment_maximises_total_iou_not_a_greedy_first_match():
 
 def test_matched_pipeline_act_with_no_hypothesis_is_refused():
     reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
-    pipeline_acts = [
-        {"act_id": "act_0000000000000001", "bounds": {"x": 0, "y": 0, "w": 100, "h": 100}}
-    ]
+    pipeline_acts = [_pipeline_act("act_0000000000000001", {"x": 0, "y": 0, "w": 100, "h": 100})]
     with pytest.raises(CorpusRefusal, match="missing-hypothesis"):
         compare_page(reference, pipeline_acts, hypotheses={})
 
@@ -324,9 +367,7 @@ def test_iou_threshold_is_exact_no_float_rounding_at_the_boundary():
     intersection 5000, union 10000, IoU exactly Fraction(1, 2).
     """
     reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100}, text="Baptisé")])
-    pipeline_acts = [
-        {"act_id": "act_0000000000000001", "bounds": {"x": 0, "y": 0, "w": 100, "h": 50}}
-    ]
+    pipeline_acts = [_pipeline_act("act_0000000000000001", {"x": 0, "y": 0, "w": 100, "h": 50})]
     hypotheses = {"act_0000000000000001": (OutputStatus.COMPLETE, "Baptisé")}
     comparison = compare_page(
         reference, pipeline_acts, hypotheses=hypotheses, threshold=Fraction(1, 2)
@@ -341,28 +382,205 @@ def test_iou_threshold_is_exact_no_float_rounding_at_the_boundary():
 def test_refuses_a_pac_identity_offered_as_a_pipeline_act():
     reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
     pac_identity = reference["acts"][0]["physical_act_id"]
-    pipeline_acts = [{"act_id": pac_identity, "bounds": {"x": 0, "y": 0, "w": 100, "h": 100}}]
+    pipeline_acts = [_pipeline_act(pac_identity, {"x": 0, "y": 0, "w": 100, "h": 100})]
     with pytest.raises(CorpusRefusal, match="wrong-identity-family"):
         compare_page(reference, pipeline_acts, hypotheses={})
 
 
 def test_refuses_a_malformed_act_id():
     reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
-    pipeline_acts = [{"act_id": "not-an-identity", "bounds": {"x": 0, "y": 0, "w": 100, "h": 100}}]
+    pipeline_acts = [_pipeline_act("not-an-identity", {"x": 0, "y": 0, "w": 100, "h": 100})]
     with pytest.raises(CorpusRefusal, match="wrong-identity-family"):
         compare_page(reference, pipeline_acts, hypotheses={})
 
 
+# --- Composition: the loader's own output feeds compare_page directly ---------
+
+
+def test_load_pipeline_proposal_acts_output_composes_straight_into_compare_page(tmp_path):
+    """`load_pipeline_proposal_acts(tree)` needs no reshaping before `compare_page`.
+
+    This is `SPEC.md`'s "a synthetic run tree with known boxes" reaching the
+    comparator end to end: seal a page and a proposal region, build the matching
+    reference page for the same sealed page bytes, and hand the loader's own list
+    straight to `compare_page`.
+    """
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
+    proposal_act = _propose_region(tree, page_identity, ordinal=1, bounds=bounds)
+
+    reference = _reference([_record("rec-1", bounds, text="Baptisé Jean")])
+    pipeline_acts = load_pipeline_proposal_acts(tree)
+    hypotheses = {proposal_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
+
+    comparison = compare_page(reference, pipeline_acts, hypotheses)
+    assert len(comparison["matched_pairs"]) == 1
+    assert comparison["matched_pairs"][0]["pipeline_act_id"] == proposal_act
+    assert comparison["misses"] == []
+
+
+def test_compare_page_refuses_a_pipeline_act_from_a_different_page():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    other_page_sha256 = digest_bytes(b"a wholly different page")
+    pipeline_acts = [
+        _pipeline_act(
+            "act_0000000000000001",
+            {"x": 0, "y": 0, "w": 100, "h": 100},
+            page_sha256=other_page_sha256,
+        )
+    ]
+    with pytest.raises(CorpusRefusal, match="wrong-page"):
+        compare_page(reference, pipeline_acts, hypotheses={})
+
+
+# --- Every declared refusal reason actually fires ------------------------------
+
+
+def test_compare_page_refuses_a_non_closed_pipeline_act():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    malformed = dict(_pipeline_act("act_0000000000000001", {"x": 0, "y": 0, "w": 100, "h": 100}))
+    malformed["extra"] = True
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        compare_page(reference, [malformed], hypotheses={})
+
+
+def test_compare_page_refuses_too_many_acts_for_one_page():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 10, "h": 10})])
+    pipeline_acts = [
+        _pipeline_act(f"act_{index:016x}", {"x": 0, "y": 0, "w": 10, "h": 10})
+        for index in range(MAX_ACTS_PER_PAGE + 1)
+    ]
+    with pytest.raises(CorpusRefusal, match="too-many-acts-for-page"):
+        compare_page(reference, pipeline_acts, hypotheses={})
+
+
+def test_validate_comparison_refuses_wrong_schema():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    comparison = compare_page(reference, [], hypotheses={})
+    tampered = dict(comparison)
+    tampered["schema"] = "some-other.v1"
+    with pytest.raises(CorpusRefusal, match="^wrong-schema:"):
+        validate_comparison(tampered)
+
+
+def test_validate_comparison_refuses_a_tampered_self_hash():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    comparison = compare_page(reference, [], hypotheses={})
+    tampered = dict(comparison)
+    tampered["normalization_profile_id"] = "some-other-profile"
+    with pytest.raises(CorpusRefusal, match="^self-hash-mismatch:"):
+        validate_comparison(tampered)
+
+
+def test_validate_comparison_refuses_a_non_list_matrix_even_with_no_misses():
+    """A matrix that is not a list, and an emptied misses list, must not slip by.
+
+    Probes the hole the nested-shape check closes: the top-level key set alone
+    passing says nothing about `matrix` actually being a list of matrix entries.
+    """
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    comparison = compare_page(reference, [], hypotheses={})
+    tampered = dict(comparison)
+    tampered["matrix"] = "not a list at all"
+    tampered["misses"] = []
+    tampered["self_hash"] = _self_hash(tampered)
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        validate_comparison(tampered)
+
+
+def test_compare_refusal_reasons_covered_here_are_a_subset_of_the_declared_vocabulary():
+    exercised = {
+        "malformed-record",
+        "wrong-schema",
+        "too-many-acts-for-page",
+        "wrong-identity-family",
+        "wrong-page",
+        "unresolvable-page-ordinal",
+        "missing-hypothesis",
+        "self-hash-mismatch",
+        "run-tree-write-refused",
+    }
+    assert exercised <= COMPARE_REFUSAL_REASONS
+
+
+# --- Excluded-region provenance -------------------------------------------------
+
+
+def test_count_excluded_designator_artifacts_counts_by_kind_and_by_origin(tmp_path):
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    _propose_region(tree, page_identity, ordinal=1, bounds={"x": 0, "y": 0, "w": 10, "h": 10})
+    _recovery_region(tree, page_identity, ordinal=1, bounds={"x": 20, "y": 20, "w": 10, "h": 10})
+
+    counts = count_excluded_designator_artifacts(tree)
+    assert counts["by_kind"] == {}
+    assert counts["by_origin"] == {"recovery": 1}
+
+
+def test_compare_page_carries_excluded_region_counts_into_the_record(tmp_path):
+    tree = _make_run(tmp_path)
+    page_identity = _seal_page(tree, ordinal=1)
+    bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
+    proposal_act = _propose_region(tree, page_identity, ordinal=1, bounds=bounds)
+    _recovery_region(tree, page_identity, ordinal=1, bounds={"x": 500, "y": 500, "w": 20, "h": 20})
+
+    reference = _reference([_record("rec-1", bounds, text="Baptisé Jean")])
+    pipeline_acts = load_pipeline_proposal_acts(tree)
+    hypotheses = {proposal_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
+    excluded = count_excluded_designator_artifacts(tree)
+
+    comparison = compare_page(reference, pipeline_acts, hypotheses, excluded_region_counts=excluded)
+    assert comparison["excluded_region_counts"] == {"by_kind": {}, "by_origin": {"recovery": 1}}
+
+
+def test_compare_page_defaults_excluded_region_counts_to_an_explicit_empty_shape():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    comparison = compare_page(reference, [], hypotheses={})
+    assert comparison["excluded_region_counts"] == {"by_kind": {}, "by_origin": {}}
+
+
+# --- Provenance on the record itself --------------------------------------------
+
+
+def test_compare_page_records_the_corpus_id_and_the_reference_pages_self_hash():
+    reference = _reference([_record("rec-1", {"x": 0, "y": 0, "w": 100, "h": 100})])
+    comparison = compare_page(reference, [], hypotheses={})
+    assert comparison["corpus_id"] == reference["corpus_id"]
+    assert comparison["reference_page_self_hash"] == reference["self_hash"]
+
+
 # --- Import-graph fence: pipeline/ must never import operations.corpus -------
+#
+# This scan does not catch everything a determined violator could write: a
+# nonliteral dynamic import (a module name built at runtime and handed to
+# `import_module`), or an import reached only through `sys.modules` /
+# `importlib.util.spec_from_file_location`, is outside what a static AST walk can
+# see. It does catch every literal `import`, `from ... import ...` (absolute or
+# relative), and literal `__import__`/`import_module` call this repository's own
+# `operations.corpus` imports would actually be written as.
 
 
 def _imported_module_names(tree: ast.AST) -> set[str]:
+    """Every module name this file names in a statically knowable import.
+
+    `from ...operations import corpus` is a relative `ImportFrom` whose `module`
+    is `"operations"` and whose one alias names `"corpus"` -- neither half alone
+    says `operations.corpus`, so an alias named `corpus` (or a `corpus.<rest>`
+    submodule) under a bare `operations` module is composed into that dotted name
+    explicitly, the same way `pipeline/1_exemplar/test_import_boundaries.py`'s
+    `imports_module` compares the first dotted segment for its own boundary.
+    """
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module)
+            if node.module == "operations":
+                for alias in node.names:
+                    if alias.name == "corpus" or alias.name.startswith("corpus."):
+                        names.add(f"operations.{alias.name}")
         elif isinstance(node, ast.Call):
             func = node.func
             called = (isinstance(func, ast.Name) and func.id in {"__import__"}) or (
@@ -395,14 +613,30 @@ def _pipeline_python_files() -> list[str]:
     return [path for path in result.stdout.split("\0") if path]
 
 
+def test_the_pipeline_population_is_the_repositorys_own_python():
+    """The guard on the guard: an empty or truncated population would pass vacuously.
+
+    Meta-invariant #88 (`pipeline/1_exemplar/test_import_boundaries.py`): no loop
+    here reports success over an empty population.
+    """
+    files = _pipeline_python_files()
+    assert len(files) >= 100, f"expected pipeline/'s tracked Python files, found {len(files)}"
+    assert "pipeline/2_designator/run.py" in files
+    missing = [path for path in files if not (ROOT / path).exists()]
+    assert not missing, (
+        "git names a pipeline/ Python file this checkout does not hold, so the "
+        f"boundary was checked against something other than the working tree: {missing}"
+    )
+
+
 def test_no_pipeline_module_imports_operations_corpus():
     offenders = []
     for relative_path in _pipeline_python_files():
         path = ROOT / relative_path
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative_path)
-        except (OSError, SyntaxError):
-            continue
+        # No try/except here: a file git tracks but that fails to parse is a
+        # failed check, not a skipped one -- the population test above already
+        # proved every listed path exists in this checkout.
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative_path)
         for name in _imported_module_names(tree):
             if name == "operations.corpus" or name.startswith("operations.corpus."):
                 offenders.append((relative_path, name))

@@ -2,27 +2,33 @@
 
 Not a picker (hard rule 8 / GOVERNANCE 3), and this is enforced, not merely
 asserted: it runs after pipeline output is immutable (this module never imports
-`pipeline/`, pinned by `test_no_pipeline_imports_corpus.py`'s AST scan across the
-whole tree), it never returns to the pipeline (`RunTree` is read here only through
-`build_manifest`/`read_artifact`, and this module never calls
-`publish_artifact`/`put_blob`/`write_manifest`/`write_index` — `test_compare.py`
-asserts this with a `RunTree` subclass that raises if any of those are invoked),
-it selects nothing about the *reading* (the pipeline already decided what it
+`pipeline/`, pinned by `test_compare.py::test_no_pipeline_module_imports_operations_corpus`'s
+AST scan across the whole tree), it never returns to the pipeline (`RunTree` is
+read here only through `build_manifest`/`read_artifact`, and this module never
+calls `publish_artifact`/`put_blob`/`write_manifest`/`write_index` —
+`test_compare.py` asserts this with `ReadOnlyRunTree`, a wrapper that delegates
+every read and raises on every write, rather than a `RunTree` subclass), it
+selects nothing about the *reading* (the pipeline already decided what it
 proposed; this only pairs a proposal with a reference box after the fact), and it
 drops nothing on either side: every unmatched reference act is reported as a MISS
 and every unmatched pipeline act is reported, not scored. `SPEC.md` Section
 5.3(d) names this boundary exactly this way.
 
-**IoU assignment.** For one page, every sealed proposal region's final bounds
-(`origin: "proposal"`, `2_designator`'s own crop rectangle, never a padded or
-recovery bound) is matched against `reference.py`'s reference acts by IoU,
-maximising the assignment's total IoU under one predeclared threshold
+**IoU assignment.** For one page, every sealed proposal region's *raw* bounds
+(`origin: "proposal"`, `2_designator`'s own structural crop rectangle from
+`payload["raw_bounds"]` — the detected rectangle, before any padding is applied)
+is matched against `reference.py`'s reference acts by IoU, maximising the
+assignment's total IoU under one predeclared threshold
 (`PREDECLARED_IOU_THRESHOLD`) — a pair below threshold is not an eligible edge at
 all, so the optimum can never be dragged down by a near-miss it should have
-refused. IoU stays exact throughout: `x,y,w,h` are always integers, so
-intersection and union areas are integers and every comparison is an exact
-`Fraction`, never a float — nothing here is a canonical artifact until the final
-record is built, and that record stores areas, not the ratio, because
+refused. `payload["transform"]["bounds"]` (the final, possibly padded, capture
+rectangle) is deliberately not what is scored here: `config/designator_padding.toml`'s
+margins are uncalibrated for this corpus, and scoring detection against a padded
+box would spend part of the miss budget on that padding config rather than on
+whether the act was found. IoU stays exact throughout: `x,y,w,h` are always
+integers, so intersection and union areas are integers and every comparison is an
+exact `Fraction`, never a float — nothing here is a canonical artifact until the
+final record is built, and that record stores areas, not the ratio, because
 `common.contracts.canonical` refuses floats outright. The assignment itself is a
 small bitmask DP (`_best_assignment`), exact for the page sizes this corpus
 actually has (`SPEC.md` Section 5.6: 2-4 records/page measured; `MAX_ACTS_PER_PAGE`
@@ -31,8 +37,8 @@ an approximation on an unexpectedly crowded page).
 
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
-`graphemic-v1` profile and `operations.spike_perlector.scoring.score_text`. This
-module supplies the reference text (carried on the reference act, `SPEC.md`
+`graphemic-v1` profile and `operations.spike_perlector.scoring.score_response`.
+This module supplies the reference text (carried on the reference act, `SPEC.md`
 Section 5.3(b)/(d)) and each matched pipeline act's hypothesis text, obtained from
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
 `compare.py` owns the join and the scoring call, not the Perlector's internal
@@ -47,7 +53,7 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any, Mapping
 
-from common.contracts.canonical import self_hash, verify_self_hash
+from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
 from common.contracts.identities import is_well_formed
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
 from common.runtree.store import RunTree
@@ -79,6 +85,7 @@ COMPARE_REFUSAL_REASONS = frozenset(
         "wrong-schema",
         "too-many-acts-for-page",
         "wrong-identity-family",
+        "wrong-page",
         "unresolvable-page-ordinal",
         "missing-hypothesis",
         "self-hash-mismatch",
@@ -87,7 +94,7 @@ COMPARE_REFUSAL_REASONS = frozenset(
 )
 
 _BOUNDS_FIELDS = frozenset({"x", "y", "w", "h"})
-_PIPELINE_ACT_FIELDS = frozenset({"act_id", "bounds"})
+_PIPELINE_ACT_FIELDS = frozenset({"act_id", "bounds", "page_sha256"})
 
 
 def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
@@ -114,6 +121,11 @@ def _validate_pipeline_act(act: Any) -> dict[str, Any]:
             "be accepted here"
         )
     _bounds(act["bounds"], f"pipeline act {act['act_id']!r} bounds")
+    if not is_sha256(act["page_sha256"]):
+        raise CorpusRefusal(
+            f"malformed-record: pipeline act {act['act_id']!r} page_sha256 must be a "
+            "lowercase sha256 digest"
+        )
     return act
 
 
@@ -266,11 +278,38 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
         acts.append(
             {
                 "act_id": record["subject_id"],
-                "bounds": dict(payload["transform"]["bounds"]),
+                "bounds": dict(payload["raw_bounds"]),
                 "page_sha256": page_sha256,
             }
         )
     return acts
+
+
+def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, int]]:
+    """Counts of Designator artifacts `load_pipeline_proposal_acts`'s filter dropped.
+
+    Two lenses on the same manifest: `by_kind` counts every artifact whose kind is
+    not `region` at all (e.g. a secondary-proposer `rescue-crop`), and `by_origin`
+    counts every sealed region whose `origin` is not `"proposal"` (e.g.
+    `"recovery"`). Read-only, and applies the identical filter
+    `load_pipeline_proposal_acts` applies, so the excluded and included counts are
+    always counting the same manifest -- this exists so a `reference-comparison.v1`
+    record can say how much of the run it declined to look at, rather than
+    dropping that population silently (GOVERNANCE 10).
+    """
+    by_kind: dict[str, int] = {}
+    by_origin: dict[str, int] = {}
+    manifest = tree.build_manifest(DESIGNATOR)
+    for entry in manifest["artifacts"]:
+        kind = entry["kind"]
+        if kind != "region":
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+            continue
+        record = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        origin = record["payload"].get("origin", "<missing>")
+        if origin != "proposal":
+            by_origin[origin] = by_origin.get(origin, 0) + 1
+    return {"by_kind": by_kind, "by_origin": by_origin}
 
 
 def _refused_write(*_args: Any, **_kwargs: Any) -> None:
@@ -313,6 +352,9 @@ _MATRIX_ENTRY_FIELDS = frozenset(
 )
 
 
+_EMPTY_EXCLUDED_REGION_COUNTS: dict[str, dict[str, int]] = {"by_kind": {}, "by_origin": {}}
+
+
 def compare_page(
     reference_page: dict[str, Any],
     pipeline_acts: list[dict[str, Any]],
@@ -320,14 +362,26 @@ def compare_page(
     *,
     threshold: Fraction = PREDECLARED_IOU_THRESHOLD,
     profile: NormalizationProfile = GRAPHEMIC_V1,
+    excluded_region_counts: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """Build one `reference-comparison.v1` for a single page.
 
-    `pipeline_acts` must already be restricted to this page (callers filter
-    `load_pipeline_proposal_acts`'s output by `page_sha256 ==
-    reference_page["page"]["sha256"]`) -- this function does not filter by page
-    itself, so it can be exercised directly against synthetic acts in tests
-    without a run tree at all.
+    `pipeline_acts` is exactly `load_pipeline_proposal_acts`'s output shape --
+    `{"act_id", "bounds", "page_sha256"}` -- so a run tree's own loader output can
+    be handed to this function directly, with no reshaping in between. Every act
+    is refused by name (`wrong-page`) unless its `page_sha256` matches
+    `reference_page["page"]["sha256"]`: this function no longer merely trusts a
+    caller-side filter to have already restricted the list to this page, which is
+    also what closes the "no sealed page carries this ordinal" gap a caller-side
+    filter alone could silently pass through. It can still be exercised directly
+    against synthetic acts in tests without a run tree at all -- the acts just
+    have to carry the reference page's own `page.sha256`.
+
+    `excluded_region_counts` is this call's own `count_excluded_designator_artifacts`
+    result, when the caller read `pipeline_acts` from a run tree -- carried into
+    the record so a reader can see how much of the run this comparison declined to
+    look at. Defaults to an explicit all-zero shape (never omitted from the
+    record) for callers exercising this function without a run tree.
 
     Every reference act not selected by the assignment is a MISS. Every pipeline
     act not selected is reported, not scored -- `reference_page`'s
@@ -339,6 +393,25 @@ def compare_page(
     """
     reference_page = validate_reference_page(reference_page)
     pipeline_acts = [_validate_pipeline_act(act) for act in pipeline_acts]
+    page_sha256 = reference_page["page"]["sha256"]
+    for act in pipeline_acts:
+        if act["page_sha256"] != page_sha256:
+            raise CorpusRefusal(
+                f"wrong-page: pipeline act {act['act_id']!r} carries page_sha256 "
+                f"{act['page_sha256']!r}, which does not match this reference page's "
+                f"{page_sha256!r}"
+            )
+    if excluded_region_counts is None:
+        excluded_region_counts = _EMPTY_EXCLUDED_REGION_COUNTS
+    else:
+        excluded_region_counts = {
+            "by_kind": _closed_counts(
+                excluded_region_counts.get("by_kind"), "excluded_region_counts.by_kind"
+            ),
+            "by_origin": _closed_counts(
+                excluded_region_counts.get("by_origin"), "excluded_region_counts.by_origin"
+            ),
+        }
 
     reference_acts = list(reference_page["acts"])  # already sorted by record_id
     ordered_pipeline = sorted(pipeline_acts, key=lambda act: act["act_id"])
@@ -418,6 +491,8 @@ def compare_page(
 
     body = {
         "schema": SCHEMA,
+        "corpus_id": reference_page["corpus_id"],
+        "reference_page_self_hash": reference_page["self_hash"],
         "page": {"sha256": reference_page["page"]["sha256"]},
         "threshold": {"numerator": threshold.numerator, "denominator": threshold.denominator},
         "normalization_profile_id": profile.profile_id,
@@ -425,6 +500,7 @@ def compare_page(
         "matched_pairs": matched_pairs,
         "misses": misses,
         "unmatched_pipeline_acts": unmatched_pipeline,
+        "excluded_region_counts": excluded_region_counts,
     }
     body["self_hash"] = self_hash(body)
     return validate_comparison(body)
@@ -433,6 +509,8 @@ def compare_page(
 _TOP_FIELDS = frozenset(
     {
         "schema",
+        "corpus_id",
+        "reference_page_self_hash",
         "page",
         "threshold",
         "normalization_profile_id",
@@ -440,9 +518,48 @@ _TOP_FIELDS = frozenset(
         "matched_pairs",
         "misses",
         "unmatched_pipeline_acts",
+        "excluded_region_counts",
         "self_hash",
     }
 )
+
+_MISS_FIELDS = frozenset({"physical_act_id", "record_id"})
+_UNMATCHED_PIPELINE_FIELDS = frozenset({"act_id"})
+_EDIT_FIELDS = frozenset(
+    {"reference_units", "hypothesis_units", "matches", "substitutions", "insertions", "deletions"}
+)
+_MATCHED_PAIR_FIELDS = frozenset(
+    {
+        "pipeline_act_id",
+        "reference_physical_act_id",
+        "record_id",
+        "intersection_area",
+        "union_area",
+        "cer",
+        "wer",
+        "status",
+    }
+)
+
+
+def _closed_counts(value: Any, what: str) -> dict[str, int]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str)
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count >= 0
+        for key, count in value.items()
+    ):
+        raise CorpusRefusal(
+            f"malformed-record: {what} must be a mapping of str to non-negative int"
+        )
+    return value
+
+
+def _closed_list(value: Any, fields: frozenset[str], what: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise CorpusRefusal(f"malformed-record: {what} must be a list")
+    return [_closed(item, fields, f"{what} entry") for item in value]
 
 
 def validate_comparison(comparison: Any) -> dict[str, Any]:
@@ -450,6 +567,24 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     comparison = _closed(comparison, _TOP_FIELDS, "reference comparison")
     if comparison["schema"] != SCHEMA:
         raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")
+
+    _closed_list(comparison["matrix"], _MATRIX_ENTRY_FIELDS, "matrix")
+    matched_pairs = _closed_list(comparison["matched_pairs"], _MATCHED_PAIR_FIELDS, "matched_pairs")
+    for pair in matched_pairs:
+        _closed(pair["cer"], _EDIT_FIELDS, "matched pair cer")
+        _closed(pair["wer"], _EDIT_FIELDS, "matched pair wer")
+    _closed_list(comparison["misses"], _MISS_FIELDS, "misses")
+    _closed_list(
+        comparison["unmatched_pipeline_acts"], _UNMATCHED_PIPELINE_FIELDS, "unmatched_pipeline_acts"
+    )
+    excluded = _closed(
+        comparison["excluded_region_counts"],
+        frozenset({"by_kind", "by_origin"}),
+        "excluded_region_counts",
+    )
+    _closed_counts(excluded["by_kind"], "excluded_region_counts.by_kind")
+    _closed_counts(excluded["by_origin"], "excluded_region_counts.by_origin")
+
     if not verify_self_hash(comparison):
         raise CorpusRefusal(
             "self-hash-mismatch: reference comparison self_hash does not verify "
@@ -466,6 +601,7 @@ __all__ = [
     "ReadOnlyRunTree",
     "load_exemplar_page_shas",
     "load_pipeline_proposal_acts",
+    "count_excluded_designator_artifacts",
     "compare_page",
     "validate_comparison",
 ]
