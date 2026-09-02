@@ -3056,6 +3056,21 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_at_the_designators_point
     # The run as sealed: the bytes the Designator re-reads are the bound bytes.
     require_sealed_config(sealed, "designator-grouping", bound)
 
+    # The fixture path's own `sealed_config_digests` names the same bytes under
+    # the same name — a different function on a different route from the real
+    # path exercised above, so a deleted entry on either side shows up here
+    # rather than surviving because both sides were built by the same mutated
+    # code.
+    from common.chairs.registry import ChairRegistry
+    from common.stage import load_fixture, run_config_bindings
+
+    fixture_bindings = run_config_bindings(
+        ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config,
+        load_fixture(str(ROOT / "proof")),
+        "happy",
+    )
+    assert fixture_bindings["sealed_config_digests"]["designator-grouping"] == bound
+
     edited = tmp_path / "designator_grouping.toml"
     edited.write_bytes(
         DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_bytes()
