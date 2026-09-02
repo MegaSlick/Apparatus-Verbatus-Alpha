@@ -1,10 +1,12 @@
 """RunPod's S3-compatible network-volume API — the only file that knows boto3.
 
-Everything here is one `operations.pod.transfer.TransferTarget` and nothing more,
-so `surface.upload` never learns that an S3 client exists. Same split, and the
-same reason, as `operations/pod/provider_runpod.py` against `provider.py`. The
-digest checking, resume journal and refusal-to-overwrite all stay in
-`ChecksummedTransfer`, which already does them for every target.
+Everything here is one `operations.pod.transfer.TransferTarget` and one
+`operations.pod.controller_armer.TimerReportChannel`, and nothing more, so
+`surface.upload` never learns that an S3 client exists and the armer never
+learns which vendor's volume it is reading. Same split, and the same reason, as
+`operations/pod/provider_runpod.py` against `provider.py`. The digest checking,
+resume journal and refusal-to-overwrite all stay in `ChecksummedTransfer`,
+which already does them for every target.
 
 **Sources, fetched and read on 2026-08-09** — `https://docs.runpod.io/storage/s3-api`,
 quoted rather than paraphrased where the detail is load-bearing:
@@ -66,6 +68,11 @@ SHA256_METADATA_KEY: Final = "verbatus-sha256"
 # stays inside the documented "<500MB" single-shot limit.
 PART_BYTES: Final = 64 * 1024 * 1024
 MAX_CONCURRENCY: Final = 4
+# What `S3VolumeReadChannel` will pull into memory for one object. The pod
+# report it exists to read is a few hundred bytes; a megabyte is already far
+# past anything this channel should believe, and the bytes come off a volume a
+# pod writes, so their size is untrusted input like their content.
+MAX_READ_BYTES: Final = 1024 * 1024
 
 # `Error.Code` values that mean "no such object" rather than "something is wrong".
 # botocore reports a bare `HeadObject` 404 as "404"; `NoSuchKey` and `NotFound`
@@ -277,6 +284,108 @@ class S3VolumeTarget:
             ) from error
 
 
+class S3VolumeReadChannel:
+    """`operations.pod.controller_armer.TimerReportChannel` over one network volume.
+
+    A `GetObject` beside `S3VolumeTarget`'s `HeadObject`, sharing this file's
+    client construction and its one classifier, `_means_absent`. It is what
+    lets the laptop read the report the pod wrote through its volume mount --
+    the single unobserved assumption the whole two-controller arming rests on.
+
+    Deliberately not a method on `S3VolumeTarget`: that class is one
+    `TransferTarget` and nothing more, and a third verb on it would put a read
+    the transfer layer never makes inside the seam the transfer layer is
+    checked against.
+
+    The contract is the channel's, not this adapter's convenience: `read`
+    returns bytes, or `None` **only** for a positively absent object. A refused
+    credential, a 5xx, a dropped connection, a body it cannot read or one past
+    the size bound all raise, because arming reads `None` as "the pod has not
+    written its report yet" and would poll a broken credential to its bound and
+    then close a pod that was fine.
+
+    Note 3 of this module's docstring applies here in full: nothing in this
+    class has ever run against a real endpoint.
+    """
+
+    def __init__(
+        self,
+        spec: VolumeSpec,
+        *,
+        client: Any | None = None,
+        environ: Mapping[str, str] | None = None,
+        max_bytes: int = MAX_READ_BYTES,
+    ) -> None:
+        if max_bytes <= 0:
+            raise VolumeTransferRefusal("network-volume read bound must be positive")
+        self.spec = spec
+        self.client = build_client(spec, environ) if client is None else client
+        self.max_bytes = int(max_bytes)
+
+    def read(self, key: str) -> bytes | None:
+        """The object's bytes, or `None` when the volume proved it is not there."""
+
+        try:
+            response = self.client.get_object(Bucket=self.spec.volume_id, Key=key)
+        except Exception as error:
+            if _means_absent(error):
+                return None
+            raise VolumeTransferRefusal(
+                f"the network volume refused or could not answer a read of {key!r}: {error}"
+            ) from error
+        body = response.get("Body") if isinstance(response, Mapping) else None
+        if body is None or not callable(getattr(body, "read", None)):
+            # Checked rather than assumed, for the same reason `_means_absent`
+            # checks its nested mappings: the response comes from a remote
+            # server, and an AttributeError here would escape as a traceback
+            # rather than as this module's own named refusal.
+            raise VolumeTransferRefusal(
+                f"the network volume answered a read of {key!r} without a readable body"
+            )
+        try:
+            payload = _read_bounded(body, self.max_bytes + 1)
+        except Exception as error:
+            raise VolumeTransferRefusal(
+                f"the network volume dropped the body of {key!r} while it was being read; "
+                f"nothing was read completely: {error}"
+            ) from error
+        finally:
+            closer = getattr(body, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # pragma: no cover - a failed close hides no evidence
+                    pass
+        if len(payload) > self.max_bytes:
+            raise VolumeTransferRefusal(
+                f"the object at {key!r} is larger than the {self.max_bytes}-byte bound this "
+                "channel reads; it was not read, and it is not evidence of anything"
+            )
+        return payload
+
+
+def _read_bounded(body: Any, limit: int) -> bytes:
+    """Accumulate up to ``limit`` bytes, tolerating short reads.
+
+    `read(amount)` is free to return fewer bytes than asked for, and a single
+    call that did so would silently truncate a report -- which the armer would
+    then refuse as unparseable and close a pod over. The loop ends on EOF or at
+    the limit, and the caller decides what a full buffer means.
+    """
+
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = body.read(remaining)
+        if not chunk:
+            break
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise TypeError("the network volume answered with a non-bytes body chunk")
+        chunks.append(bytes(chunk))
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def default_transfer_config() -> Any | None:
     """boto3's managed-transfer settings, or `None` when boto3 is not installed.
 
@@ -327,8 +436,10 @@ def _means_absent(error: BaseException) -> bool:
 
 __all__ = [
     "MAX_CONCURRENCY",
+    "MAX_READ_BYTES",
     "PART_BYTES",
     "SHA256_METADATA_KEY",
+    "S3VolumeReadChannel",
     "S3VolumeTarget",
     "VolumeSpec",
     "VolumeTransferRefusal",

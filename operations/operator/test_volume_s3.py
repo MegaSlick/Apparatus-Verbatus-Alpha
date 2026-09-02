@@ -19,6 +19,7 @@ from .errors import ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
     SHA256_METADATA_KEY,
+    S3VolumeReadChannel,
     S3VolumeTarget,
     VolumeSpec,
     VolumeTransferRefusal,
@@ -354,3 +355,150 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
 
     assert any("fixture volume" in line for line in messages)
     assert not any("runpod.io" in line for line in messages)
+
+
+# -- the read channel -------------------------------------------------------
+#
+# `S3VolumeReadChannel` answers `operations.pod.controller_armer`'s one
+# question -- is the pod's report there yet -- and the armer reads `None` as
+# "not yet, keep waiting". So the only thing that matters here is the same
+# distinction the transfer target turns on, in the other direction: nothing but
+# a positively absent object may come back as `None`, because everything else
+# would be a broken credential arming a pod, or a pod closed over a report it
+# had in fact written.
+
+
+class _Body:
+    """A streaming body that serves short reads, as `read(amt)` is free to do."""
+
+    def __init__(self, payload: bytes, *, chunk: int | None = None, error: Exception | None = None):
+        self.payload = payload
+        self.chunk = chunk or len(payload) or 1
+        self.error = error
+        self.offset = 0
+        self.closed = False
+
+    def read(self, amount: int) -> bytes:
+        if self.error is not None:
+            raise self.error
+        served = self.payload[self.offset : self.offset + min(amount, self.chunk)]
+        self.offset += len(served)
+        return served
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeReadClient:
+    """The one boto3 call the read channel makes."""
+
+    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+        self.objects = dict(objects or {})
+        self.error: Exception | None = None
+        self.response: object | None = None
+        self.bodies: list[_Body] = []
+        self.chunk: int | None = None
+        self.reads: list[str] = []
+
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803 - boto3's own names
+        del Bucket
+        self.reads.append(Key)
+        if self.error is not None:
+            raise self.error
+        if self.response is not None:
+            return self.response
+        if Key not in self.objects:
+            raise _client_error("NoSuchKey", 404)
+        body = _Body(self.objects[Key], chunk=self.chunk)
+        self.bodies.append(body)
+        return {"Body": body}
+
+
+def _channel(client: FakeReadClient, **kwargs) -> S3VolumeReadChannel:
+    return S3VolumeReadChannel(_spec(), client=client, **kwargs)
+
+
+def test_the_channel_returns_the_bytes_the_pod_wrote() -> None:
+    client = FakeReadClient({"pod-report.json": b'{"schema":"pod-report.v1"}\n'})
+
+    assert _channel(client).read("pod-report.json") == b'{"schema":"pod-report.v1"}\n'
+    assert client.reads == ["pod-report.json"]
+
+
+def test_a_body_served_in_short_reads_is_assembled_whole() -> None:
+    """A single `read` that stopped early would truncate a report the armer
+    would then refuse as unparseable -- and close a pod over."""
+
+    payload = b"x" * 5000
+    client = FakeReadClient({"pod-report.json": payload})
+    client.chunk = 17
+
+    assert _channel(client).read("pod-report.json") == payload
+
+
+@pytest.mark.parametrize("code,status", [("404", 404), ("NoSuchKey", 404), ("NotFound", 404)])
+def test_a_proven_absence_is_the_only_none_this_channel_returns(code: str, status: int) -> None:
+    client = FakeReadClient()
+    client.error = _client_error(code, status)
+
+    assert _channel(client).read("pod-report.json") is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _client_error("AccessDenied", 403),
+        _client_error("SignatureDoesNotMatch", 403),
+        _client_error("InternalError", 500),
+        RuntimeError("the connection dropped"),
+    ],
+)
+def test_anything_that_is_not_a_proven_absence_raises_rather_than_reading_as_not_yet(
+    error: Exception,
+) -> None:
+    client = FakeReadClient()
+    client.error = error
+
+    with pytest.raises(VolumeTransferRefusal, match="could not answer a read"):
+        _channel(client).read("pod-report.json")
+
+
+def test_an_object_past_the_read_bound_is_refused_rather_than_believed() -> None:
+    client = FakeReadClient({"pod-report.json": b"y" * 4096})
+
+    with pytest.raises(VolumeTransferRefusal, match="larger than the 1024-byte bound"):
+        _channel(client, max_bytes=1024).read("pod-report.json")
+
+
+def test_an_object_exactly_at_the_bound_is_read() -> None:
+    client = FakeReadClient({"pod-report.json": b"y" * 1024})
+
+    assert _channel(client, max_bytes=1024).read("pod-report.json") == b"y" * 1024
+
+
+@pytest.mark.parametrize(
+    "response", [{}, {"Body": None}, {"Body": "not a stream"}, "not a mapping"]
+)
+def test_a_response_of_the_wrong_shape_is_a_named_refusal_not_a_traceback(
+    response: object,
+) -> None:
+    client = FakeReadClient()
+    client.response = response
+
+    with pytest.raises(VolumeTransferRefusal, match="without a readable body"):
+        _channel(client).read("pod-report.json")
+
+
+def test_a_body_that_drops_mid_read_is_a_refusal_and_the_body_is_closed() -> None:
+    client = FakeReadClient({"pod-report.json": b"partial"})
+    body = _Body(b"partial", error=OSError("the connection dropped"))
+    client.response = {"Body": body}
+
+    with pytest.raises(VolumeTransferRefusal, match="dropped the body"):
+        _channel(client).read("pod-report.json")
+    assert body.closed
+
+
+def test_a_nonpositive_read_bound_is_refused_at_construction() -> None:
+    with pytest.raises(VolumeTransferRefusal, match="must be positive"):
+        _channel(FakeReadClient(), max_bytes=0)
