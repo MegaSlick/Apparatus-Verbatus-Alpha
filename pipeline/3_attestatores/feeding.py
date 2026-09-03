@@ -186,7 +186,26 @@ def dai_model_view(
     query_prompt_ref: dict[str, str],
     generation_config_ref: dict[str, str],
 ) -> dict[str, Any]:
-    """Build DAI's crop view, referencing carried prompt/config bytes by manifest."""
+    """Build DAI's crop view, referencing carried prompt/config bytes by manifest.
+
+    **The identity transform is a claim about bytes, not about paths.** When no
+    resize is needed the model must have been shown exactly the source image,
+    and the two references are therefore required to name the same content —
+    the same SHA-256, which is what "the same retained blob" means in a
+    content-addressed store. They are deliberately not required to be the same
+    *reference dict*: the source is the Designator's own proposal crop under
+    `2_designator/`, and every blob this stage shows a witness is published
+    into `3_attestatores/blobs/sha256/`, so a byte-identical image legitimately
+    appears at two stage-owned paths. `verify_exemplar_crop_lineage` already
+    proves a proposal crop is exactly `crop_png(sealed page, bounds)`, and
+    `_dai_present` re-derives the same crop from the same sealed page on that
+    path, so equal digests here are equal pixels and not a coincidence. Held to
+    the whole dict instead, this rule refused every genuine no-resize DAI act
+    after its response had already come back — the Attestatores HANDOFF's
+    second owed gap. Refusing on digest keeps the invariant that mattered (the
+    model saw the source bytes) and drops only the one that never did (both
+    stages spell the same bytes' location the same way).
+    """
     for name, reference in (
         ("source image", source_image_ref),
         ("model image", model_image_ref),
@@ -204,7 +223,7 @@ def dai_model_view(
     resized = (resized_width, resized_height) != (width_px, height_px)
     if resized and source_image_ref["sha256"] == model_image_ref["sha256"]:
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
-    if not resized and source_image_ref != model_image_ref:
+    if not resized and source_image_ref["sha256"] != model_image_ref["sha256"]:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = _dai_image_limits()
     view = {
@@ -312,7 +331,7 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
     model_ref = value["model_image_ref"]
     if resized and source_ref["sha256"] == model_ref["sha256"]:
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
-    if not resized and source_ref != model_ref:
+    if not resized and source_ref["sha256"] != model_ref["sha256"]:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
 
     limits = value["image_limits"]

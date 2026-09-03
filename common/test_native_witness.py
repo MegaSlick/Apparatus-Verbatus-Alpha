@@ -8,6 +8,7 @@ from PIL import Image
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.imaging import crop_png
 from common.native_witness import (
     partition_disagreement,
@@ -791,6 +792,150 @@ def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_byte
     value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
     with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
         verify_native_capture_bytes(value["native_capture"], raw)
+
+
+def test_a_churro_capture_admits_the_live_unreported_stop_reason():
+    """U5: a live page-scoped chair (Churro) whose wire response carried no
+    `finish_reason` at all retains `STOP_REASON_UNREPORTED`
+    (`common/contracts/serving.py`) as its transport word -- distinct from
+    every fixture/engine word already in `_CHURRO_STOP_REASONS`, and it must
+    be admitted here or every such live response would fail this check by
+    name alone, indistinguishably from a genuinely unknown transport word."""
+    value = _native_capture()
+    value["transport_stop_reason"] = STOP_REASON_UNREPORTED
+    value["stop_reason"] = STOP_REASON_UNREPORTED
+    assert validate_native_capture(value) is value
+
+
+def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
+    """U8, the HANDOFF's third owed gap: three states, not two.
+
+    The shared page contract re-derived a Churro page record's health from its
+    capture by asking one question -- "is this word a cut-off word" -- and an
+    engine that reported *nothing* answered it "no", which the record then
+    published as `truncated: false`: a completed boundary nobody observed
+    (GOVERNANCE 10). The live boundary measures three states, and this is the
+    third: unknown, said so in the basis. Before the fix this payload was
+    refused by name, so a live Churro chair whose wire carried no
+    `finish_reason` could not publish a page record at all.
+    """
+
+    value = _page_with_churro_capture()
+    value["native_capture"]["transport_stop_reason"] = STOP_REASON_UNREPORTED
+    value["native_capture"]["stop_reason"] = STOP_REASON_UNREPORTED
+    value["content_health"].update(truncated=None, truncation_basis="not-recorded")
+
+    assert validate_page_testimonium_payload(value) is value
+
+    # And the two-valued answer it replaces is now refused: `false` here is a
+    # claim about a boundary the engine never reported.
+    value["content_health"].update(truncated=False, truncation_basis="trusted-response-boundary")
+    with pytest.raises(SchemaRefusal, match="health differs"):
+        validate_page_testimonium_payload(value)
+
+
+def test_an_unreported_boundary_over_an_empty_churro_page_is_not_a_confirmed_blank():
+    """The same guard the cut-off case already had, for the same reason.
+
+    An empty reading may be published as a measured absence only when the
+    boundary positively said the model finished. "Cut off" and "never said"
+    both fail that test, so both owe the record a failed-attempt reason.
+    """
+
+    value = _page_with_churro_capture()
+    value["payload"] = ""
+    value["native_capture"]["transport_stop_reason"] = STOP_REASON_UNREPORTED
+    value["native_capture"]["stop_reason"] = STOP_REASON_UNREPORTED
+    value["native_capture"]["parse"]["text"] = ""
+    value["observed"][0]["span"] = None
+    value["content_health"].update(
+        empty=True, blank=True, truncated=None, characters=0, truncation_basis="not-recorded"
+    )
+    value["reason"] = "the provider's stop boundary was never confirmed complete"
+
+    assert validate_page_testimonium_payload(value) is value
+
+    del value["reason"]
+    with pytest.raises(SchemaRefusal, match="no failed-attempt reason"):
+        validate_page_testimonium_payload(value)
+
+
+def test_a_reported_natural_stop_is_unchanged_by_the_third_state():
+    """The two measured states still reconcile exactly as they did.
+
+    The widening adds a third answer; it must not move either of the two a
+    record already written under the old rule carries.
+    """
+
+    complete = _page_with_churro_capture()
+    assert complete["native_capture"]["transport_stop_reason"] == "eos"
+    assert complete["content_health"]["truncated"] is False
+    assert validate_page_testimonium_payload(complete) is complete
+
+    cut_off = _page_with_churro_capture()
+    cut_off["native_capture"]["transport_stop_reason"] = "length"
+    cut_off["native_capture"]["stop_reason"] = "length"
+    cut_off["content_health"].update(truncated=True)
+    assert validate_page_testimonium_payload(cut_off) is cut_off
+
+
+def test_a_capture_may_record_a_shape_its_parser_ran_over_and_could_not_place():
+    """U8, the HANDOFF's fourth owed gap: `unrecognized-shape` is admitted.
+
+    `pipeline/3_attestatores/chandra.py` has produced this state since it was
+    written -- the vendor publishes no response specimen, so a real Chandra
+    body is a named surprise rather than a parse failure -- and
+    `feeding.retain_model_view` records it. The shared contract had no room for
+    it, so the retained model view of the one state a live Chandra response
+    actually reaches could be attached to no record at all: the bytes stayed,
+    the adapter's own account of them was dropped.
+    """
+
+    value = _native_capture()
+    value["adapter"] = "chandra.v1"
+    value["view"] = {"prompt": {"instruction": "Transcribe this complete page."}}
+    value["transport_stop_reason"] = "stop"
+    value["stop_reason"] = "partial-parse-unrecognized-shape"
+    value["parse"] = {
+        "state": "unrecognized-shape",
+        "parser": "json",
+        "outcome": "unverified-response-schema",
+    }
+
+    assert validate_native_capture(value) is value
+
+
+@pytest.mark.parametrize(
+    "parse",
+    (
+        # The state must name the shape it could not place, in `outcome`.
+        {"state": "unrecognized-shape", "parser": "json"},
+        {"state": "unrecognized-shape", "parser": "json", "outcome": ""},
+        {"state": "unrecognized-shape", "parser": "json", "outcome": None},
+        # And it may not borrow another state's third field: three states,
+        # three distinct pieces of evidence, so a record cannot wear one
+        # state's clothing while carrying another's.
+        {"state": "unrecognized-shape", "parser": "json", "reason": "nope"},
+        {"state": "unrecognized-shape", "parser": "json", "text": "smuggled"},
+        {"state": "parsed", "parser": "json", "outcome": "unverified-response-schema"},
+    ),
+)
+def test_an_unrecognized_shape_capture_must_name_the_shape_and_nothing_else(parse):
+    value = _native_capture()
+    value["adapter"] = "chandra.v1"
+    value["view"] = {"prompt": {"instruction": "Transcribe this complete page."}}
+    value["stop_reason"] = "partial-parse-unrecognized-shape"
+    value["parse"] = parse
+    with pytest.raises(SchemaRefusal, match="wrong shape|without naming it"):
+        validate_native_capture(value)
+
+
+def test_a_churro_capture_still_refuses_a_genuinely_unknown_stop_reason():
+    value = _native_capture()
+    value["transport_stop_reason"] = "abort"
+    value["stop_reason"] = "abort"
+    with pytest.raises(SchemaRefusal, match="unknown transport stop reason"):
+        validate_native_capture(value)
 
 
 def _page_payload(**changes):

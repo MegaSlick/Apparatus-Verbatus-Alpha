@@ -37,10 +37,16 @@ _DEFAULT_PROTOCOL: Final = {
 }
 
 
-def _fake_perlector_v0(
+def _neutral_dossier_lines(
     chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
-) -> str:
-    """The declared byte template for the walking skeleton's fixture recipe."""
+) -> list[str]:
+    """The structure every registered Perlector template shares: testimonia
+    presented as labelled clues, the sealed neutral fragment around a fed
+    prior draft, and the role and act key that close the shared shape. A
+    builder differs from this only in what, if anything, it appends after it
+    -- never in how this part is rendered, so two chairs read through the
+    same shared prefix stay comparable (invariant #49).
+    """
     lines = [
         f"page_shared_prefix_policy: {protocol_config['page_shared_prefix_policy']}",
         f"witness_regime: {dossier['witness_regime']}",
@@ -62,11 +68,64 @@ def _fake_perlector_v0(
             ]
         )
     lines.extend((f"role: {chair_role}", f"act: {dossier['act_key']}"))
-    return "\n".join(lines)
+    return lines
+
+
+def _fake_perlector_v0(
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+) -> str:
+    """The declared byte template for the walking skeleton's fixture recipe."""
+    return "\n".join(_neutral_dossier_lines(chair_role, dossier, protocol_config))
+
+
+# The one pinned transcription instruction for `unproven-real-perlector`
+# (`config/models-real.toml`), the first recipe this module renders for a
+# real serving engine rather than a fixture. Per GOVERNANCE 3 ("the Perlector
+# never picks") and GOVERNANCE 10 ("the instrument may not constrain what it
+# measures"): it names no witness preference, sets no severity or confidence
+# floor, and says nothing about which way to argue. It asks for the ink
+# transcribed as written, unmodernized, through to the end -- nothing else.
+# Code, covered by `builder_sha256` like every builder in this module;
+# reworded only as a reviewed two-file change with `config/README.md`'s R5a
+# register, the same rule already governing the Pass-B fragment.
+TRANSCRIPTION_INSTRUCTION: Final = (
+    "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
+    "expand abbreviations, or correct the scribe. Read through to the end of the act."
+)
+
+
+def _unproven_real_perlector_v0(
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+) -> str:
+    """`unproven-real-perlector`'s declared template (`config/models-real.toml:18`).
+
+    The same neutral structure `_fake_perlector_v0` renders, plus the one
+    pinned transcription instruction above, appended last so it is never the
+    reader's first framing and never sits ahead of the neutral Pass-B fragment
+    (GOVERNANCE 3's "no picker" holds over prompt bytes, not only the
+    dossier).
+
+    Reads only fields a delivered dossier and its retained twin carry
+    identically: `witness_regime`; each `testimonia[*]` row's
+    `witness_label`/`training_domain`/`reported`/`model_name`/
+    `resolved_provenance`; `prior_draft`/`prior_draft_view`; `act_key`. Never
+    `dossier_digest`, `cross_capture_autopsia`, or `logical_act_id` -- fields
+    sealed onto the retained dossier that a delivered one does not carry
+    identically, so a builder that read them would render bytes the
+    prompt-fidelity test (`test_prompt_fidelity.py`) could never reproduce
+    from a delivered dossier and a retained one alike.
+    """
+    return "\n".join(
+        [
+            *_neutral_dossier_lines(chair_role, dossier, protocol_config),
+            TRANSCRIPTION_INSTRUCTION,
+        ]
+    )
 
 
 _BUILDERS: Final[dict[str, Callable[[str, dict[str, Any], dict[str, str]], str]]] = {
     "fake-perlector-v0": _fake_perlector_v0,
+    "unproven-real-perlector": _unproven_real_perlector_v0,
 }
 
 

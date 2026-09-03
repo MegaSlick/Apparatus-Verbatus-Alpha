@@ -407,6 +407,7 @@ def profile_row(
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
         "poll_interval_seconds": 1,
+        "request_timeout_seconds": 30,
         "readiness_probe": {
             "kind": "chat-completions",
             "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',

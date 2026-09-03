@@ -17,7 +17,6 @@ does with the two facts that case can produce.
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import importlib.metadata
 import json
@@ -63,8 +62,10 @@ from .errors import (
 )
 from .http import (
     EndpointUnavailable,
+    HttpResponse,
     HttpTransport,
     OpenAIResult,
+    chat_image_bytes_all,
     endpoint_for_probe,
     health_url,
     models_url,
@@ -313,6 +314,20 @@ class ServiceHandle:
         """Issue one exact-model, non-streaming OpenAI-compatible request."""
 
         return self._manager.request(self, kind, payload)
+
+    def request_reading(self, kind: str, body_bytes: bytes, timeout_seconds: float) -> HttpResponse:
+        """POST one already-built reading request and return the raw response.
+
+        Unparsed and unretained: the caller (a :class:`ChairClient`, not this
+        module) owns retaining the raw bytes before parsing and owns parsing
+        with :func:`operations.serving.http.parse_openai_reading`.  This is
+        the one wire-level primitive a reading needs beyond ``request`` —
+        which forces a manager-chosen non-deterministic payload shape and
+        parses with the readiness-probe parser, neither of which fits a
+        witness or reader call.
+        """
+
+        return self._manager.request_reading(self, kind, body_bytes, timeout_seconds)
 
     @property
     def requests_completed(self) -> int:
@@ -757,6 +772,27 @@ class ServingManager:
         handle._requests_completed += 1
         handle._last_request_was_fixture = False
         return result
+
+    def request_reading(
+        self, handle: ServiceHandle, kind: str, body_bytes: bytes, timeout_seconds: float
+    ) -> HttpResponse:
+        """POST a caller-built request body and return the unparsed response.
+
+        Same liveness gate as ``request``, deliberately narrower otherwise: no
+        request shape is imposed here (the caller already built and digested
+        it), and nothing is parsed — a malformed or refusal-worthy body must
+        reach the caller's own parser, never be turned into an exception this
+        module raises on the caller's behalf.
+        """
+
+        self._require_active(handle)
+        self._assert_process_live(handle.process)
+        return self.http.request(
+            "POST",
+            endpoint_for_probe(handle.endpoint, kind),
+            body=body_bytes,
+            timeout_seconds=timeout_seconds,
+        )
 
     def stop(self, handle: ServiceHandle) -> None:
         """Stop one exact owned process and verify its endpoint no longer responds."""
@@ -1502,90 +1538,34 @@ def _utc_stamp(value: datetime) -> str:
 
 
 def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> bytes:
-    """Extract one image vLLM will receive from an OpenAI chat payload.
+    """Extract the one image vLLM will receive from an OpenAI chat payload.
 
-    A recursive ``image_url`` search is deliberately insufficient: vLLM may
-    ignore unknown extension fields, which would let a text-only request claim
-    fixture evidence.  The sole image must be a typed ``image_url`` part in a
-    user message's ``content`` list, and no other ``image_url`` key may exist
-    elsewhere in the payload.
+    A thin single-image wrapper over :func:`chat_image_bytes_all`, kept for
+    the golden-page smoke and adapter probes that must refuse anything but
+    exactly one active image.  The refusal rules — a typed ``image_url`` part
+    in a ``role=user`` content list, a local ``data:image/...;base64,`` URI,
+    and no ignored ``image_url`` key elsewhere in the payload — live once, in
+    that shared function.
     """
 
-    messages = payload.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ServingConfigurationError(f"{label} must contain a non-empty chat messages list")
-    active_candidates: list[object] = []
-    for message in messages:
-        if not isinstance(message, Mapping):
-            raise ServingConfigurationError(f"{label} chat messages must be objects")
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if not isinstance(part, Mapping) or part.get("type") != "image_url":
-                continue
-            if message.get("role") != "user":
-                raise ServingConfigurationError(
-                    f"{label} image_url must be in a role=user content block"
-                )
-            if set(part) != {"type", "image_url"}:
-                raise ServingConfigurationError(
-                    f"{label} image_url content block must contain only type and image_url"
-                )
-            active_candidates.append(part["image_url"])
-    all_candidates = _image_url_candidates(payload)
-    if len(active_candidates) != 1 or len(all_candidates) != 1:
+    try:
+        images = chat_image_bytes_all(payload, label=label)
+    except ServingConfigurationError as error:
+        # A hidden image_url outside every role=user content list is, for
+        # this single-image caller, the same refusal as finding none active:
+        # collapse the shared function's more specific wording into the one
+        # message this call site has always raised.
+        if "outside a role=user content list" in str(error):
+            raise ServingConfigurationError(
+                f"{label} must contain exactly one active image_url "
+                "content block and no ignored image_url fields"
+            ) from error
+        raise
+    if len(images) != 1:
         raise ServingConfigurationError(
             f"{label} must contain exactly one active image_url content block and no ignored image_url fields"
         )
-    candidate = active_candidates[0]
-    if not isinstance(candidate, Mapping) or "url" not in candidate:
-        raise ServingConfigurationError(
-            f"{label} image_url must be an OpenAI image object with a non-blank URL"
-        )
-    if set(candidate) - {"url", "detail"}:
-        raise ServingConfigurationError(f"{label} image_url has fields outside OpenAI url/detail")
-    detail = candidate.get("detail")
-    if detail is not None and not isinstance(detail, str):
-        raise ServingConfigurationError(f"{label} image_url detail must be a string when supplied")
-    candidate = candidate["url"]
-    if not isinstance(candidate, str) or not candidate:
-        raise ServingConfigurationError(f"{label} image_url must contain a non-blank URL")
-    if not candidate.startswith("data:"):
-        raise ServingConfigurationError(
-            f"{label} image_url must be a local image data URI, not a remote/file URL"
-        )
-    try:
-        header, encoded = candidate.split(",", 1)
-    except ValueError as error:
-        raise ServingConfigurationError(f"{label} data URI has no payload") from error
-    if not header.startswith("data:image/") or ";base64" not in header:
-        raise ServingConfigurationError(
-            f"{label} data URI must declare an image MIME type and base64 payload"
-        )
-    if not encoded:
-        raise ServingConfigurationError(f"{label} data URI payload must not be empty")
-    try:
-        data = base64.b64decode(encoded.encode("ascii"), validate=True)
-    except (UnicodeEncodeError, binascii.Error) as error:
-        raise ServingConfigurationError(f"{label} data URI payload is not valid base64") from error
-    if not data:
-        raise ServingConfigurationError(f"{label} data URI decoded to no bytes")
-    return data
-
-
-def _image_url_candidates(value: object) -> list[object]:
-    if isinstance(value, Mapping):
-        candidates: list[object] = []
-        for key, item in value.items():
-            if key == "image_url":
-                candidates.append(item)
-            else:
-                candidates.extend(_image_url_candidates(item))
-        return candidates
-    if isinstance(value, list):
-        return [candidate for item in value for candidate in _image_url_candidates(item)]
-    return []
+    return images[0]
 
 
 def _immutable_json_value(value: object) -> object:

@@ -16,6 +16,11 @@
 # pod_placement.toml.  The common stage parser seals the selected catalogue's
 # exact bytes, so using this catalogue cannot silently share a run authority
 # with the fixture-only catalogue.
+#
+# `request_timeout_seconds` bounds one non-streaming reading request, which
+# returns nothing until generation completes.  Witness rows carry 600s,
+# Perlector rows 1800s — both UNMEASURED planning values, not a claim that any
+# reading has ever been timed on real silicon.
 schema = "serving-recipes.v1"
 
 # Chandra fills the Designator structure chair and Attestator 1.  They have
@@ -47,6 +52,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -75,6 +81,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -103,6 +110,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -131,6 +139,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -159,6 +168,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -187,6 +197,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # DAI and Churro each have a dedicated stage-side chair and may not inherit
@@ -217,6 +228,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -245,6 +257,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -273,6 +286,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -301,6 +315,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -329,6 +344,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -357,6 +373,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # The secondary proposer is a separately configured chair, even though its
@@ -411,6 +428,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -439,6 +457,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -467,4 +486,5 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

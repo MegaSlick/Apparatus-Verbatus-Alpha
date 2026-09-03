@@ -314,3 +314,138 @@ while a handle is active, and `PreflightRunner` reads its chairs in sequence —
 the precondition is stated rather than locked: a lock inside the handle would not
 make the reader's read-after-write atomic, and would advertise a concurrency this
 seam does not support.
+
+## Client
+
+`client.ChairClient` is the one client a stage holds for one chair, across
+every reading in a pass. It composes an already-built `ServingManager`; it
+never starts a pod, never picks between chairs, and never retries, re-samples,
+or edits a response (GOVERNANCE 7). Enter it as a context manager — `__enter__`
+calls `manager.start` and then re-reads the published receipt back through the
+tree (`read_receipt`, production `context.tree.read_run_receipt`), refusing
+with `ReceiptDriftRefusal` (`CHAIR_RECEIPT_DRIFT`) and stopping the service
+unless the receipt still names this exact chair and revision — nothing is
+read from a start whose own record has already drifted. `__exit__` always
+stops the handle; a `ServiceStopError` from an unverified shutdown propagates
+rather than being swallowed.
+
+A refused receipt drift stops the handle before raising; if that shutdown
+itself cannot be verified (`ServiceStopError`), the drift refusal is what the
+caller sees — the stop failure is chained onto it (`__cause__`), never
+allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
+
+`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
+in this order: refuse an unbuildable request (a `kind` other than
+`chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
+`seed`, or `n` — those are the manager's and the decoding policy's alone; an
+image whose digest does not match the claimed `image_sha256s`, exactly and in
+order) before anything is built or sent; build the body deterministically
+(`request_body(..., deterministic=True)` forces temperature 0 and the
+profile's seed — this is why the client refuses at construction unless its
+caller's `record_temperature` is already 0, so a policy that disagrees is a
+named refusal, not a silent override); POST through
+`ServiceHandle.request_reading`; refuse before retention if the response is
+non-200 or names another model (bytes from the wrong source are not this
+chair's evidence); retain the raw response through the caller's `retain`
+callable; only then parse content — a content/choices problem becomes
+`parse_problem` on the returned `ChairResponse`, never a raised exception,
+because a malformed body from a witness or reader is retained evidence, not a
+stage abort; and finally write one `chair-call-record.v1` blob (the closed
+field set in `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`, canonical
+bytes) before returning. A body that names no model at all is retained and
+parsed the same as any other malformed body, but `parse_openai_reading`'s own
+comparison (`payload.get("model") != expected_model_id`) cannot distinguish
+"no model was named" from "the wrong model was named" — both come back as
+`CHAIR_RESPONSE_MODEL_MISMATCH`. `read` remaps that one ambiguous case to
+`CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
+the recorded `parse_problem` never asserts a foreign-source observation that
+was never made (GOVERNANCE 10).
+
+**The reading parser, against the probe parser.** `http.parse_openai_reading`
+is not `parse_openai_answer` reused: a readiness probe must prove the engine
+can answer at all, so it refuses blank content. A witness or reader's
+legitimate output can be the empty string (`genuinely-empty`), so the reading
+parser accepts one choice with `content == ""` and refuses only a missing or
+non-string content, never an empty one. Its `finish_reason` is always the
+engine's own word, verbatim — missing or `null` become `None`, and nothing
+here maps an unrecognized string to anything; that mapping is the stages' job
+(§1.6 of the seam spec), not this parser's.
+
+**`request_timeout_seconds`** is a per-profile field (`config.py`,
+`config/serving_recipes_real.toml`) because a non-streaming generation of
+real length returns nothing until it is done, and the manager's own
+readiness/adapter probes stay on their own short, hardcoded budgets — a slow
+reading must never be able to stretch those.
+
+`serving_mode_for(recipes, identity, tier)` is the live/fixture selector: a
+three-name lookup (`recipe`, `chair`, `tier`) in the sealed serving-recipe
+catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
+first — if all of them are fixture rows, the chair is fixture regardless of
+tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
+the profile at that exact tier decides, with an `UnsupportedProfile` refusing
+by its own recorded reason and a fixture row at that tier refused when the
+same chair is live at another tier — a catalogue may not be half live for one
+chair. A tier with no configured row at all for this chair is also this
+function's own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
+`ServingConfigurationError` is caught and re-raised as
+`ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
+this function's refusals to report a placement-tier problem never sees a
+bare configuration error instead.
+
+`fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
+`FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`) is a
+shared fake endpoint for stage tests built against `ChairClient` — mirrors of
+this package's own `test_manager.py` fakes, not moved from there, so that
+suite stays untouched. `ScriptedAnswer.finish_reason` takes an explicit
+`ABSENT` sentinel distinct from `None`: `None` scripts a JSON `null`, `ABSENT`
+omits the key from the wire entirely, and the reading parser treats both the
+same way — verbatim absence, never a default. `FakeEndpoint` auto-answers a
+manager's one readiness POST (recognized structurally: it is always the first
+POST a fresh instance sees, made inside `ServingManager.start` before any
+reading is possible) without consuming a scripted answer, so every
+`ScriptedAnswer` a test schedules is consumed by an actual `ChairClient.read`
+call. Its optional `assert_retained_before_next_request` flag proves
+response-as-arrival by construction: when set, the fake refuses a reading
+request until the *exact* raw bytes it served for the previous reading — its
+own sha256, checked through `FakeBlobStore.has`, not merely the store's
+overall size — are already on disk in the shared `FakeBlobStore`. A count
+alone is satisfied by any retention order, since the client also writes one
+`chair-call-record.v1` blob per read; naming the digest is what actually
+pins retain-before-parse from outside the client, without reading its
+source. The strongest proof of that ordering, though, lives in
+`test_client.py`: a test that monkeypatches `parse_openai_reading` itself to
+raise, and shows the raw bytes were already retained before that call ever
+ran — the one case a passing-response check like this fake's cannot reach,
+because retain-after-parse and retain-before-parse look identical whenever
+parsing succeeds. `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
+`test_manager.py`'s own fake: it keeps the loopback health endpoint answering
+after its bound process is told to exit, the exact ambiguity
+`ServingManager._assert_endpoint_absent` exists to catch, for a test that
+needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+
+## End to end
+
+`pipeline/test_live_reading_seam_e2e.py` is the only place the whole seam runs
+as one run: the real stage programs carry a tree to the Designator, the
+Attestatores reads it through three live witness chairs, the Perlector reads it
+through a live chair, and the Recensor, Archetypus and Armarium then consume
+what those two wrote. Every chair answers through `fakes.py`; nothing starts a
+pod. What makes the run live there is the same thing that makes it live on a
+card — a tmp catalogue whose rows say `kind = "vllm"` for all four servable
+chairs at all three tiers — so the selector under test is the sealed one, not a
+test-only switch.
+
+Two facts that suite establishes and no single-stage suite can. First, a live
+run reaches a **sealed terminal export that is held for review, not delivered**:
+both acts are read and every reading names the exact bytes its engine sent, but
+only one witness of a floor of three counts, because `chandra.v1` has no
+verifiable wire schema and a live page witness's act attachment is unaligned
+until R4 owns live alignment. Second, two independent drivers reach the same
+fixture tree byte for byte: the orchestrator's own subprocess chain on one
+side, and — on the other — the identical driver this module uses for the live
+seam, pointed at the committed fixture catalogue, with `--placement-tier`
+supplied and both stage `main`s called in-process rather than as subprocesses.
+That equality says this seam's own driving code takes the fixture path
+unchanged; whether the fixture tree itself has moved relative to history is
+`pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST`
+pin to say, not this suite.

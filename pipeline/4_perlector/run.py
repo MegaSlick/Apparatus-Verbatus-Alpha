@@ -18,6 +18,13 @@ the record, and the shape is where GOVERNANCE 3 either holds or quietly fails:
                                           computed *after* the reading is fixed,
                                           and cannot reach back into it.
 
+Which reader answers is the sealed serving-recipe row's business, not this file's: a
+`kind = "vllm"` row for the resolved Perlector chair selects `live_reader.VLLMReader`
+behind one `ChairClient`, and every other catalogue selects the fixture reader above.
+Nothing downstream of the reader call changes with that choice — the record shape, the
+truncation instrument and the Recensor's routing are the same either way. HANDOFF.md's
+"Live reader" section carries the mapping, the refusals and the resume rule.
+
 Dissent is structural, not evaluative: it records where the reading departed from
 each witness, which makes parroting measurable without new instrumentation. It is
 not a quality signal — most lines in a register are easy and every witness agrees,
@@ -49,6 +56,7 @@ import protocol  # noqa: E402
 import regime  # noqa: E402
 import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
+from live_reader import VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
 from common.alignment import markup_text_view  # noqa: E402
@@ -69,7 +77,13 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.contracts.stages import (  # noqa: E402
+    ATTESTATORES,
+    DESIGNATOR,
+    EXEMPLAR,
+    PERLECTOR,
+    writing_directory,
+)
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
@@ -108,6 +122,18 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
+from operations.serving.config import (  # noqa: E402
+    ServingConfigInputs,
+    load_serving_recipes,
+)
+from operations.serving.http import UrllibHttpTransport  # noqa: E402
+from operations.serving.manager import (  # noqa: E402
+    ServingManager,
+    StageContextReceiptPublisher,
+)
+from operations.serving.process import SubprocessLauncher  # noqa: E402
+from operations.serving.residency import FileResidencyLease  # noqa: E402
 
 # A sampling gate has to inspect the shared receipt directory because the sealed
 # experiment selector cannot contain the content address of the approval that
@@ -115,6 +141,16 @@ from common.stage import (  # noqa: E402
 # into a named refusal instead of an unbounded preflight.  Real receipts are a
 # few kilobytes; these ceilings allow a large alpha run while keeping both one
 # object and the aggregate scan finite.
+# A live chair's engine logs and its residency lease, both inside the run tree so
+# they travel with the evidence they belong to. The logs sit beside this stage's
+# artifacts and blobs rather than among them: `_stage_blob_inventory` walks
+# `<stage>/blobs` alone, so an engine still writing its log while the stage seals
+# cannot make the witnessed inventory false. The lease is run-scoped, not
+# stage-scoped, because the card is: the Attestatores' witness chairs and this
+# reader must contend for one lock, or two stages co-reside on one GPU.
+SERVING_LOG_DIRECTORY: Final = "serving-logs"
+RESIDENCY_LOCK_FILE: Final = "pod-gpu.lock"
+
 MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
 MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
 MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
@@ -688,11 +724,27 @@ def validate_page_testimonium_record(
         capture = payload.get("native_capture")
         if capture is not None:
             retained.append(capture["raw_response_ref"])
+        # A native capture that parsed reaches the same retained response the
+        # partition already named (`live_witness.captured_page_attempt`, the
+        # chandra.v1 branch): the writer names that reference once
+        # (`_named_once`, 3_attestatores/run.py), and the reader must count it
+        # once too, or a page record binding one blob twice would be refused
+        # for the very thing it did right. Order-preserving, keyed on the
+        # reference's own identity, so two genuinely distinct responses still
+        # count as two.
+        seen_retained: set[tuple[str, str]] = set()
+        deduped_retained = []
+        for reference in retained:
+            key = (reference["relative_path"], reference["sha256"])
+            if key in seen_retained:
+                continue
+            seen_retained.add(key)
+            deduped_retained.append(reference)
         # Sorted the way the envelope stores inputs, exactly as the act-scoped
         # seam above does. Comparing against the payload's own order passes only
         # while the retained paths happen to sort after the presented image.
         expected_inputs = sorted(
-            expected_inputs + retained,
+            expected_inputs + deduped_retained,
             key=lambda item: (item["relative_path"], item["sha256"]),
         )
         if record.get("inputs") != expected_inputs:
@@ -1532,7 +1584,13 @@ def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
         testimonia_of(context, act["act_id"], proposal_regions)
 
 
-def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
+def provenance_for(
+    context,
+    resolved: ChairIdentity | AbsentChair,
+    *,
+    attempted: bool,
+    receipt_ref: dict[str, str] | None = None,
+) -> dict:
     """Project one Perlector outcome's immutable provenance.
 
     A record for a reading that never happened — a held act, or an absent chair —
@@ -1543,7 +1601,27 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     moment it is produced rather than once at run creation: GOVERNANCE 6 is about
     identity when the reading was made, and a receipt captured at serve time and
     copied forward is the weaker claim spec 02 names and refuses.
+
+    `receipt_ref` is the live chair's own receipt, published by the serving
+    manager when the service actually started and read back by
+    `ChairClient.__enter__` before any reading was taken. It is passed only in
+    live mode, and it is not an optimisation: `fixture_serving_details` declares
+    `fixture://` for an endpoint and `fixture` for a dtype, so minting one
+    beside a reading a real engine produced would put a declared fixture value
+    where a measurement belongs (GOVERNANCE 10). Fixture mode passes nothing and
+    writes the declared receipt exactly as before, which is what leaves its bytes
+    where they were.
     """
+    if receipt_ref is not None and not attempted:
+        raise SchemaRefusal(
+            "a Perlector outcome that attempted no reading cannot carry a serving receipt; "
+            "a held act and an absent chair name what would have read and stop there"
+        )
+    if receipt_ref is not None and isinstance(resolved, AbsentChair):
+        raise SchemaRefusal(
+            "an absent Perlector chair served nothing, so a receipt reference "
+            "would name a serving moment this chair never had"
+        )
     regime = {
         # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
         # toggle, and every Perlectio records the regime it ran under, because a
@@ -1570,12 +1648,307 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
             "value": resolved.receipt_revision,
         },
         "receipt_ref": (
-            context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+            (
+                dict(receipt_ref)
+                if receipt_ref is not None
+                else context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+            )
             if attempted
             else None
         ),
         **regime,
     }
+
+
+def bound_serving_recipes(context, recipes_path: str):
+    """The serving catalogue, proved to be the exact bytes this run sealed.
+
+    Only the recipe catalogue is read, so only its digest is compared.
+    `operations.serving.assembly._load_bound_configuration` additionally re-reads
+    and re-digests `config/pod_placement.toml` because pod preflight parses that
+    table to *choose* a tier; this stage never does. The tier arrives already
+    measured on `--placement-tier`, and the manager still carries the run-sealed
+    pair into every launch audit, where `StageContext.write_serving_launch_audit`
+    refuses one that differs. Digesting a file nothing here reads would be a
+    check on bytes this stage cannot act on.
+    """
+    inputs = context.serving_config_inputs
+    if inputs is None:
+        raise ContractError(
+            "this run authority seals no serving configuration inputs, so the catalogue that "
+            "decides whether a chair is live cannot be proven; open the run with `open_context`"
+        )
+    expected = ServingConfigInputs.from_record(inputs)
+    recipes = load_serving_recipes(recipes_path)
+    if recipes.source_sha256 != expected.serving_recipes_sha256:
+        raise ContractError(
+            f"the serving recipe catalogue at {recipes_path} is not the catalogue this run "
+            "sealed; the row kind that decides live from fixture would be read out of bytes "
+            "no run authority bound"
+        )
+    return recipes
+
+
+def perlector_serving_mode(context, args, chair: ChairIdentity | AbsentChair) -> str:
+    """`"fixture"` or `"live"`, from the sealed serving-recipe row kind alone.
+
+    No new configuration key decides this and none is added: the catalogue
+    `--serving-recipes-config` names is already sealed into `config_digest`
+    through `serving_config_inputs`, so the fact is one the run authority
+    already states (spec 08 §5). `--placement-tier` is the one thing that must
+    be supplied beside it, and it is deliberately unsealed — a measured runtime
+    fact of the card, not run configuration.
+
+    Resolved once, before the run partition is published and before any chair is
+    started, so a live catalogue named without a tier refuses while the tree is
+    still exactly as this invocation found it.
+
+    An absent chair resolves to fixture without consulting the catalogue: it
+    reads nothing at all — every act publishes an explicit not-run record naming
+    the absence — so there is no resolved identity to look a row up by, and
+    inventing one to ask about would be asking which engine an absence would
+    have used.
+    """
+    if isinstance(chair, AbsentChair):
+        return "fixture"
+    return serving_mode_for(
+        bound_serving_recipes(context, args.serving_recipes_config), chair, args.placement_tier
+    )
+
+
+class ResidentChair:
+    """The one live chair a Perlector pass holds, and the promise it is stopped.
+
+    A holder rather than a `with` block around the pass, because the pass is six
+    hundred lines that have nothing to do with serving and every line of it would
+    have moved to gain the guarantee. `main` closes this in a `finally`; the pass
+    also closes it explicitly before it seals, so on the ordinary path the
+    service is verified down *before* the completion boundary is written and a
+    failed shutdown cannot be reported over a sealed stage. `close` is idempotent
+    for exactly that reason.
+
+    A `ServiceStopError` propagates. An unverified shutdown of a child this
+    process started is the local form of GOVERNANCE 8's rule that shutdown is
+    verified rather than inferred, and swallowing it in cleanup is how a run
+    reports success over a service nobody proved was gone.
+    """
+
+    __slots__ = ("client",)
+
+    def __init__(self) -> None:
+        self.client: ChairClient | None = None
+
+    def close(self) -> None:
+        client, self.client = self.client, None
+        if client is not None:
+            client.__exit__()
+
+
+def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temperature: int):
+    """Build the production `serving_factory(context, chair, tier) -> ChairClient`.
+
+    Returned as a closure rather than exposed as a bare function so the one
+    parameter list `main` injects against stays `(context, chair, tier)`: a test
+    passes `operations.serving.fakes.fake_serving_factory`, and production passes
+    nothing and gets this. The seam is a dependency injection point, never a
+    choice among engines — which engine answers is the sealed row's business
+    (`perlector_serving_mode`), and this factory is only reached once that row
+    has already said `live`.
+    """
+
+    def factory(context, chair: ChairIdentity, tier: str) -> ChairClient:
+        manager = ServingManager(
+            registry=context.registry,
+            recipes=recipes,
+            config_inputs=ServingConfigInputs.from_record(context.serving_config_inputs),
+            launcher=SubprocessLauncher(),
+            http=UrllibHttpTransport(),
+            receipt_publisher=StageContextReceiptPublisher(context),
+            log_root=context.tree.resolve(
+                f"{writing_directory(context.stage)}/{SERVING_LOG_DIRECTORY}"
+            ),
+            # One card, one resident chair, one lease file for the whole run
+            # tree: the Attestatores' witness chairs and this reader contend for
+            # the same GPU, and the lease is what makes a second start refuse
+            # instead of co-residing.
+            residency_lease=FileResidencyLease(context.tree.resolve(RESIDENCY_LOCK_FILE)),
+            producer="pipeline/4_perlector/run.py",
+        )
+        return ChairClient(
+            manager=manager,
+            identity=chair,
+            tier=tier,
+            retain=partial(retain_chair_bytes, context),
+            decoding_config_sha256=decoding_config_sha256,
+            record_temperature=record_temperature,
+            # Wired bare. `ChairClient.__enter__` copies
+            # `ServiceHandle.receipt_reference` into a plain `dict` before it
+            # calls this, which is exactly the type `RunTree.read_run_receipt`
+            # requires, so no stage-side conversion is left to do.
+            read_receipt=context.tree.read_run_receipt,
+        )
+
+    return factory
+
+
+def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
+    """Store one chair response or call record under its own digest.
+
+    The client retains before it parses, so this runs before anything has looked
+    at the body: it is the durability half of response-as-arrival (GOVERNANCE 2),
+    and it is a property of the client rather than of this stage's publication
+    order. Guarded after the seal for the reason `StageContext._write_serving_blob`
+    is — this writes into the stage's own blob directory, whose inventory digest
+    the completion seal witnessed, and a write afterwards makes that inventory
+    false while the symptom lands on the next stage.
+    """
+    if context.sealed:
+        raise SchemaRefusal(
+            "the Perlector has sealed its completion boundary; retaining a chair response "
+            "afterwards would make its witnessed blob inventory false"
+        )
+    digest, result = context.tree.put_blob(context.stage, data)
+    return {"relative_path": result.relative_path, "sha256": digest}
+
+
+def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Bind the two blobs a live reading's own record names as direct inputs.
+
+    A fixture reading has no engine behind it, sets no `engine_call`, and adds
+    nothing here — which is what keeps its envelope, and the acceptance pin over
+    it, exactly where they were.
+
+    Each reference is re-derived from the bytes on disk and compared to what the
+    reader claimed, rather than copied: a record naming a response that is not
+    there, or whose digest has moved, would otherwise publish an input list that
+    reads as evidence and resolves to nothing.
+    """
+    if engine_call is None:
+        return []
+    if not isinstance(engine_call, dict) or set(engine_call) != {
+        "call_record_ref",
+        "raw_response_ref",
+        "response_sha256",
+        "finish_reason",
+        "served_model_id",
+    }:
+        raise SchemaRefusal(f"a live reading's engine_call has the wrong shape: {engine_call!r}")
+    if engine_call["response_sha256"] != engine_call["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal(
+            "a live reading's engine_call names two different digests for one response: "
+            f"response_sha256={engine_call['response_sha256']!r}, "
+            f"raw_response_ref sha256={engine_call['raw_response_ref']['sha256']!r}"
+        )
+    references = []
+    for name in ("raw_response_ref", "call_record_ref"):
+        claimed = engine_call[name]
+        observed = context.input_ref(claimed["relative_path"])
+        if observed != dict(claimed):
+            raise SchemaRefusal(
+                f"a live reading's {name} names {claimed!r}, but the retained bytes at that "
+                f"path are {observed!r}"
+            )
+        references.append(observed)
+    return references
+
+
+def _live_reader(
+    context,
+    args,
+    *,
+    chair: ChairIdentity,
+    protocol_config,
+    decoding_policy: dict[str, Any],
+    decoding_sha256: str,
+    serving_factory,
+    service: "ResidentChair",
+) -> tuple[VLLMReader, dict[str, str]]:
+    """Start this run's one chair and return the reader that speaks to it.
+
+    The receipt reference comes back beside the reader because every record this
+    pass publishes must name the receipt of the service that actually answered —
+    `ChairClient.__enter__` has already read it back through the tree and refused
+    a receipt that no longer names this chair and revision (GOVERNANCE 6).
+    """
+    factory = serving_factory or default_serving_factory(
+        bound_serving_recipes(context, args.serving_recipes_config),
+        decoding_config_sha256=decoding_sha256,
+        # The sealed reading-of-record posture, taken from the bytes this run
+        # bound and rechecked. `ChairClient` refuses anything but 0 rather than
+        # coercing one, so a policy that said otherwise is a named refusal here
+        # instead of a silent zero on every call record.
+        record_temperature=decoding_policy["reading_of_record"]["temperature"],
+    )
+    # Assigned before it is entered: a `ChairClient` that fails partway through
+    # `__enter__` has already stopped whatever it started, and `close` on one
+    # that never started is a no-op — but the assignment is what makes that
+    # true of every future failure between these two lines as well.
+    service.client = factory(context, chair, args.placement_tier)
+    service.client.__enter__()
+    reader = VLLMReader(
+        client=service.client,
+        chair=chair,
+        protocol_config=protocol_config,
+        # No sealed output bound exists and this section does not invent one:
+        # vLLM bounds generation by `max_model_len`, so an engine `"length"`
+        # then honestly means the context itself was exhausted rather than that
+        # the harness cut the reading short. A sealed bound belongs with the
+        # variance-experiment section, which will need one too.
+        max_tokens=None,
+    )
+    return reader, dict(service.client.handle.receipt_reference)
+
+
+def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
+    """One entry per path, in first-named order, refusing two digests for one path.
+
+    Needed only where a live re-proof joins the establishing call: both are
+    content-addressed, so an engine that answered the same bytes twice names one
+    blob twice and the envelope would carry a duplicate input. Two *different*
+    digests under one path cannot happen in a content-addressed store, so if it
+    ever does, something has rewritten a blob and this refuses rather than
+    picking one.
+    """
+    distinct: dict[str, dict[str, str]] = {}
+    for reference in references:
+        seen = distinct.get(reference["relative_path"])
+        if seen is None:
+            distinct[reference["relative_path"]] = reference
+        elif seen != reference:
+            raise SchemaRefusal(
+                f"two different digests are claimed for input {reference['relative_path']!r}: "
+                f"{seen!r} and {reference!r}"
+            )
+    return list(distinct.values())
+
+
+def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
+    """Whether this run tree already holds this act's Perlectio at this ordinal.
+
+    Existence, not content: the question is whether asking a chair again would
+    write over an immutable record, and any Perlectio at this identity — a
+    completed reading or a not-run acknowledgement — already answers for it.
+    """
+    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
+    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    return context.tree.resolve(
+        context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
+    ).exists()
+
+
+def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
+    """Carry a live reading's engine call on its record, and a fixture one's nothing.
+
+    The `_NOT_RUN_CAPACITY_FIELDS` precedent: a field that exists only on one
+    shape of record widens the closed set for that shape rather than becoming
+    optional inside one set, so every record is still validated against a schema
+    that names exactly what it carries.
+    """
+    engine_call = result.get("engine_call")
+    if engine_call is None:
+        return fields
+    payload["engine_call"] = engine_call
+    return fields | {"engine_call"}
 
 
 def _page_renders_for(context, bases: list[dict]) -> list[dict]:
@@ -2511,6 +2884,7 @@ def _publish_lectio_nuda(
     protocol_config: dict[str, str | int],
     protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
+    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """Publish outside Perlectio kind and attempt identity with no witness facts."""
     nuda_dossier, prompt, outcome, truncation_record, nuda_text = _publication_pass_data(
@@ -2535,18 +2909,19 @@ def _publish_lectio_nuda(
         "truncation": truncation_record,
         "uncertain_spans": [],
         "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
-        "provenance": provenance_for(context, chair, attempted=True),
+        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
     }
+    fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
     reading_inputs = _reading_image_inputs(
         context,
         bases,
         page_renders,
         autopsia=nuda_dossier["cross_capture_autopsia"],
-    )
+    ) + engine_call_inputs(context, result.get("engine_call"))
     validate_reading_payload(
         payload,
         outcome=outcome,
-        fields=_LECTIO_NUDA_FIELDS,
+        fields=fields,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
         inputs=reading_inputs,
@@ -2575,6 +2950,7 @@ def _publish_lectio_prior(
     region_pixels,
     protocol_config,
     protocol_sha256,
+    receipt_ref: dict[str, str] | None = None,
 ) -> dict:
     """Publish Pass A as a retained draft, never as a Perlectio."""
     prior_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
@@ -2595,23 +2971,24 @@ def _publish_lectio_prior(
         "truncation": truncation_record,
         "uncertain_spans": [],
         "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
-        "provenance": provenance_for(context, chair, attempted=True),
+        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
         "protocol": {
             "selection_rule": protocol_config["selection_rule"],
             "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
             "draft_fed": context.draft_fed,
         },
     }
+    fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
     reading_inputs = _reading_image_inputs(
         context,
         bases,
         page_renders,
         autopsia=prior_dossier["cross_capture_autopsia"],
-    )
+    ) + engine_call_inputs(context, result.get("engine_call"))
     validate_reading_payload(
         payload,
         outcome=outcome,
-        fields=_LECTIO_PRIOR_FIELDS,
+        fields=fields,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
         inputs=reading_inputs,
@@ -2650,6 +3027,7 @@ def _publish_primed_without_prior(
     protocol_config,
     protocol_sha256,
     approval_ref: ApprovalRecordBinding,
+    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
@@ -2708,7 +3086,7 @@ def _publish_primed_without_prior(
         "gaps": _whole_act_gap(testimonia, testimonium_references)
         if outcome == "no-readable-text"
         else [],
-        "provenance": provenance_for(context, chair, attempted=True),
+        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
         "lectio_kind": "primed-without-prior",
         "protocol": {
             "selection_rule": protocol_config["selection_rule"],
@@ -2716,6 +3094,7 @@ def _publish_primed_without_prior(
             "draft_fed": context.draft_fed,
         },
     }
+    fields = with_engine_call(payload, result, _PRIMED_WITHOUT_PRIOR_FIELDS)
     reading_inputs = (
         _reading_image_inputs(
             context,
@@ -2725,11 +3104,12 @@ def _publish_primed_without_prior(
         )
         + list(testimonium_references.values())
         + [attachment_view["reference"]]
+        + engine_call_inputs(context, result.get("engine_call"))
     )
     validate_reading_payload(
         payload,
         outcome=outcome,
-        fields=_PRIMED_WITHOUT_PRIOR_FIELDS,
+        fields=fields,
         run_id=context.tree.run_id,
         config_digest=context.config_digest,
         protocol_config=protocol_config,
@@ -2764,17 +3144,41 @@ def _logical_sampling_decisions(context, logical_act_id: str) -> tuple[bool, boo
     return nuda_sampled, control_sampled
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied chair implementation.
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
+    """Run the pass, and guarantee any chair it started is stopped.
 
-    Production passes the default registry. The test-only injection is a
-    dependency seam, not a runtime choice among models or chairs.
+    Both parameters are dependency seams, not runtime choices. `registry_factory`
+    supplies the chair implementation; `serving_factory` supplies the client a
+    live chair is read through, and is reached only when the sealed
+    serving-recipe row for the resolved Perlector chair already says the chair is
+    live (`perlector_serving_mode`). Passing one does not make a run live and
+    omitting one does not make a run fixture: no argument to this function
+    decides which engine answers.
+
+    The `finally` is the guarantee, not the ordinary path — `_read_the_acts`
+    stops the chair itself before it seals, so a failed shutdown is never
+    reported over a sealed stage. This one catches the exceptional path, where
+    the pass raised before it reached its own shutdown.
     """
+    service = ResidentChair()
+    try:
+        return _read_the_acts(registry_factory, serving_factory, service)
+    finally:
+        service.close()
+
+
+def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
+    """One Perlector pass: every requested act read once and published once."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, PERLECTOR, registry_factory=registry_factory)
-    _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
+    decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    reader = FixtureReader(context.fixture, context.scenario)
+    # Resolved here, before the run partition is published and long before a
+    # chair is started: the sealed catalogue and `--placement-tier` are all this
+    # answer needs, and a live catalogue named without a tier must refuse while
+    # the tree is still exactly as this invocation found it.
+    chair = perlector_chair(context)
+    serving_mode = perlector_serving_mode(context, args, chair)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
     )
@@ -2820,13 +3224,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     read = 0
     acknowledged = 0
+    resumed = 0
     pending: list[dict[str, Any]] = []
     # Walked once for the whole run: the routing denominator is every sealed
     # proposal, and `reported_unrouted` keeps one observation's finding from being
     # restated by every act that reaches the same page Testimonium.
     all_proposal_regions = sealed_proposal_regions(context)
     reported_unrouted: set[tuple[str, int]] = set()
-    chair = perlector_chair(context)
+
+    # A live chair is started on first use, not here. In fixture mode there is
+    # nothing to start and the reader exists from this line; in live mode the
+    # loop below starts one the first time an act actually clears capacity and
+    # needs a reading, so a resumed pass whose acts are all already sealed --
+    # or all over capacity -- never loads a 27B model onto a card that bills
+    # by the hour to read nothing. `service` owns the shutdown from the moment
+    # the client exists.
+    reader = None if serving_mode == "live" else FixtureReader(context.fixture, context.scenario)
+    receipt_ref: dict[str, str] | None = None
+
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
@@ -2887,6 +3302,39 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             acknowledged += 1
             continue
+
+        if serving_mode == "live" and _reading_already_sealed(context, act_id, ordinal):
+            # **A live act sealed at this ordinal is never asked again.** Fixture
+            # readers are deterministic, so a resumed fixture pass recomputes the
+            # same ordinal, republishes the same bytes and the store reuses them
+            # (`_next_attempt`'s own docstring). A live chair cannot promise that:
+            # the second reading's bytes differ, the store refuses the collision
+            # (`IncompatibleReuse`), and the run ends loudly one act into a
+            # resume. The act is already recorded, so the honest resume is to
+            # leave it recorded and read the rest — GOVERNANCE 4, evidence is
+            # never overwritten. Counted apart from `read`, because this
+            # invocation did not read it and a tally that said otherwise would be
+            # this pass measuring work it did not do.
+            resumed += 1
+            continue
+
+        # The scenario's declared engine behaviour stands in for a real
+        # engine's own report and, when present, decides `reading` and
+        # `outcome` together: a declared `no-readable-text` means nothing was
+        # read, not that the fixture's normal act text happens to still apply.
+        # That stand-in is only honest when there is no real report to stand
+        # in for. Checked here, before any chair is started or arm published:
+        # a live pass answering a declared act is a misconfiguration knowable
+        # from the fixture and the act key alone, and this stage must refuse
+        # while the tree is still exactly as this invocation found it --
+        # GOVERNANCE 10 names exactly this override.
+        declared_failure = declared_reading_failure(context, act["act_key"])
+        if serving_mode == "live" and declared_failure is not None:
+            raise ContractError(
+                f"the fixture declares reading outcome {declared_failure!r} for "
+                f"act {act['act_key']!r} while a live chair is answering; a "
+                "declared stand-in cannot override an engine that reported"
+            )
 
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
@@ -2968,6 +3416,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             acknowledged += 1
             continue
 
+        if reader is None:
+            # First act of a live pass that actually clears capacity and needs
+            # reading. One chair for the whole run, entered once here and
+            # stopped once at the end: the sequential-serving posture, and the
+            # reason this is a single `is None` rather than a per-act start.
+            reader, receipt_ref = _live_reader(
+                context,
+                args,
+                chair=chair,
+                protocol_config=protocol_config,
+                decoding_policy=decoding_policy,
+                decoding_sha256=decoding_sha256,
+                serving_factory=serving_factory,
+                service=service,
+            )
+
         base_dossier = dossier_module.build_dossier(
             context,
             act_id=act_id,
@@ -3000,6 +3464,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             region_pixels=region_pixels,
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
+            receipt_ref=receipt_ref,
         )
 
         # Every arm receives the complete presentation in one reader call.
@@ -3030,6 +3495,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
                 approval_ref=nuda_approval,
+                receipt_ref=receipt_ref,
             )
 
         if control_sampled:
@@ -3049,6 +3515,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
                 approval_ref=instrument_approval,
+                receipt_ref=receipt_ref,
             )
 
         # Publication consumes the one establishing result; it never chooses or
@@ -3063,11 +3530,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # objects render the same bytes without giving the reader a side channel.
         prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
 
-        # The scenario's declared engine behaviour stands in for a real
-        # engine's own report and, when present, decides `reading` and
-        # `outcome` together: a declared `no-readable-text` means nothing was
-        # read, not that the fixture's normal act text happens to still apply.
-        declared_failure = declared_reading_failure(context, act["act_key"])
+        # `declared_failure` was resolved and, in live mode, already refused
+        # before any reader call above -- this is the one remaining use of the
+        # value, deciding `reading` and `outcome` together.
         reading = "" if declared_failure == "no-readable-text" else result["text"]
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,
@@ -3094,7 +3559,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else []
         )
 
-        provenance = provenance_for(context, chair, attempted=True)
+        provenance = provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref)
         payload = {
             "act_key": act["act_key"],
             "attempt_ordinal": ordinal,
@@ -3126,6 +3591,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "draft_fed": context.draft_fed,
             },
         }
+        # The record names the call its published text came from. Here that is
+        # the establishing pass; the audit loop below re-points it at the
+        # re-proof's own call in exactly the case where the re-proof's text is
+        # the one published, beside `truncation` and `self_revision`, which move
+        # for the same reason.
+        payload_fields = with_engine_call(payload, result, _PERLECTIO_FIELDS)
         pending.append(
             {
                 "act": act,
@@ -3133,6 +3604,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "order": declared_order[act_id],
                 "bases": bases,
                 "payload": payload,
+                "fields": payload_fields,
                 "outcome": outcome,
                 # Deliberately NOT the decoded pixels: holding every act's
                 # delivered images until the audit loop reaches it would grow
@@ -3150,7 +3622,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "autopsia": autopsia,
                 "inputs": _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
                 + list(testimonium_references.values())
-                + [attachment_view["reference"], prior["reference"]],
+                + [attachment_view["reference"], prior["reference"]]
+                + engine_call_inputs(context, result.get("engine_call")),
             }
         )
         read += 1
@@ -3219,6 +3692,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
         uncertainty: list[dict[str, Any]] = []
+        payload_fields = row["fields"]
+        # A re-proof reading is evidence of this Perlectio whether or not it
+        # changed the text: it is the second thing that looked at this act's
+        # pixels, and its response is what the `change_record` below reports on.
+        # Bound as an input in both cases; named by `payload["engine_call"]` only
+        # when its text is the one published.
+        reproof_inputs: list[dict[str, str]] = []
         # The same predicate `validate_chain` re-derives from the frozen draft:
         # one spelling of "a re-proof request exists for this act".
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
@@ -3279,8 +3759,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             final_text = reproof["text"]
             pre_audit_text = payload["text"]
+            reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
             if final_text != payload["text"]:
                 payload["text"] = final_text
+                # `engine_call` names the call the published text came from, so
+                # it moves with the text. Leaving the establishing call's record
+                # here would bind a published reading to a response that did not
+                # produce it -- the same false provenance `truncation` and
+                # `self_revision` below were repaired for (audit finding H6).
+                payload_fields = with_engine_call(payload, reproof, payload_fields)
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
@@ -3409,7 +3896,25 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # carry.
             "request_digest": request_digest,
         }
-        reading_inputs = row["inputs"] + [draft_ref, finding_ref]
+        # Dedup is scoped to the re-proof's own references: those are the only
+        # ones a live engine can legitimately repeat, when a re-proof answers
+        # with the same bytes as the establishing call and the content-addressed
+        # store names the same path twice. `row["inputs"]` (the image, testimonia,
+        # attachment and prior references) can never legitimately repeat, so a
+        # duplicate there stays under the envelope's own double-count refusal
+        # instead of being silently absorbed here.
+        reading_inputs = (
+            row["inputs"]
+            + [
+                reference
+                for reference in _distinct_inputs(reproof_inputs)
+                if reference not in row["inputs"]
+            ]
+            + [
+                draft_ref,
+                finding_ref,
+            ]
+        )
         # The producer and every later consumer use the same cross-record
         # validation. Run it before the Perlectio is published so a drifted
         # draft/finding relationship never becomes an unreadable artifact.
@@ -3421,7 +3926,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         validate_reading_payload(
             payload,
             outcome=row["outcome"],
-            fields=_PERLECTIO_FIELDS,
+            fields=payload_fields,
             run_id=context.tree.run_id,
             config_digest=context.config_digest,
             protocol_config=protocol_config,
@@ -3437,9 +3942,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload=payload,
         )
 
-    if read == 0 and acknowledged == 0:
+    if read == 0 and acknowledged == 0 and resumed == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")
 
+    # Before the seal, not after it: a chair still resident while the completion
+    # boundary is written would let a failed shutdown be reported over a sealed
+    # stage. `main`'s own `finally` still holds for the paths that never reach
+    # this line, and `close` is idempotent so the two never fight.
+    service.close()
     context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
