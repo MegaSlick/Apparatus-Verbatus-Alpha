@@ -1305,9 +1305,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # and describes no tree in this section: it moved for cause 1 and 2 as well,
 # which unit D predicted and did not exercise.
 # Section C review round (the independent panel's four majors, applied). Both
-# digests move again, and both move for the same three causes -- named per pin
-# because each is a different set of bytes, not because each was measured on its
-# own tree:
+# digests move again, and both move for the same four causes -- named per pin
+# because each is a different set of bytes. The first three were not measured on
+# trees of their own; the fourth was, by the inventory diff below.
 #
 #   1. `config/designator_grouping.toml` gains `max_secondary_proposals`,
 #      `fallback_bands` and `fallback_overlap_bp`, so the file's digest changes
@@ -1322,6 +1322,28 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #   3. Every `conservation` record gains `page_width`, `page_height` and
 #      `reconciliation_thresholds` -- what that reconciliation actually executed
 #      on and under, published on the record of the computation that executed it.
+#   4. Every enumerated page's geometry-coverage finding, built in
+#      `5_recensor/run.py::geometry_coverage_inputs`, gains `residual_enumeration`,
+#      `max_residual_components`, `page_residual_act_count` and `reason`, so the
+#      enumerated shape carries the same key set as the bounded-out one.
+#      `geometry_coverage_for` deep-copies that object into every Recensor review
+#      and recovery-request payload -- an accepted act's as much as a held act's --
+#      so both fixture scenarios carry the new bytes even though neither mints a
+#      page-residual act.
+#
+# Cause 4 was isolated rather than predicted, the way unit F's was: the fixture was
+# run at this tree and at this tree with those four keys removed, and the two
+# semantic inventories diffed. Happy changes exactly 15 entries and review exactly
+# 20 -- the Recensor reviews carrying the bytes (and, on review, the recovery
+# request), then every record that names one of those by digest: the Recensor stage
+# seals and manifest, the Archetypus records with their index, seal and manifest,
+# the Armarium export, its two manifest-entries, seal and manifest, the run-health
+# partition receipt, and on review the Designator region recropped from that
+# recovery request, with its stage seal and manifest. Unlike unit F's diff above,
+# one entry appears and one vanishes on each side, and both are the Armarium
+# bundle blob: it is content-addressed, so changed members give it a new filename
+# rather than adding a file. The totals are unmoved at 96 and 107 in the
+# counterfactual runs as well.
 #
 # **The counts hold and were checked rather than assumed**: happy 96 and review
 # 107, in both roots, on the line above each digest assertion. That is the number
