@@ -1181,6 +1181,24 @@ def test_geometry_coverage_refuses_an_unknown_residual_enumeration(monkeypatch):
         RUN.geometry_coverage_inputs(context)
 
 
+def test_geometry_coverage_names_an_unhashable_residual_enumeration_by_value(monkeypatch):
+    """A list at this field is refused the same way an unknown string is.
+
+    `RESIDUAL_ENUMERATIONS` (`common/stage.py`) is a plain tuple, so
+    membership is decided by equality against each member, never by hashing
+    the candidate -- an unhashable JSON value here does not raise `TypeError`,
+    it is simply never equal to either sealed spelling and falls into the
+    same named refusal a bad string would.
+    """
+    context = _context(_conservation("conservation-1", enumeration=["complete"]))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(
+        FatalAccounting, match=r"records its residual enumeration as \['complete'\]"
+    ):
+        RUN.geometry_coverage_inputs(context)
+
+
 def test_geometry_coverage_refuses_a_missing_residual_enumeration(monkeypatch):
     """Absence is the same failure arriving by omission, and refuses the same way."""
     record = _conservation("conservation-1")
