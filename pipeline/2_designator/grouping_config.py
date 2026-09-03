@@ -188,13 +188,28 @@ def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> di
     return values
 
 
+#  `_PROVENANCE_FIELDS` names every field the closed schema carries;
+# `_TYPED_PROVENANCE_FIELDS` names the ones checked by their own type below
+# instead of by the string loop, so the string loop is derived from the
+# difference rather than hand-copied -- a field newly added to
+# `_PROVENANCE_FIELDS` is validated by construction instead of silently
+# skipped by a tuple nobody remembered to extend. The assertion below fires
+# at import if the two ever drift apart.
+_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
+_STRING_PROVENANCE_FIELDS: Final = tuple(sorted(set(_PROVENANCE_FIELDS) - _TYPED_PROVENANCE_FIELDS))
+assert _TYPED_PROVENANCE_FIELDS | set(_STRING_PROVENANCE_FIELDS) == set(_PROVENANCE_FIELDS)
+
+
 def _load_grouping_provenance(provenance: Any) -> dict[str, Any]:
     """Validate the grouping config's declared provenance against its closed schema.
 
     Identical shape to `geometry._load_padding_provenance`, for the same
     reason: every field is required and checked for shape, so a provenance
     block that is merely present cannot stand in for one that actually
-    answers "where did this number come from."
+    answers "where did this number come from." Unlike that function, the
+    string-typed fields are derived from `_PROVENANCE_FIELDS` rather than
+    hand-copied, so a field added to the schema is validated rather than
+    silently passed through untyped.
     """
     if not isinstance(provenance, dict):
         raise ContractError(
@@ -212,7 +227,7 @@ def _load_grouping_provenance(provenance: Any) -> dict[str, Any]:
         raise ContractError(
             f"the grouping configuration's provenance is missing field(s) {missing}"
         )
-    for field in ("source", "corpus", "sample_unit", "statistic", "caveat"):
+    for field in _STRING_PROVENANCE_FIELDS:
         if not isinstance(provenance[field], str) or not provenance[field].strip():
             raise ContractError(
                 f"the grouping configuration's provenance field {field!r} is not a non-empty string"

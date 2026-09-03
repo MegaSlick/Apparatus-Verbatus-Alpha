@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 from grouping_config import (
+    _PROVENANCE_FIELDS,
+    _STRING_PROVENANCE_FIELDS,
+    _TYPED_PROVENANCE_FIELDS,
     DEFAULT_GROUPING_CONFIG_PATH,
     GroupingThresholds,
     load_grouping_config,
@@ -403,6 +406,34 @@ def test_provenance_negative_sample_count_refused(tmp_path):
     body = _valid_toml().replace("sample_count = 0", "sample_count = -1")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="sample_count"):
+        load_grouping_config(path)
+
+
+def test_string_provenance_fields_are_derived_from_the_whole_schema():
+    """The two field sets partition `_PROVENANCE_FIELDS` exactly.
+
+    A field added to `_PROVENANCE_FIELDS` without being added to
+    `_TYPED_PROVENANCE_FIELDS` lands here automatically instead of being
+    silently unchecked -- this is the module-import assertion, exercised
+    again here so a failure shows as a named test rather than a collection
+    error.
+    """
+    assert set(_STRING_PROVENANCE_FIELDS) | _TYPED_PROVENANCE_FIELDS == set(_PROVENANCE_FIELDS)
+    assert set(_STRING_PROVENANCE_FIELDS).isdisjoint(_TYPED_PROVENANCE_FIELDS)
+
+
+@pytest.mark.parametrize("field", ["source", "corpus", "sample_unit", "statistic", "caveat"])
+def test_every_string_provenance_field_is_actually_type_checked(tmp_path, field):
+    """Each field the schema calls a string is refused when it is not one.
+
+    Regression for a loader that validates a hand-copied subset of
+    `_PROVENANCE_FIELDS`: a field present in the schema but missing from
+    that subset would pass through this loop unchecked while still being
+    accepted as present.
+    """
+    body = _valid_toml().replace(f'{field} = "', f"{field} = 7 #", 1)
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match=field):
         load_grouping_config(path)
 
 
