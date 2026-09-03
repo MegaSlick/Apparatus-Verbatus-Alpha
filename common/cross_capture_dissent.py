@@ -11,7 +11,7 @@ from __future__ import annotations
 from itertools import combinations
 from typing import Any, Final
 
-from common.contracts.canonical import digest_of, self_hash, verify_self_hash
+from common.contracts.canonical import digest_of, is_sha256, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
 from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_capture_preference
@@ -171,7 +171,7 @@ def _span_or_gap_ref(value: Any) -> Any:
 
 
 def _sha(value: Any, label: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or set(value) - set("0123456789abcdef"):
+    if not is_sha256(value):
         raise SchemaRefusal(f"cross-capture dissent: {label} is not a lowercase SHA-256")
     return value
 

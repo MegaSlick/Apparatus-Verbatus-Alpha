@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
 from common.runtree.store import BLOBS_DIR
@@ -59,12 +59,8 @@ _BINDING_FIELDS = frozenset(
 )
 
 
-def _sha(value: object, what: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(c not in "0123456789abcdef" for c in value)
-    ):
+def _sha(value: Any, what: str) -> str:
+    if not is_sha256(value):
         raise SchemaRefusal(f"{what} is not a lowercase sha256")
     return value
 

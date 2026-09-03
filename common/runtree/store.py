@@ -58,6 +58,7 @@ from common.contracts.canonical import (
     SCHEMA_LABEL,
     canonical_bytes,
     digest_bytes,
+    is_sha256,
     self_hash,
     self_hash_refusal,
     verify_self_hash,
@@ -284,7 +285,7 @@ class RunTree:
                     "run sealed_config_digests must be a non-empty object when supplied"
                 )
             if any(
-                not isinstance(name, str) or not name or not _is_sha256(digest)
+                not isinstance(name, str) or not name or not is_sha256(digest)
                 for name, digest in sealed_config_digests.items()
             ):
                 raise SchemaRefusal(
@@ -396,7 +397,7 @@ class RunTree:
 
     def receipt_path(self, digest: str) -> str:
         """The one content-addressed location for a validated receipt-backed record."""
-        if not _is_sha256(digest):
+        if not is_sha256(digest):
             raise SchemaRefusal(f"receipt digest {digest!r} is not a lowercase sha256")
         return f"{RECEIPTS_DIR}/{digest}.json"
 
@@ -1018,7 +1019,7 @@ class RunTree:
                 before = self._entry_lstat(directory_fd, name, relative_path)
                 if stat.S_ISLNK(before.st_mode):
                     self._raise_manifest_symlink(relative_path, frozenset())
-                if not _is_sha256(name):
+                if not is_sha256(name):
                     continue
                 if not stat.S_ISREG(before.st_mode):
                     raise SchemaRefusal(
@@ -1347,7 +1348,7 @@ class RunTree:
         """
         if self._config_digest is None:
             config_digest = self.read_run().get("config_digest")
-            if not _is_sha256(config_digest):
+            if not is_sha256(config_digest):
                 raise IncompatibleReuse(
                     "run.json has no lowercase sha256 config_digest, so no artifact in this "
                     "tree can be bound to its run authority"
@@ -1665,14 +1666,6 @@ def _read_json(path: Path) -> Any:
     return _read_json_with_bytes(path)[0]
 
 
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _inode_identity(value: os.stat_result) -> tuple[int, int]:
     """The filesystem identity a spelling cannot forge by sharing a prefix."""
     return value.st_dev, value.st_ino
@@ -1691,7 +1684,7 @@ def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> d
         computed = page.get("computed_sha256")
         if computed is None:
             computed = page.get("sha256")
-        if not _is_sha256(computed):
+        if not is_sha256(computed):
             raise SchemaRefusal(
                 "corpus frame membership needs an inspected or declared sha256 for "
                 "every source page"
@@ -1715,7 +1708,7 @@ def _validate_corpus_frame_membership(membership: Any) -> None:
             "corpus_frame_membership must be the closed {frame_digest, page_digest, seed} record"
         )
     for field, value in membership.items():
-        if not _is_sha256(value):
+        if not is_sha256(value):
             raise SchemaRefusal(f"corpus_frame_membership.{field} is not a sha256 digest")
 
 
@@ -1727,7 +1720,7 @@ def _receipt_reference(value: RunReceiptReference | dict[str, str]) -> RunReceip
     relative, digest = value["relative_path"], value["sha256"]
     if not isinstance(relative, str) or not relative:
         raise SchemaRefusal("run receipt reference has no relative_path")
-    if not _is_sha256(digest):
+    if not is_sha256(digest):
         raise SchemaRefusal("run receipt reference has no lowercase sha256")
     return RunReceiptReference(relative, digest)
 
@@ -1740,7 +1733,7 @@ def _approval_record_reference(value: ApprovalRecordReference) -> ApprovalRecord
         )
     if not isinstance(value.relative_path, str) or not value.relative_path:
         raise ApprovalRefusal("approval record reference has no relative_path")
-    if not _is_sha256(value.sha256):
+    if not is_sha256(value.sha256):
         raise ApprovalRefusal("approval record reference has no lowercase sha256")
     return value
 

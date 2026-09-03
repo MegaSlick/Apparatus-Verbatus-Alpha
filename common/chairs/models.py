@@ -12,14 +12,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from common.contracts.canonical import digest_of
-
-
-def is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
+from common.contracts.canonical import is_sha256 as is_sha256  # re-exported to this package
 
 
 def is_hf_revision(value: object) -> bool:
@@ -245,12 +238,13 @@ class ModelsConfig:
 
     @property
     def models_digest(self) -> str:
-        """The canonical digest of the model configuration's run-shaping facts.
+        """A canonical digest of the model configuration's run-shaping facts.
 
-        One component of a run's `config_digest`, never the whole of it: the
-        fixture and the scenario shape a run's behaviour too, and a digest that
-        dropped them would let the same run id be reopened under a different
-        scenario. `common/stage.py::run_config_bindings` composes the three.
+        A convenience digest no run binding consumes. `config_digest` covers the
+        same ground by embedding `to_record()` itself, beside the fixture and the
+        scenario, because a digest that dropped those would let the same run id be
+        reopened under a different scenario; see
+        `common/stage.py::run_config_bindings`.
         """
 
         return digest_of(self.to_record())

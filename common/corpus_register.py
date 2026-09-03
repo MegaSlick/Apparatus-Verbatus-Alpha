@@ -49,7 +49,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Iterator
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -125,7 +125,7 @@ def _resolved_register_path(register_path: str | Path, expected_digest: str) -> 
         path = supplied_path.parent.resolve(strict=False) / supplied_path.name
     except (OSError, RuntimeError, TypeError) as error:
         raise SchemaRefusal("corpus-register path could not be resolved") from error
-    if not _is_sha256(expected_digest):
+    if not is_sha256(expected_digest):
         raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
     return path
 
@@ -397,7 +397,7 @@ def _temporary_cleanup_error(path: Path) -> OSError | None:
 def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:
     """Read and verify the immutable register bytes sealed into one run."""
     digest = run.get("register_digest")
-    if not _is_sha256(digest):
+    if not is_sha256(digest):
         raise IncompatibleReuse("run.json carries no valid register_digest")
     relative_path = tree.blob_path("door", digest)
     try:
@@ -428,7 +428,7 @@ def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -
     """
     sealed = run.get("register_digest")
     required = run.get("register_required")
-    if not _is_sha256(sealed) or not isinstance(required, bool):
+    if not is_sha256(sealed) or not isinstance(required, bool):
         raise IncompatibleReuse(
             "run.json does not carry a valid corpus-register digest and presence binding"
         )
@@ -660,18 +660,10 @@ def _digests(value: Any, what: str) -> list[str]:
         not isinstance(value, list)
         or len(value) > MAX_RECORD_LIST_ITEMS
         or value != sorted(set(value))
-        or not all(_is_sha256(member) for member in value)
+        or not all(is_sha256(member) for member in value)
     ):
         raise SchemaRefusal(f"{what} must be sorted unique source digests")
     return value
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _identity(value: Any, prefix: str, what: str) -> None:
