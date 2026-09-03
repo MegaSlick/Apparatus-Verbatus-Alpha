@@ -91,9 +91,11 @@ from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from operations.serving.config import ServingConfigInputs
+from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
 
-from . import bootstrap_main
+from . import boot_a_request, bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
 from .bootstrap_main import (
     DEFAULT_PROOF_FIXTURE,
@@ -290,6 +292,24 @@ def resolve_run_plan(
     volume = bootstrap.volume_mount_path
     report_path = _require_contained(args.report_path, volume, "--report-path")
     _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    # boot_a_request.py seals BOOT_A_VOLUME_MOUNT_PATH into every real launch
+    # request; a directory at exactly that path that is not actually mounted
+    # is an unmounted local substitute on the pod's own ephemeral disk, not
+    # the approved network volume -- write_probe (bootstrap_main.py) only
+    # proves the path is a writable directory, and gate.resolve_storage_roots
+    # only proves it exists, so neither catches this on its own. This check
+    # is scoped to the one path a real launch actually seals, not to every
+    # --volume-mount-path a drill or test may name, so a plain temporary
+    # directory used as a stand-in volume elsewhere is unaffected.
+    if str(volume) == boot_a_request.BOOT_A_VOLUME_MOUNT_PATH and not os.path.ismount(volume):
+        raise RunRefusal(
+            f"--volume-mount-path {volume} is the pod's expected network-volume mount "
+            "point, but this machine does not have anything mounted there; an unmounted "
+            "local directory at that path is not the approved storage root, whatever "
+            "gate.resolve_storage_roots would otherwise admit for it existing and being "
+            "a directory",
+            report_path=report_path,
+        )
     if bootstrap.hold_only:
         raise RunRefusal(
             "pod_run needs a full bootstrap plan; --hold-only is the drill and runs nothing",
@@ -407,6 +427,21 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
 
 
 def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
+    """The measured tier, and the exact serving-recipe/placement digests it was measured against.
+
+    ``serving_config_inputs`` used to fall back to ``{}`` for anything that
+    was not already a plain dict -- absent, malformed, or a stray non-dict
+    value all read the same as "no digests", and the run report recorded
+    "complete" with no proof the serving recipe and pod-placement bytes the
+    orchestrator is about to use are the ones ``PREFLIGHT`` actually
+    measured. ``ServingConfigInputs.from_record`` is the same validation
+    ``bootstrap_main`` applies when it seals this value onto the receipt in
+    the first place (``ServingConfigInputs.to_record``); reapplying it here
+    closes the gap between "the receipt carries something under this key"
+    and "the receipt carries a run-sealed configuration projection this run
+    can trust".
+    """
+
     receipt = report.receipts.get("preflight")
     tier = receipt.get("placement_tier") if isinstance(receipt, dict) else None
     if not isinstance(tier, str) or not tier:
@@ -415,7 +450,20 @@ def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
             "record which measured tier its chairs were preflighted for"
         )
     inputs = receipt.get("serving_config_inputs") if isinstance(receipt, dict) else None
-    return tier, dict(inputs) if isinstance(inputs, dict) else {}
+    if not isinstance(inputs, Mapping):
+        raise RunRefusal(
+            "the green bootstrap's PREFLIGHT receipt carries no serving_config_inputs; the run "
+            "cannot record which measured serving recipe and pod-placement digests its chairs "
+            "were preflighted against"
+        )
+    try:
+        validated = ServingConfigInputs.from_record(inputs)
+    except ServingConfigurationError as error:
+        raise RunRefusal(
+            "the green bootstrap's PREFLIGHT receipt carries a malformed serving_config_inputs: "
+            f"{error}"
+        ) from error
+    return tier, validated.to_record()
 
 
 def _stamp(value: datetime) -> str:
@@ -426,23 +474,39 @@ def _write_run_report(plan: RunPlan, record: Mapping[str, object]) -> None:
     atomic_write(plan.report_path, canonical_json({"schema": RUN_REPORT_SCHEMA, **record}))
 
 
-def _write_refusal(report_path: Path | None, reason: str, *, now: Callable[[], datetime]) -> None:
-    """Best-effort durable reason, with ``bootstrap_main``'s own rule about parents."""
+def _write_refusal(
+    report_path: Path | None, reason: str, *, now: Callable[[], datetime]
+) -> str | None:
+    """Best-effort durable reason, with ``bootstrap_main``'s own rule about parents.
 
-    if report_path is None or not report_path.parent.is_dir():
-        return
+    Returns ``None`` when the reason was written, and also when there was
+    legitimately nowhere yet to write it (``report_path`` is ``None`` for a
+    refusal raised before a plan exists) -- neither is a failure worth a
+    caller's attention. Any other case returns a description of why the
+    durable record could not be written, so the caller can say so: a refusal
+    that never reaches the volume is silent (GOVERNANCE 2) unless something
+    names that it happened.
+    """
+
+    if report_path is None:
+        return None
+    if not report_path.parent.is_dir():
+        return f"{report_path.parent} does not exist"
     try:
         atomic_write(
             report_path,
             canonical_json({"schema": RUN_REFUSAL_SCHEMA, "reason": reason, "at": _stamp(now())}),
         )
-    except OSError:
-        pass
+    except OSError as error:
+        return str(error)
+    return None
 
 
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
-    _write_refusal(refusal.report_path, str(refusal), now=now)
+    failure = _write_refusal(refusal.report_path, str(refusal), now=now)
+    if failure is not None:
+        print(f"pod_run refusal report could not be written: {failure}", file=sys.stderr)
     return EXIT_REFUSED
 
 

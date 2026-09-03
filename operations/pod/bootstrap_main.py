@@ -1186,7 +1186,7 @@ REFUSAL_SCHEMA = "pod-bootstrap-refusal.v1"
 
 def _write_refusal_report(
     report_path: Path | None, reason: str, *, now: Callable[[], datetime]
-) -> None:
+) -> str | None:
     """Best-effort: leave the refusal reason durable on the volume before exit.
 
     Without this, a refusal is a stderr line that dies with the container --
@@ -1199,10 +1199,19 @@ def _write_refusal_report(
     and calling it unconditionally here would let exactly the write-probe
     refusal this exists to record silently create the unmounted volume the
     probe just proved was not there.
+
+    Returns ``None`` when the reason was written, and also when there was
+    legitimately nowhere yet to write it (``report_path`` is ``None``); any
+    other case returns a description of the failure, so the caller (``refuse``)
+    can name it rather than letting the durable record's own absence go
+    unmentioned -- GOVERNANCE 2 binds this failure too, not only the refusal
+    it was trying to record.
     """
 
-    if report_path is None or not report_path.parent.is_dir():
-        return
+    if report_path is None:
+        return None
+    if not report_path.parent.is_dir():
+        return f"{report_path.parent} does not exist"
     try:
         atomic_write(
             report_path,
@@ -1214,8 +1223,9 @@ def _write_refusal_report(
                 }
             ),
         )
-    except OSError:
-        pass
+    except OSError as error:
+        return str(error)
+    return None
 
 
 EXIT_REFUSED = 2
@@ -1261,7 +1271,9 @@ def refuse(
 
     print(f"{label} refused: {refusal}", file=sys.stderr)
     report_path = plan.report_path if plan is not None else refusal.report_path
-    _write_refusal_report(report_path, str(refusal), now=now)
+    failure = _write_refusal_report(report_path, str(refusal), now=now)
+    if failure is not None:
+        print(f"{label} refusal report could not be written: {failure}", file=sys.stderr)
     return EXIT_REFUSED
 
 

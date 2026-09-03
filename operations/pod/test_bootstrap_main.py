@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from . import bootstrap_main
 from .bootstrap import BootstrapStep, BootstrapStepFailure
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
@@ -455,6 +456,43 @@ def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
     record = json.loads(ws.report_path.read_text(encoding="utf-8"))
     assert record["schema"] == REFUSAL_SCHEMA
     assert "positive finite number" in record["reason"]
+
+
+def test_a_refusal_report_write_failure_is_named_not_swallowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_write_refusal_report`` used to return ``None`` whether it wrote the
+    report or hit an ``OSError`` -- ``refuse`` could not tell, so a refusal
+    that also failed to leave its durable reason exited exactly like a clean
+    one. GOVERNANCE 2 binds the write failure too: it must be named on
+    stderr, and the refusal exit code stays exactly what it was.
+    """
+
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = [
+        "--volume-mount-path",
+        str(ws.volume),
+        "--report-path",
+        str(ws.report_path),
+        "--hold-only",
+        "--interval-seconds",
+        "0",
+    ]
+
+    def broken_atomic_write(path, payload):  # type: ignore[no-untyped-def]
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(bootstrap_main, "atomic_write", broken_atomic_write)
+
+    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--interval-seconds must be a positive finite number" in err
+    assert "refusal report could not be written" in err
+    assert "no space left on device" in err
+    assert not ws.report_path.exists()
 
 
 def test_refuses_missing_required_plan_arguments(

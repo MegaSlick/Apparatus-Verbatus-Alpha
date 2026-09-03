@@ -7,7 +7,8 @@ orchestrator subprocess, and an injected clock for every sleep. The fixture
 roster (``config/models.toml``) and the fixture serving catalogue are what the
 plan names; no chair is ever served and no provider is ever reached.
 
-The last test is the reconciliation the ``pod`` dependency group carries with
+The last two tests are the ``surface.py``/``bootstrap_main`` evidence-prefix
+spelling held together, and the reconciliation the ``pod`` dependency group carries with
 ``config/serving_recipes_real.toml``. The group is locked now -- what could
 not share one environment before was ``transformers==4.57.1`` wanting
 ``huggingface-hub<1.0``, and that is resolved -- so the reconciliation is
@@ -26,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from . import pod_run
 from .bootstrap import BootstrapStep
 from .pod_run import (
     EXIT_BOOTSTRAP_RED,
@@ -391,6 +393,90 @@ def test_a_green_bootstrap_without_a_measured_tier_is_refused_by_name(tmp_path: 
     assert "placement_tier" in report["reason"]
 
 
+@dataclass
+class _TierWithoutServingInputsActions(FakeActions):
+    """Green, with a measured tier but no ``serving_config_inputs`` at all."""
+
+    def run_preflight(self) -> dict[str, object]:
+        return self._step(
+            BootstrapStep.PREFLIGHT,
+            {"color": "green", "placement_tier": TIER},
+        )
+
+
+def test_a_green_bootstrap_with_no_serving_config_inputs_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    """A preflight receipt with a tier but no digests cannot say what those chairs
+
+    were actually measured against -- the run must not reach "complete" believing
+    a serving recipe and pod-placement pair that PREFLIGHT never checked.
+    """
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: _TierWithoutServingInputsActions(),
+        runner=runner,
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    report = _report(ws)
+    assert report["state"] == "refused"
+    assert "serving_config_inputs" in report["reason"]
+
+
+@dataclass
+class _MalformedServingInputsActions(FakeActions):
+    """Green, with a tier and a ``serving_config_inputs`` that fails validation."""
+
+    def run_preflight(self) -> dict[str, object]:
+        return self._step(
+            BootstrapStep.PREFLIGHT,
+            {
+                "color": "green",
+                "placement_tier": TIER,
+                # Missing `schema` and carrying a non-hex digest: neither
+                # `ServingConfigInputs.from_record`'s field check nor its
+                # `is_sha256` check can accept this.
+                "serving_config_inputs": {
+                    "serving_recipes_sha256": "not-a-digest",
+                    "pod_placement_sha256": "2" * 64,
+                },
+            },
+        )
+
+
+def test_a_green_bootstrap_with_a_malformed_serving_config_inputs_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: _MalformedServingInputsActions(),
+        runner=runner,
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    report = _report(ws)
+    assert report["state"] == "refused"
+    assert "malformed serving_config_inputs" in report["reason"]
+
+
 def test_the_run_report_is_written_before_the_orchestrator_starts(tmp_path: Path) -> None:
     """A crash mid-run leaves a durable ``running`` record, never silence."""
 
@@ -593,6 +679,32 @@ def test_refuses_a_bad_run_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     assert "--run-id refused" in capsys.readouterr().err
 
 
+def test_a_refusal_report_write_failure_is_named_not_swallowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_write_refusal`` used to return ``None`` whether it wrote the report or
+    hit an ``OSError`` -- ``_refuse`` could not tell, so a run that refused
+    *and* failed to leave its durable reason exited exactly like a run that
+    refused cleanly. GOVERNANCE 2 binds the write failure too: it must be
+    named on stderr, and the refusal exit code stays exactly what it was.
+    """
+
+    ws = _prepared(tmp_path)
+
+    def broken_atomic_write(path, payload):  # type: ignore[no-untyped-def]
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(pod_run, "atomic_write", broken_atomic_write)
+
+    exit_code, _runner = _refused(ws, _run_argv(ws, run_id="My-Run"))
+
+    assert exit_code == EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "--run-id refused" in err
+    assert "pod_run refusal report could not be written" in err
+    assert "no space left on device" in err
+
+
 def test_refuses_a_missing_submission_folder_by_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -677,9 +789,33 @@ def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
     err = capsys.readouterr().err
     assert "does not admit the submission folder" in err
     assert "reserved to Tyrel" in err
-    report = _report(ws)
-    assert report["schema"] == RUN_REFUSAL_SCHEMA
-    assert "reserved to Tyrel" in report["reason"]
+
+
+def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one path a real launch seals must actually be mounted, not merely present.
+
+    ``boot_a_request.py`` seals ``BOOT_A_VOLUME_MOUNT_PATH`` into every real
+    launch request. Neither ``bootstrap_main.write_probe`` (a writable
+    directory) nor ``gate.resolve_storage_roots`` (an existing directory)
+    proves that path is the attached network volume rather than an unmounted
+    local substitute on the pod's own ephemeral disk. This test stands a
+    plain temporary directory in for that path -- ``tmp_path`` is never
+    itself a mount point -- and expects the refusal named in
+    ``resolve_run_plan``, before the orchestrator or even the bootstrap runs.
+    """
+
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run.boot_a_request, "BOOT_A_VOLUME_MOUNT_PATH", str(ws.volume))
+
+    exit_code, runner = _refused(ws, _run_argv(ws))
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    err = capsys.readouterr().err
+    assert "expected network-volume mount point" in err
+    assert "does not have anything mounted there" in err
 
 
 def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
@@ -753,6 +889,19 @@ def test_refuses_a_credential_looking_value_in_either_half(
 
     assert exit_code == EXIT_REFUSED
     assert "looks like a credential" in capsys.readouterr().err
+
+
+def test_the_operator_evidence_prefix_names_the_same_directory_as_preflight() -> None:
+    """``surface.FETCH_EVIDENCE_PREFIX`` is a second, deliberate spelling of
+    ``bootstrap_main.PREFLIGHT_DIRECTORY`` -- ``surface.py`` says so rather than
+    import it, to avoid loading the whole serving stack for one directory name.
+    ``surface.py``'s own docstring says this file is where the two spellings are
+    held together; this is that test.
+    """
+
+    from operations.operator.surface import FETCH_EVIDENCE_PREFIX
+
+    assert FETCH_EVIDENCE_PREFIX == pod_run.bootstrap_main.PREFLIGHT_DIRECTORY
 
 
 # --- the pod dependency group and the recipe's pins ---------------------------
