@@ -67,6 +67,38 @@ a run with both register drift and an unloadable fixture now names the fixture
 first. Nothing pinned depends on the old order — the drift test's fixture is sound —
 so this is recorded rather than reverted.
 
+**The Door seals three names on a real run alone, and they are what stands in
+for the whole-digest check downstream.** `_real_bindings` adds `models`,
+`armarium-formats` and `run-policy` to `sealed_config_digests` on the real path
+only — never into `config_digest`, so the real digest does not move and no run
+in flight is invalidated by their arrival. They exist because a real run's
+`config_digest` cannot be recomputed by any later stage: it binds the submission
+ledger's file list and self-hash, the data-handling policy that gated admission,
+the triage documents, and `_door_execution_recipe`, which is the PDFium and
+Pillow build of the machine that ran the Door. Recomputing that downstream would
+refuse a sound run after a library upgrade, so `open_context`'s whole-digest
+comparison has no counterpart on the real route and the name-by-name recheck of
+the sealed map takes its place. Without these three names that recheck would
+cover neither the model roster (only inside `config_digest`, via
+`models.to_record()`), nor the Armarium's format projection, nor the run-level
+reading knobs — the witness-context regime and its declaration, the Lectio nuda
+rate and approval reference, the Perlector instrument rate and approval
+reference, and `draft_fed`, which `real_run_policy_digest` closes under one
+name. A real run resumed with a different `--models-config` would otherwise
+publish stage-3 testimony naming one model and stage-4 dossiers naming another,
+every check green, which is GOVERNANCE 6 broken silently on the one path that
+will ever carry real material.
+
+**A real run created before these three names cannot be resumed under this
+build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
+moved one — "this run sealed no digest for the … configuration, so a stage
+cannot prove which bytes it is bound to" — because the two need different
+operator actions: restore the file, versus start the run again on a build that
+seals the name. That is correct and cheap today, and only today: nothing real
+has ever gone past the Designator, so no corpus is stranded. It stops being
+cheap the moment a real corpus is in flight, which is why this landed before the
+first live pod rather than after it.
+
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
 other's stored deleted-seal trigger.
