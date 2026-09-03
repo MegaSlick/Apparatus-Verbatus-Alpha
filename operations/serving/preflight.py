@@ -20,7 +20,7 @@ import hashlib
 import stat
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Final, Mapping
 
 from common.chairs.models import ChairIdentity, is_sha256
 from operations.pod.preflight import (
@@ -37,6 +37,12 @@ from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 SmokeCall = Callable[[ServiceHandle, ChairIdentity, Path, PlacementTier], SmokeResult]
 CalibrationFor = Callable[[ChairIdentity, Path], AdapterCalibration | None]
+
+# How deep a launch audit may nest before `_plain_mapping` refuses it. A real
+# audit is a handful of levels; the bound exists so a pathological one is named
+# rather than crashing the copy, the same way `operations/submit/inventory.py`
+# bounds a submission's directory tree.
+MAX_AUDIT_DEPTH: Final = 64
 
 
 def prepare_log_root(log_root: str | Path) -> Path:
@@ -319,16 +325,32 @@ def _with_service_evidence(
     return replace(result, receipt=receipt)
 
 
-def _plain_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    """Copy nested mappings/lists out of immutable operational audit values."""
+def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, object]:
+    """Copy nested mappings/lists out of immutable operational audit values.
 
+    Bounded rather than rewritten with an explicit stack. What this walks is a
+    launch audit this package assembled itself, so its depth is known and small
+    -- but "known and small" is a claim about today's code, and the walk that
+    trusts it has no way to say so if a later edit is wrong. The bound is the
+    same shape `operations/submit/inventory.py::_walk` uses for a directory
+    tree: an audit that nests past it is refused by name rather than by running
+    out of stack, which is a crash naming neither the audit nor the field.
+    """
+
+    if depth > MAX_AUDIT_DEPTH:
+        raise ServingConfigurationError(
+            f"a serving launch audit nests deeper than {MAX_AUDIT_DEPTH} levels; an audit "
+            "value that deep is a defect in whatever assembled it, not evidence a receipt "
+            "can carry"
+        )
     result: dict[str, object] = {}
     for key, item in value.items():
         if isinstance(item, Mapping):
-            result[key] = _plain_mapping(item)
+            result[key] = _plain_mapping(item, depth + 1)
         elif isinstance(item, tuple):
             result[key] = [
-                _plain_mapping(entry) if isinstance(entry, Mapping) else entry for entry in item
+                _plain_mapping(entry, depth + 1) if isinstance(entry, Mapping) else entry
+                for entry in item
             ]
         else:
             result[key] = item

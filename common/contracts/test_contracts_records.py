@@ -17,6 +17,9 @@ from common.contracts.approval import (
     validate_approval_record,
 )
 from common.contracts.canonical import (
+    _MAX_CANONICAL_DEPTH,
+    _refuse_floats,
+    _unencodable_path,
     canonical_bytes,
     digest_of,
     self_hash,
@@ -84,6 +87,120 @@ def test_deep_nesting_is_a_named_serializer_refusal_not_recursion_error():
         nested = [nested]
     with pytest.raises(TypeError, match="recursive or nests too deeply"):
         canonical_bytes(nested)
+
+
+# Far past any interpreter's recursion allowance, so a walk that survives this
+# is not spending the interpreter stack to do it.
+PATHOLOGICAL_DEPTH = 1_000_000
+
+
+def test_a_pathological_payload_is_refused_by_this_module_not_by_the_interpreter():
+    """The walk this pipeline seals every artifact through may not be the thing
+    that runs out of stack, and may not decide *where* by running out.
+
+    `canonical_bytes` did convert the `RecursionError` into a named refusal, so
+    nothing crashed. But the depth it refused at was wherever one of two
+    recursive walks exhausted itself: `_refuse_floats`'s Python frames near the
+    recursion limit, or `json.dumps`'s C encoder, which absorbs roughly 9,997
+    levels here and a different number elsewhere -- CPython's C recursion limit
+    is platform-dependent, the same fact `common/test_corpus_register.py`
+    records about the JSON parser. A hasher whose acceptance depends on which
+    machine ran it cannot promise the same content produces the same bytes.
+
+    So the walk carries its own list and its own declared bound, and a million
+    levels are answered in constant time by a refusal that names the limit.
+    """
+    nested: object = "leaf"
+    for _ in range(PATHOLOGICAL_DEPTH):
+        nested = [nested]
+
+    with pytest.raises(TypeError, match="nests too deeply") as caught:
+        _refuse_floats(nested)
+    assert f"{_MAX_CANONICAL_DEPTH}-level limit" in str(caught.value)
+
+    with pytest.raises(TypeError, match="nests too deeply"):
+        canonical_bytes(nested)
+
+
+def test_the_canonical_depth_bound_is_a_bound_and_not_a_ceiling_real_records_meet():
+    """One level inside it serializes exactly as before; one level past it is
+    refused by name. The deepest record this pipeline builds is a handful of
+    levels, so nothing real is anywhere near either side of this."""
+    inside: object = "leaf"
+    for _ in range(_MAX_CANONICAL_DEPTH - 1):
+        inside = [inside]
+    assert canonical_bytes(inside) == b"[" * (_MAX_CANONICAL_DEPTH - 1) + b'"leaf"' + b"]" * (
+        _MAX_CANONICAL_DEPTH - 1
+    )
+
+    outside: object = "leaf"
+    for _ in range(_MAX_CANONICAL_DEPTH + 1):
+        outside = [outside]
+    with pytest.raises(TypeError, match=f"past the {_MAX_CANONICAL_DEPTH}-level limit"):
+        canonical_bytes(outside)
+
+
+def test_a_refusal_deep_inside_the_bound_still_names_a_readable_position():
+    """The position is elided rather than rendered whole. A legal-but-deep
+    payload can put a float two hundred levels down, and a path of two hundred
+    segments on stderr names nothing an operator can read."""
+    buried: object = 1.5
+    for _ in range(200):
+        buried = {"nested": buried}
+
+    with pytest.raises(TypeError, match="^float at ") as caught:
+        _refuse_floats(buried)
+    message = str(caught.value)
+    assert "more levels" in message
+    assert len(message) < 1000
+
+
+def test_a_structure_that_contains_itself_is_named_rather_than_walked_forever():
+    """A cycle used to end the recursive walk by exhausting it. A walk with no
+    stack to exhaust must say so itself, or it hangs -- which is worse than the
+    traceback it replaced, because nothing at all is reported."""
+    looped: dict = {"payload": {}}
+    looped["payload"]["back"] = looped
+
+    with pytest.raises(TypeError, match="contains itself"):
+        _refuse_floats(looped)
+    with pytest.raises(TypeError, match="recursive or nests too deeply"):
+        canonical_bytes(looped)
+
+
+def test_a_value_reached_twice_is_not_mistaken_for_a_cycle():
+    """Only the open path is watched. A record legitimately carrying the same
+    sub-structure under two keys is canonical, and refusing it would be a new
+    and much louder defect than the one the cycle check closes."""
+    shared = {"region": [1, 2]}
+    assert (
+        canonical_bytes({"a": shared, "b": shared})
+        == b'{"a":{"region":[1,2]},"b":{"region":[1,2]}}'
+    )
+
+
+def test_the_unencodable_locator_walks_a_pathological_payload_too():
+    """The depth bound keeps this locator shallow in production -- but it runs
+    inside `canonical_bytes`'s `UnicodeEncodeError` handler, which is outside
+    the guard that names exhausted traversal, so a `RecursionError` raised in
+    here escaped as a traceback from the function every sealed artifact is
+    hashed through. It is pinned directly rather than through its caller,
+    because its caller can no longer hand it anything deep."""
+    nested: object = "leaf"
+    for _ in range(PATHOLOGICAL_DEPTH):
+        nested = [nested]
+    assert _unencodable_path(nested) is None
+    # Freed before the next chain is built: two million-level structures alive
+    # at once is a memory cost this case has no reason to pay.
+    del nested
+
+    buried: object = SURROGATE
+    for _ in range(PATHOLOGICAL_DEPTH):
+        buried = {"nested": buried}
+    located = _unencodable_path(buried)
+    assert located.endswith(".nested")
+    assert "more levels" in located
+    assert len(located) < 1000
 
 
 # json.loads accepts this value, while canonical UTF-8 cannot encode it.
