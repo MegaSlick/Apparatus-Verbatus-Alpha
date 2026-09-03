@@ -177,9 +177,24 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
         if name not in IMAGE_GROUPS
         for entry in group
     ]
-    assert all(isinstance(entry, str) and ";" in entry for entry in excluded_entries), (
+    # Two different problems, reported separately. A PEP 735
+    # `{include-group = "..."}` table here is a shape this test does not
+    # understand, not an entry missing a marker -- the comment further down
+    # explains that those tables are a real thing to expect -- and folding both
+    # into one assertion made a future group that used one fail with a message
+    # naming the wrong problem.
+    excluded_tables = [entry for entry in excluded_entries if not isinstance(entry, str)]
+    assert all(
+        isinstance(entry, dict) and set(entry) == {"include-group"} for entry in excluded_tables
+    ), (
+        f"unrecognised non-string dependency-group entries outside {IMAGE_GROUPS}: "
+        f"{excluded_tables}; this test compares environment markers and does not know "
+        "what these declare"
+    )
+    unmarked = [entry for entry in excluded_entries if isinstance(entry, str) and ";" not in entry]
+    assert not unmarked, (
         f"dependency-group entries outside {IMAGE_GROUPS} without an environment "
-        f"marker: {excluded_entries}; an unmarked entry would install everywhere "
+        f"marker: {unmarked}; an unmarked entry would install everywhere "
         "and this test would silently stop comparing it"
     )
     group_entries = [

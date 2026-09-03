@@ -18,6 +18,7 @@ from operations.pod.transfer import ChecksummedTransfer
 from .errors import ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
+    MAX_LISTED_KEYS,
     MAX_LISTED_PAGES,
     SHA256_METADATA_KEY,
     S3VolumeObjectReader,
@@ -661,6 +662,31 @@ def test_a_listing_with_a_fresh_token_every_page_is_bounded_by_page_count() -> N
     with pytest.raises(VolumeTransferRefusal, match="pages listing"):
         _reader(client).list_keys("runs/r1/")
     assert client.calls == MAX_LISTED_PAGES
+
+
+def test_a_single_page_past_the_key_bound_is_refused_by_name() -> None:
+    """The key bound the docstring leans on, proven rather than assumed.
+
+    Only the page bound was exercised; the key bound is reachable on its own
+    (a thousand pages of a thousand keys) and a listing far past the shape of
+    one run tree must be refused, not walked.
+    """
+
+    class OneHugePageClient(FakeListingClient):
+        def __init__(self) -> None:
+            super().__init__({})
+
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.listings.append({"Prefix": Prefix})
+            return {
+                "Contents": [{"Key": f"{Prefix}{index}"} for index in range(MAX_LISTED_KEYS + 1)],
+                "IsTruncated": False,
+            }
+
+    client = OneHugePageClient()
+    with pytest.raises(VolumeTransferRefusal, match=f"more than {MAX_LISTED_KEYS} objects"):
+        _reader(client).list_keys("runs/r1/")
 
 
 def test_a_listing_the_volume_refuses_is_a_refusal_not_an_empty_run() -> None:

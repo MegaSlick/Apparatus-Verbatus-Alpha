@@ -4689,6 +4689,11 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert payload["fetched"] == len(_files_under(volume / "runs" / "brought-home"))
     assert payload["reused"] == 0
     assert payload["stages_verified"] == ["designator"]
+    # Every artifact here is recorded by a stored manifest, so none of them was
+    # verified "by their own envelope" -- naming them all was a false statement
+    # about what was measured (GOVERNANCE 10) and made the field useless for
+    # telling a crashed stage's artifacts from the rest.
+    assert payload["envelope_only_artifacts"] == []
     assert payload["excluded_publication_temporaries"] == [
         "2_designator/.manifest.json.tmp-residue"
     ]
@@ -4704,6 +4709,120 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+
+
+def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, bytes]:
+    """A launch's PREFLIGHT tree beside the run tree, as `bootstrap_main` writes it.
+
+    A golden page, a serving log, and one content-addressed receipt -- the
+    three shapes this pass has to handle: opaque bytes, plain text, and an
+    object whose name is its own digest.
+    """
+
+    page = b"\x89PNG\r\n\x1a\nsynthetic golden page"
+    log = b"vllm: served attestator_1\n"
+    receipt = b'{"schema":"serving-receipt.v1"}'
+    written = {
+        f"preflight/{stem}/golden-page/witness-abc.png": page,
+        f"preflight/{stem}/logs/attestator_1.log": log,
+        f"preflight/{stem}/receipts/sha256/{_sha256(receipt)}.json": receipt,
+    }
+    for key, payload in written.items():
+        target = volume / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return written
+
+
+def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
+    tmp_path: Path,
+) -> None:
+    """The run tree is not the whole record of a run that billed a card.
+
+    The launch's PREFLIGHT tree -- which chairs were preflighted, against which
+    catalogue digests, at what measured tier -- is written outside
+    ``runs/<run_id>/`` and used to have no tracked path home, while the volume
+    it lives on is destroyed under the retention policy (GOVERNANCE 6). What
+    still cannot be fetched by name is said out loud rather than left to be
+    inferred from an empty folder (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    written = _volume_evidence(volume)
+    surface = _surface(tmp_path)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    evidence_root = into / "evidence"
+    for key, payload in written.items():
+        assert (evidence_root / key).read_bytes() == payload
+    payload = surface.receipts.read(receipt)["payload"]["evidence"]
+    assert payload["fetched"] == len(written)
+    assert payload["reused"] == 0
+    assert payload["refusals"] == []
+    assert {entry["key"] for entry in payload["objects"]} == set(written)
+    assert all(entry["sha256"] == _sha256(written[entry["key"]]) for entry in payload["objects"])
+    assert "bootstrap journal" in payload["not_fetched"]
+    assert "--evidence-key" in payload["not_fetched"]
+
+    again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    repeated = surface.receipts.read(again)["payload"]["evidence"]
+    assert repeated["fetched"] == 0
+    assert repeated["reused"] == len(written)
+
+
+def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
+    tmp_path: Path,
+) -> None:
+    """The launch-bound reports are named by the operator who knows their keys.
+
+    A key that is not there is recorded as a refusal and never brings the
+    verified run tree down with it -- losing a proven fetch because a log file
+    could not be read would be the wrong trade.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    report = b'{"schema":"pod-run-report.v1"}'
+    (volume / "pod-run-report-launch7.json").write_bytes(report)
+    surface = _surface(tmp_path)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(
+        run_id="brought-home",
+        into=into,
+        reader=reader,
+        evidence_keys=("pod-run-report-launch7.json", "pod-run-report-absent.json"),
+    )
+
+    outcome = surface.receipts.read(receipt)["payload"]
+    assert outcome["state"] == "verified"
+    evidence = outcome["evidence"]
+    assert (into / "evidence" / "pod-run-report-launch7.json").read_bytes() == report
+    assert [entry["key"] for entry in evidence["objects"]] == ["pod-run-report-launch7.json"]
+    assert any("pod-run-report-absent.json" in reason for reason in evidence["refusals"])
+
+
+def test_fetch_run_records_a_content_addressed_evidence_object_that_forged_its_name(
+    tmp_path: Path,
+) -> None:
+    """An evidence receipt must still hash to its own name."""
+
+    volume, reader = _volume_run(tmp_path)
+    written = _volume_evidence(volume)
+    [addressed] = [key for key in written if "/receipts/sha256/" in key]
+    reader.overrides[addressed] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    outcome = surface.receipts.read(receipt)["payload"]
+    assert outcome["state"] == "verified", "the run tree itself is untouched by this"
+    evidence = outcome["evidence"]
+    assert any("not the one its name claims" in reason for reason in evidence["refusals"])
+    assert not (into / "evidence" / addressed).exists()
 
 
 def test_fetch_run_refuses_a_receipt_that_does_not_hash_to_its_name(tmp_path: Path) -> None:
@@ -4783,7 +4902,8 @@ def test_fetch_run_brings_home_a_stage_that_never_reached_finish(tmp_path: Path)
     assert payload["state"] == "verified-partial"
     assert payload["unmanifested_stages"] == ["designator"]
     assert payload["stages_verified"] == []
-    assert len(payload["envelope_only_artifacts"]) == 1
+    [envelope_only] = payload["envelope_only_artifacts"]
+    assert envelope_only.startswith("2_designator/artifacts/")
     assert (into / "brought-home" / "2_designator" / "artifacts").exists()
     assert not (into / "brought-home" / "2_designator" / "manifest.json").exists()
 
@@ -4806,6 +4926,10 @@ def test_fetch_run_still_refuses_a_forged_artifact_in_an_unmanifested_stage(
 
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
     assert not (tmp_path / "local" / "brought-home" / relative).exists()
+    # And no empty run-tree skeleton either: a refused fetch that left the
+    # directories behind put a structure on disk no completed fetch wrote, which
+    # the partial receipt does not mention and a later fetch would walk.
+    assert not (tmp_path / "local" / "brought-home").exists()
 
 
 def test_fetch_run_refuses_a_blob_that_does_not_hash_to_its_name(tmp_path: Path) -> None:

@@ -135,6 +135,22 @@ _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
 """Where `pod_run` writes run trees on the volume, relative to its mount:
 `<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
+FETCH_EVIDENCE_PREFIX = "preflight"
+"""Where a launch's PREFLIGHT evidence sits on the volume, relative to its mount:
+`<volume>/preflight/<report stem>/` (`operations/pod/bootstrap_main.py`,
+`PREFLIGHT_DIRECTORY`) -- the golden page, the serving logs, and the
+content-addressed serving receipts, launch audits and evidence manifests. Spelled
+here rather than imported because `bootstrap_main` pulls the whole serving stack
+in behind it, which this surface has no business loading to learn a directory
+name; `operations/pod/test_pod_run.py` holds the two spellings together."""
+EVIDENCE_DIRECTORY = "evidence"
+"""Where fetched evidence lands under `--into`, beside `<run_id>/` rather than
+inside it: the run tree must stay byte-for-byte what the volume holds under
+`runs/<run_id>/`, and the tree's own inventory scope accounts for nothing else."""
+MAX_FETCH_EVIDENCE_OBJECTS = 10_000
+"""A launch's preflight directory holds a page, some logs and a handful of
+receipts. Ten thousand is far past that and still bounds a listing that is not
+what this verb thinks it is."""
 MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
 """One object's bound. A whole-page blob is the largest thing a run tree holds;
 the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
@@ -785,6 +801,8 @@ class OperatorSurface:
         volume: VolumeSpec | None = None,
         reader: RunObjectReader | None = None,
         run_prefix: str = FETCH_RUN_PREFIX,
+        evidence_prefixes: Sequence[str] = (FETCH_EVIDENCE_PREFIX,),
+        evidence_keys: Sequence[str] = (),
     ) -> Path:
         """Bring one run tree back from the volume, every object digest-checked.
 
@@ -798,6 +816,22 @@ class OperatorSurface:
         scope -- is a refusal by name; a publication temporary is skipped and
         its name recorded. A local file that already exists is compared, never
         replaced: identical bytes are reused, different bytes refuse by name.
+
+        **The run tree is not the whole record, so the evidence comes too.** A
+        launch's PREFLIGHT tree (``preflight/``) is written outside
+        ``runs/<run_id>/`` and says which chairs were preflighted, against which
+        catalogue digests, at what measured tier -- provenance that has to
+        travel with the record (GOVERNANCE 6) off a volume the retention policy
+        will destroy. Everything under ``evidence_prefixes`` is fetched into
+        ``<into>/evidence/``, each object recorded in the receipt with its
+        digest and the content-addressed ones checked against their own names.
+        Two records cannot be found this way: the launch-bound bootstrap and
+        run reports and the bootstrap journal carry this launch's token in
+        names an operator chose, at paths this verb has no way to derive, and
+        guessing at them would mean listing the whole volume -- which holds the
+        submission's own page images. They are named as not fetched in the
+        receipt rather than passed over in silence, and ``evidence_keys`` takes
+        their exact keys from the operator who does know them.
 
         Zero GPU-hours: this reads storage and needs no pod. Nothing here has
         run against a real endpoint (``volume_s3.py``, note 3).
@@ -844,6 +878,12 @@ class OperatorSurface:
             raise OperatorError(
                 ErrorCode.FETCH_RUN_FAILED, detail=f"{error} Saved receipt: {receipt}"
             ) from error
+        evidence = _fetch_evidence(
+            reader,
+            tuple(evidence_prefixes),
+            tuple(evidence_keys),
+            destination_root / EVIDENCE_DIRECTORY,
+        )
         partial = bool(outcome.unmanifested_stages)
         summary = (
             f"Run {checked_id} was brought back and verified: "
@@ -870,6 +910,24 @@ class OperatorSurface:
                 "unmanifested_stages": list(outcome.unmanifested_stages),
                 "envelope_only_artifacts": list(outcome.envelope_only_artifacts),
                 "excluded_publication_temporaries": list(outcome.excluded),
+                "evidence": {
+                    "into": str(destination_root / EVIDENCE_DIRECTORY),
+                    "prefixes": list(evidence_prefixes),
+                    "requested_keys": list(evidence_keys),
+                    "fetched": evidence.fetched,
+                    "reused": evidence.reused,
+                    "bytes": evidence.bytes,
+                    "objects": [{"key": key, "sha256": digest} for key, digest in evidence.objects],
+                    "prefixes_with_nothing_stored": list(evidence.empty_prefixes),
+                    "refusals": list(evidence.refusals),
+                    "not_fetched": (
+                        "the launch-bound bootstrap and pod-run reports and the bootstrap "
+                        "journal: their names carry this launch's token at paths an operator "
+                        "chose, which this verb cannot derive and will not guess at by listing "
+                        "the whole volume. Pass each exact key as --evidence-key to bring them "
+                        "home."
+                    ),
+                },
                 "zero_gpu_hours": True,
             },
             descriptor_action="fetch-run",
@@ -893,6 +951,19 @@ class OperatorSurface:
                 f"{len(outcome.excluded)} publication temporar{'y' if len(outcome.excluded) == 1 else 'ies'} "
                 "on the volume were not fetched; their names are in the receipt."
             )
+        self.present(
+            f"Launch evidence: {evidence.fetched} object(s) fetched, {evidence.reused} already "
+            f"present and identical, into {destination_root / EVIDENCE_DIRECTORY}."
+        )
+        if evidence.refusals:
+            self.present(
+                f"{len(evidence.refusals)} evidence object(s) did not come home; their names "
+                "and reasons are in the receipt. The run tree above is unaffected."
+            )
+        self.present(
+            "The launch-bound reports and the bootstrap journal are not fetched by name -- "
+            "pass --evidence-key for each; the receipt says so too."
+        )
         self.present(f"Saved receipt: {receipt}")
         return receipt
 
@@ -3032,7 +3103,7 @@ def _fetch_run_tree(
     fetched = reused = total = 0
     expected: dict[str, str] = {}
     manifests: dict[str, dict[str, Any]] = {}
-    unresolved: dict[str, str] = {}  # relative artifact path -> its fetched digest
+    unresolved: dict[str, str] = {}  # every fetched artifact -> its digest, resolved below
     # Every target this call itself wrote fresh (never one already on disk that
     # was only compared). A refusal anywhere below -- including one raised well
     # after the object that turned out bad was fetched, such as the stage
@@ -3089,6 +3160,15 @@ def _fetch_run_tree(
         # would derive -- the same envelope, run, and path checks
         # `build_manifest` always applies -- rather than refusing the whole
         # tree for a manifest a genuine crash never got to write.
+        # Every artifact a *stored* manifest recorded, taken before the derived
+        # pass below adds any. `unresolved` holds every artifact that arrived,
+        # because the digest comparison at the end checks them all; only the
+        # ones missing from this set were verified by envelope alone, and only
+        # those belong in the receipt's `envelope_only_artifacts`. Reporting
+        # the whole set named manifest-covered artifacts as unmanifested --
+        # a false statement about what was measured (GOVERNANCE 10) and
+        # useless for telling a crashed stage's artifacts from the rest.
+        manifest_recorded = set(expected)
         manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
         unmanifested_stages: set[str] = set()
         if unresolved:
@@ -3135,6 +3215,25 @@ def _fetch_run_tree(
     except BaseException:
         for path in staged:
             path.unlink(missing_ok=True)
+        # And the directories those files were created in, bottom-up. A refused
+        # fetch that left an empty run-tree skeleton behind put a directory
+        # structure on disk that no completed fetch ever wrote and the partial
+        # receipt does not mention; a later `fetch_run` into the same root then
+        # walks it. `rmdir` removes only what is already empty, so a directory
+        # holding a file an earlier, verified fetch left is untouched.
+        for directory in sorted(
+            {parent for path in staged for parent in path.parents if root in parent.parents},
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        try:
+            root.rmdir()
+        except OSError:
+            pass
         raise
     return FetchRunOutcome(
         fetched,
@@ -3143,7 +3242,105 @@ def _fetch_run_tree(
         tuple(sorted(stages)),
         tuple(excluded),
         tuple(sorted(unmanifested_stages)),
-        tuple(sorted(unresolved)),
+        tuple(sorted(name for name in unresolved if name not in manifest_recorded)),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FetchEvidenceOutcome:
+    """What the evidence pass brought home, and what it did not.
+
+    The run tree is not the whole record of a run that billed a card: the
+    launch's PREFLIGHT evidence -- the golden page, the serving logs, the
+    published serving receipts and launch audits -- lives beside it on the
+    volume and says which chairs were preflighted, against which catalogue
+    digests, at what measured tier. The volume is destroyed under the retention
+    policy, so that provenance has to travel with the record (GOVERNANCE 6),
+    and what could *not* be brought home has to be named rather than left
+    silent (GOVERNANCE 2).
+    """
+
+    fetched: int
+    reused: int
+    bytes: int
+    objects: tuple[tuple[str, str], ...] = ()
+    empty_prefixes: tuple[str, ...] = ()
+    refusals: tuple[str, ...] = ()
+
+
+_CONTENT_ADDRESSED_PARENT = "sha256"
+
+
+def _fetch_evidence(
+    reader: RunObjectReader,
+    prefixes: tuple[str, ...],
+    keys: tuple[str, ...],
+    destination: Path,
+) -> FetchEvidenceOutcome:
+    """Bring the launch's evidence home beside the run tree, each object digested.
+
+    Unlike the run tree, this material carries no manifest to reconcile against:
+    the receipts and audits under it are content-addressed and are checked
+    against their own names, and everything else is recorded in the fetch-run
+    receipt with the digest of the bytes that arrived, which is what lets a
+    later reader say the local copy is the one that was fetched.
+
+    Nothing here refuses the fetch as a whole. The run tree has already been
+    verified when this runs, and losing that verified result because a log file
+    could not be read would be the wrong trade; every object that did not come
+    home is named in the returned refusals and lands in the receipt instead.
+    """
+
+    fetched = reused = total = 0
+    objects: list[tuple[str, str]] = []
+    empty: list[str] = []
+    refusals: list[str] = []
+    wanted: list[str] = []
+    for prefix in prefixes:
+        listing_prefix = prefix if prefix.endswith("/") else f"{prefix}/"
+        try:
+            listed = reader.list_keys(listing_prefix)
+        except Exception as error:  # noqa: BLE001 -- a failed listing is recorded, never raised here
+            refusals.append(f"{listing_prefix}: the volume listing failed: {error}")
+            continue
+        if not listed:
+            empty.append(listing_prefix)
+        wanted.extend(listed)
+    wanted.extend(keys)
+    ordered = sorted(dict.fromkeys(wanted))
+    if len(ordered) > MAX_FETCH_EVIDENCE_OBJECTS:
+        refusals.append(
+            f"{len(ordered)} objects are stored under the evidence prefixes, past the "
+            f"{MAX_FETCH_EVIDENCE_OBJECTS}-object bound; none were fetched"
+        )
+        return FetchEvidenceOutcome(0, 0, 0, (), tuple(empty), tuple(refusals))
+    for key in ordered:
+        if not key or key.startswith("/") or ".." in key.split("/"):
+            refusals.append(f"{key!r} is not a path this verb will write under {destination}")
+            continue
+        target = destination / key
+        existed = target.exists()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            size, was_reused = _fetch_or_compare(reader, key, target)
+            digest = _sha256_of(target)
+            name = PurePosixPath(key)
+            if name.parent.name == _CONTENT_ADDRESSED_PARENT and name.stem != digest:
+                raise FetchRunRefusal(
+                    f"{key} is content-addressed but its bytes digest to {digest}; the object "
+                    "on the volume is not the one its name claims."
+                )
+        except Exception as error:  # noqa: BLE001 -- recorded per object, never fatal to the run tree
+            if not existed:
+                target.unlink(missing_ok=True)
+            refusals.append(f"{key}: {error}")
+            continue
+        objects.append((key, digest))
+        total += size
+        fetched += not was_reused
+        reused += was_reused
+    return FetchEvidenceOutcome(
+        fetched, reused, total, tuple(objects), tuple(empty), tuple(refusals)
     )
 
 

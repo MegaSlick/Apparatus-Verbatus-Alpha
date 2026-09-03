@@ -173,6 +173,23 @@ survive to be reused. Run it again after a refusal — it safely reuses those fi
 receipt records counts, the stages verified and the excluded temporaries; `status` shows
 it. The listing and `GetObject` path has never run against a real endpoint.
 
+**The launch's evidence comes home with it.** The run tree is not the whole record of a
+run that billed a card: the launch's `preflight/` tree — the golden page, the serving
+logs, and the content-addressed serving receipts, launch audits and evidence manifests —
+is written beside `runs/` on the volume and says which chairs were preflighted, against
+which catalogue digests, at what measured tier. It is fetched into `<local root>/evidence/`
+in the same call, each object recorded in the receipt with the digest of the bytes that
+arrived and the content-addressed ones checked against their own names. An evidence
+object that cannot be fetched is named in the receipt and never takes the verified run
+tree down with it.
+
+Two records this verb cannot find on its own: the bootstrap and pod-run **reports** and
+the bootstrap **journal**. Their names carry the launch token at paths an operator chose,
+and finding them would mean listing the whole volume — which holds the submission's own
+page images. The receipt says plainly that they were not fetched, and `--evidence-key
+<key>` (repeatable) brings each one home by its exact key. Nothing is left to be inferred
+from an empty folder.
+
 ## `spend show`: inspect the reviewed guard
 
 Choose **spend** in the double-click window, or run `verbatus spend show`. It shows a

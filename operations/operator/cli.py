@@ -293,6 +293,15 @@ def build_parser() -> PlainParser:
             "file here"
         ),
     )
+    fetch_run.add_argument(
+        "--evidence-key",
+        action="append",
+        metavar="KEY",
+        help="one more volume key to bring home beside the run tree, repeatable. The "
+        "launch's preflight/ tree comes home on its own; the bootstrap and run reports and "
+        "the bootstrap journal are named with the launch token at paths this verb cannot "
+        "derive, so name them here. The receipt says which were fetched and which were not",
+    )
 
     export = verbs.add_parser(
         "export", help="copy the recorded base Armarium evidence locally and print reconciliation"
@@ -486,7 +495,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 serving_recipes_config=args.serving_recipes_config,
             )
         elif args.verb == "fetch-run":
-            surface.fetch_run(run_id=args.run_id, into=args.into, volume=volume)
+            surface.fetch_run(
+                run_id=args.run_id,
+                into=args.into,
+                volume=volume,
+                evidence_keys=tuple(args.evidence_key or ()),
+            )
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":
