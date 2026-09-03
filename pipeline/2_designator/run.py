@@ -92,6 +92,7 @@ from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
     EXIT_HELD,
+    PAGE_RESIDUAL_REASON_CODE,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     SECONDARY_PROPOSER_CHAIR,
@@ -138,10 +139,14 @@ _FORBIDDEN_TEXT_KEYS = frozenset(
     }
 )
 
-# The page-residual reason code, named once so the frozenset entry below and
-# every hold payload that cites it are the same string by construction rather
-# than by two authors agreeing.
-PAGE_RESIDUAL_REASON_CODE = "residual-components-over-page-bound"
+# How much of a page's secondary rescue pass its records actually enumerate.
+# A closed pair, modelled on `common.stage`'s `RESIDUAL_ENUMERATION_*` and kept
+# here rather than there because these two values are read by nothing outside
+# this stage: the secondary proposer's output enters no act, no seal and no
+# consumer, and a vocabulary published in `common/` that `common/` never reads
+# would be an interface nobody holds.
+SECONDARY_ENUMERATION_COMPLETE = "complete"
+SECONDARY_ENUMERATION_WITHHELD = "withheld-page-held"
 
 # Why an act could not be marked out. A closed vocabulary rather than free text,
 # so a consumer can branch on the cause without parsing a sentence, and so a new
@@ -938,10 +943,14 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
                 "reason_code": reason_code,
                 "background_source": analysis["background_source"] if analysis else None,
                 "structure_evidence": analysis["structure_evidence"] if analysis else None,
-                # Null on a page held before it was analysed, for the same
-                # reason the two fields above are: no geometry executed on that
-                # page, and naming the numbers it *would* have run under would
-                # be a resolution reported as an execution.
+                # Null on a page held before the structure pass analysed it,
+                # for the same reason the two fields above are: this record
+                # answers for the structure pass, that pass resolved and ran
+                # nothing here, and naming the numbers it *would* have run under
+                # would be a resolution reported as an execution. It is not a
+                # claim that nothing ran on the page at all -- conservation
+                # scans a structure-held page and publishes the two thresholds
+                # its own reconciliation executed under, on its own record.
                 "page_width": analysis["width"] if analysis else None,
                 "page_height": analysis["height"] if analysis else None,
                 "resolved_thresholds": (
@@ -1039,7 +1048,12 @@ def _analyze_page(
         structure_evidence = "detected"
         if not groups:
             structure_evidence = "fallback-tiles"
-            groups = grouping.fallback_tiles(width, height)
+            groups = grouping.fallback_tiles(
+                width,
+                height,
+                bands=thresholds.fallback_bands,
+                overlap_px=thresholds.fallback_overlap_px,
+            )
         cache[ordinal] = {
             "width": width,
             "height": height,
@@ -1233,7 +1247,13 @@ def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) ->
 
 
 def _publish_secondary_proposals(
-    context, ordinal: int, page_record: dict, analysis: dict, claimed: list[dict], secondary: dict
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    claimed: list[dict],
+    secondary: dict,
+    grouping_policy: dict,
 ) -> bool:
     """Cut and hold every non-authoritative rescue candidate for review.
 
@@ -1241,6 +1261,26 @@ def _publish_secondary_proposals(
     against a hand-fed page analysis without needing to also be the first
     (and, since a conservation record is a once-only artifact, therefore the
     only) publisher of that page's conservation record.
+
+    **Bounded per page, the same way and for the same reason the residual
+    enumeration is.** This is the stage's other per-page enumeration, and it is
+    the more expensive one: each rescue cuts a PNG blob as well as two records.
+    A page speckled enough to trip `max_residual_components` would trip this
+    too, and without a bound it would reopen the unopenable run
+    `_publish_page_residual_hold` exists to prevent, by the one route that bound
+    does not cover. Past `max_secondary_proposals` the page's secondary pass
+    becomes one held record naming the count, the bound and the sealed policy
+    digest it was judged against, and no crop is cut. The candidates are
+    counted, never filtered: `structure.secondary_scan` still returns
+    everything it finds and `_secondary_rescue_candidates` still reduces it by
+    geometry alone, so what the bound changes is how many separate review items
+    one page mints -- never what was measured (GOVERNANCE 10).
+
+    `secondary_enumeration` is on both shapes as a closed pair, exactly as
+    `residual_enumeration` is on every conservation record: "this page had no
+    unclaimed candidate" and "this page's candidates were counted and not cut"
+    are two different facts, and a consumer that cannot tell them apart reads
+    the second as the first.
     """
     if secondary["chair_state"] != "configured":
         # Nothing to add: the secondary proposer is explicitly absent, and its
@@ -1269,6 +1309,18 @@ def _publish_secondary_proposals(
     )
     rescues = _secondary_rescue_candidates(claimed, candidates)
     image_path = page_record["payload"]["image_path"]
+    max_secondary_proposals = analysis["thresholds"].max_secondary_proposals
+    if len(rescues) > max_secondary_proposals:
+        return _publish_withheld_secondary_pass(
+            context,
+            ordinal,
+            page_record,
+            analysis,
+            secondary,
+            candidate_count=len(rescues),
+            max_secondary_proposals=max_secondary_proposals,
+            grouping_config_sha256=grouping_policy["config_sha256"],
+        )
     page_bytes = _read_checked_page_bytes(context, page_record)
     for index, rescue_row in enumerate(rescues):
         candidate = rescue_row["candidate"]
@@ -1314,6 +1366,7 @@ def _publish_secondary_proposals(
             "pixel_count": candidate["pixel_count"],
             "authoritative": False,
             "terminal_disposition": "held-for-review",
+            "secondary_enumeration": SECONDARY_ENUMERATION_COMPLETE,
             "overlapping_claimed_act_count": overlap_count,
             "rescue_ref": context.input_ref(rescue.relative_path),
             "provenance": secondary,
@@ -1327,6 +1380,59 @@ def _publish_secondary_proposals(
             payload=proposal_payload,
         )
     return bool(rescues)
+
+
+def _publish_withheld_secondary_pass(
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    secondary: dict,
+    *,
+    candidate_count: int,
+    max_secondary_proposals: int,
+    grouping_config_sha256: str,
+) -> bool:
+    """One held record for a page whose secondary pass found more than the bound.
+
+    The page rectangle, the count, the bound and the sealed grouping digest, and
+    no crop at all. Cutting them would be the unreadable run; dropping them
+    silently would be worse, so the count stands on the record and the page is
+    one review item instead of that many.
+
+    This mints no act and enters no seal, exactly as the enumerated rescues it
+    replaces do not: the secondary proposer adds recall for a reviewer's eye and
+    decides no authority either way (spec 06 test 5), so a bound on how it is
+    presented cannot change an authority outcome either. What it does do is hold
+    the run, which is the same visible consequence the enumerated shape has.
+    """
+    payload = {
+        "page_ordinal": ordinal,
+        "page_bounds": {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]},
+        "authoritative": False,
+        "terminal_disposition": "held-for-review",
+        "secondary_enumeration": SECONDARY_ENUMERATION_WITHHELD,
+        "secondary_candidate_count": candidate_count,
+        "max_secondary_proposals": max_secondary_proposals,
+        "grouping_config_sha256": grouping_config_sha256,
+        "reason": (
+            f"this page's secondary pass found {candidate_count} rescue candidates no crop "
+            f"claims, more than the sealed bound of {max_secondary_proposals} this run may cut "
+            "and hold separately on one page, so the pass is held as a single review item and "
+            "no rescue crop was cut; nothing was filtered out of the scan, and the candidates "
+            "remain recomputable from the sealed page bytes under the sealed policy"
+        ),
+        "provenance": secondary,
+    }
+    _refuse_text_fields(payload)
+    context.publish(
+        kind="secondary-proposal",
+        subject_id=f"{page_record['subject_id']}-secondary-withheld",
+        outcome="held",
+        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        payload=payload,
+    )
+    return True
 
 
 def residual_act_key(page_ordinal: int, index: int) -> str:
@@ -1472,6 +1578,19 @@ def _publish_page_residual_hold(
     page is worse than N held acts for a page with three of them and better
     than N held acts for a page with sixty thousand, and
     `max_residual_components` is the sealed line between the two.
+
+    **The bound is per page, and the console's ceiling is per run.** What this
+    buys is that no single page can make a run unopenable on its own; it is not
+    a guarantee that the run stays under `MAX_REVIEW_ITEMS`, and nothing here
+    claims one. Thirty pages each just inside the bound still carry the run past
+    the console's 50,000 items, and this stage cannot honestly refuse them for
+    it: the queue an operator opens is assembled in the Armarium's export from
+    every stage's review items, so a total counted here would be a fraction of
+    the run's presented as the whole of it — a claim past what is measured
+    (GOVERNANCE 10). The run-wide ceiling stays where it is enforced, at the
+    console, refused by name against the queue it actually reads rather than by
+    exhaustion. `HANDOFF.md` carries this as a named remainder rather than as a
+    thing this bound does.
 
     **Nothing leaves the measurement.** `residual_pixel_count` on this page's
     conservation record is the same integer it would have been, the exact
@@ -1667,8 +1786,8 @@ def _publish_page_fallback(
 
     A fallback tile carries `padding: null`, like a recovery crop and for the
     same reason: the tile *is* the final rectangle. It was computed from the
-    page's own dimensions with its overlap already built in
-    (`grouping.DEFAULT_FALLBACK_OVERLAP_PX`), so expanding it again by the
+    page's own dimensions with this page's own resolved overlap already built
+    in (`fallback_overlap_px`), so expanding it again by the
     capture padding would conflate a structural pad with a capture pad, which
     `geometry.py`'s docstring says must never happen.
     """
@@ -1773,6 +1892,17 @@ def _publish_conservation_and_secondary(
     worse still: it would have to estimate the count without labelling, and an
     estimate published as a bound is the defect this exists to close.
 
+    **What ran is on the record that ran it.** `page_width`, `page_height` and
+    `reconciliation_thresholds` say what geometry this reconciliation executed
+    under. They are here rather than only on `structure-status` because this
+    scan runs on every sealed page including one the structure pass was held on
+    before it was ever analysed -- and that page's status record says null for
+    the structure pass's own geometry, correctly, while this one had resolved
+    integers in hand and used them. A null beside a computation is the shape
+    GOVERNANCE 10 refuses. Only the two thresholds `conservation.reconcile` was
+    actually given are published, and they are null on an unmeasurable page,
+    where no reconciliation ran to have executed under anything.
+
     `residual_enumeration` says which of the two happened, on every record, as a
     closed value. It is the field that lets a consumer tell "this page had no
     unclaimed ink" from "this page's unclaimed ink was counted and not listed" —
@@ -1781,6 +1911,7 @@ def _publish_conservation_and_secondary(
     withheld page the key is *omitted* rather than emptied, so every consumer
     that reads it as a list fails loudly instead of reading absence as none.
     """
+    thresholds = analysis["thresholds"]
     measurable = analysis["background"] is not None
     result = (
         conservation.reconcile(
@@ -1789,10 +1920,8 @@ def _publish_conservation_and_secondary(
             analysis["rows"],
             background=analysis["background"],
             claimed_bounds=[entry["bounds"] for entry in claimed],
-            gap_tolerance_px=analysis["thresholds"].gap_tolerance_px,
-            review_priority_min_dimension_px=analysis[
-                "thresholds"
-            ].review_priority_min_dimension_px,
+            gap_tolerance_px=thresholds.gap_tolerance_px,
+            review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
         )
         if measurable
         else {
@@ -1805,7 +1934,7 @@ def _publish_conservation_and_secondary(
     page_id = page_record["subject_id"]
     components = result["residual_components"]
     component_count = len(components)
-    max_residual_components = analysis["thresholds"].max_residual_components
+    max_residual_components = thresholds.max_residual_components
     # An unmeasured page never withholds. It enumerated nothing because there
     # was no threshold to enumerate against, not because a bound stopped it, and
     # holding it for over-bound scatter would name a reconciliation that never
@@ -1819,6 +1948,24 @@ def _publish_conservation_and_secondary(
         "background_source": analysis["background_source"],
         "background_value": analysis["background"],
         "ink_measurable": measurable,
+        # The geometry this reconciliation actually executed on, on the record
+        # of the computation that executed it. This page's `structure-status`
+        # publishes the whole resolved set when the structure pass ran on it and
+        # null when the page was held before that pass -- and conservation runs
+        # on a held page all the same, so without these two lines a
+        # structure-held page carried a null for "what geometry ran here" beside
+        # a reconciliation that had just run under resolved integers. The pair
+        # below is exactly what `conservation.reconcile` was given, never the
+        # whole `GroupingThresholds`: this record answers for its own
+        # measurement and not for a pass it did not make.
+        "page_width": analysis["width"],
+        "page_height": analysis["height"],
+        "reconciliation_thresholds": {
+            "gap_tolerance_px": thresholds.gap_tolerance_px,
+            "review_priority_min_dimension_px": thresholds.review_priority_min_dimension_px,
+        }
+        if measurable
+        else None,
         "reason": _conservation_reason(measurable, withheld, component_count),
         "total_ink_pixel_count": result["total_ink_pixel_count"],
         "claimed_pixel_count": result["claimed_pixel_count"],
@@ -1857,7 +2004,7 @@ def _publish_conservation_and_secondary(
         payload=conservation_payload,
     )
     secondary_held = _publish_secondary_proposals(
-        context, ordinal, page_record, analysis, claimed, secondary
+        context, ordinal, page_record, analysis, claimed, secondary, grouping_policy
     )
     conservation_ref = context.input_ref(published.relative_path)
     if withheld:
@@ -2127,7 +2274,18 @@ def _account_for_declared_act(
     row = {
         "act_id": act_id,
         "act_key": act["key"],
-        "page_id": page_identity(context.fixture, page_ordinal),
+        # The sealed page record's own subject wherever the page sealed, exactly
+        # as this stage's other records now read it, and the fixture derivation
+        # only on the one branch above where no sealed record exists to read.
+        # The two are the same string on a fixture run and only one of them
+        # exists on a real page; this row is the one every consumer joins the
+        # others against, so it is the last place two spellings of one identity
+        # should have been left standing.
+        "page_id": (
+            pages[page_ordinal]["subject_id"]
+            if page_ordinal in pages
+            else page_identity(context.fixture, page_ordinal)
+        ),
         "page_ordinal": page_ordinal,
         # Derived from the regions actually cut, never from the fixture
         # declaration: a seal that claims a continuation nothing holds is

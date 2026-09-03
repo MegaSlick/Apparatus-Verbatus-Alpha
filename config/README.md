@@ -226,7 +226,7 @@ nothing recorded where they came from. They decide which marks join into one act
 two runs under different values mark out *different acts from identical pixels* — the
 padding argument one step earlier in the same stage, and the reason this file exists.
 
-Six of its thresholds are integer basis points of the page's own dimension —
+Seven of its thresholds are integer basis points of the page's own dimension —
 `margin_bp` of the width, the rest of the height — resolved through the same
 round-half-up rule `designator_padding.toml` already uses, because an absolute pixel
 policy cannot be one policy for both a 200×260 fixture and a 2480×3508 scan, and two
@@ -237,12 +237,20 @@ resolved integers are published on its `structure-status` record, so a reader of
 finished run can say what geometry that page actually executed at rather than
 re-deriving it.
 
-A seventh threshold, `gap_tolerance_px`, sits in the file but never scales with the
+An eighth threshold, `gap_tolerance_px`, sits in the file but never scales with the
 page: it is a stroke-connectivity radius rather than a page proportion, scaling it would
 change what "connected" means and make the labeller's cost grow with the cube of page
 scale, and no measurement of its true relationship to scan resolution exists — the
 file's own caveat says so at length, and it is the one number in there this build
-cannot honestly set. Two more values do not enter the file at all.
+cannot honestly set. Three more values are bare counts rather than lengths, so
+they have no dimension to be a fraction of: `max_residual_components` and
+`max_secondary_proposals` cap how many separate review items one page's residual
+enumeration and one page's secondary rescue pass may mint — each bounding one
+page's contribution to a review queue the console refuses past 50,000 items, not
+the run's total — and `fallback_bands` is how many horizontal bands the
+predetermined fallback grid cuts a page into, a cardinality rather than a length
+(a taller page gets taller bands, not more of them; its `fallback_overlap_bp`
+scales instead). Two more values do not enter the file at all.
 `structure.PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python
 constants: they are 8-bit ink-intensity offsets, not geometry, and
 `common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` as a

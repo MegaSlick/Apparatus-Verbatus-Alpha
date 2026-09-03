@@ -77,6 +77,7 @@ from common.residual_ink import MINIMUM_INK_PIXELS, page_residual_ink  # noqa: E
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     RESIDUAL_ENUMERATIONS,
     WITNESS_READING_OUTCOMES,
@@ -2072,7 +2073,8 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                 ordinal, payload, measurable, pixel_counts, residual_keys, page_residual_keys
             )
             continue
-        if page_residual_keys.count(page_residual_act_key(ordinal)) > 0:
+        page_residual_act_count = page_residual_keys.count(page_residual_act_key(ordinal))
+        if page_residual_act_count > 0:
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} enumerated its residual components "
                 "and is also held as one page-residual review item; a page is accounted for by "
@@ -2139,10 +2141,24 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             raise FatalAccounting(
                 f"unmeasured Designator conservation page {ordinal} minted residual acts"
             )
+        bound = payload.get("max_residual_components")
+        if not isinstance(bound, int) or isinstance(bound, bool) or bound < 0:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} names no integer "
+                "max_residual_components; every record carries the bound that was in force, "
+                "crossed or not, and a page cannot be reconciled against a policy it does not "
+                "name"
+            )
         findings[ordinal] = {
             "ink_measurable": measurable,
             "residual_component_count": len(components),
             "residual_act_count": len(actual),
+            "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
+            "max_residual_components": bound,
+            # Zero, and checked rather than assumed: the refusal above is what
+            # proves an enumerated page carries no page-residual item.
+            "page_residual_act_count": page_residual_act_count,
+            "reason": None,
         }
     required_ordinals = {act["page_ordinal"] for act in acts if act["outcome"] != "held"}
     missing = sorted(required_ordinals - findings.keys())
@@ -2181,13 +2197,20 @@ def _withheld_page_conservation(
     the thing deliberately not carried; saying so is better than quietly
     dropping it.
 
-    The finding this returns is deliberately not the shape an enumerated page
-    returns.  `residual_act_count` is 0 and true -- no `residual:` act was
-    minted -- and on its own it would read to a reviewer as a page whose
-    unclaimed components vanished, so the count, the bound, the enumeration and
-    the one page-residual act are all named beside it.  A record that restated a
-    withheld page in an enumerated page's shape would be the same class of
-    untruth as `NO_PAGE_CONSERVATION` defaulting to `ink_measurable: False`.
+    The finding this returns carries the same key set as every other shape this
+    function can produce, and says something different in it.  `residual_act_count`
+    is 0 and true -- no `residual:` act was minted -- and on its own it would
+    read to a reviewer as a page whose unclaimed components vanished, so the
+    count, the bound, the enumeration and the one page-residual act are named
+    beside it.  What it may not do is *lose* those keys on the other two shapes:
+    an enumerated page states the same facts with `residual_enumeration:
+    "complete"` and a null reason, and a page with no record at all states them
+    as null, so a consumer reads one schema and finds absence as a value rather
+    than as a `KeyError` on whichever shape a page happened to produce.  Filling
+    them is only honest because each value is true of the page it describes;
+    restating a withheld page in an enumerated page's *values* would be the same
+    class of untruth as `NO_PAGE_CONSERVATION` defaulting to
+    `ink_measurable: False`.
     """
     if not measurable:
         raise FatalAccounting(
@@ -2667,6 +2690,9 @@ NO_PAGE_CONSERVATION = {
     "ink_measurable": None,
     "residual_component_count": None,
     "residual_act_count": None,
+    "residual_enumeration": None,
+    "max_residual_components": None,
+    "page_residual_act_count": None,
     "reason": (
         "the Designator published no conservation record for this page, so nothing on it "
         "was measured; its acts are held for the reason the page itself carries"

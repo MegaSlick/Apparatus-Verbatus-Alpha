@@ -39,6 +39,7 @@ _RETIRED = {
         "height",
         6,
     ),  # conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX
+    "fallback_overlap_bp": ("height", 8),  # grouping.DEFAULT_FALLBACK_OVERLAP_PX
 }
 
 
@@ -75,6 +76,8 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
 
     assert config["config_sha256"] == digest_bytes(raw)
     assert config["max_residual_components"] == 2000
+    assert config["max_secondary_proposals"] == 2000
+    assert config["fallback_bands"] == 4
     assert set(config["page_fraction_bp"]) == set(_RETIRED)
     assert config["absolute"] == {"gap_tolerance_px": 3}
     assert config["provenance"]["calibrated_for_this_corpus"] is False
@@ -85,6 +88,8 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
     assert set(raw) == {"grouping"}
     assert set(raw["grouping"]) == {
         "max_residual_components",
+        "max_secondary_proposals",
+        "fallback_bands",
         "page_fraction_bp",
         "absolute",
         "provenance",
@@ -110,8 +115,11 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     assert (
         resolved.review_priority_min_dimension_px == 6
     )  # DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX
+    assert resolved.fallback_overlap_px == 8  # DEFAULT_FALLBACK_OVERLAP_PX
     assert resolved.gap_tolerance_px == 3  # DEFAULT_GAP_TOLERANCE_PX, unconverted
     assert resolved.max_residual_components == 2000
+    assert resolved.max_secondary_proposals == 2000
+    assert resolved.fallback_bands == 4  # DEFAULT_FALLBACK_BANDS, unconverted
 
 
 def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
@@ -124,6 +132,7 @@ def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
     assert resolved.brace_min_height_px == 30  # 260 * 1154 / 10000 = 30.004 -> 30
     assert resolved.page_edge_reach_px == 4  # 260 * 154 / 10000 = 4.004 -> 4
     assert resolved.review_priority_min_dimension_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
+    assert resolved.fallback_overlap_px == 8  # 260 * 308 / 10000 = 8.008 -> 8
 
 
 def test_resolve_thresholds_returns_a_frozen_dataclass_of_plain_ints():
@@ -139,8 +148,11 @@ def test_resolve_thresholds_returns_a_frozen_dataclass_of_plain_ints():
         resolved.brace_min_height_px,
         resolved.page_edge_reach_px,
         resolved.review_priority_min_dimension_px,
+        resolved.fallback_overlap_px,
         resolved.gap_tolerance_px,
         resolved.max_residual_components,
+        resolved.max_secondary_proposals,
+        resolved.fallback_bands,
     ):
         assert isinstance(value, int) and not isinstance(value, bool)
 
@@ -188,6 +200,7 @@ anchor_reach_bp = 77
 brace_min_height_bp = 1154
 page_edge_reach_bp = 154
 review_priority_min_dimension_bp = 231
+fallback_overlap_bp = 308
 """
 
 _VALID_PROVENANCE = """\
@@ -204,7 +217,9 @@ caveat = "cv"
 def _valid_toml() -> str:
     return (
         "[grouping]\n"
-        "max_residual_components = 2000\n\n"
+        "max_residual_components = 2000\n"
+        "max_secondary_proposals = 2000\n"
+        "fallback_bands = 4\n\n"
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
         "[grouping.absolute]\n"
         "gap_tolerance_px = 3\n\n"
@@ -418,6 +433,28 @@ def test_negative_max_residual_components_refused(tmp_path):
 def test_bool_max_residual_components_refused(tmp_path):
     # bool is an int subclass in Python; _is_plain_int must reject it explicitly.
     body = _valid_toml().replace("max_residual_components = 2000", "max_residual_components = true")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="non-negative integer"):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", "4.0"])
+def test_a_fallback_band_count_that_cuts_nothing_is_refused(tmp_path, value):
+    """The one count with a floor of one, and the reason it has one.
+
+    Zero bands is a page the structure pass found nothing on reaching the
+    witnesses as no crop at all -- the loss Tyrel's predetermined-crop ruling
+    exists to prevent -- so this field refuses at the loader rather than
+    resolving to a grid that cuts nothing.
+    """
+    body = _valid_toml().replace("fallback_bands = 4", f"fallback_bands = {value}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="fallback_bands is not a positive integer"):
+        load_grouping_config(path)
+
+
+def test_negative_max_secondary_proposals_refused(tmp_path):
+    body = _valid_toml().replace("max_secondary_proposals = 2000", "max_secondary_proposals = -1")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="non-negative integer"):
         load_grouping_config(path)

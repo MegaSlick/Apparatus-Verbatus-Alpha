@@ -2653,11 +2653,12 @@ def _verify_withheld_page_is_held_as_one_item(
             f"page {page_id}'s conservation record withheld its residual components without "
             "naming the integer bound it was judged against"
         )
-    if holds[0].get("max_residual_components") != bound:
+    held_bound = holds[0].get("max_residual_components")
+    if not _is_count(held_bound) or held_bound != bound:
         raise FatalAccounting(
-            f"page {page_id} is held against a bound of {holds[0].get('max_residual_components')!r} "
-            f"residual components while its own conservation record applied {bound}; the held "
-            "page and the reconciliation that held it must name one policy"
+            f"page {page_id} is held against a bound of {held_bound!r} residual components "
+            f"while its own conservation record applied {bound}; the held page and the "
+            "reconciliation that held it must name one policy, as one integer"
         )
 
 
@@ -2680,6 +2681,14 @@ def fallback_page_act_key(page_ordinal: int) -> str:
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
 RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
 RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD)
+
+# Why a page held in place of its residual components was held. The Designator
+# declares the closed hold vocabulary and imports this name into it, and this
+# module checks a page-residual hold against the same constant, so the producer
+# and the verifier cannot spell the one machine-readable statement of the cause
+# differently -- the same reason `page_residual_act_key` is defined here and
+# recomputed there.
+PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
 
 
 def page_residual_act_key(page_ordinal: int) -> str:
@@ -2927,6 +2936,14 @@ def _verify_page_residual_act_row(
     different one would put a figure in front of a person that no artifact in the
     run supports. GOVERNANCE 10: the count is a measurement, so it is checked
     against the thing that measured it.
+
+    The `reason_code` and `blocking_page_ordinal` are checked too, and they are
+    the cheapest checks here for the field that carries the most: the hold
+    vocabulary is closed so that a consumer can branch on the cause without
+    parsing prose, and this is the one hold whose evidence a reviewer cannot open
+    and count for themselves. A page-residual hold arriving under another cause's
+    code, or blaming another page, would be routed by everything downstream as
+    that other thing.
     """
     payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
     if "residual_bounds" in payload:
@@ -2949,6 +2966,17 @@ def _verify_page_residual_act_row(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
         )
+    if (
+        payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE
+        or payload.get("blocking_page_ordinal") != ordinal
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold records its cause as "
+            f"{payload.get('reason_code')!r} against page "
+            f"{payload.get('blocking_page_ordinal')!r} rather than "
+            f"{PAGE_RESIDUAL_REASON_CODE!r} against page {ordinal}; the hold vocabulary is "
+            "closed so that a consumer can branch on the cause without reading prose"
+        )
     grouping_digest = payload.get("grouping_config_sha256")
     if not isinstance(grouping_digest, str) or not grouping_digest:
         raise FatalAccounting(
@@ -2956,6 +2984,17 @@ def _verify_page_residual_act_row(
             "configuration digest its residual bound was judged against"
         )
     sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
+    if sealed_grouping_digest is None:
+        # Named apart from drift below, the way `require_sealed_config` names
+        # them apart: a run that never sealed the policy and a hold that names
+        # the wrong one need different things done about them, and one message
+        # printing `None` as the digest sends both operators to the same place.
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, but this run sealed no designator-grouping digest at all "
+            "for it to be judged against; the bound behind a held page cannot be bound to a "
+            "policy the run never named"
+        )
     if grouping_digest != sealed_grouping_digest:
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold names grouping configuration digest "

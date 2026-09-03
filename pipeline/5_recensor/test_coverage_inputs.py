@@ -976,8 +976,61 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
             "ink_measurable": True,
             "residual_component_count": 1,
             "residual_act_count": 1,
+            # The same key set every other shape this function returns carries,
+            # so a consumer reads one schema and finds absence as a value. The
+            # bound was in force on this page and is named; nothing was withheld
+            # and there is nothing to say about it.
+            "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
+            "max_residual_components": 2000,
+            "page_residual_act_count": 0,
+            "reason": None,
         }
     }
+
+
+def test_every_geometry_coverage_shape_carries_the_same_keys(monkeypatch):
+    """One schema, three answers -- absence is a value here, never a missing key.
+
+    An enumerated page, a page held as one review item, and a page with no
+    conservation record at all reach the same review payload field, and a
+    consumer branching on `residual_enumeration` or reading `reason` may not
+    have to know which of the three it got before it can look.
+    """
+    enumerated = _context(_conservation("conservation-1", components=[_component()]))
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
+    )
+    complete = RUN.geometry_coverage_inputs(enumerated)[1]
+
+    withheld_context = _context(
+        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
+    withheld = RUN.geometry_coverage_inputs(withheld_context)[1]
+
+    assert set(complete) == set(withheld) == set(RUN.NO_PAGE_CONSERVATION)
+    assert complete["residual_enumeration"] != withheld["residual_enumeration"]
+    assert complete["reason"] is None and withheld["reason"] is not None
+
+
+def test_an_enumerated_record_naming_no_integer_bound_is_refused(monkeypatch):
+    """The bound is on every record, so a record without one is not reconcilable.
+
+    The withheld branch has always held its record to an integer bound; the
+    enumerated branch now publishes that bound in its own finding, and a value
+    published to a reviewer is checked rather than passed through.
+    """
+    context = _context(_conservation("conservation-1", components=[_component()], bound=None))
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
+    )
+
+    with pytest.raises(FatalAccounting, match="no integer max_residual_components"):
+        RUN.geometry_coverage_inputs(context)
 
 
 def test_geometry_coverage_refuses_a_divergent_residual_partition(monkeypatch):

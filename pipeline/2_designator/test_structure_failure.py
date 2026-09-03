@@ -229,6 +229,28 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
         "the held structure pass did not infer a background; the independent "
         "conservation record above attributes the measurement that actually ran"
     )
+    # And the same for the geometry. The status record says null because the
+    # structure pass resolved and ran nothing on this page; the reconciliation
+    # that *did* run says what it ran under, on its own record. A null on one
+    # record beside a real computation recorded nowhere is the shape this pair
+    # exists to keep apart.
+    assert status["resolved_thresholds"] is None
+    assert (status["page_width"], status["page_height"]) == (None, None)
+
+    import grouping_config
+
+    resolved = grouping_config.resolve_thresholds(
+        grouping_config.load_grouping_config(str(ROOT / "config" / "designator_grouping.toml")),
+        page_one["page_width"],
+        page_one["page_height"],
+    )
+    assert (page_one["page_width"], page_one["page_height"]) == (200, 260), (
+        "the fixture pages measure 200x260; the record names the size it decoded"
+    )
+    assert page_one["reconciliation_thresholds"] == {
+        "gap_tolerance_px": resolved.gap_tolerance_px,
+        "review_priority_min_dimension_px": resolved.review_priority_min_dimension_px,
+    }, "exactly the two thresholds conservation.reconcile was given, and no more"
 
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
     residual_keys = [
@@ -828,7 +850,10 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     import grouping
 
     page_w, page_h = 100, 200
-    tiles = grouping.fallback_tiles(page_w, page_h)
+    # The grid takes its band count and overlap in from the sealed policy now,
+    # like every other threshold this module resolves per page; the values here
+    # are the fixture-size resolution of `config/designator_grouping.toml`.
+    tiles = grouping.fallback_tiles(page_w, page_h, bands=4, overlap_px=8)
 
     covered = set()
     for tile in tiles:
@@ -843,6 +868,24 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     for earlier, later in zip(tiles, tiles[1:], strict=False):
         earlier_end = earlier["bounds"]["y"] + earlier["bounds"]["h"]
         assert later["bounds"]["y"] < earlier_end, "adjacent bands must overlap, not merely touch"
+
+
+def test_fallback_tiles_refuse_a_band_count_or_overlap_they_cannot_cut_under():
+    """The grid takes its two numbers in, so it refuses them by name.
+
+    A caller that forgets one fails on the keyword; one that resolves a bad
+    value fails here, rather than cutting a real page's only crops under it.
+    """
+    import grouping
+
+    with pytest.raises(TypeError):
+        grouping.fallback_tiles(100, 200, bands=4)
+    with pytest.raises(ContractError, match="cuts nothing"):
+        grouping.fallback_tiles(100, 200, bands=0, overlap_px=8)
+    with pytest.raises(ContractError, match="cuts nothing"):
+        grouping.fallback_tiles(100, 200, bands=4.0, overlap_px=8)
+    with pytest.raises(ContractError, match="not a non-negative integer"):
+        grouping.fallback_tiles(100, 200, bands=4, overlap_px=-1)
 
 
 def test_designator_refuses_two_proposals_with_identical_bounds_on_one_page():

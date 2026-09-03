@@ -528,6 +528,33 @@ def test_group_page_refuses_a_negative_or_non_integer_threshold(name, bad_value)
         group_page([component(0, 0, 5, 5)], PAGE_W, PAGE_H, **kwargs)
 
 
+@pytest.mark.parametrize(
+    "name,bad_value",
+    [
+        ("edge_reach_a_px", -1),
+        ("edge_reach_a_px", 1.5),
+        ("edge_reach_a_px", True),
+        ("edge_reach_b_px", -1),
+        ("edge_reach_b_px", 1.5),
+        ("column_overlap_px", -1),
+        ("column_overlap_px", 1.5),
+    ],
+)
+def test_find_continuation_candidate_refuses_a_negative_or_non_integer_reach(name, bad_value):
+    """The one geometric decision here whose failure is an act cut in half.
+
+    `group_page` refuses its four thresholds by name; these three decide
+    whether an act is judged to run on across a page break, and a float or a
+    negative reach silently changes that answer rather than failing.
+    """
+    trailing = body_component(280, 20)
+    leading = body_component(0, 30)
+    page_a_groups = group([trailing], PAGE_W, PAGE_H)
+    page_b_groups = group([leading], PAGE_W, PAGE_H)
+    with pytest.raises(ContractError, match="is not a non-negative integer"):
+        continuation(page_a_groups, PAGE_H, page_b_groups, **{name: bad_value})
+
+
 def test_find_continuation_candidate_refuses_a_missing_edge_reach_keyword():
     trailing = body_component(280, 20)
     leading = body_component(0, 30)

@@ -1304,10 +1304,41 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # roots agreed exactly. The review pin above was measured before unit A existed
 # and describes no tree in this section: it moved for cause 1 and 2 as well,
 # which unit D predicted and did not exercise.
+# Section C review round (the independent panel's four majors, applied). Both
+# digests move again, and both move for the same three causes -- named per pin
+# because each is a different set of bytes, not because each was measured on its
+# own tree:
+#
+#   1. `config/designator_grouping.toml` gains `max_secondary_proposals`,
+#      `fallback_bands` and `fallback_overlap_bp`, so the file's digest changes
+#      and with it every run's `config_digest` and the `designator-grouping`
+#      entry in `sealed_config_digests`. This alone reaches every record that
+#      carries the run's configuration digest, which is why no per-cause
+#      inventory diff is offered here: unlike unit F's narrow change, this one
+#      is tree-wide by construction and a diff would say only that.
+#   2. Every `structure-status` record's `resolved_thresholds` gains the three
+#      fields `GroupingThresholds` gained (`fallback_overlap_px`,
+#      `max_secondary_proposals`, `fallback_bands`).
+#   3. Every `conservation` record gains `page_width`, `page_height` and
+#      `reconciliation_thresholds` -- what that reconciliation actually executed
+#      on and under, published on the record of the computation that executed it.
+#
+# **The counts hold and were checked rather than assumed**: happy 96 and review
+# 107, in both roots, on the line above each digest assertion. That is the number
+# this round had to watch, for two reasons now: no fixture page comes near
+# `max_residual_components`, so no page-residual act is minted, and no fixture
+# run configures a `secondary_proposer` chair, so the newly bounded secondary
+# pass publishes nothing either. A moved count would have meant an artifact
+# appeared or vanished for a reason nobody had named.
+#
+# Both digests below were measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` as its own tests call them; happy exited 0 and
+# review exited 3 in both roots, and the two roots agreed exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "8a34be4de34a6e8d1923f3592c3dd043bb2d07dfc4810f9ce366f95af07899f0"
-REVIEW_RUN_TREE_DIGEST = "e4705bc5062c1dd4b6d75035c3f3c9c5eacca89b8337dce5e00a034108e193d3"
+HAPPY_RUN_TREE_DIGEST = "ce13fe64780ef6b9582dc67659c07962a9a969cd51a0a1e720a6e046a1fc6a5f"
+REVIEW_RUN_TREE_DIGEST = "91b0c9c5195a57027cea6dcc4ea27a4d1c61b7b366ce518bf6518ed89d24dd85"
 
 
 def orchestrate(
@@ -3583,6 +3614,20 @@ def _patch_conservation_with_extra_residual(
     rule for the same reason: nothing verifies it today, and a fixture that
     quietly disagreed with the three integers beside it would be a lie waiting
     for the first consumer that does.
+
+    That rule is spelled out below rather than imported from
+    `pipeline/2_designator/run.py::_residual_ink_fraction_bp`, deliberately and
+    on this file's own precedent (`NUDA_APPROVAL_SUBJECT` above). Importing the
+    Designator here would put `pipeline/2_designator` on `sys.path` and bind its
+    sibling module names -- `geometry`, `structure`, `grouping`,
+    `conservation` -- into `sys.modules` for every test in the session, which is
+    what "nothing here imports a stage" is for. The cost is named rather than
+    denied: this is a second copy of three lines of integer arithmetic, nothing
+    cross-checks the two rules, and a producer that changed its rounding without
+    changing this would forge records whose fraction disagrees with its own. It
+    is tolerable only because that field gates nothing and no consumer reads it;
+    the day one does, this helper imports the rule or the rule moves somewhere
+    both can reach.
     """
     conservation_id = artifact_id(DESIGNATOR, "conservation", page_id)
     relative_path = tree.artifact_path(DESIGNATOR, "conservation", conservation_id)

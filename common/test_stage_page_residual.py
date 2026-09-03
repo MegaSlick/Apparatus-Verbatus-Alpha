@@ -154,6 +154,15 @@ def _conservation_payload(
         "background_source": "page-modal",
         "background_value": 255,
         "ink_measurable": True,
+        # What this reconciliation ran on and under, as the producer publishes
+        # it. Nothing in this verifier reads these; a double that dropped them
+        # would still be testing a shape no producer emits.
+        "page_width": 8,
+        "page_height": 8,
+        "reconciliation_thresholds": {
+            "gap_tolerance_px": 3,
+            "review_priority_min_dimension_px": 6,
+        },
         "reason": None,
         "total_ink_pixel_count": 40,
         "claimed_pixel_count": 0,
@@ -235,6 +244,10 @@ class _Page:
             "page_bounds": bounds,
             "residual_component_count": count,
             "max_residual_components": bound,
+            "blocking_page_ordinal": ORDINAL,
+            # Spelled out rather than imported from `common.stage`: this string
+            # is what a consumer branches on, and the one place it is written
+            # independently of the constant both producer and verifier share.
             "reason_code": "residual-components-over-page-bound",
             "reason": (
                 "this page's conservation reconciled more residual components than the sealed "
@@ -380,6 +393,69 @@ def test_a_hold_naming_a_foreign_grouping_digest_is_refused(page):
     page.context.finish()
     with pytest.raises(FatalAccounting, match="this run sealed at binding time"):
         _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        {"reason_code": "structure-pass-held"},
+        {"reason_code": None},
+        {"blocking_page_ordinal": ORDINAL + 1},
+    ],
+)
+def test_a_hold_wearing_another_cause_or_blaming_another_page_is_refused(page, forged):
+    """The closed hold vocabulary is what a consumer branches on without prose.
+
+    This is the one hold whose evidence a reviewer cannot open and count, so a
+    page-residual hold arriving under another cause's code -- or naming a page
+    other than the one it holds -- would be routed downstream as that other
+    thing while carrying this one's claim.
+    """
+    page.publish_conservation(_conservation_payload())
+    act = page.hold_page(extra=forged)
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="records its cause as"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+def test_a_run_that_sealed_no_grouping_digest_is_refused_by_its_own_name(page, monkeypatch):
+    """A binding gap and drift are two faults, and an operator does two things.
+
+    `require_sealed_config` separates them for that reason: a run that never
+    sealed the policy has to be created again on a build that does, while a hold
+    naming a foreign digest means the policy file moved under a run that did.
+    One message printing `None` as the sealed digest sends both to the same
+    place.
+    """
+    import common.stage as stage_module
+
+    page.publish_conservation(_conservation_payload())
+    act = page.hold_page()
+    monkeypatch.setattr(stage_module, "run_sealed_config_digests", lambda run: {})
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="sealed no designator-grouping digest at all"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+def test_a_hold_naming_a_boolean_bound_is_refused_against_its_records_integer(page):
+    """`True == 1` in Python, and a policy is an integer or it is not one.
+
+    Defence in depth, and exercised as such: the row-side verifier types the
+    hold's own bound first and refuses this hold for that, so this direction is
+    driven on its own here. It is the comparison that binds the review item's
+    policy to the reconciliation's, and a bare `!=` let a hold naming `True`
+    agree with a record naming `1` -- the case `_is_count` exists for.
+    """
+    page.publish_conservation(_conservation_payload(bound=1, count=2))
+    act = page.hold_page(bound=True, count=2)
+
+    page.context.finish()
+    with pytest.raises(FatalAccounting, match="does not name an integer residual component"):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+    with pytest.raises(FatalAccounting, match="must name one policy, as one integer"):
+        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 
 def test_a_bound_the_reconciliation_did_not_exceed_is_refused(page):

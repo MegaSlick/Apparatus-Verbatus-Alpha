@@ -6,8 +6,10 @@ that page's own size. A calibration session reading a finished run back could
 recover the policy from the seal and the dimensions from the sealed pixels and
 re-derive them -- and a re-derivation is exactly what stops matching the run the
 day the resolution rule changes. The record publishes what executed instead
-(SPEC_C 4.2): eight resolved integers and the page's own width and height, on a
-per-page record that already exists.
+(SPEC_C 4.2): every resolved integer of `GroupingThresholds` and the page's own
+width and height, on a per-page record that already exists. The field set is
+spelled out below rather than taken from `dataclasses.asdict` a second time, so
+a field added to the dataclass and dropped from the record fails here.
 
 Nothing reads these back to decide anything. They are a recording, and the two
 tests below are about the two ways a recording goes wrong: publishing numbers
@@ -109,8 +111,11 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
             "brace_min_height_px": expected.brace_min_height_px,
             "page_edge_reach_px": expected.page_edge_reach_px,
             "review_priority_min_dimension_px": expected.review_priority_min_dimension_px,
+            "fallback_overlap_px": expected.fallback_overlap_px,
             "gap_tolerance_px": expected.gap_tolerance_px,
             "max_residual_components": expected.max_residual_components,
+            "max_secondary_proposals": expected.max_secondary_proposals,
+            "fallback_bands": expected.fallback_bands,
         }
         # Integers only. A float in a canonical payload is a determinism defect,
         # and basis points exist so that this resolution never produces one.
@@ -146,13 +151,19 @@ class _Recorder:
 
 
 def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions():
-    """Null, not the numbers the page would have run under.
+    """Null, not the numbers the structure pass would have run under.
 
-    A page held before the structure pass ran executed no geometry, and naming
-    the thresholds it *would* have resolved to would be a resolution reported as
-    an execution -- the same defect `background_source` and `structure_evidence`
-    are null for on exactly this page. The two fields either say what happened
-    or say nothing.
+    This record answers for the structure pass, and on a held page that pass
+    never ran: naming the thresholds it *would* have resolved to would be a
+    resolution reported as an execution -- the same defect `background_source`
+    and `structure_evidence` are null for on exactly this page. The fields
+    either say what happened or say nothing.
+
+    The null is about this pass, not about the page. Conservation scans a
+    structure-held page for real, and `test_structural_reconciliation.py` pins
+    the thresholds it executed under on that page's own conservation record --
+    which is where a null beside a real computation would be the lie this null
+    is not.
     """
     import grouping_config
 
@@ -195,8 +206,8 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
     page's resolved numbers on every page's record would still pass a test built
     entirely from same-sized pages. This test resolves against two distinct
     sizes -- a fixture-sized page and a full scan-sized page -- so a mix-up
-    between the two records fails on both the dimensions and the eight integers,
-    not just one or the other.
+    between the two records fails on both the dimensions and the resolved
+    integers, not just one or the other.
     """
     import grouping_config
 
@@ -233,8 +244,11 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "brace_min_height_px": small.brace_min_height_px,
         "page_edge_reach_px": small.page_edge_reach_px,
         "review_priority_min_dimension_px": small.review_priority_min_dimension_px,
+        "fallback_overlap_px": small.fallback_overlap_px,
         "gap_tolerance_px": small.gap_tolerance_px,
         "max_residual_components": small.max_residual_components,
+        "max_secondary_proposals": small.max_secondary_proposals,
+        "fallback_bands": small.fallback_bands,
     }
     assert large_page["resolved_thresholds"] == {
         "margin_px": large.margin_px,
@@ -243,8 +257,11 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "brace_min_height_px": large.brace_min_height_px,
         "page_edge_reach_px": large.page_edge_reach_px,
         "review_priority_min_dimension_px": large.review_priority_min_dimension_px,
+        "fallback_overlap_px": large.fallback_overlap_px,
         "gap_tolerance_px": large.gap_tolerance_px,
         "max_residual_components": large.max_residual_components,
+        "max_secondary_proposals": large.max_secondary_proposals,
+        "fallback_bands": large.fallback_bands,
     }
     assert small_page["resolved_thresholds"] != large_page["resolved_thresholds"]
 

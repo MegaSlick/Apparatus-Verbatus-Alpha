@@ -37,7 +37,7 @@ that last case, not this module. Grouping only assembles what it is given; it
 never decides that something ungrouped may be discarded.
 """
 
-from typing import Any, Final, TypedDict
+from typing import Any, TypedDict
 
 from geometry import Bounds
 
@@ -51,10 +51,11 @@ class ActGroup(TypedDict):
     rationale: str
 
 
-# These geometric policies used to carry module defaults here. They no longer
-# do: `run.py` resolves each one, per page, from a sealed basis-point config
-# and that page's own dimensions (SPEC_C section 2, "Where resolution
-# happens"), and passes the resolved pixel integers in on every call. A caller
+# No geometric policy in this module carries a default any more -- the four
+# grouping thresholds below, and the fallback grid's band count and overlap at
+# the foot of this file. `run.py` resolves each one, per page, from a sealed
+# basis-point config and that page's own dimensions (SPEC_C section 2, "Where
+# resolution happens"), and passes the resolved pixel integers in on every call. A caller
 # that forgets one now fails loudly rather than running under a value nobody
 # reviewed for this page -- `geometry.load_padding_config`'s own docstring is
 # the precedent: "refused loudly rather than defaulted".
@@ -324,7 +325,21 @@ def find_continuation_candidate(
     `edge_reach_a_px` and `edge_reach_b_px` are each page's own resolved edge
     reach -- one value serving both pages silently assumed they shared a
     height, which a real corpus does not guarantee.
+
+    All three reaches are refused by name when they are not non-negative
+    plain integers, exactly as `group_page` refuses its own four. This is the
+    module's stated contract, and it earns its place here more than anywhere
+    else: a float or negative reach changes whether an act is judged to run on
+    across a page break, and the failure that hides behind is an act read on
+    one side of the break and delivered as a whole one.
     """
+    for name, value in (
+        ("page A edge reach", edge_reach_a_px),
+        ("page B edge reach", edge_reach_b_px),
+        ("column overlap", column_overlap_px),
+    ):
+        if not _plain_int(value) or value < 0:
+            raise ContractError(f"{name} {value}px is not a non-negative integer")
     if not page_a_groups or not page_b_groups:
         return None
     trailing = max(page_a_groups, key=lambda group: group["bounds"]["y"] + group["bounds"]["h"])
@@ -351,25 +366,38 @@ def find_continuation_candidate(
 #
 # Horizontal bands rather than a checkerboard because a register page is a
 # column of entries: a band spans the full width, so an entry is never split
-# down its middle by the grid itself. Declared here as named policy, overridable
-# by keyword, for the same reason as every default above -- not a magic number
-# buried in a stage program.
-DEFAULT_FALLBACK_BANDS: Final = 4
-DEFAULT_FALLBACK_OVERLAP_PX: Final = 8
+# down its middle by the grid itself.
+#
+# The band count and the overlap used to be module defaults here, and were the
+# two this module's own sweep left behind: the sentence above about no defaults
+# was true of the five thresholds it was written for and false of these. They
+# are sealed policy now, like the rest -- `fallback_bands` a bare count and
+# `fallback_overlap_bp` a basis point of the page's own height in
+# `config/designator_grouping.toml`, resolved per page by `run.py::_analyze_page`
+# and passed in. That mattered more here than for a threshold that only orders
+# evidence: these two decide the crop rectangles that actually reach the
+# Attestatores and the Perlector on a page nothing was found on, and an 8px
+# overlap fixed against a 3508px scan is a hairline where the fixture had a
+# margin.
 
 
 def fallback_tiles(
     page_w: int,
     page_h: int,
     *,
-    bands: int = DEFAULT_FALLBACK_BANDS,
-    overlap_px: int = DEFAULT_FALLBACK_OVERLAP_PX,
+    bands: int,
+    overlap_px: int,
 ) -> list[ActGroup]:
     """Predetermined overlapping crops covering the whole page, for a page with no found ink.
 
     Every pixel of the page falls inside at least one band, and adjacent bands
     overlap by `overlap_px`, so a line of writing sitting exactly on a band
     boundary is whole inside one of the two rather than cut in half by both.
+
+    `bands` and `overlap_px` are this page's own resolved sealed policy, passed
+    in like every other threshold this module takes: a caller that forgets one
+    fails loudly rather than cutting a real page's crops under a value nobody
+    reviewed for it.
 
     This is not detection and it does not pretend to be: each group carries a
     rationale saying it is a fallback tile, so nothing downstream can mistake a
@@ -379,10 +407,10 @@ def fallback_tiles(
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to tile")
-    if bands <= 0:
+    if not _plain_int(bands) or bands <= 0:
         raise ContractError(f"a fallback grid of {bands} bands cuts nothing")
-    if overlap_px < 0:
-        raise ContractError(f"fallback overlap {overlap_px} is negative")
+    if not _plain_int(overlap_px) or overlap_px < 0:
+        raise ContractError(f"fallback overlap {overlap_px} is not a non-negative integer")
 
     bands = min(bands, page_h)
     tiles: list[ActGroup] = []

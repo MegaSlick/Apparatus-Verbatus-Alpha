@@ -244,7 +244,8 @@ asserting it.
 
 A fallback tile's region carries `padding: null`, like a recovery crop and for
 the same reason: the tile *is* the final rectangle, computed from the page's own
-dimensions with `grouping.DEFAULT_FALLBACK_OVERLAP_PX` already built into it.
+dimensions with this page's own resolved `fallback_overlap_px` already built
+into it.
 Expanding it again by the capture padding would conflate a structural pad with a
 capture pad, which `geometry.py`'s docstring says must never happen.
 
@@ -276,6 +277,7 @@ background cannot be inferred is recorded
 
 ```text
 page_ordinal, background_source, background_value | null
+page_width, page_height, reconciliation_thresholds | null
 ink_measurable, reason | null
 total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
 residual_component_count, residual_ink_fraction_bp | null, max_residual_components
@@ -297,6 +299,16 @@ reconciliation took on a withheld one. `residual_ink_fraction_bp` is
 `residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
 gating nothing. `max_residual_components` is the sealed bound the page was judged
 against, published whether or not it was crossed.
+
+`page_width`, `page_height` and `reconciliation_thresholds` are what this scan
+actually executed on and under. The thresholds are exactly the two
+`conservation.reconcile` is given — `gap_tolerance_px` and
+`review_priority_min_dimension_px` — never the whole `GroupingThresholds`: this
+record answers for its own measurement, not for the structure pass. They are
+`null` when `ink_measurable` is false, where no reconciliation ran to have
+executed under anything. This is the record that keeps a structure-held page
+honest: its `structure-status` says null for a pass that never ran, and this one
+says what did.
 
 The background fields belong to this reconciliation, not to the structure
 pass. This distinction matters on a page whose structure pass was held before
@@ -435,6 +447,20 @@ turned a complete run into a fatal one with no denominator at all — the exact
 inverse of spec 06's test 5, "removing the proposer changes no authority
 decision (it adds recall, never verdicts)".
 
+**Bounded per page, like the residual enumeration beside it.** Each published
+candidate costs a cropped PNG blob and two records, so a page speckled enough to
+trip `max_residual_components` would rebuild the unopenable run here — on the
+one path that bound does not cover. Past `max_secondary_proposals` the page's
+secondary pass is a single held `secondary-proposal` instead: the page
+rectangle, `secondary_candidate_count`, the bound it was judged against, the
+run's own sealed grouping digest, and no crop cut at all. Nothing is filtered
+out of the scan itself (GOVERNANCE 10) — `structure.secondary_scan` still
+returns everything it finds — and the candidates stay recomputable from the
+sealed page bytes. `secondary_enumeration` is `complete` or `withheld-page-held`
+on every one of these records, exactly the closed pair `residual_enumeration`
+is, so "this page had no unclaimed candidate" and "this page's candidates were
+counted and not cut" cannot be read as each other.
+
 Each proposal directly references a `rescue-crop`: the exact unpadded source
 pixels inside the secondary box, with its origin, null padding, transform,
 image digests and the same `overlapping_claimed_act_count`. Both
@@ -463,7 +489,7 @@ different fact about the *act*, not this per-page structural pass record.
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 background_source | null, structure_evidence | null
 page_width | null, page_height | null
-resolved_thresholds | null (the eight fields of GroupingThresholds)
+resolved_thresholds | null (every field of GroupingThresholds)
 provenance (the resolved Designator chair)
 ```
 
@@ -493,6 +519,12 @@ subset, `max_residual_components` included: it is part of what the page ran
 under, and a subset boundary would be a second judgment about which of one
 dataclass's fields matter. These fields are a recording and decide nothing; they
 are `null` on a page held before analysis for the same reason the two above are.
+
+**That null answers for the structure pass, not for the page.** Conservation
+scans a structure-held page all the same — the ink is real and no crop claims
+it — so the geometry that reconciliation ran under is published on that page's
+own `conservation` record instead. Neither record speaks for the other, and
+neither leaves a null standing beside a computation that did happen.
 This is the cheap honest half of the 300-DPI question — there is no physical
 page size on disk for a photographed master, so there is no DPI to probe, and a
 probe that guessed one would be a measurement invented rather than taken.
@@ -717,6 +749,29 @@ measures ~254,000 at a 33px pitch), each of which used to mint its own held act,
 hold artifact and seal row. `operations/operator/review.py` refuses a run past
 `MAX_REVIEW_ITEMS` by name, so one such page made every *other* page's findings
 unreadable on the only surface a person uses.
+
+**The bound is per page and the console's ceiling is per run — a named
+remainder, not a thing this bound does.** What it buys is that no single page
+can make a run unopenable on its own. Thirty pages each sitting just inside
+`max_residual_components` still carry a run past the console's 50,000 items and
+still meet that refusal, by name, at the console. Nothing in the pipeline counts
+the run-wide total while a run is produced, and the Designator deliberately does
+not: the queue an operator opens is assembled in the Armarium's export from
+every stage's review items, so a total counted in this stage would be a fraction
+of the run's presented as the whole of it, which GOVERNANCE 10 forbids more
+firmly than it wants the check. A run-wide accounting belongs where the queue is
+assembled if it is wanted; until then the ceiling is enforced at the console
+against the queue it actually reads.
+
+**The secondary rescue pass is bounded the same way, on the same page.**
+`max_secondary_proposals` caps how many rescue candidates one page cuts and
+holds separately; past it the pass becomes one held `secondary-proposal` record
+naming the count, the bound and the sealed grouping digest, and cuts no crop.
+That path mints a PNG blob per candidate as well as two records, so it is the
+more expensive of the stage's two per-page enumerations, and leaving it
+unbounded would have rebuilt the unopenable run by the one route the residual
+bound does not cover. `secondary_enumeration` is a closed pair on both shapes,
+for the reason `residual_enumeration` is one on every conservation record.
 `pipeline/2_designator/test_page_residual_bound.py` carries that case, marked
 `full` because the pure-Python structure pass takes ~100 seconds at that size.
 
@@ -907,23 +962,35 @@ absent. This closes the silent `EXIT_COMPLETE` path found in review on
 2026-08-10; the remaining calibration limit is the unmeasured derivation of both
 thresholds recorded below.
 
-**The grouping and scanning thresholds are sealed policy now, and there were
-nine of them, not eight.** `config/designator_grouping.toml` carries them with
-the padding config's own provenance schema and the same honest
+**The grouping and scanning thresholds are sealed policy now, and the inventory
+has been wrong twice.** `config/designator_grouping.toml` carries them with the
+padding config's own provenance schema and the same honest
 `calibrated_for_this_corpus = false`; `grouping_config.py` loads it,
 `run.py::_analyze_page` resolves it against *each page's own* width and height,
 and the modules take the resolved pixel integers as required keyword arguments
 with no defaults left to fall back on. The digest is sealed as
-`designator-grouping` and rechecked at that point of use. The ninth was
-`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`, which the earlier
-inventory missed: it orders review rather than filtering it, but at 2480×3508
-every residual over 6px on either axis is "high", so the ordering silently
-stopped working.
+`designator-grouping` and rechecked at that point of use.
 
-Six fields are integer basis points of a page dimension — `margin_bp` of the
-page's **width**, the other five of its **height** — and each resolves
+The count went eight → nine → eleven, and both corrections are worth keeping
+here because both were found by reading rather than by a test. The ninth was
+`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`, which orders review
+rather than filtering it, but at 2480×3508 every residual over 6px on either
+axis is "high", so the ordering silently stopped working. The tenth and
+eleventh were `grouping.DEFAULT_FALLBACK_BANDS` (4) and
+`DEFAULT_FALLBACK_OVERLAP_PX` (8), which the sweep left behind while `run.py`'s
+own docstring claimed no module in the stage carried a threshold any more. They
+are the two that decide the crop rectangles which actually reach the
+Attestatores and the Perlector on a page nothing was found on — an 8px overlap
+is a comfortable band on a 260px fixture and a hairline on a 3508px scan — so
+they were the worst two to have missed. `fallback_overlap_bp` is a basis point
+of the page's own height like the others; `fallback_bands` is a bare count,
+because a page twice as tall gets bands twice as tall rather than twice as many.
+
+Seven fields are integer basis points of a page dimension — `margin_bp` of the
+page's **width**, the other six of its **height** — and each resolves
 bit-identically to its retired constant on the 200×260 fixture pages, so no
-fixture geometry changed.
+fixture geometry changed. Three are bare counts: `max_residual_components`,
+`max_secondary_proposals` and `fallback_bands`.
 
 Two do **not** move and never will. `structure.PRIMARY_MARGIN` and
 `SECONDARY_MARGIN` are 8-bit ink-intensity offsets, not geometry;

@@ -50,6 +50,7 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
     "brace_min_height_bp",
     "page_edge_reach_bp",
     "review_priority_min_dimension_bp",
+    "fallback_overlap_bp",
 )
 _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 
@@ -60,18 +61,25 @@ _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 # the refusal site, not have to already know it.
 _FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
-_GROUPING_TOP_FIELDS: Final = (
+# The bare counts. None of the three is a length, so none has a page dimension
+# to be a fraction of and none belongs in `absolute`, which holds pixel
+# lengths: a band count is a cardinality, and the two bounds are ceilings on
+# how many separate review items one page may contribute.
+_GROUPING_COUNT_FIELDS: Final = (
     "max_residual_components",
+    "max_secondary_proposals",
+    "fallback_bands",
+)
+
+_GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "page_fraction_bp",
     "absolute",
     "provenance",
 )
 
 
-def _refuse_forbidden_names(fields: Any, where: str) -> None:
-    if not isinstance(fields, dict):
-        return
-    found = sorted(_FORBIDDEN_NAMES_present(fields))
+def _refuse_forbidden_names(fields: dict, where: str) -> None:
+    found = sorted(name for name in _FORBIDDEN_NAMES if name in fields)
     if found:
         raise ContractError(
             f"the grouping configuration's {where} carries forbidden field(s) {found}; "
@@ -79,10 +87,6 @@ def _refuse_forbidden_names(fields: Any, where: str) -> None:
             "module constants in structure.py by common/test_designator_recensor_ink_calibration.py "
             "and may never become a per-run config value"
         )
-
-
-def _FORBIDDEN_NAMES_present(fields: dict) -> list[str]:
-    return [name for name in _FORBIDDEN_NAMES if name in fields]
 
 
 def load_grouping_config(
@@ -129,11 +133,18 @@ def load_grouping_config(
     if missing:
         raise ContractError(f"the grouping configuration is missing field(s) {missing}")
 
-    max_residual_components = grouping["max_residual_components"]
-    if not _is_plain_int(max_residual_components) or max_residual_components < 0:
-        raise ContractError(
-            "the grouping configuration's max_residual_components is not a non-negative integer"
-        )
+    counts = {}
+    for name in _GROUPING_COUNT_FIELDS:
+        value = grouping[name]
+        # `fallback_bands` is the one count that may not be zero: a grid of no
+        # bands cuts nothing, and a page the structure pass found nothing on
+        # would then reach the witnesses as no crop at all -- the exact loss
+        # Tyrel's 2026-08-11 ruling on predetermined crops exists to prevent.
+        floor = 1 if name == "fallback_bands" else 0
+        if not _is_plain_int(value) or value < floor:
+            shape = "positive" if floor else "non-negative"
+            raise ContractError(f"the grouping configuration's {name} is not a {shape} integer")
+        counts[name] = value
 
     page_fraction_bp = _load_closed_int_table(
         grouping.get("page_fraction_bp"),
@@ -147,7 +158,7 @@ def load_grouping_config(
 
     return {
         "config_sha256": digest_bytes(data),
-        "max_residual_components": max_residual_components,
+        **counts,
         "page_fraction_bp": page_fraction_bp,
         "absolute": absolute,
         "provenance": provenance,
@@ -227,8 +238,11 @@ class GroupingThresholds:
     brace_min_height_px: int
     page_edge_reach_px: int
     review_priority_min_dimension_px: int
+    fallback_overlap_px: int
     gap_tolerance_px: int
     max_residual_components: int
+    max_secondary_proposals: int
+    fallback_bands: int
 
 
 def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> GroupingThresholds:
@@ -238,8 +252,9 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
     resolves against `height` -- the basis each field's config comment
     declares as a design decision (SPEC_C section 2), not a property
     recovered from the retired pixel constant it replaces.
-    `gap_tolerance_px` and `max_residual_components` pass through unresolved:
-    neither is a page-fraction quantity.
+    `gap_tolerance_px` and the three counts (`max_residual_components`,
+    `max_secondary_proposals`, `fallback_bands`) pass through unresolved: none
+    of them is a page-fraction quantity.
 
     Uses `geometry._pad_amount` for every basis-point resolution -- the same
     round-half-up integer rule the padding config already uses -- so this
@@ -257,6 +272,9 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         review_priority_min_dimension_px=_pad_amount(
             height, bp["review_priority_min_dimension_bp"]
         ),
+        fallback_overlap_px=_pad_amount(height, bp["fallback_overlap_bp"]),
         gap_tolerance_px=config["absolute"]["gap_tolerance_px"],
         max_residual_components=config["max_residual_components"],
+        max_secondary_proposals=config["max_secondary_proposals"],
+        fallback_bands=config["fallback_bands"],
     )
