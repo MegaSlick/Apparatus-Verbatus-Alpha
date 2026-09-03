@@ -3036,7 +3036,7 @@ def _verify_proposal_act_row(
         # docstring above promises: staying silent skips not just the answer
         # hop but the geometry recompute's only counterparty, so a forger's
         # self-consistent rectangle would be admitted on its own say-so.
-        if _is_real_ingress(context.run):
+        if is_real_ingress(context.run):
             raise FatalAccounting(
                 f"act {act_id} is a structural proposal on real ingress, but the proposal "
                 "seal's own provenance names no engine_call; a real submission's structural "
