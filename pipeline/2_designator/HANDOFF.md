@@ -717,6 +717,25 @@ The live pass therefore captures nothing for the witnesses; what it retains
 under custody is its own evidence. Nothing here is a picker: the chair
 proposes, the scan corroborates, and nothing selects among witnesses.
 
+**Proved end to end.** `pipeline/test_structure_chair_e2e.py` runs this pass as
+the *denominator* of a whole run: the Door, Exemplar and Ink Map as real
+programs, this stage's live pass against a scripted structure chair, then the
+three live witness chairs, a live Perlector, and the Recensor, Archetypus and
+Armarium as real programs over acts no fixture declared. It asserts that each
+minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
+recomputes from them, that the seal verifies at the Attestatores' own
+boundary, that the sealed `[structure]` temperature is both on the wire and on
+every answer record, that no Designator artifact carries a byte of the chair's
+transcription, and that a second attempt whose rectangles moved is an ordinary
+run — different acts on the page that changed, the same act on the page that
+did not, because identity is content-addressed rather than positional. The
+zero-act, cut-off and every-named-parse-refusal answers are exercised there
+over the real chain as well as in this stage's own suite. The export it reaches
+is *held*, for the reason the live seam suite measures over declared acts:
+Churro publishes no native layout, so two witnesses of a floor of three count
+(`pipeline/3_attestatores/HANDOFF.md`). That is a witness-coverage fact, not a
+fact about this stage — every act the chair proposed was read.
+
 **Named risks.** The real `designator_structure` rows' `max_model_len` is a
 planning value, and a whole-page transcription plus geometry may not fit it;
 `structure-answer-cut-off` on every page of the first real run is the
