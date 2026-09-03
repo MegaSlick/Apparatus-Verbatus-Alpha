@@ -410,9 +410,9 @@ def _failed_parse_composition(
 
     Shared by the act-scoped and page-scoped parse-failure branches so a
     provider-truncated response cannot go on being folded into one and
-    dropped from the other. When ``cut_off`` is a recognized cut-off word,
-    both strings name the truncation ahead of the underlying parse reason;
-    otherwise both are the parse reason verbatim.
+    dropped from the other. When ``cut_off`` is ``True`` — the provider's stop
+    word was a recognized cut-off — both strings name the truncation ahead of
+    the underlying parse reason; otherwise both are the parse reason verbatim.
     """
 
     if cut_off:
