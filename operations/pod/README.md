@@ -648,11 +648,25 @@ The stack the real roster asks for is now a `pod` dependency group in
 carries those exact versions under
 `sys_platform == 'linux' and platform_machine == 'x86_64'` markers:
 
-| Package | Pin | Why this one |
-|---|---|---|
-| `vllm` | `0.27.1` | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
-| `transformers` | `5.14.1` | The version the vLLM 0.27 line's own requirements were bumped to; above vLLM's `transformers >= 5.5.3` floor and above the Perlector's stated `>= 5.8.0` |
-| `qwen-vl-utils` | `0.0.14` | Unchanged; latest, and it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing in this group compiles on the card |
+| Package | Pin | Licence | Why this one |
+|---|---|---|---|
+| `vllm` | `0.27.1` | Apache-2.0 | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
+| `transformers` | `5.14.1` | Apache-2.0 | The version the vLLM 0.27 line's own requirements were bumped to; above vLLM's `transformers >= 5.5.3` floor and above the Perlector's stated `>= 5.8.0` |
+| `qwen-vl-utils` | `0.0.14` | Apache-2.0 | Unchanged; latest, and it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing in this group compiles on the card |
+
+**Licence record for the `pod` group**, per `cleanroom/README.md`'s rule that a
+third-party dependency's source and licence are recorded beside the code (this
+table, and the group's own comment in `pyproject.toml`):
+
+- `vllm` 0.27.1 — Apache-2.0, per the `LICENSE` file at
+  `github.com/vllm-project/vllm` (tag `v0.27.1`).
+- `transformers` 5.14.1 — Apache-2.0, per the `LICENSE` file at
+  `github.com/huggingface/transformers`.
+- `qwen-vl-utils` 0.0.14 — Apache-2.0, per its packaging metadata on PyPI
+  (`pypi.org/project/qwen-vl-utils`); the package is maintained under
+  `github.com/QwenLM/Qwen2.5-VL`, itself Apache-2.0. This session has no
+  network access to fetch either page directly and states the licence as
+  each project's own published metadata, not as a byte fetched here.
 
 **Why the old pins could not be locked.** The catalogue previously pinned
 `vllm 0.10.1` / `transformers 4.57.1`, and `uv lock` refused the group outright:
