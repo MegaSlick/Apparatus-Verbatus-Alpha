@@ -1303,7 +1303,9 @@ def test_a_projection_with_a_non_sha256_submission_id_is_refused(tmp_path):
     is a well-formed `"a" * 64`.
     """
     projection = replace(_projection(), fixture_id=None, submission_id="not-a-lowercase-sha256")
-    with pytest.raises(SchemaRefusal, match="projection submission identity is not a lowercase sha256"):
+    with pytest.raises(
+        SchemaRefusal, match="projection submission identity is not a lowercase sha256"
+    ):
         build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
 
 
