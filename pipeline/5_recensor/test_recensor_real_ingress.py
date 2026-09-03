@@ -226,9 +226,7 @@ def test_the_fixture_reader_refusal_is_resolved_before_the_partition_is_publishe
     )
 
 
-def test_the_fixture_reader_refusal_actually_fires_before_any_write(
-    real_root, monkeypatch
-):
+def test_the_fixture_reader_refusal_actually_fires_before_any_write(real_root, monkeypatch):
     """Drives `_read_the_acts` itself rather than comparing source positions,
     so deleting the refusal (or introducing a write ahead of it under any
     name) fails this test. `verify_predecessor_seal` is stubbed out because
