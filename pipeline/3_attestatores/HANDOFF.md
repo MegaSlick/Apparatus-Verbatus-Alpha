@@ -276,28 +276,31 @@ channel is Unit 12's obligation, and until it lands a live run counts two
 witnesses of a floor of three and holds for review.
 
 **A page witness's geometry on a continuation page is a record the Perlector
-cannot read today.** `attached` is derived from geometry alone on every
-contributing page, so a served Chandra whose page-2 block overlaps an act's
-continuation region publishes that act's page-2 entry as `attached: true`,
+now reads.** `attached` is derived from geometry alone on every contributing
+page, so a served Chandra whose page-2 block overlaps an act's continuation
+region publishes that act's page-2 entry as `attached: true`,
 `attachment_basis: geometric-overlap`, alignment
 `continuation-page-no-act-anchor`, `comparable: false`, no span
 (`test_attestatores_live_pass.py` pins it). `pipeline/4_perlector/run.py::act_attachment_view`
-then refuses it twice over: it requires `attached` to equal the witness's
-geometric overlap with the act's sealed regions on that page (so `false` is
-refused as not derived from geometry) and separately refuses any
-continuation-page entry that is attached (so `true` is refused as claiming an
-anchor). No record satisfies both, so a page witness reporting geometry over a
-continuation region cannot pass the Perlector in either state. The
+used to refuse that twice over: it required `attached` to equal the witness's
+geometric overlap with the act's sealed regions on that page (so `false` was
+refused as not derived from geometry) and separately refused any
+continuation-page entry that was attached (so `true` was refused as claiming an
+anchor). No record satisfied both, so a page witness reporting geometry over a
+continuation region could not pass the Perlector in either state. The
 contradiction was unreachable until a served Chandra parsed -- the fixture
-declares no geometry on a continuation page -- and the fix is the Perlector's
-(outside this stage's ownership): decide which of its two rules the
-continuation entry obeys, most plausibly dropping the second, since
-`attached` says only that the chair's ink overlaps the act's and the
+declares no geometry on a continuation page -- and it was fixed on the
+Perlector's side, as this section predicted, by dropping the second rule:
+`attached` says only that the chair's ink overlaps the act's, and the
 `continuation-page-no-act-anchor` alignment beside it already says no
-comparison view exists. Until then `pipeline/test_live_reading_seam_e2e.py`
-scripts Chandra's continuation-page answer in the contract's page-text form,
-which is a legitimate answer and the one the Perlector reads, and says so
-where it does.
+comparison view exists. What the continuation page genuinely lacks is an
+*anchor*, and that is what the surviving rule now names. The derivation rule is
+untouched, so an entry that discounts its own geometry is still refused
+(`pipeline/4_perlector/test_live_perlector.py`).
+`pipeline/test_live_reading_seam_e2e.py` still scripts Chandra's
+continuation-page answer in the contract's page-text form, which is a
+legitimate answer and one the Perlector reads; the geometry form is exercised
+against the reader directly.
 
 **No live reread.** `--operation reread` is refused by name under a live roster.
 A reread asks one chair for one act again at a new ordinal; it needs its own
@@ -411,10 +414,10 @@ page-edge overshoot finding, which the shared contract requires to be traceable
 through `raw_response_refs`; there the reference is added and the Perlector's
 arithmetic would refuse the record. That branch is unreachable for the wire
 contract -- its page-pixel conversion clamps to the page -- and reachable only
-for a live body wearing the fixture placeholder's pixel boxes, so the
-Perlector-side fix (one entry per `relative_path` before the sorted comparison,
-outside this stage's ownership) is still owed, but nothing a served chair
-answering its prompt can produce reaches it.
+for a live body wearing the fixture placeholder's pixel boxes. The
+Perlector-side fix has since landed -- one entry per `relative_path` before the
+sorted comparison -- so that branch is no longer a record this stage may
+publish and the next one must refuse.
 
 **Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
 stage's live pass as one link in a whole run: the real stage programs to the

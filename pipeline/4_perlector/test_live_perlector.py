@@ -17,6 +17,7 @@ are live and let the run bind it exactly as a real one would.
 from __future__ import annotations
 
 import ast
+import copy
 import importlib.util
 import json
 import shutil
@@ -29,11 +30,12 @@ from typing import Any
 import pytest
 from live_reader import EngineSignalRefusal
 
+from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import PERLECTOR
+from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.runtree.store import RunTree
 from operations.serving.client import ChairClient, ServingModeRefusal
@@ -983,3 +985,258 @@ def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(liv
     # only `<stage>/artifacts`, the blob inventory only `<stage>/blobs`), so the
     # seal must still succeed with these paths named but nothing started.
     context.seal_boundary()
+
+
+# --- the two consumer-side rules a served page witness reached first ----------
+#
+# Both were unreachable while no page witness parsed live: the fixture posture
+# declares no geometry on a continuation page, and a fixture page record's
+# partition and its capture never name one blob twice. A served Chandra reaches
+# both (`pipeline/3_attestatores/HANDOFF.md`), which is why they are fixed here
+# rather than left described.
+
+
+def _page_context(root: Path, catalogue: Path, monkeypatch):
+    """A real Perlector stage context over a chained run tree."""
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--serving-recipes-config",
+            str(catalogue),
+            "--placement-tier",
+            TIER,
+        ],
+    )
+    args = perlector.stage_parser(perlector.__doc__.splitlines()[0]).parse_args()
+    return perlector.open_stage_context(args, PERLECTOR, registry_factory=ChairRegistry.from_toml)
+
+
+def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_input(
+    live_run, monkeypatch
+):
+    """A blob a page record reaches twice is one response, not two.
+
+    A page witness whose partition was derived from the very bytes its own
+    native capture describes names one content-addressed blob through
+    `raw_response_refs` and again through `native_capture` -- and a page-edge
+    overshoot finding is *required* by the shared contract to be traceable
+    through `raw_response_refs` while the capture still names it
+    (`common/native_witness.py`). The producer names it once
+    (`pipeline/3_attestatores/run.py::_named_once`), and the envelope refuses a
+    repeated path outright, so no publishable record could ever have carried
+    two entries. Concatenating the two fields here without de-duplication
+    therefore built an expectation nothing could satisfy: a correct record,
+    correctly published, refused one stage later.
+    """
+    root, catalogue = live_run
+    context = _page_context(root, catalogue, monkeypatch)
+    proposals = perlector.sealed_proposal_regions(context)
+    pages = [
+        context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+    record = next(
+        (page for page in pages if page["payload"].get("native_capture") is not None), None
+    )
+    assert record is not None, "no page Testimonium in this tree retains a native capture"
+    perlector.validate_page_testimonium_record(context, record, proposals)
+
+    reference = record["payload"]["native_capture"]["raw_response_ref"]
+    assert reference in record["inputs"]
+    both = copy.deepcopy(record)
+    both["payload"]["raw_response_refs"] = [dict(reference)]
+    both["self_hash"] = self_hash(both)
+    # `inputs` is untouched: it is what the producer would have written, and
+    # the point is that this record needs no second entry to be honest.
+    perlector.validate_page_testimonium_record(context, both, proposals)
+
+    # The rule did not go soft. An input the record does not derive from is
+    # still refused, and so is one retained response left unbound.
+    extra = copy.deepcopy(both)
+    extra["inputs"] = sorted(
+        [*extra["inputs"], context.input_ref(proposals[0]["payload"]["image_path"])],
+        key=lambda item: (item["relative_path"], item["sha256"]),
+    )
+    with pytest.raises(SchemaRefusal, match="does not bind exactly its presented image"):
+        perlector.validate_page_testimonium_record(context, extra, proposals)
+    unbound = copy.deepcopy(both)
+    unbound["inputs"] = [item for item in unbound["inputs"] if item != reference]
+    with pytest.raises(SchemaRefusal, match="every retained raw response"):
+        perlector.validate_page_testimonium_record(context, unbound, proposals)
+
+
+def _continuation_attachment(*, attached: bool, alignment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "chair": "attestator_1",
+        "page_witness": True,
+        "page_ordinal": 2,
+        "testimonium_ref": {"relative_path": "3_attestatores/artifacts/p.json", "sha256": "b" * 64},
+        "attached": attached,
+        "comparable": False,
+        "attachment_basis": "geometric-overlap" if attached else "unattached",
+        "content_health": {"characters": 12},
+        "alignment": alignment,
+        "span": None,
+    }
+
+
+def _continuation_context(monkeypatch, attachment: dict[str, Any]):
+    """The smallest tree a page witness's continuation-page entry needs.
+
+    Stubbed rather than driven, and `validate_page_testimonium_record` is
+    stubbed out with it: the page record's own validity has its own suites
+    (`test_region_boundary.py`, and the test above), while what is under test
+    here is the pair of rules `act_attachment_view` applies to `attached` on a
+    page that is not the act's primary one. Everything those two rules read is
+    real -- the geometric derivation runs over reported observations and the
+    act's sealed bases, exactly as it does in a run.
+    """
+    # A real `ChairIdentity`: `declared_page_witness_chairs` reads page scope
+    # off the sealed configuration's own type, and a stand-in would be read as
+    # act-scoped and never reach the branch under test.
+    identity = ChairIdentity(
+        role="attestator_1",
+        source="local-repository",
+        repo=None,
+        path="attestator_1",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/attestator_1.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="chandra.v1",
+        witness_scope="page",
+    )
+    page_payload = {
+        "chair": "attestator_1",
+        "scope": "page",
+        "page_ordinal": 2,
+        "page_role": "continuation",
+        "unjoined_act_attempts": [],
+        "payload": "SYNTHETIC TAIL",
+        # Reported geometry that really does overlap the act's sealed region on
+        # this page: the state a served Chandra reaches and the fixture never did.
+        "observed": [
+            {
+                "ordinal": 0,
+                "bounds": {"x": 20, "y": 20, "w": 160, "h": 60},
+                "bounds_source": "native",
+                "span": None,
+            }
+        ],
+    }
+    testimonium = {"outcome": "read", "payload": page_payload, "artifact_id": "page-2-attestator-1"}
+    attachment_record = {
+        "artifact_id": "attachment-1",
+        "payload": {"act_key": "a1", "attempt_ordinal": 1, "attachments": [attachment]},
+    }
+    tree = SimpleNamespace(
+        build_manifest=lambda stage: {
+            "artifacts": [
+                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
+            ]
+        },
+        read_artifact=lambda stage, kind, artifact_id: attachment_record,
+        read_artifact_reference=lambda reference, *, stage, kind, subject_id: testimonium,
+    )
+    context = SimpleNamespace(
+        tree=tree,
+        witness_chairs=["attestator_1"],
+        registry=SimpleNamespace(
+            config=SimpleNamespace(chairs={"attestator_1": identity}),
+            resolve=lambda chair: identity,
+        ),
+        artifact_ref=lambda stage, kind, artifact_id: {"artifact_id": artifact_id},
+    )
+    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
+    monkeypatch.setattr(
+        perlector, "validate_page_testimonium_record", lambda context, record, regions: None
+    )
+    act = {"act_id": "act_0123456789abcdef", "act_key": "a1", "page_ordinal": 1}
+    bases = [
+        {
+            "source_page_ordinal": 2,
+            "source_page_id": "page_two",
+            "region_id": "r2",
+            "transform": {"bounds": {"x": 20, "y": 20, "w": 160, "h": 60}},
+        }
+    ]
+    chair_testimonium = {
+        "outcome": "read",
+        "payload": {
+            "chair": "attestator_1",
+            "content_health": {"characters": 12},
+            # The scope claim's second spelling, reconciled against the run's
+            # own declaration by this reader.
+            "page_witness": True,
+        },
+    }
+    return context, act, [chair_testimonium], bases
+
+
+CONTINUATION_ALIGNMENT = {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
+
+
+def test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable(monkeypatch):
+    """The two rules now admit exactly one state, and it is the honest one.
+
+    `attached` is derived from geometry alone on every contributing page, so a
+    chair whose block covers an act's continuation region publishes that entry
+    as attached. This reader required the same thing -- and separately refused
+    any attached continuation entry, so neither `true` nor `false` could pass
+    and the record had no legal spelling at all. What a continuation page
+    genuinely lacks is an ANCHOR, and that is what the surviving rule says.
+    """
+    context, act, testimonia, bases = _continuation_context(
+        monkeypatch, _continuation_attachment(attached=True, alignment=CONTINUATION_ALIGNMENT)
+    )
+    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
+    assert view["page_witness_count"] == 1
+    # Attached, and still carrying no comparison view: the anchor is the thing
+    # the continuation page does not have.
+    assert view["comparison_views"] == {}
+    assert view["edge_deltas"]["attestator_1"][0]["region_id"] == "r2"
+
+
+def test_a_continuation_page_entry_that_contradicts_its_own_geometry_is_still_refused(monkeypatch):
+    """Dropping one rule did not drop the other: geometry still decides.
+
+    An entry that says `attached: false` while the chair's reported ink covers
+    the act's sealed region on that page is a witness whose evidence was
+    silently discounted, and it is refused by the derivation rule exactly as
+    before.
+    """
+    context, act, testimonia, bases = _continuation_context(
+        monkeypatch, _continuation_attachment(attached=False, alignment=CONTINUATION_ALIGNMENT)
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
+
+
+def test_a_continuation_page_entry_claiming_an_act_anchor_is_refused(monkeypatch):
+    """The surviving rule, on the fault it actually names.
+
+    A continuation entry whose alignment claims anything other than
+    `continuation-page-no-act-anchor` is asserting an act-specific anchor on a
+    page that has none -- the fault the old pair was reaching for, now stated
+    once and about the field that carries it.
+    """
+    context, act, testimonia, bases = _continuation_context(
+        monkeypatch,
+        _continuation_attachment(
+            attached=True, alignment={"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
+        ),
+    )
+    with pytest.raises(SchemaRefusal, match="carries no act-specific anchor"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
