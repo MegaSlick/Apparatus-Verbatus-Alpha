@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,38 @@ from operations.triage.reconcile import (
 )
 
 FIXTURES = Path(__file__).with_name("fixtures") / "reconciliation"
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every byte under `root`, so a refusal's own claim can be checked.
+
+    Each path guard in `_canonical_distinct_paths` tells the operator that nothing
+    was written. That is a statement about this directory, and until it is compared
+    against the directory it is a statement the suite takes on trust -- exactly the
+    shape GOVERNANCE 10 refuses, since a pass that published the disagreement
+    document and then refused would still print it.
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
+
+
+def _local_verdicts(tmp_path: Path) -> list[Path]:
+    local = []
+    for fixture in sorted(FIXTURES.glob("seat-*.json")):
+        target = tmp_path / fixture.name
+        target.write_bytes(fixture.read_bytes())
+        local.append(target)
+    return local
 
 
 def test_checked_in_synthetic_verdicts_replay_exactly(tmp_path: Path):
@@ -73,6 +107,102 @@ def test_reconciliation_paths_refuse_case_collisions_and_source_symlinks(tmp_pat
         )
     assert not (tmp_path / "expected.json").exists()
     assert not (tmp_path / "disagreements.json").exists()
+
+
+def _unresolvable_output(tmp_path, sources, monkeypatch):
+    """The only guard here with no filesystem shape of its own to build."""
+    doomed = tmp_path / "unresolvable"
+    original = Path.resolve
+
+    def refuse(self, strict=False):
+        if self == doomed:
+            raise OSError(errno.EIO, "simulated resolution failure")
+        return original(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", refuse)
+    return sources, doomed / "expected.json", tmp_path / "disagreements.json"
+
+
+def _colliding_spellings(tmp_path, sources, _monkeypatch):
+    return sources, tmp_path / "Result.json", tmp_path / "result.json"
+
+
+def _unstatable_output(tmp_path, sources, _monkeypatch):
+    """A parent that is a regular file: `lstat` fails with ENOTDIR, not ENOENT."""
+    plain = tmp_path / "not-a-directory.json"
+    plain.write_bytes(b"{}")
+    return sources, plain / "expected.json", tmp_path / "disagreements.json"
+
+
+def _linked_source(tmp_path, sources, _monkeypatch):
+    linked = tmp_path / "linked-seat.json"
+    linked.symlink_to(sources[0])
+    return (
+        [linked, sources[1]],
+        tmp_path / "expected.json",
+        tmp_path / "disagreements.json",
+    )
+
+
+def _irregular_source(tmp_path, sources, _monkeypatch):
+    fifo = tmp_path / "verdict.fifo"
+    os.mkfifo(fifo)
+    return (
+        [fifo, sources[1]],
+        tmp_path / "expected.json",
+        tmp_path / "disagreements.json",
+    )
+
+
+def _one_file_under_two_names(tmp_path, sources, _monkeypatch):
+    twin = tmp_path / "twin-seat.json"
+    os.link(sources[0], twin)
+    return (
+        [sources[0], twin],
+        tmp_path / "expected.json",
+        tmp_path / "disagreements.json",
+    )
+
+
+@pytest.mark.parametrize(
+    ("build", "named"),
+    (
+        pytest.param(_unresolvable_output, "could not be resolved", id="unresolvable"),
+        pytest.param(_colliding_spellings, "case-insensitive filesystem", id="case-collision"),
+        pytest.param(_unstatable_output, "could not be verified", id="unstatable"),
+        pytest.param(_linked_source, "is a symbolic link", id="symlink"),
+        pytest.param(_irregular_source, "is not a regular file", id="irregular"),
+        pytest.param(_one_file_under_two_names, "name one file", id="one-inode"),
+    ),
+)
+def test_a_refused_reconciliation_path_wrote_nothing_it_disowned(
+    tmp_path: Path, monkeypatch, build, named: str
+):
+    """Every path guard's "nothing was written" measured against the directory.
+
+    The tests above check the named cause and the two output names. That leaves the
+    sentence itself unmeasured, and it is the half an operator acts on: the advice is
+    to repair the path and retry, which is only safe while the previous attempt left
+    no half-published pair behind. `reconcile_files` publishes the disagreements
+    document *before* the expected one deliberately, so a guard that moved below the
+    writes would leave exactly one of the two on disk -- new positive assertions with
+    no dissent record, or a dissent record for assertions nobody made.
+
+    The comparison is over content, not names: the source verdicts already exist, so
+    a guard that overwrote one would leave the name list untouched. The assertion
+    names the paths that moved, because "one file changed" does not say which.
+    """
+    sources, expected, disagreements = build(tmp_path, _local_verdicts(tmp_path), monkeypatch)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconciliationRefusal) as refusal:
+        reconcile_files(sources, expected, disagreements)
+
+    assert named in str(refusal.value)
+    assert "nothing was written" in str(refusal.value)
+    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the tree it disowned"
+    )
 
 
 def test_unanimity_intervals_and_union_act_denominator_are_not_a_vote():

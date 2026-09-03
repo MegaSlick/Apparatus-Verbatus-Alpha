@@ -12,6 +12,7 @@ filesystem behaviour.
 """
 
 import errno
+import hashlib
 import inspect
 import json
 import os
@@ -48,6 +49,28 @@ SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTE
 CONFIG_DIGEST = "c" * 64
 RECIPES = {"designator": "fake-designator-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every byte under `root`, so a refusal's own claim can be checked.
+
+    `_verify_compatible_reuse` tells the operator "Nothing was written". That is a
+    statement about this directory, and until it is compared against the directory
+    it is a statement the suite takes on trust -- exactly the shape GOVERNANCE 10
+    refuses, since a store that half-wrote and then refused would still print it.
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
 
 
 def make_run(tmp_path, run_id="r1", **overrides):
@@ -479,13 +502,41 @@ def test_reusing_a_run_id_with_changed_ingress_evidence_is_refused(tmp_path):
         make_run(tmp_path, ingress={"mode": "real"})
 
 
-def test_an_incompatible_reuse_writes_nothing(tmp_path):
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    (
+        ({"config_digest": "d" * 64}, "config_digest"),
+        ({"adapter_recipes": {"designator": "fake-designator-v1"}}, "adapter_recipes"),
+        ({"witness_chairs": ["attestator_1", "attestator_2"]}, "witness_chairs"),
+    ),
+)
+def test_an_incompatible_reuse_writes_nothing(tmp_path, overrides, field):
+    """The refusal's own sentence, measured against the tree rather than read.
+
+    "this is a different run wearing an old name. Nothing was written" is advice as
+    much as a diagnosis: an operator who believes it re-runs under a fresh id and
+    expects the old tree to be exactly what the earlier run left. A reuse that
+    rewrote `run.json` under the new bindings before refusing would make the
+    existing artifacts describe a configuration no longer recorded beside them,
+    and the message would still print.
+
+    Names alone are not enough -- the defect this closes overwrites a file that
+    already exists, so the comparison is over content. Each parameter changes one
+    bound field, so the refusal can only be about that field, and the assertion
+    names the paths that moved rather than only counting them.
+    """
     tree = make_run(tmp_path)
     tree.publish_artifact(make_envelope())
-    before = sorted(path.name for path in (tmp_path / "r1").rglob("*"))
-    with pytest.raises(IncompatibleReuse):
-        make_run(tmp_path, config_digest="d" * 64)
-    assert sorted(path.name for path in (tmp_path / "r1").rglob("*")) == before
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(IncompatibleReuse) as caught:
+        make_run(tmp_path, **overrides)
+
+    assert field in str(caught.value)
+    assert "Nothing was written" in str(caught.value)
+    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the run tree it disowned"
+    )
 
 
 def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
