@@ -1960,7 +1960,10 @@ def _live_reader(
 def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     """One entry per path, in first-named order, refusing two digests for one path.
 
-    Needed only where a live re-proof joins the establishing call: both are
+    Used at exactly two seams, both places where one content-addressed blob is
+    honestly reachable by two names: a live re-proof answering with the same
+    bytes as the establishing call, and a page Testimonium whose partition was
+    derived from the very bytes its own native capture describes. Both are
     content-addressed, so an engine that answered the same bytes twice names one
     blob twice and the envelope would carry a duplicate input. Two *different*
     digests under one path cannot happen in a content-addressed store, so if it

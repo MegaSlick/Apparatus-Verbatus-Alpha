@@ -788,12 +788,22 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     ),
 )
 def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
-    """Every refusal the closed contract can reach, held under its own code.
+    """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
 
     A page whose answer this system cannot read is held with the outcome that
     says why, and its ink reconciles as conservation residual — never repaired,
     never re-asked, and never quietly tiled as though the chair had answered
     (GOVERNANCE 7).
+
+    This covers 7 of `structure_answer.PARSE_OUTCOMES`' 11 codes — every one
+    `operations/serving/fakes.py::_STRUCTURE_REFUSALS` builds a scripted body
+    for. `raw-response-not-bytes` and `response-too-large` describe the wire
+    itself, not a body the fake endpoint hands back, so no scripted answer can
+    reach them here. `excessive-json-nesting` and `too-many-acts` are
+    constructible over this real chain but have no scripted body yet; both,
+    and the full 11, are exercised at the parser level in
+    `common/test_structure_answer.py`, guarded against silent drift by its own
+    `test_every_declared_outcome_is_exercised_above`.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(

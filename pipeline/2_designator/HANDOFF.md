@@ -729,8 +729,11 @@ every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
-zero-act, cut-off and every-named-parse-refusal answers are exercised there
-over the real chain as well as in this stage's own suite. The export it reaches
+zero-act and cut-off answers, and 7 of the 11 named parse refusals
+(`_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`), are exercised there
+over the real chain as well as in this stage's own suite; the remaining four
+refusal codes are exercised only at the parser level
+(`common/test_structure_answer.py`). The export it reaches
 is *held*, for the reason the live seam suite measures over declared acts:
 Churro publishes no native layout, so two witnesses of a floor of three count
 (`pipeline/3_attestatores/HANDOFF.md`). That is a witness-coverage fact, not a
