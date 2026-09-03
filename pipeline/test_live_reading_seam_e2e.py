@@ -94,6 +94,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePackages,
     ScriptedAnswer,
 )
+from operations.serving.http import chat_image_bytes_all  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
 
@@ -424,16 +425,27 @@ class RecordingEndpoint(FakeEndpoint):
 
 
 class VaryingReadingEndpoint(RecordingEndpoint):
-    """A reader endpoint whose answer content is derived from the request body.
+    """A reader endpoint whose answer content is derived from the pixels it was sent.
 
     A fixed scripted answer, replayed for every reading POST, cannot say
     whether a Perlectio is bound to *its own* engine response or to any
     canonical one: sixty identical replies make every response blob
-    identical too. Hashing the incoming request body into the content
-    instead ties each answer to the exact bytes that asked for it, while
-    still answering the same for the Pass A / Pass B / re-proof calls of one
-    act, which `live_reader.py`'s own docstring says carry identical dossier
-    arguments and so render to the same request body.
+    identical too. Hashing the images the request actually carries into the
+    content instead ties each answer to the act whose pixels asked for it,
+    while answering the same for the Pass A / Pass B / re-proof calls of that
+    one act.
+
+    **Why the delivered images and not the whole body.** Pass A and Pass B do
+    render the same request, but the audit re-proof does not: it appends every
+    reproof prompt to the same dossier (`live_reader.read`), so a whole-body
+    hash answers the re-proof with different text. That is not a re-proof this
+    seam may serve. `audit.change_record` admits only a change that falls
+    inside a flagged location, and a tail digest that moved sits inside a
+    testimony-diff flag only when the witness text happens to end in the same
+    character as the reading -- so the pass would refuse, or not, on a
+    coincidence between a witness constant and a hash. The delivered pixels are
+    the act's own bytes and are identical across its three passes, which is the
+    property this endpoint needed all along.
     """
 
     def __init__(self, *, finish_reason: Any, **keywords: Any) -> None:
@@ -446,14 +458,15 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             and url.endswith("/chat/completions")
             and self._readiness_probe_answered
         ):
-            digest = hashlib.sha256(body).hexdigest()[:12] if body is not None else "no-body"
+            images = chat_image_bytes_all(json.loads(body)) if body is not None else []
+            digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
             # Bracketed, not bare: a bare hex digest ends in "a" one time in
             # sixteen, and every witness body this fixture serves also ends
             # in "a" (`DAI_ACT_ONE`, `DAI_ACT_TWO`, and Churro's parsed
             # `<output>` text all end mid-word on "...gamma"/"...eta"). When
             # both coincide, a testimony-diff flag's suffix-trimmed end lands
             # one character short of a re-proof envelope that reaches the
-            # true end of the text — a real production coincidence
+            # true end of the text -- a real production coincidence
             # (`common.perlector_audit.change_record` now tolerates exactly
             # that one-byte gap), but not one this fixture needs to also
             # roll on every run. "]" is not a character any scripted witness

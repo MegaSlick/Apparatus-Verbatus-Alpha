@@ -11,7 +11,12 @@ records are shaped exactly as `pipeline/2_designator/run.py::cut_minted_region`
 publishes them (a crop really cut from the sealed page, an identity that binds
 its transform, provenance naming a receipt this run wrote), so the lineage and
 provenance checks this stage runs before any chair is asked hold over them as
-they would over the real producer's output.
+they would over the real producer's output. Since D3 a real structural proposal
+also owes the served structure chair's own records -- the page's
+`structure-answer`, the `structure-status` that names it, and the `engine_call`
+on the seal's provenance -- so `_RealDesignator.scan` builds that chain too,
+through the same builder `common/test_stage_structure_proposals.py` publishes
+it with.
 
 Every chair here is `operations/serving/fakes.py`: nothing starts a pod,
 contacts a provider or loads a model. The fakes stand behind a real
@@ -90,6 +95,7 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_stage_context,
 )
+from common.test_stage_structure_proposals import _StructureDesignator  # noqa: E402
 from operations.serving.config import load_serving_recipes  # noqa: E402
 from operations.serving.fakes import ScriptedAnswer  # noqa: E402
 from operations.submit import gate, submit  # noqa: E402
@@ -253,6 +259,7 @@ class _RealDesignator:
     """
 
     def __init__(self, root: Path):
+        self.root = root
         self.tree = RunTree(root, RUN_ID)
         run = self.tree.read_run()
         registry = ChairRegistry.from_toml(str(MODELS_CONFIG))
@@ -290,7 +297,35 @@ class _RealDesignator:
             ),
             "adapter_revision": self.context.adapter_revision,
         }
+        # Built lazily by `scan`: standing one up writes a serving receipt the
+        # moment it exists, and the tests that never seal a proposal never need
+        # the served chain at all.
+        self._served: _StructureDesignator | None = None
         self.rows: list[dict[str, Any]] = []
+
+    def scan(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
+        """One page's served-chair records: its retained answer, then its status.
+
+        D3 (892b1f951f) closed the route this stand-in used to take. A real
+        submission's structural proposal is now checked back through the page's
+        own `structure-status` to the `structure-answer` the chair returned, and
+        a seal whose provenance names no `engine_call` is refused by name before
+        any rectangle is recomputed -- so a hand-built real tree that proposes
+        anything owes those records too.
+
+        Composed from `test_stage_structure_proposals._StructureDesignator`, the
+        same builder `common/test_stage_real_ingress.py` was repaired onto
+        (327eb24c98), rather than re-deriving the answer/status/call-record
+        chain here: one description of the served route, in one place. Only the
+        chain is borrowed. The regions stay `propose`'s own, because this
+        stage's witnesses read the crop bytes it cuts from the sealed page, and
+        the act keys stay `ACTS`' own structural keys.
+        """
+        if self._served is None:
+            self._served = _StructureDesignator(
+                self.root, RUN_ID, scenario=REAL_SCENARIO, fixture=None
+            )
+        self._served.status(ordinal, self._served.answer(ordinal, rectangles))
 
     def propose(self, ordinal: int, bounds: dict[str, int], key: str) -> str:
         page = self.pages[ordinal]
@@ -339,10 +374,19 @@ class _RealDesignator:
         return act
 
     def seal(self) -> None:
+        # `_structure_chair_call` reads the served call from the *seal*, not
+        # from any one row, so once a page has been scanned the seal carries the
+        # served designator's own provenance -- engine_call included -- rather
+        # than the bare marker that predates the structure chair entirely.
+        provenance: dict[str, Any] = (
+            self._served.provenance()
+            if self._served is not None
+            else {"kind": "hand-built proposal seal"}
+        )
         payload: dict[str, Any] = {
             "expected_acts": self.rows,
             "count": len(self.rows),
-            "provenance": {"kind": "hand-built proposal seal"},
+            "provenance": provenance,
         }
         payload["self_hash"] = self_hash(payload)
         self.context.publish(
@@ -358,6 +402,15 @@ class _RealDesignator:
 
 def _designate(run_root: Path) -> _RealDesignator:
     designator = _RealDesignator(run_root)
+    # Every rectangle a page carries, listed on that page's one answer before
+    # anything is proposed from it: the answer's own `act_count` must reconcile
+    # with the acts it lists, and a rectangle it does not list may not be
+    # attributed to the chair.
+    by_page: dict[int, list[dict[str, int]]] = {}
+    for ordinal, bounds, _key in ACTS:
+        by_page.setdefault(ordinal, []).append(bounds)
+    for ordinal in sorted(by_page):
+        designator.scan(ordinal, by_page[ordinal])
     for ordinal, bounds, key in ACTS:
         designator.propose(ordinal, bounds, key)
     designator.seal()
