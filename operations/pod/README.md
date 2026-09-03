@@ -551,11 +551,13 @@ typed confirmation; EOF is a refusal. **`--record-fixture PATH`** routes every p
 exchange the launch sees — method, path, request body, status, response body, and a
 raised transport failure — through `fixture.py`'s recorder, appended as JSON lines
 (0600, fsynced per line, never truncated) so a drill boot leaves a replayable fixture
-behind for deferral 04-6. Bodies are stored verbatim unless a key anywhere in them is
-credential-shaped by `models.looks_like_credential_field`, in which case the body is
-parsed, those values replaced, re-serialized with money still as numbers, and the record
-says `verbatim: false` and names every scrubbed path; the launch token is scrubbed too,
-by the same predicate, with no exemption. The flag is duck-typed on a provider's
+behind for deferral 04-6. Bodies are stored verbatim unless something in them is
+credential-shaped by either of the two shared predicates — a key that names itself a
+secret by `models.looks_like_credential_field`, or a string leaf under any key at all
+that carries a credential-shaped word by `models.looks_like_credential_value` — in which
+case the body is parsed, those values replaced, re-serialized with money still as
+numbers, and the record says `verbatim: false` and names every scrubbed path; the launch
+token is scrubbed too, by the name predicate, with no exemption. The flag is duck-typed on a provider's
 `record_exchanges` method so the CLI names no vendor; the RunPod adapter wraps its REST
 transport and its own balance observer's transport, and a provider without the method —
 the fake — refuses the flag by name before any preview rather than recording nothing.

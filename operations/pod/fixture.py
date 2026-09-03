@@ -11,26 +11,30 @@ and the response body, and appends each as one JSON line to the evidence file
 
 **What "verbatim" means here, stated exactly.** A response body that carries
 nothing credential-shaped is stored as the bytes the provider sent, decoded as
-UTF-8 with replacement. A body that does carry a credential-shaped key -- by
-`models.looks_like_credential_field`, the one shared definition -- is parsed,
-the offending values replaced with `SCRUBBED`, and re-serialized; the record
-then names every scrubbed path and says `verbatim: false`, so a reader never
-mistakes a scrubbed body for the provider's own bytes. Money survives the
-round trip as numbers: JSON floats are parsed as `Decimal` and written back
-as the same digits, never through a binary float.
+UTF-8 with replacement. Two shared predicates decide "credential-shaped", not
+one, because a secret announces itself in two different ways:
+`models.looks_like_credential_field` asks of every key whether the *name*
+names a secret, and `models.looks_like_credential_value` asks of every string
+leaf, under any key at all, whether it or a word inside it is *shaped* like
+one. A body either predicate hits is parsed, the offending values replaced
+with `SCRUBBED`, and re-serialized; the record then names every scrubbed path
+and says `verbatim: false`, so a reader never mistakes a scrubbed body for the
+provider's own bytes. Money survives the round trip as numbers: JSON floats
+are parsed as `Decimal` and written back as the same digits, never through a
+binary float.
 
 **The launch token is scrubbed too.** `VERBATUS_LAUNCH_TOKEN` is not a
 capability, and `models.PodCreateRequest` exempts it from the credential
 scan of pod metadata for that reason. This recorder does not: the brief for
-the fixture is "secrets scrubbed by the predicate", and one predicate with no
-exemptions is a rule a reader can check without reading this file. Replaying
+the fixture is "secrets scrubbed by the predicates", and predicates with no
+exemptions are a rule a reader can check without reading this file. Replaying
 the exact-token recovery path from a fixture therefore needs the token
 re-substituted from the lease, which the record's `scrubbed` list makes
 possible.
 
 A raised transport failure is recorded too, as a line with `error` set and
 no status: "every provider response the launch sees" includes the ones it
-never got. That text is free-form, not a mapping the shared predicate can
+never got. That text is free-form, not a mapping the shared predicates can
 walk field by field, so it gets its own pass: any `key=value`-shaped or
 `Bearer <token>`-shaped substring that looks credential-shaped is redacted
 before the line is written, and the redaction is named in `scrubbed` like

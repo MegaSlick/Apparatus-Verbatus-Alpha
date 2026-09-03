@@ -64,7 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "append every provider exchange this launch sees -- method, path, request "
             "body, status, response body -- to PATH as JSON lines, credential-shaped "
-            "fields scrubbed, so a drill boot leaves a replayable fixture behind. The "
+            "fields and credential-shaped values scrubbed, so a drill boot leaves a "
+            "replayable fixture behind. The "
             "provider must be able to record its own exchanges; the fake cannot"
         ),
     )
