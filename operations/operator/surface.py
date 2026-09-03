@@ -854,8 +854,20 @@ class OperatorSurface:
                 reader = S3VolumeObjectReader(volume)
             except Exception as error:
                 self._record_failure("fetch-run", "volume-unavailable", str(error))
+                # Not UPLOAD_VOLUME_UNAVAILABLE: that code's registered copy
+                # ends "then run `verbatus upload` again", which tells an
+                # operator who asked to bring a run tree home to send files
+                # instead -- and following it brings nothing back. Every other
+                # refusal on this verb is FETCH_RUN_FAILED, whose copy names
+                # `verbatus fetch-run`; the volume detail the other code
+                # carried is kept here in the detail line.
                 raise OperatorError(
-                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)
+                    ErrorCode.FETCH_RUN_FAILED,
+                    detail=(
+                        f"the network volume could not be prepared for reading: {error}. "
+                        "Check the volume id, its datacenter, and that both storage-key "
+                        "environment variables are set on this computer"
+                    ),
                 ) from error
         self.present("No pod needs to be running. This step uses zero GPU-hours.")
         destination_root = Path(into).resolve()

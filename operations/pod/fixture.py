@@ -101,6 +101,19 @@ class FixtureRecorder:
         # Append, never truncate: a second launch that names the same file adds
         # to the evidence rather than erasing the first's (GOVERNANCE 4).
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            # The 0600 above is the *creation* mode and says nothing about a
+            # path that already exists: a second `--record-fixture` naming a
+            # file some earlier step left 0644 would append these exchanges --
+            # scrubbed, but still the provider's own answers -- to a
+            # world-readable file. Narrowed here, on the descriptor already
+            # open, so no window exists between the two calls; and a mode that
+            # cannot be narrowed aborts the recorder rather than recording
+            # anyway, with the descriptor closed on the way out.
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            os.close(descriptor)
+            raise
         self._handle = os.fdopen(descriptor, "ab")
         self.sequence = 0
         # `record_exchanges` wraps both the provider's own transport and its

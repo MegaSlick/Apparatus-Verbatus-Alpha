@@ -1409,6 +1409,29 @@ def test_record_exchanges_writes_every_exchange_scrubbed_and_replayable(tmp_path
     assert (recorder.path.stat().st_mode & 0o777) == 0o600
 
 
+def test_an_existing_fixture_file_is_narrowed_to_0600_before_anything_is_recorded(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The mode is set on the file that is there, not only on one this creates.
+
+    `os.open`'s mode argument applies at creation, so a path an earlier step
+    left readable stayed readable while the recorder appended the provider's
+    own answers to it. The recorder narrows the descriptor it just opened, and
+    the first record is written only after that succeeded.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    path = tmp_path / "prior.jsonl"
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o644)
+
+    recorder = FixtureRecorder(path, now=lambda: NOW)
+    recorder.record("GET", "/pods", None, status=200, response_body=b"[]")
+    recorder.close()
+
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert len(read_fixture(path)) == 1
+
+
 def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A provider body cannot forge a money value on its way to disk.
 

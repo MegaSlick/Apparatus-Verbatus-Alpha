@@ -93,7 +93,8 @@ a bound; prepare that material as smaller submitted folders.
 the submitted folder if you are preparing source masters, work its queue with `triage`,
 `upload` your images (zero machine cost while you do any of that), then `launch` when you
 are ready to actually process
-them, `boot`, `run`, `export`, `fetch-run` to bring a pod-written run tree home,
+them, `boot`, `run`, `fetch-run` to bring a pod-written run tree home -- until it
+does, that tree is on the volume and `export` reads a local one -- then `export`,
 `backup` your run tree to keep a local copy, and `close`
 the moment you are done. Use `review` to read one run tree without changing anything in
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any

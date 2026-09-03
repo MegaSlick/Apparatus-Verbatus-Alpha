@@ -682,6 +682,66 @@ def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
     assert "reserved to Tyrel" in report["reason"]
 
 
+def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GOVERNANCE 2, on the path where nothing else gets to say it.
+
+    This gate runs before the bootstrap's own mount diagnostic, so on a pod
+    with the volume unmounted it is the only thing an operator reads. Naming
+    only the roots that resolved made "the policy does not admit it" look like
+    a policy that never listed the folder, when the truth is that the root
+    listing it was not there. The skipped root is named, never admitted.
+    """
+
+    ws = _prepared(tmp_path)
+    absent = tmp_path / "never-mounted"
+    _policy(ws, roots=["private/", str(absent)])
+
+    exit_code, runner = _refused(ws, _run_argv(ws))
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    err = capsys.readouterr().err
+    assert "does not admit the submission folder" in err
+    assert str(absent) in err and "did not resolve on this machine" in err
+    assert str(absent) in _report(ws)["reason"]
+
+
+def test_actions_that_cannot_be_built_are_a_refusal_not_a_started_run(
+    tmp_path: Path,
+) -> None:
+    """``run_bootstrap`` returns ``EXIT_REFUSED`` when the factory raises.
+
+    Nothing about that reaches the orchestrator, and the run report has to say
+    refused: a run tree that never started must never be readable as one that
+    finished (GOVERNANCE 2).
+    """
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner(returncode=0)
+
+    def _unbuildable(plan):  # type: ignore[no-untyped-def]
+        raise RuntimeError("the workspace has no uv")
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_unbuildable,
+        runner=runner,
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    report = _report(ws)
+    assert report["state"] == "refused"
+    assert report["exit_code"] == EXIT_REFUSED
+    assert "actions could not be built" in report["reason"]
+
+
 def test_refuses_a_credential_looking_value_in_either_half(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

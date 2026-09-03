@@ -2,7 +2,10 @@
 
 Every test injects `runner` in place of `default_runner` -- exactly the
 pattern `operations/pod/notify_bridge.py`'s own tests use -- so nothing here
-ever spawns `sh` or touches `operations/notify/notify.sh` for real.
+ever spawns `sh` or touches `operations/notify/notify.sh` for real. The one
+test *of* `default_runner` replaces `subprocess.run` itself, for the same
+reason: it checks the arguments that call is made with, and still starts no
+process.
 """
 
 from __future__ import annotations
@@ -12,8 +15,10 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from . import notify_hooks
 from .notify_hooks import (
     NOTIFY_SCRIPT,
+    NOTIFY_TIMEOUT_SECONDS,
     NotifyOutcome,
     notify_balance,
     notify_close,
@@ -226,6 +231,34 @@ def test_a_timeout_is_reported_not_raised() -> None:
     assert outcome.attempted
     assert not outcome.delivered
     assert "did not answer" in outcome.detail
+
+
+def test_the_real_runner_bounds_the_script_with_the_module_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one call every other test replaces, checked where it is made.
+
+    `default_runner` is what a real close reaches, and its `timeout` is the
+    only thing standing between a hung `notify.sh` and a pod held open while
+    it bills. Every test above injects a `FakeRunner` past this call, so
+    dropping the argument would have left the suite green. `subprocess.run` is
+    replaced here rather than run: nothing spawns a shell.
+    """
+
+    seen: dict[str, object] = {}
+
+    def _fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        seen["argv"] = list(argv)
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    monkeypatch.setattr(notify_hooks.subprocess, "run", _fake_run)
+
+    result = notify_hooks.default_runner(["sh", str(NOTIFY_SCRIPT), "milestone", "a message"])
+
+    assert result.returncode == 0
+    assert seen["timeout"] == NOTIFY_TIMEOUT_SECONDS
+    assert seen["capture_output"] is True and seen["text"] is True and seen["check"] is False
 
 
 def test_an_unexpected_runner_exception_is_reported_not_raised() -> None:

@@ -375,6 +375,7 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
     whose decision the missing root is.
     """
 
+    resolved: gate.ResolvedStorageRoots | None = None
     try:
         policy = gate.load_policy(plan.data_gate_policy)
         resolved = gate.resolve_storage_roots(policy)
@@ -382,11 +383,24 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
             plan.submission_folder, resolved.roots, "submission folder on the volume"
         )
     except gate.GateRefusal as error:
+        # The skipped roots belong in this refusal, not only in the report a
+        # refusal never writes. This check runs before the bootstrap's own
+        # mount diagnostic, so it is often the only thing an operator sees --
+        # and "the policy does not admit it" reads as a policy that never
+        # listed the folder, when what happened is that the root listing it
+        # was not mounted here. Skipped roots are still not admitted; they are
+        # named.
+        narrowing = ""
+        if resolved is not None and resolved.skipped:
+            narrowing = (
+                f" The policy also lists {list(resolved.skipped)}, which did not resolve on "
+                "this machine and was therefore not enforced as an approved root."
+            )
         raise RunRefusal(
             f"the data-handling policy {plan.data_gate_policy} does not admit the submission "
-            f"folder: {error}. Listing the volume root as an approved storage root is a "
-            "disclosure decision reserved to Tyrel (hard rule 1); nothing was fetched and no "
-            "run was started",
+            f"folder: {error}.{narrowing} Listing the volume root as an approved storage root "
+            "is a disclosure decision reserved to Tyrel (hard rule 1); nothing was fetched and "
+            "no run was started",
             report_path=plan.report_path,
         ) from error
     return tuple(str(root) for root in resolved.roots), resolved.skipped

@@ -267,6 +267,36 @@ def test_main_exits_two_on_an_uncommitted_unconfigured_policy(
     assert "REFUSED" in capsys.readouterr().out
 
 
+def test_main_refuses_an_unreadable_spend_policy_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`SpendRefusal` is a `PodRuntimeError`, not a `ValueError`.
+
+    A missing or malformed `config/spend.toml` is the ordinary way this
+    command is run wrong, and it used to answer with a traceback rather than
+    the REFUSED page every other unrenderable configuration gets.
+    """
+
+    spend = tmp_path / "spend.toml"
+    spend.write_text('schema = "pod-spend.v3"\nstate = "configured"\nmax_hourly', encoding="utf-8")
+
+    status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
+
+    assert status == 2
+    out = capsys.readouterr().out
+    assert "REFUSED" in out
+    assert "python -m operations.pod.cli" not in out
+
+
+def test_main_refuses_a_missing_spend_policy_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status = main(["--spend", str(tmp_path / "absent.toml"), "--placement", str(PLACEMENT)])
+
+    assert status == 2
+    assert "REFUSED" in capsys.readouterr().out
+
+
 def test_main_exits_zero_on_a_configured_policy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

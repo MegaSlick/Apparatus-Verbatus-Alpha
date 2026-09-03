@@ -28,7 +28,7 @@ from decimal import ROUND_UP, Decimal
 from pathlib import Path
 from typing import Sequence
 
-from .models import require_utc
+from .models import SpendRefusal, require_utc
 from .preflight import CardProfile, PlacementTable, load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -375,7 +375,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository_commit=args.repository_commit,
             hard_deadline=args.hard_deadline,
         )
-    except ValueError as error:
+    # `SpendRefusal` beside `ValueError`, not inside it: the spend policy's
+    # own refusal is a `PodRuntimeError`, so an unreadable or invalid
+    # `config/spend.toml` -- the one file this command exists to read -- came
+    # out as a traceback where the placement table's `PlacementRefusal`, a
+    # `ValueError`, printed REFUSED and exited 2. Both are the same fact to a
+    # reader: the drill cannot be rendered from what the configuration says.
+    except (ValueError, SpendRefusal) as error:
         print(f"# Boot A drill -- REFUSED\n\n{error}\n", end="")
         return 2
     print(rendered.text, end="")

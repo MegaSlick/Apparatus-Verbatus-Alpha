@@ -15,7 +15,7 @@ import pytest
 
 from operations.pod.transfer import ChecksummedTransfer
 
-from .errors import ErrorCode, OperatorError
+from .errors import ERRORS, ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
     MAX_LISTED_KEYS,
@@ -347,6 +347,34 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
     assert any("https://s3api-eu-cz-1.runpod.io/" in line for line in messages)
     assert any("Nothing outside that sealed record is read or sent." in line for line in messages)
     assert any("zero GPU-hours" in line for line in messages)
+
+
+def test_a_volume_fetch_run_cannot_prepare_is_a_fetch_run_refusal_not_an_upload_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The words on screen must name the verb the operator actually ran.
+
+    `UPLOAD_VOLUME_UNAVAILABLE`'s registered next step is "run `verbatus
+    upload` again". An operator who asked for a run tree and follows that
+    sends files instead, and nothing they wanted arrives. Every other refusal
+    in `fetch_run` is `FETCH_RUN_FAILED`, and the volume detail rides in the
+    detail line.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    # Explicitly absent, for the reason the upload test above states: with the
+    # keys exported this would build a real client and reach the network.
+    monkeypatch.delenv("RUNPOD_S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_S3_SECRET_KEY", raising=False)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", volume=_spec())
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "could not be prepared for reading" in str(refusal.value.detail)
+    next_step = ERRORS[refusal.value.code].next_step
+    assert "verbatus fetch-run" in next_step and "verbatus upload" not in next_step
 
 
 def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path: Path) -> None:
