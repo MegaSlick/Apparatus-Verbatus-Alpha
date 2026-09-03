@@ -42,6 +42,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         recovery_config="config/recovery.toml",
         hard_failure_config="config/hard_failure.toml",
         pdf_target_dpi=None,
+        placement_tier=None,
         corpus_register=None,
         witness_context="named",
         witness_context_config="config/witness_context.toml",

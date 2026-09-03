@@ -222,6 +222,11 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             command += ["--data-gate-policy", str(args.data_gate_policy)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
+    # A measured runtime fact of the card, not run configuration (GOVERNANCE 6);
+    # forwarded only when set, so a fixture run's argv carries no
+    # "--placement-tier None" and stage_parser's own default (None) governs.
+    if args.placement_tier is not None:
+        command += ["--placement-tier", str(args.placement_tier)]
     # Forwarded to every stage, not only to the door that snapshots it: the
     # drift refusal exists to catch a register appended *between* two stages of
     # one run, which is precisely the case an unforwarded flag cannot see.
@@ -413,6 +418,15 @@ def main() -> int:
         "--hard-failure-config",
         default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH),
         help="the run-level hard-failure cap this orchestrator checkpoints against",
+    )
+    parser.add_argument(
+        "--placement-tier",
+        default=None,
+        help=(
+            "the measured placement tier of the card serving this run; forwarded "
+            "to every stage when set, omitted (not sealed) otherwise — see "
+            "stage_parser's own flag for the full rationale"
+        ),
     )
     parser.add_argument(
         "--witness-context",

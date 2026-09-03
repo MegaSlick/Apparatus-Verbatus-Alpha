@@ -39,6 +39,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `--perlector-instrument-per-mille` | 0 | Tyrel, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
 | Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
 | Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation Tyrel records, which retires the pin rather than edits around it |
+| Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation Tyrel records, which retires the pin |
 
 The Pass-B fragment sits in `perlector_protocol.toml` so its exact bytes seal
 into every run, not so a run may choose them. It is pinned in code because a

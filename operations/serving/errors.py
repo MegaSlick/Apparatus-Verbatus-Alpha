@@ -70,3 +70,35 @@ class ServiceStopError(ServingError):
     """An owned process could not be stopped and verified as gone."""
 
     code = "VLLM_STOP_FAILED"
+
+
+class ChairRequestRefusal(ServingError):
+    """A reading request cannot go on the wire as the caller shaped it.
+
+    This is a refusal about the request the caller built — an unsupported
+    ``kind``, an OpenAI field a chair may never set, an image whose bytes do
+    not match the digest the caller claims to be sending — never about what
+    an engine sent back.  ``ChairResponseRefusal`` is that other half.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}")
+
+
+class ChairResponseRefusal(ServingError):
+    """An engine's raw HTTP response is not a valid reading for this chair.
+
+    Every ``CHAIR_RESPONSE_*`` code names one specific way a response fails to
+    be a reading — non-200, unparseable body, wrong model, not exactly one
+    choice, missing content.  None of these retries, re-samples, or edits the
+    response: the raw bytes are retained before this is raised, so a caller
+    that must keep evidence rather than abort can catch this and record
+    ``code`` as ``parse_problem``.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}")

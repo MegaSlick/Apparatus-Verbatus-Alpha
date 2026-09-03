@@ -515,3 +515,50 @@ def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
         )
+
+
+def test_a_fixture_perlectio_carries_no_engine_call(published_payload):
+    """The pinned fixture path publishes exactly the closed field set, still.
+
+    `engine_call` is the one field the live seam adds, and it is added by
+    widening the closed set for the record that carries it rather than by making
+    the field optional inside one set (`with_engine_call`, the
+    `_NOT_RUN_CAPACITY_FIELDS` precedent). This is the fixture half of that
+    claim, taken from a payload the real stage published: a run whose sealed
+    serving-recipe rows are fixture rows produces the same bytes it always did,
+    which is what leaves `HAPPY_RUN_TREE_DIGEST` where it is.
+    """
+    assert set(published_payload) == set(perlector._PERLECTIO_FIELDS)
+    assert "engine_call" not in published_payload
+
+
+def test_a_live_reading_records_its_engine_call_against_the_widened_set(published_payload):
+    """The live half: the key is closed-set enforced, never merely tolerated.
+
+    Against the fixture field set the same payload refuses as an unexpected
+    field, so a record that grew one without its schema growing too cannot
+    publish — and against the widened set it validates. This proves the
+    widening covers the `engine_call` *key*, membership only: the shape of
+    the value (its own required fields, and that `response_sha256` matches
+    `raw_response_ref`) is `engine_call_inputs`'s job, not exercised here.
+    """
+    payload = copy.deepcopy(published_payload)
+    payload["engine_call"] = {
+        "call_record_ref": {"relative_path": "4_perlector/blobs/sha256/a", "sha256": "a" * 64},
+        "raw_response_ref": {"relative_path": "4_perlector/blobs/sha256/b", "sha256": "b" * 64},
+        "response_sha256": "b" * 64,
+        "finish_reason": "stop",
+        "served_model_id": "perlector-under-test",
+    }
+    with pytest.raises(SchemaRefusal, match="unexpected \\['engine_call'\\]"):
+        _validate(payload)
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+    perlector.validate_reading_payload(
+        payload,
+        outcome="read",
+        fields=perlector._PERLECTIO_FIELDS | {"engine_call"},
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )

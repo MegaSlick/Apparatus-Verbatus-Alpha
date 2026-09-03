@@ -926,6 +926,36 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
         )
 
 
+def test_dai_identity_view_accepts_one_image_under_two_stage_owned_paths():
+    """The identity rule is about bytes; the two paths are about who owns them.
+
+    On the no-resize path -- every act crop in the reference fixture -- DAI's
+    `adapter-crop` is `crop_png` of the same sealed page at the same bounds as
+    the Designator's proposal crop, so the two references carry one digest.
+    They do not carry one path: the proposal crop lives under `2_designator/`,
+    and every image a witness is actually shown is inventoried in this stage's
+    own content-addressed store. Held to the whole reference dict, this rule
+    refused a genuine DAI act after its response had already come back.
+    """
+
+    digest = "a" * 64
+    view = dai_model_view(
+        source_image_ref=_ref("2_designator/crops/small.png", digest),
+        model_image_ref=_ref(f"3_attestatores/blobs/sha256/{digest}", digest),
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    assert view["transform"]["kind"] == "identity"
+    # Both references survive verbatim: the record shows the one set of bytes
+    # under each store that holds it, rather than collapsing them to one name.
+    assert view["source_image_ref"]["relative_path"] == "2_designator/crops/small.png"
+    assert view["model_image_ref"]["relative_path"] == f"3_attestatores/blobs/sha256/{digest}"
+    assert validate_dai_model_view(view) is view
+
+
 @pytest.mark.parametrize(
     "unsafe_path",
     ["/etc/passwd", "../outside", "prompts/../../outside"],

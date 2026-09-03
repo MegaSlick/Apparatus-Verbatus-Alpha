@@ -518,15 +518,51 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     consumer — a diff heuristic here would make a sealed record's validity depend
     on the differ. That decomposition belongs with the real reader in R6, which
     is the first thing that can answer two locations in one pass.
+
+    **A witness-derived flag's own end is itself suffix-trimmed**, by this same
+    `text_change_span`, against the one testimony that located it (`audit.py`).
+    Suffix trimming can only ever fall short at the true end of the text — a
+    prefix mismatch is visible in `start`, never in `end` — so the one place this
+    envelope and that flag can legitimately disagree is exactly at
+    `len(before)`. When `before`'s last character coincidentally equals that
+    testimony's last character, the flag's recorded end lands one character
+    short of the true edit boundary: not because the flag under-covers the
+    disagreement, but because a *different* string's tail happened to share one
+    byte with `before`'s. A re-proof that rewrites straight through to the true
+    end of the text is real content inside that same disagreement, not an
+    escape from it, and refusing it would be refusing the coincidence rather
+    than the change. So a witness-derived flag whose end sits exactly one
+    character short of an envelope that reaches `len(before)` is still treated
+    as containing it — one byte of slack for one coincidental byte, nothing
+    wider. The envelope must still reach into the flag (`start < flag end`):
+    a change that starts at or past the flag's own end is disjoint from the
+    disagreement the flag located, not an extension through it, so the slack
+    never credits a re-proof no witness placed. A flag any other class, or
+    any wider gap, still refuses: this does not loosen the posture that a
+    change outside every flag is refused, it only stops the trimming
+    algorithm from refusing itself.
     """
     if before == after:
         return []
     start, end = text_change_span(before, after)
-    containing = [
-        flag
-        for flag in flags
-        if flag["location"]["start"] <= start and end <= flag["location"]["end"]
-    ]
+
+    def _contains(flag: dict[str, Any]) -> bool:
+        location = flag["location"]
+        if location["start"] > start:
+            return False
+        if end <= location["end"]:
+            return True
+        # Only a witness-derived flag's end is suffix-trimmed against a
+        # string this function never sees, and only the true end of the text
+        # is where that trimming can fall short — see the docstring above.
+        return (
+            flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
+            and start < location["end"]
+            and end == len(before)
+            and end - location["end"] == 1
+        )
+
+    containing = [flag for flag in flags if _contains(flag)]
     if not containing:
         raise SchemaRefusal("an audit re-proof changed text outside every flagged location")
     triggering = min(

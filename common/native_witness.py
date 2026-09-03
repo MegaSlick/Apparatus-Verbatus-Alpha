@@ -15,6 +15,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
@@ -475,6 +476,27 @@ def unpresented_region_ids(
     return unpresented
 
 
+def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None, str]:
+    """The three states the live response boundary can actually measure.
+
+    The engine says one of three things about where a reading stopped, and this
+    contract used to be able to record only two of them. Asking "is this word a
+    cut-off word" made an engine that reported *nothing* indistinguishable from
+    one that reported a natural stop, so a live Churro page whose wire carried
+    no ``finish_reason`` could only be published as ``truncated: false`` — a
+    completed boundary nobody observed, which GOVERNANCE 10 refuses. The third
+    state is the honest one: unknown, and said so in the basis, exactly the
+    shape `validate_content_health` already closes and the live boundary
+    (`pipeline/3_attestatores/live_witness.py::_content_health`) already
+    derives. Nothing about the two measured states changes, so a record written
+    under the old two-valued rule reconciles identically.
+    """
+
+    if transport_stop_reason == STOP_REASON_UNREPORTED:
+        return None, "not-recorded"
+    return transport_stop_reason in _CHURRO_CUTOFF_STOP_REASONS, "trusted-response-boundary"
+
+
 def validate_page_testimonium_payload(
     payload: Any,
     *,
@@ -538,22 +560,29 @@ def validate_page_testimonium_payload(
                     raise SchemaRefusal(
                         "a Churro page Testimonium payload differs from its parsed native capture"
                     )
-                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                truncated, truncation_basis = _truncation_from_stop_word(
+                    capture["transport_stop_reason"]
+                )
                 expected_health = {
                     "native_type": "string",
                     "encoding": "utf-8-json-native",
                     "recordable": True,
                     "empty": parsed_text == "",
                     "blank": parsed_text.strip() == "",
-                    "truncated": cut_off,
+                    "truncated": truncated,
                     "characters": len(parsed_text),
-                    "truncation_basis": "trusted-response-boundary",
+                    "truncation_basis": truncation_basis,
                 }
                 if payload["content_health"] != expected_health:
                     raise SchemaRefusal(
                         "a Churro page Testimonium health differs from its parsed native capture"
                     )
-                interrupted_silence = cut_off and parsed_text == ""
+                # An empty page reading may be published as a confirmed blank
+                # only when the boundary positively said the model finished.
+                # Cut off and unreported both fail that test, for the same
+                # reason and with the same consequence: the attempt carries a
+                # reason and is not a blank anyone measured.
+                interrupted_silence = truncated is not False and parsed_text == ""
                 if interrupted_silence:
                     # The retired `reported` projection cannot smuggle a claimed
                     # absence any more; the closed schema refuses the key itself.
@@ -963,12 +992,34 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
-_NATIVE_CAPTURE_PARSE_STATES: Final = frozenset({"not-requested", "pending", "parsed", "failed"})
+# `unrecognized-shape` is the state a parser reaches when it ran, read the
+# whole response, and could name no shape it knows — distinct from `failed`,
+# where the parser refused the bytes, and from `parsed`, where it produced
+# text. `pipeline/3_attestatores/chandra.py` has produced it since it was
+# written (the vendor publishes no response specimen, so a real Chandra body is
+# a named surprise rather than a parse failure), and
+# `feeding.retain_model_view` records it; this contract simply had no room for
+# it, so the one state a live Chandra response actually reaches could not be
+# attached to any record. Admitting it puts the retained model view back beside
+# the bytes it describes instead of dropping the view and keeping only the
+# blob.
+_NATIVE_CAPTURE_PARSE_STATES: Final = frozenset(
+    {"not-requested", "pending", "parsed", "failed", "unrecognized-shape"}
+)
 _CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
-_CHURRO_STOP_REASONS: Final = frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS
+# `eos`/`stop`/`max_new_tokens` are the fixture transport's own vocabulary;
+# `length` is vLLM's cut-off word for the same fact on the live wire.
+# `STOP_REASON_UNREPORTED` (`common/contracts/serving.py`) is neither a fixture
+# nor an engine word -- it is what a live page-scoped chair (Churro) retains
+# when the wire carried no `finish_reason` at all, and it must be admitted
+# here or every such live Churro response would fail `_validate_churro_capture`
+# by name, indistinguishably from a genuinely unknown transport word.
+_CHURRO_STOP_REASONS: Final = (
+    frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS | {STOP_REASON_UNREPORTED}
+)
 
 
 def validate_churro_xml(raw: bytes) -> str:
@@ -1251,7 +1302,12 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     elif state == "pending":
         expected, parser_valid = {"state", "parser"}, isinstance(parser, str) and bool(parser)
     else:
-        expected = {"state", "parser", "text" if state == "parsed" else "reason"}
+        # `unrecognized-shape` names the shape it could not place in `outcome`,
+        # where `failed` names the refusal in `reason` and `parsed` carries
+        # `text`. Three states, three distinct third fields, so a record cannot
+        # wear one state's clothing while carrying another's evidence.
+        third = {"parsed": "text", "failed": "reason"}.get(state, "outcome")
+        expected = {"state", "parser", third}
         parser_valid = isinstance(parser, str) and bool(parser)
     if set(parse) != expected or not parser_valid:
         raise SchemaRefusal("a page Testimonium native capture parse record has the wrong shape")
@@ -1260,6 +1316,12 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     if state == "failed" and not (isinstance(parse["reason"], str) and parse["reason"]):
         raise SchemaRefusal(
             "a page Testimonium native capture claims a parse failure with no reason"
+        )
+    if state == "unrecognized-shape" and not (
+        isinstance(parse["outcome"], str) and parse["outcome"]
+    ):
+        raise SchemaRefusal(
+            "a page Testimonium native capture claims an unrecognized shape without naming it"
         )
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)

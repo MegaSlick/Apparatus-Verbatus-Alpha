@@ -69,9 +69,26 @@ PASS_KINDS: Final = frozenset(
 )
 
 
-class LectioResult(TypedDict):
+class _LectioResultRequired(TypedDict):
     text: str
     stop_reason: str | None
+
+
+class LectioResult(_LectioResultRequired, total=False):
+    """What one reading pass returns: the text, the engine's own stop word,
+    and -- live readers only -- the retained evidence it was read from.
+
+    `engine_call` is optional (`total=False` on this subclass; `text` and
+    `stop_reason` keep the base class's required totality). `FixtureReader`
+    has no engine behind it and never sets the key; `VLLMReader`
+    (`pipeline/4_perlector/live_reader.py`) sets it to
+    `{call_record_ref, raw_response_ref, response_sha256, finish_reason,
+    served_model_id}` on every call, so a live Perlectio can bind its text
+    back to the exact response it came from (ARCHITECTURE invariant 3;
+    GOVERNANCE 6, provenance travels with the record).
+    """
+
+    engine_call: dict[str, Any]
 
 
 class DeliveredPixels(TypedDict):

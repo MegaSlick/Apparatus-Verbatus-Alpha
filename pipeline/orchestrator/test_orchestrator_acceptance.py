@@ -1357,10 +1357,67 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # canonical run id "r", through this module's own `orchestrate` and
 # `semantic_snapshot_digest` as its own tests call them; happy exited 0 and
 # review exited 3 in both roots, and the two roots agreed exactly.
+# Live reading seam re-pin (2026-09-02, the whole U1-U8 seam on one branch). Both
+# digests moved and neither count did: happy holds at 96 files / exit 0 and review
+# at 107 / exit 3. **One leaf caused it**, and the rest is content addressing doing
+# its job.
+#
+# The leaf is `payload.prompt.builder_sha256` in the Perlectio and lectio-prior
+# records: `prompts.py` digests its own whole module source (`_MODULE_SOURCE_DIGEST`,
+# `prompts.py:33`), and U3 registered the first real chair's prompt template in that
+# module, so the module's bytes moved and every prompt record now claims the new
+# digest. That is exactly what the D-7 entry above installed the field to do -- a
+# builder edit changes what the record says about itself rather than silently
+# invalidating an old record nothing could detect -- so this movement is the design
+# working, not a fixture regression. The fixture path itself is untouched: no live
+# chair runs here, and no reading, region, page, count or exit changed.
+#
+# Measured rather than argued. A fixture happy tree built at 857d325181~15 (before
+# U3) was compared file by file against one built at this commit: 96 files on both
+# sides, 25 of them differing in content, plus one Armarium bundle blob whose own
+# bytes moved to a new content-addressed name -- not because it is a renamed copy
+# of the old blob, but because its own contents changed. That blob was opened on
+# both sides too: it is a zip of 7 entries, same names and metadata on both sides,
+# and four of the entries differ -- EXPORT_MANIFEST.json (three `members[].sha256`
+# leaves and `self_hash`), sources.json and acts.jsonl (`*_ref.sha256` leaves), and
+# acts.sqlite (`acts.evidence_json` on both rows) -- every changed leaf inside it a
+# 64-hex digest, same as everywhere else in the tree. And 118 changed JSON leaves
+# across those 25 files. Every one of those 118 is
+# either a 64-hex digest or a content-addressed blob path -- four of them are
+# `builder_sha256` itself (two lectio-prior, two Perlectio) and the other 114 are
+# the cascade those four force: `self_hash`, the `*_ref` digests that name the
+# changed records, the dossier and audit-request digests computed over them, each
+# stage's `artifact_inventory`/`blob_inventory`, the stage manifests, the Archetypus
+# index, and the Recensor partition receipt. (The bundle blob is excluded from that
+# 25-file/118-leaf count by construction -- it appears as one name-only-old plus one
+# name-only-new -- so its own four changed entries are recorded here instead.) Not
+# one non-digest field changed anywhere in the tree, inside the bundle blob included. The two
+# `builder_sha256` values are the two trees' own `prompts.py` bytes
+# (932f3d48... before, ad623c7d... now), and 10330bc189 (U3) is the only commit in
+# that range that touches the file.
+#
+# Both literals below were measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers. The two roots agreed exactly on both
+# scenarios: happy exited 0 at 96 files, review exited 3 at 107 files. The snapshot
+# counts held, so they are re-stated below unchanged rather than re-pinned.
+# Merge re-pin (real-page robustness PR2 merged with the live reading seam,
+# PR #85). Both parent branches' causes are in this tree at once and neither
+# touches the other's bytes: Section C's `designator_grouping.toml` binding,
+# residual fields and structure-status geometry are orthogonal to the reading
+# seam's `prompts.py` module-source digest, and neither fixture scenario
+# exercises a live chair or a page-residual act, so nothing new is minted by
+# the merge itself. The counts therefore hold at happy 96 / exit 0 and review
+# 107 / exit 3 -- checked, not assumed, the same way as every prior re-pin --
+# and only the two digest literals move, because both parents' sealed bytes
+# are now in one tree. Measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest`; happy exited 0 and review exited 3 in both
+# roots, and the two roots agreed exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "ce13fe64780ef6b9582dc67659c07962a9a969cd51a0a1e720a6e046a1fc6a5f"
-REVIEW_RUN_TREE_DIGEST = "91b0c9c5195a57027cea6dcc4ea27a4d1c61b7b366ce518bf6518ed89d24dd85"
+HAPPY_RUN_TREE_DIGEST = "TBD-remeasured-in-the-follow-on-commit"
+REVIEW_RUN_TREE_DIGEST = "TBD-remeasured-in-the-follow-on-commit"
 
 
 def orchestrate(
@@ -1583,6 +1640,10 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,
+        # `invoke` reads this by name like every sibling flag; a stand-in that
+        # omits it is not the argv surface it mirrors (U7p; pr/14 broke CI by
+        # missing exactly this for a different flag).
+        placement_tier=None,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
         nuda_per_mille=0,
