@@ -829,9 +829,10 @@ class OperatorSurface:
         run reports and the bootstrap journal carry this launch's token in
         names an operator chose, at paths this verb has no way to derive, and
         guessing at them would mean listing the whole volume -- which holds the
-        submission's own page images. They are named as not fetched in the
-        receipt rather than passed over in silence, and ``evidence_keys`` takes
-        their exact keys from the operator who does know them.
+        submission's own page images. ``evidence_keys`` takes their exact keys
+        from the operator who does know them, and the receipt names that
+        derivation limit -- with how many keys this call named, never a blanket
+        claim that they went unfetched -- rather than passing over it in silence.
 
         Zero GPU-hours: this reads storage and needs no pod. Nothing here has
         run against a real endpoint (``volume_s3.py``, note 3).
@@ -920,12 +921,18 @@ class OperatorSurface:
                     "objects": [{"key": key, "sha256": digest} for key, digest in evidence.objects],
                     "prefixes_with_nothing_stored": list(evidence.empty_prefixes),
                     "refusals": list(evidence.refusals),
-                    "not_fetched": (
+                    "records_only_by_name": (
                         "the launch-bound bootstrap and pod-run reports and the bootstrap "
                         "journal: their names carry this launch's token at paths an operator "
                         "chose, which this verb cannot derive and will not guess at by listing "
-                        "the whole volume. Pass each exact key as --evidence-key to bring them "
-                        "home."
+                        "the whole volume, so they come home only when named as --evidence-key. "
+                        + (
+                            "No key was named this call, so none of them is in this tree."
+                            if not evidence_keys
+                            else f"{len(evidence_keys)} key(s) were named this call; "
+                            "requested_keys, objects and refusals above say which of those "
+                            "arrived. Any such record not named is not in this tree."
+                        )
                     ),
                 },
                 "zero_gpu_hours": True,
@@ -960,10 +967,18 @@ class OperatorSurface:
                 f"{len(evidence.refusals)} evidence object(s) did not come home; their names "
                 "and reasons are in the receipt. The run tree above is unaffected."
             )
-        self.present(
-            "The launch-bound reports and the bootstrap journal are not fetched by name -- "
-            "pass --evidence-key for each; the receipt says so too."
-        )
+        if evidence_keys:
+            self.present(
+                "The launch-bound reports and the bootstrap journal come home only when named: "
+                f"{len(evidence_keys)} key(s) were named this call, and the receipt says which "
+                "of them arrived."
+            )
+        else:
+            self.present(
+                "The launch-bound reports and the bootstrap journal cannot be found by name -- "
+                "none was named this call, so none came home; pass --evidence-key for each. The "
+                "receipt says so too."
+            )
         self.present(f"Saved receipt: {receipt}")
         return receipt
 

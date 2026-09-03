@@ -186,9 +186,10 @@ tree down with it.
 Two records this verb cannot find on its own: the bootstrap and pod-run **reports** and
 the bootstrap **journal**. Their names carry the launch token at paths an operator chose,
 and finding them would mean listing the whole volume — which holds the submission's own
-page images. The receipt says plainly that they were not fetched, and `--evidence-key
-<key>` (repeatable) brings each one home by its exact key. Nothing is left to be inferred
-from an empty folder.
+page images. `--evidence-key <key>` (repeatable) brings each one home by its exact key.
+The receipt states that limit and how many keys the call named — it does not claim they
+went unfetched when the operator named them — and `objects` and `refusals` say which of
+the named keys arrived. Nothing is left to be inferred from an empty folder.
 
 ## `spend show`: inspect the reviewed guard
 

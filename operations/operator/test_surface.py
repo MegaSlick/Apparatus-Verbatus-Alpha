@@ -4749,11 +4749,13 @@ def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
 
     volume, reader = _volume_run(tmp_path)
     written = _volume_evidence(volume)
-    surface = _surface(tmp_path)
+    printed: list[str] = []
+    surface = _surface(tmp_path, output=printed)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
 
+    assert any("none came home" in line for line in printed)
     evidence_root = into / "evidence"
     for key, payload in written.items():
         assert (evidence_root / key).read_bytes() == payload
@@ -4763,8 +4765,10 @@ def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
     assert payload["refusals"] == []
     assert {entry["key"] for entry in payload["objects"]} == set(written)
     assert all(entry["sha256"] == _sha256(written[entry["key"]]) for entry in payload["objects"])
-    assert "bootstrap journal" in payload["not_fetched"]
-    assert "--evidence-key" in payload["not_fetched"]
+    assert "bootstrap journal" in payload["records_only_by_name"]
+    assert "--evidence-key" in payload["records_only_by_name"]
+    # No key was named, so here the field may say outright that none came home.
+    assert "No key was named this call" in payload["records_only_by_name"]
 
     again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
 
@@ -4781,12 +4785,19 @@ def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
     A key that is not there is recorded as a refusal and never brings the
     verified run tree down with it -- losing a proven fetch because a log file
     could not be read would be the wrong trade.
+
+    And the receipt may not contradict itself while it does this: a payload that
+    records the pod-run report fetched with its digest cannot also assert that
+    the pod-run report was not fetched. The field states the derivation limit
+    and how many keys this call named; what arrived is read off ``objects`` and
+    ``refusals`` (GOVERNANCE 10).
     """
 
     volume, reader = _volume_run(tmp_path)
     report = b'{"schema":"pod-run-report.v1"}'
     (volume / "pod-run-report-launch7.json").write_bytes(report)
-    surface = _surface(tmp_path)
+    printed: list[str] = []
+    surface = _surface(tmp_path, output=printed)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(
@@ -4802,6 +4813,13 @@ def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
     assert (into / "evidence" / "pod-run-report-launch7.json").read_bytes() == report
     assert [entry["key"] for entry in evidence["objects"]] == ["pod-run-report-launch7.json"]
     assert any("pod-run-report-absent.json" in reason for reason in evidence["refusals"])
+    limit = evidence["records_only_by_name"]
+    assert "2 key(s) were named this call" in limit
+    assert "No key was named this call" not in limit
+    assert "not fetched" not in limit
+    # The console must not contradict the receipt either.
+    assert any("2 key(s) were named this call" in line for line in printed)
+    assert not any("none came home" in line for line in printed)
 
 
 def test_fetch_run_records_a_content_addressed_evidence_object_that_forged_its_name(
