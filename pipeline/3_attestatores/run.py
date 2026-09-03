@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import feeding  # noqa: E402
+import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
 
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
@@ -39,6 +40,11 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.serving import (  # noqa: E402
+    RAW_RESPONSE_KINDS,
+    RAW_RESPONSE_MODEL_OUTPUT,
+    STOP_REASON_UNREPORTED,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
@@ -50,6 +56,7 @@ from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     split_page_edge_overshoots,
     unpresented_region_ids,
+    validate_native_capture,
     validate_native_witness_geometry,
     validate_presented_page_binding,
     validate_unpresented_regions,
@@ -59,6 +66,7 @@ from common.native_witness import (
 )
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
+    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
     WITNESS_READING_OUTCOMES,
@@ -71,6 +79,17 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
+from operations.serving.config import (  # noqa: E402
+    ServingConfigInputs,
+    ServingRecipes,
+    load_serving_recipes,
+)
+from operations.serving.errors import ServingError  # noqa: E402
+from operations.serving.http import UrllibHttpTransport  # noqa: E402
+from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
+from operations.serving.process import SubprocessLauncher  # noqa: E402
+from operations.serving.residency import FileResidencyLease  # noqa: E402
 
 # A witness may report one of these ordinal self-assessments. They are retained
 # as testimony about its own response, never promoted into a model ranking or
@@ -891,9 +910,33 @@ def prepared_response(
     return native_payload, witness_reported, capabilities, health, None
 
 
-def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
-    """The exact configured identity and actual serving moment for one outcome."""
+def provenance_for(
+    context,
+    resolved: ChairIdentity | AbsentChair,
+    *,
+    attempted: bool,
+    receipt_ref: dict[str, str] | None = None,
+) -> dict:
+    """The exact configured identity and actual serving moment for one outcome.
+
+    ``receipt_ref`` is the live boundary's half: a chair that really served this
+    reading already published its receipt when the client started it
+    (``ServingManager.start`` -> ``StageContextReceiptPublisher`` ->
+    ``StageContext.write_serving_receipt``), so the live pass names *that*
+    moment's receipt rather than writing a second, declared one. Absent it the
+    fixture path is unchanged: it writes `fixture_serving_details`, which says
+    `fixture://` out loud (GOVERNANCE 10).
+    """
+    if receipt_ref is not None and not attempted:
+        raise ContractError(
+            "a witness attempt that was never made carries a serving receipt reference; "
+            "a receipt names a serving moment, and there was none"
+        )
     if isinstance(resolved, AbsentChair):
+        if receipt_ref is not None:
+            raise ContractError(
+                f"chair {resolved.role!r} is absent and cannot carry a serving receipt"
+            )
         return {
             "chair": resolved.role,
             "chair_state": "absent",
@@ -905,11 +948,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
         }
     if not isinstance(resolved, ChairIdentity):
         raise ContractError("witness resolution returned neither an identity nor an absence")
-    receipt_ref = (
-        context.write_serving_receipt(resolved, fixture_serving_details(resolved))
-        if attempted
-        else None
-    )
+    if receipt_ref is None and attempted:
+        receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
     return {
         "chair": resolved.role,
         "chair_state": "configured",
@@ -944,8 +984,28 @@ TESTIMONIUM_FIELDS = frozenset(
 # validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
 # belong to the page-scoped kind, which this closed act-level payload never
 # carries, and allowing them here let a resealed act record wear page clothing.
+# `native_capture` and `serving_call_ref` are the live boundary's two additions
+# (SPEC_A section 2.3). Both are written only by the live pass: a fixture attempt
+# carries neither, so the fixture record's bytes are exactly what they were.
+# `native_capture` was already admitted on a page record by the shared contract
+# (`common/native_witness.PAGE_TESTIMONIUM_OPTIONAL_FIELDS`); this admits it on an
+# act record too, where a live attempt's own retained model view belongs.
+# `raw_response_kind` says what sort of bytes `raw_response_ref` names, because
+# on a live record it is two different things: the adapter's own output, when a
+# parser read it, and the whole transport body, when no adapter ever saw a
+# reading. Both are retained evidence and neither is the other, so the record
+# says which rather than leaving a reader to infer it from whether some other
+# optional field happens to be present.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
-    {"adapter_metadata", "raw_response_ref", "reason", "page_witness"}
+    {
+        "adapter_metadata",
+        "raw_response_ref",
+        "raw_response_kind",
+        "reason",
+        "page_witness",
+        "native_capture",
+        "serving_call_ref",
+    }
 )
 
 # A page Testimonium is a different, closed record from the act-scoped
@@ -974,7 +1034,10 @@ def testimonium_payload(
     reason: str | None = None,
     page_witness: bool = False,
     raw_response_ref: dict[str, str] | None = None,
+    raw_response_kind: str | None = None,
     adapter_metadata: dict[str, Any] | None = None,
+    native_capture: dict[str, Any] | None = None,
+    serving_call_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the stage schema without letting a compatibility field define it."""
     record: dict[str, Any] = {
@@ -999,8 +1062,16 @@ def testimonium_payload(
         record["page_witness"] = True
     if raw_response_ref is not None:
         record["raw_response_ref"] = raw_response_ref
+    if raw_response_kind is not None:
+        record["raw_response_kind"] = raw_response_kind
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
+    if native_capture is not None:
+        # Only the derived view joins the payload; the response bytes stay in the
+        # named blob the capture already points at.
+        record["native_capture"] = native_capture
+    if serving_call_ref is not None:
+        record["serving_call_ref"] = serving_call_ref
 
     return validate_testimonium_payload(record)
 
@@ -1015,8 +1086,8 @@ def declared_adapter_metadata(
     return None if rule is None else {"geometry_quantization": rule}
 
 
-def validate_raw_response_ref(reference: Any) -> dict[str, str]:
-    """Close one retained-response reference to this stage's own blob store."""
+def validate_stage_blob_ref(reference: Any, field: str) -> dict[str, str]:
+    """Close one content-addressed reference to this stage's own blob store."""
     prefix = "3_attestatores/blobs/sha256/"
     if (
         not isinstance(reference, dict)
@@ -1027,8 +1098,13 @@ def validate_raw_response_ref(reference: Any) -> dict[str, str]:
         or any(character not in "0123456789abcdef" for character in reference["sha256"])
         or reference["relative_path"] != prefix + reference["sha256"]
     ):
-        raise SchemaRefusal("a Testimonium raw_response_ref is not an Attestatores blob reference")
+        raise SchemaRefusal(f"a Testimonium {field} is not an Attestatores blob reference")
     return reference
+
+
+def validate_raw_response_ref(reference: Any) -> dict[str, str]:
+    """Close one retained-response reference to this stage's own blob store."""
+    return validate_stage_blob_ref(reference, "raw_response_ref")
 
 
 def validate_adapter_metadata(payload: Any) -> None:
@@ -1055,6 +1131,27 @@ def validate_adapter_metadata(payload: Any) -> None:
             )
 
 
+def _named_once(references: list[Any]) -> list[Any]:
+    """Keep the first mention of each input reference, in the order given.
+
+    Order is the record's own account of how it was derived, so it is
+    preserved; a repeat is not a second response and must not read as one.
+    """
+    seen: list[str] = []
+    kept: list[Any] = []
+    for reference in references:
+        key = (
+            json.dumps(reference, sort_keys=True)
+            if isinstance(reference, dict)
+            else repr(reference)
+        )
+        if key in seen:
+            continue
+        seen.append(key)
+        kept.append(reference)
+    return kept
+
+
 def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
     """Require retained bytes and their adapter rule to describe one record."""
     has_references = (
@@ -1075,18 +1172,86 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
             )
 
 
-def validate_retained_response_blob(tree: Any, reference: Any) -> None:
-    """Re-read one retained response so a missing or changed blob cannot pass a tally."""
-    checked = validate_raw_response_ref(reference)
+def validate_live_serving_fields(payload: dict[str, Any]) -> None:
+    """Close the two fields only a live reading writes onto an act Testimonium.
+
+    A retained model view (`native_capture`) is the adapter's own record of the
+    bytes it parsed, so it must name the very blob this Testimonium names: two
+    references disagreeing about which response was read is a record that cannot
+    say what it read. The call record (`serving_call_ref`) is the request half of
+    the same moment, and it is meaningless without a retained response beside it
+    -- a chair that answered nothing has no reading to account for.
+
+    `raw_response_kind` is the third: a live record's retained blob is the
+    adapter's own output on every branch where a parser ran, and the whole
+    transport body on the one branch where none could. Those are different
+    evidence -- one is the model's answer, the other is an envelope around a
+    body that was never a reading -- and a reader that guessed between them
+    from the presence of some other field would be reading a record that never
+    said. So a record that names a serving call and retains a response must
+    name which kind it retained, and a retained model view must agree that it
+    is the adapter's own output, because that is the only thing a capture can
+    describe.
+    """
+    kind = payload.get("raw_response_kind")
+    if kind is not None:
+        if kind not in RAW_RESPONSE_KINDS:
+            raise SchemaRefusal(
+                f"a Testimonium names raw response kind {kind!r}, which is not one of "
+                f"{sorted(RAW_RESPONSE_KINDS)}"
+            )
+        if "raw_response_ref" not in payload:
+            raise SchemaRefusal(
+                "a Testimonium says what kind of response bytes it holds while retaining none"
+            )
+    if "serving_call_ref" in payload:
+        validate_stage_blob_ref(payload["serving_call_ref"], "serving_call_ref")
+        if "raw_response_ref" not in payload:
+            raise SchemaRefusal(
+                "a Testimonium names the serving call that produced it but retains no response; "
+                "a request with no retained answer is not evidence of a reading"
+            )
+        if kind is None:
+            raise SchemaRefusal(
+                "a live Testimonium retains a response without saying which kind of bytes it "
+                "is; the adapter's own output and the transport body are not interchangeable "
+                "evidence, and a record that does not say cannot be read as either"
+            )
+    if "native_capture" not in payload:
+        return
+    capture = validate_native_capture(payload["native_capture"])
+    if payload.get("raw_response_ref") != capture["raw_response_ref"]:
+        raise SchemaRefusal(
+            "a Testimonium's retained model view names a different response blob than the "
+            "record itself; one attempt reads one response"
+        )
+    if kind is not None and kind != RAW_RESPONSE_MODEL_OUTPUT:
+        raise SchemaRefusal(
+            f"a Testimonium carries an adapter's retained model view over bytes it calls "
+            f"{kind!r}; a capture describes the model's own output and nothing else"
+        )
+
+
+def validate_retained_response_blob(
+    tree: Any, reference: Any, field: str = "raw_response_ref"
+) -> None:
+    """Re-read one retained blob so a missing or changed one cannot pass a tally.
+
+    ``field`` names which reference is being re-read. A live Testimonium carries
+    two of them -- the response bytes and the `chair-call-record.v1` blob -- and
+    a tally that re-hashed only the first would leave the request half of the
+    serving moment as a reference nothing checks.
+    """
+    checked = validate_stage_blob_ref(reference, field)
     try:
         data = tree.read_bytes(checked["relative_path"])
     except OSError as error:
         raise SchemaRefusal(
-            f"retained witness response {checked['relative_path']} could not be read: {error}"
+            f"retained witness {field} {checked['relative_path']} could not be read: {error}"
         ) from error
     if digest_bytes(data) != checked["sha256"]:
         raise SchemaRefusal(
-            f"retained witness response {checked['relative_path']} differs from its digest"
+            f"retained witness {field} {checked['relative_path']} differs from its digest"
         )
 
 
@@ -1105,6 +1270,7 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
     validate_unpresented_regions(payload)
     if "raw_response_ref" in payload:
         validate_raw_response_ref(payload["raw_response_ref"])
+    validate_live_serving_fields(payload)
     validate_adapter_metadata(payload)
     validate_retained_response_pairing(payload)
     # The closed confidence-ordinal set is a writer-side rule
@@ -1427,6 +1593,7 @@ def preflight_appendable_ordinals(
     index: "AttemptIndex",
     *,
     resume_incomplete_pass: bool,
+    resolve=None,
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
     dict[tuple[str, str], "Attempt"],
@@ -1464,7 +1631,19 @@ def preflight_appendable_ordinals(
     chair. This is what makes the resume safe for a real non-deterministic chair:
     no second answer has to reproduce immutable bytes, and no later ordinal is
     invented for an act the pass never finished (GOVERNANCE 2, 4).
+
+    **`resolve` is what keeps this preflight a no-write preflight when the chair
+    is live.** In fixture mode it is `resolve_attempt`, which reads the sealed
+    fixture and needs nothing outside this process. A live chair cannot be
+    consulted here at all -- that would be N x M model calls with nothing on
+    disk until the last one returned -- so the live pass supplies a resolver
+    that returns `PENDING_LIVE_ATTEMPT` for every unsealed pair and fills each
+    in as its own response arrives. The live caller also passes
+    `resume_incomplete_pass=True` unconditionally: a pair already sealed at this
+    ordinal is reused from its retained Testimonium and never asked again,
+    because a live chair cannot reproduce immutable bytes (GOVERNANCE 4).
     """
+    resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
     validate_declared_churro_page_responses(context, declared_page_witness_chairs(context))
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
@@ -1527,7 +1706,7 @@ def preflight_appendable_ordinals(
                 attempt = (
                     not_read_attempt(resolved, not_read)
                     if not_read is not None
-                    else resolve_attempt(
+                    else resolve(
                         context,
                         act,
                         chair,
@@ -1536,6 +1715,20 @@ def preflight_appendable_ordinals(
                     )
                 )
             attempts_by_pair[pair] = attempt
+            if attempt is PENDING_LIVE_ATTEMPT:
+                # Nothing to compare: the branch above reuses every pair already
+                # sealed at this ordinal whenever a resolver of this kind is in
+                # play, so a pending pair has no record here to collide with.
+                # The live pass checks nothing further before publishing because
+                # there is nothing there to check -- and if that ever stopped
+                # being true, this is where it would have to be caught.
+                if existing:
+                    raise FatalAccounting(
+                        f"the live preflight left {pair!r} unresolved while a Testimonium is "
+                        f"already sealed at ordinal {ordinal}; a sealed pair is reused, never "
+                        "asked again"
+                    )
+                continue
             _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
     # Last, so a genuine witness-attempt disagreement is named for what it is
     # rather than reported as its consequence one derivation downstream: the
@@ -1567,6 +1760,15 @@ def validate_tallied_testimonium(
     validate_testimonium_payload(payload)
     if "raw_response_ref" in payload:
         validate_retained_response_blob(context.tree, payload["raw_response_ref"])
+    if "serving_call_ref" in payload:
+        # The live half of the same rule. `inputs` is re-derived below from the
+        # regions and the presentation alone, so a live record's two retained
+        # blobs are deliberately not envelope inputs -- which is exactly why the
+        # tally re-hashes them itself rather than leaving them as references
+        # nothing ever reads back.
+        validate_retained_response_blob(
+            context.tree, payload["serving_call_ref"], "serving_call_ref"
+        )
     validate_testimonium_presentation(context, record)
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
@@ -1818,6 +2020,56 @@ class Attempt(NamedTuple):
     reason: str | None
     raw_response_ref: dict[str, str] | None = None
     observation_payload: Any = None
+    # Live-only, and appended so every existing constructor -- positional or
+    # keyword -- keeps writing exactly the record it wrote before (the fixture
+    # pass must stay byte-identical). `native_capture` is the adapter's own
+    # retained model view; `serving_call_ref` names the `chair-call-record.v1`
+    # blob the client wrote for the one request this attempt came from.
+    native_capture: dict[str, Any] | None = None
+    serving_call_ref: dict[str, str] | None = None
+    receipt_ref: dict[str, str] | None = None
+    # Which sort of bytes `raw_response_ref` names. `None` on the fixture path,
+    # which retains one kind of declared bytes and has no branch that could
+    # mean the other.
+    raw_response_kind: str | None = None
+
+
+class _PendingLiveAttempt:
+    """The live pass has not asked this chair for this pair yet.
+
+    Deliberately not an `Attempt` with a `pending` outcome: an outcome is a
+    published fact, and a sentinel that can be published is a sentinel that
+    eventually is. Nothing here can be mistaken for a witness result -- it has no
+    outcome, no payload and no health -- so a code path that fails to replace it
+    fails loudly at the first attribute it reaches.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        return "PENDING_LIVE_ATTEMPT"
+
+
+PENDING_LIVE_ATTEMPT: Any = _PendingLiveAttempt()
+
+
+def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
+    """The live preflight's resolver: every unsealed pair is still unasked.
+
+    Same signature as `resolve_attempt`, because it stands exactly where that
+    function stands and the seam must not grow a second shape. It reads none of
+    its arguments: in live mode the fixture's declared responses are not this
+    run's evidence, and the chair is asked once, later, from the pass that can
+    publish its answer immediately.
+    """
+    del context, act, chair, declarations
+    if isinstance(resolved, AbsentChair):
+        # An absent chair is unavailable before any attempt reaches it, in either
+        # posture. Leaving it pending would put a chair the roster says is not
+        # there into the live schedule, and the first thing the schedule does is
+        # try to start it.
+        return dead_attempt(resolved)
+    return PENDING_LIVE_ATTEMPT
 
 
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
@@ -1830,6 +2082,19 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     payload = record["payload"]
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
+    # A live attempt whose response never parsed carries no observation payload:
+    # `live_witness.captured_page_attempt` sets one only on the parsed branch,
+    # because geometry derived from bytes no parser recognized would be geometry
+    # nobody read. The resume must reconstruct the same fact, or the page record
+    # it rebuilds derives a partition the interrupted pass never wrote and the
+    # immutable writer refuses the republish. `serving_call_ref` is the live
+    # marker; the fixture path retains its declared bytes on every branch and is
+    # deliberately untouched here.
+    served_by_a_chair = payload.get("serving_call_ref") is not None
+    parsed_into_a_payload = (
+        isinstance(payload.get("content_health"), dict)
+        and payload["content_health"].get("recordable") is True
+    )
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
         try:
@@ -1845,6 +2110,12 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
                 "a resumed Testimonium's retained raw response digest differs from its "
                 f"reference: expected {raw_response_ref['sha256']}, read {observed}"
             )
+        # Read and digest-checked either way -- the blob must still be there and
+        # still be itself before this record can stand in for a chair response.
+        # Only whether it is offered as *geometry* depends on the branch above.
+        if served_by_a_chair and not parsed_into_a_payload:
+            observation_payload = None
+    provenance = payload.get("provenance")
     return Attempt(
         outcome=record["outcome"],
         native_payload=payload["payload"],
@@ -1854,6 +2125,13 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
         reason=payload.get("reason"),
         raw_response_ref=raw_response_ref,
         observation_payload=observation_payload,
+        # Carried back so a resumed live pass can rebuild the page record its
+        # interrupted predecessor derived from this same response, without ever
+        # asking the chair a second time (`live_page_capture`).
+        native_capture=payload.get("native_capture"),
+        serving_call_ref=payload.get("serving_call_ref"),
+        receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
+        raw_response_kind=payload.get("raw_response_kind"),
     )
 
 
@@ -2372,8 +2650,17 @@ def publish_attempt(
     ordinal: int,
     regions: list[dict],
     attempt: Attempt,
+    live: bool = False,
 ) -> None:
-    """Seal one immutable Testimonium. The only write path for an attempt."""
+    """Seal one immutable Testimonium. The only write path for an attempt.
+
+    ``live`` says the response came from a chair that actually served it. It
+    changes exactly one derivation: a fixture `[[native_observation]]` row is a
+    declared stimulus for the offline posture, and letting one stand in for the
+    geometry a live response really carried would record a measurement nobody
+    made (GOVERNANCE 10). Everything else here is identical in both postures,
+    which is what keeps the fixture record byte-for-byte what it was.
+    """
     # This shared accessor must run before building any artifact facts: a bad
     # roster cannot be allowed to seal an otherwise plausible record first.
     page_witness_chairs = declared_page_witness_chairs(context)
@@ -2394,13 +2681,19 @@ def publish_attempt(
             resolved.witness_adapter, source_presentation, presented
         )
     unpresented_regions = unpresented_region_ids(presented, regions)
-    if not presented:
-        observed: list[dict[str, Any]] = []
-    elif (
-        fixture_observed := _fixture_native_observations(
+    # A declared observation is the offline posture's stimulus. A live response
+    # carries its own geometry, and letting a fixture row stand in for it would
+    # publish a measurement nobody made (GOVERNANCE 10).
+    fixture_observed = (
+        _fixture_native_observations(
             context, chair=chair, page_ordinal=presented["source_page_ordinal"]
         )
-    ) is not None:
+        if presented and not live
+        else None
+    )
+    if not presented:
+        observed: list[dict[str, Any]] = []
+    elif fixture_observed is not None:
         observed = fixture_observed
     elif adapter is not None:
         observed = adapter.observe(
@@ -2426,7 +2719,9 @@ def publish_attempt(
         act_key=act["act_key"],
         ordinal=ordinal,
         regions=region_references(regions) if attempted else [],
-        provenance=provenance_for(context, resolved, attempted=attempted),
+        provenance=provenance_for(
+            context, resolved, attempted=attempted, receipt_ref=attempt.receipt_ref
+        ),
         format_capabilities=attempt.format_capabilities,
         native_payload=attempt.native_payload,
         witness_reported=attempt.witness_reported,
@@ -2442,9 +2737,12 @@ def publish_attempt(
         page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
         raw_response_ref=attempt.raw_response_ref,
+        raw_response_kind=attempt.raw_response_kind,
         adapter_metadata=declared_adapter_metadata(
             resolved, has_raw_response=attempt.raw_response_ref is not None
         ),
+        native_capture=attempt.native_capture,
+        serving_call_ref=attempt.serving_call_ref,
     )
     inputs = testimonium_inputs(context, regions, presented) if attempted else []
     # Adapter output is untrusted. Reconcile it while refusal can still leave
@@ -2785,44 +3083,42 @@ def non_reading_alignment_reason(outcome: str, *, native_page_capture: bool) -> 
     return f"non-reading-{subject}-{outcome}"
 
 
-def publish_page_testimonia_and_attachments(
-    context,
-    *,
-    acts: list[dict[str, Any]],
-    ordinal: int,
-    regions_by_act: dict[str, tuple[list[dict], str | None]],
-    attempts_by_pair: dict[tuple[str, str], Attempt],
-) -> None:
-    """Retain page testimony and derive one attachment record for every act.
+def require_live_page_capture(
+    page_captures: dict[tuple[int, str], tuple["Attempt", dict[str, Any]]],
+    page_ordinal: int,
+    chair: str,
+) -> tuple["Attempt", dict[str, Any]]:
+    """The live response this page record is derived from, or a named refusal.
 
-    R0 uses each successful chair's complete delivered act reading as an interim
-    span so the custody chain is real before R4 owns text alignment. The fixture
-    declares no spans. The act-scoped records for chairs 1 and 3 remain a temporary
-    compatibility view for the current Perlector; each is explicitly linked below
-    to the immutable page Testimonium that supplied it.
+    Under a live posture there is no second place a page record could come
+    from. Falling through to the legacy act-attempt join would publish a page
+    record derived from act views while the chair really did answer once, for
+    the page -- a record about a response nobody made (GOVERNANCE 10).
     """
-    # Scope is authoritative only after the sealed roster and configured
-    # occupants agree.
-    page_chairs = declared_page_witness_chairs(context)
-    anchor_chair = declared_chandra_anchor_chair(context)
-    # Declared Churro responses are validated in the attempt preflight now,
-    # before any compatibility record publishes.
-    limits, limits_digest = load_alignment_limits(context.args.alignment_config)
-    context.require_sealed_config("alignment", limits_digest)
-    page_records: dict[tuple[int, str], dict[str, str]] = {}
-    page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
-    page_texts: dict[tuple[int, str], str] = {}
-    # Native captures own their page outcome; legacy joins derive it from act
-    # attempts, so the two paths cannot share an attempt-object fallback.
-    page_outcomes: dict[tuple[int, str], str] = {}
-    # The anchor is a page fact, not a chair's report, and it is kept in its own
-    # map for that reason: parked in `page_texts` under a reserved chair slot it
-    # shared a key space with the configured roster, so a chair carrying that
-    # name would have had its retained page reading silently overwritten by the
-    # anchor markup and then been aligned against itself.
-    anchor_texts: dict[int, str] = {}
-    page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
-    anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
+    captured = page_captures.get((page_ordinal, chair))
+    if captured is None:
+        raise FatalAccounting(
+            f"the live pass holds no response for page {page_ordinal} and chair {chair!r}, "
+            "which its own page denominator names; a page record cannot be derived from "
+            "testimony that was never requested"
+        )
+    return captured
+
+
+def page_denominator(
+    context,
+    acts: list[dict[str, Any]],
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+) -> tuple[dict[str, list[int]], dict[int, list[dict[str, Any]]]]:
+    """Which pages every proposed act stands on, and which acts stand on each page.
+
+    One derivation, two readers. The page publisher needs it to know which page
+    records to write; the live pass needs the same answer *before* it asks a
+    page-scoped chair anything, because a page is that chair's unit of work.
+    Deriving it twice would be two answers to "which pages does this act
+    contribute?" that can drift, and the drift would show up as a page record
+    published for a page nobody was asked about.
+    """
     contributing_pages_by_act: dict[str, list[int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
@@ -2860,6 +3156,49 @@ def publish_page_testimonia_and_attachments(
                 page_acts = by_page.setdefault(source_ordinal, [])
                 if act not in page_acts:
                     page_acts.append(act)
+    return contributing_pages_by_act, by_page
+
+
+def publish_page_testimonia_and_attachments(
+    context,
+    *,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] | None = None,
+) -> None:
+    """Retain page testimony and derive one attachment record for every act.
+
+    R0 uses each successful chair's complete delivered act reading as an interim
+    span so the custody chain is real before R4 owns text alignment. The fixture
+    declares no spans. The act-scoped records for chairs 1 and 3 remain a temporary
+    compatibility view for the current Perlector; each is explicitly linked below
+    to the immutable page Testimonium that supplied it.
+    """
+    # Scope is authoritative only after the sealed roster and configured
+    # occupants agree.
+    page_chairs = declared_page_witness_chairs(context)
+    anchor_chair = declared_chandra_anchor_chair(context)
+    # Declared Churro responses are validated in the attempt preflight now,
+    # before any compatibility record publishes.
+    limits, limits_digest = load_alignment_limits(context.args.alignment_config)
+    context.require_sealed_config("alignment", limits_digest)
+    page_records: dict[tuple[int, str], dict[str, str]] = {}
+    page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    page_texts: dict[tuple[int, str], str] = {}
+    # Native captures own their page outcome; legacy joins derive it from act
+    # attempts, so the two paths cannot share an attempt-object fallback.
+    page_outcomes: dict[tuple[int, str], str] = {}
+    # The anchor is a page fact, not a chair's report, and it is kept in its own
+    # map for that reason: parked in `page_texts` under a reserved chair slot it
+    # shared a key space with the configured roster, so a chair carrying that
+    # name would have had its retained page reading silently overwritten by the
+    # anchor markup and then been aligned against itself.
+    anchor_texts: dict[int, str] = {}
+    page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
+    anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
+    contributing_pages_by_act, by_page = page_denominator(context, acts, regions_by_act)
 
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
@@ -2870,9 +3209,12 @@ def publish_page_testimonia_and_attachments(
                 raise FatalAccounting(
                     f"page witness chair {chair!r} did not resolve to a configured identity"
                 )
-            captured = captured_churro_page_attempt(
-                context, page_ordinal, chair, resolved.witness_adapter
-            )
+            if page_captures is None:
+                captured = captured_churro_page_attempt(
+                    context, page_ordinal, chair, resolved.witness_adapter
+                )
+            else:
+                captured = require_live_page_capture(page_captures, page_ordinal, chair)
             if captured is None:
                 # Legacy fixture rows retain their deliberately synthetic join.
                 # A Churro row above never takes this path.
@@ -2895,6 +3237,16 @@ def publish_page_testimonia_and_attachments(
                 unjoined_act_attempts = []
                 page_outcomes[(page_ordinal, chair)] = page_attempt_result.outcome
             reading = outcome in WITNESS_READING_OUTCOMES
+            # Did a response actually arrive for this page? A retained capture
+            # says so, and so does a live capture whose wire body `ChairClient`
+            # could not parse into a reading at all -- that body arrived, was
+            # retained, and produced an unrecordable channel, which is a
+            # different fact from a chair that answered nothing (GOVERNANCE 2).
+            # In the fixture posture `page_captures` is None and this is exactly
+            # the `native_capture is not None` it has always been.
+            arrived = native_capture is not None or (
+                page_captures is not None and captured is not None
+            )
             attempted_page = captured is not None or page_witness_attempted(
                 page_acts, chair, attempts_by_pair
             )
@@ -2948,8 +3300,10 @@ def publish_page_testimonia_and_attachments(
             # Declared fixture observations simulate native geometry; for a
             # Chandra chair they are additive marginal evidence rather than the
             # whole derived layer.
-            fixture_observed = _fixture_native_observations(
-                context, chair=chair, page_ordinal=page_ordinal
+            fixture_observed = (
+                _fixture_native_observations(context, chair=chair, page_ordinal=page_ordinal)
+                if page_captures is None
+                else None
             )
             if not presented:
                 observed: list[dict[str, Any]] = []
@@ -3053,18 +3407,23 @@ def publish_page_testimonia_and_attachments(
                 ordinal=ordinal,
                 regions=[],
                 # A failed attempted page still records the serving moment;
-                # every attempted witness outcome is receipt-backed.
-                provenance=provenance_for(context, resolved, attempted=attempted_page),
+                # every attempted witness outcome is receipt-backed. Under a live
+                # capture that moment is the one the chair really served, named by
+                # the receipt its own client re-read at start.
+                provenance=provenance_for(
+                    context,
+                    resolved,
+                    attempted=attempted_page,
+                    receipt_ref=page_attempt_result.receipt_ref if captured is not None else None,
+                ),
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                 # A cut-off empty capture retains text without claiming absence.
-                native_payload=native_payload if reading or native_capture is not None else None,
+                native_payload=native_payload if reading or arrived else None,
                 witness_reported=None,
                 # Native failure health means a response arrived; legacy
                 # non-reading health means no response channel arrived.
                 health=(
-                    health
-                    if reading or native_capture is not None
-                    else no_response_health(reason=failure_reason)
+                    health if reading or arrived else no_response_health(reason=failure_reason)
                 ),
                 presented=presented,
                 observed=observed,
@@ -3087,7 +3446,11 @@ def publish_page_testimonia_and_attachments(
                 # the payload is a blob no ordinary consumer re-hashes. The
                 # order is the payload's own -- presented image, then the
                 # partition's responses in partition order, then the capture.
-                inputs=(
+                # Named once each: a page whose partition was derived from the
+                # very bytes its capture describes -- a live Chandra page that
+                # parsed -- reaches the same reference twice, and one response
+                # listed twice is not two responses.
+                inputs=_named_once(
                     inputs
                     + page_response_refs
                     + ([native_capture["raw_response_ref"]] if native_capture is not None else [])
@@ -3100,11 +3463,22 @@ def publish_page_testimonia_and_attachments(
                 page_artifact_id,
             )
             page_observations[(page_ordinal, chair)] = observed
-        anchors = [
-            row
-            for row in context.fixture.get("chandra_anchor", [])
-            if row.get("page_ordinal") == page_ordinal
-        ]
+        # A declared anchor is the fixture posture's stand-in for the anchor
+        # chair's own page text, and its per-act `lines` carry act geometry no
+        # live run has measured. Aligning a live page reading against it would
+        # place real witness text on declared spans -- a measurement nobody made
+        # (GOVERNANCE 10) -- so a live pass reads no anchor at all and its page
+        # witnesses come back `unaligned: missing-chandra-page-anchor`, which is
+        # what this run honestly holds until R4 owns live alignment.
+        anchors = (
+            [
+                row
+                for row in context.fixture.get("chandra_anchor", [])
+                if row.get("page_ordinal") == page_ordinal
+            ]
+            if page_captures is None
+            else []
+        )
         if len(anchors) > 1:
             # Skipping a malformed declaration is not the same fact as an absent
             # one: it would detach every page witness on the page from every act
@@ -3557,6 +3931,691 @@ def attempt_pass(
     return recorded, isolated_crop_failure
 
 
+def bound_serving_recipes(context) -> ServingRecipes:
+    """The serving catalogue this run sealed, re-read and re-checked by digest.
+
+    `open_context` already refuses a run whose configuration bytes moved, so
+    this is the same authority read a second time rather than a new one: the
+    point is that the rows this stage decides live-or-fixture from are the rows
+    the run's `config_digest` covers, checked at the moment they are used
+    (GOVERNANCE 6). Refuses in this stage's own vocabulary, because a serving
+    catalogue that cannot be read is a configuration refusal, not a witness
+    failure.
+    """
+    if context.serving_config_inputs is None:  # pragma: no cover - open_context always sets it
+        raise ContractError(
+            "this run authority seals no serving configuration inputs; the serving posture "
+            "of its chairs cannot be read"
+        )
+    try:
+        recipes = load_serving_recipes(context.args.serving_recipes_config)
+        placement_bytes = Path(DEFAULT_POD_PLACEMENT_CONFIG_PATH).read_bytes()
+        ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
+            recipes_sha256=recipes.source_sha256,
+            placement_sha256=digest_bytes(placement_bytes),
+        )
+    except OSError as error:
+        raise ContractError(
+            f"the sealed serving configuration could not be read: {error}"
+        ) from error
+    except ServingError as error:
+        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
+    return recipes
+
+
+def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
+    """`fixture` or `live` for every configured witness chair, and never a mix.
+
+    The mode is the sealed serving-recipe row's own `kind`, read through
+    `operations.serving.client.serving_mode_for` -- a three-name lookup with a
+    named refusal on zero rows, an unresolved tier, or a catalogue that is half
+    live for one chair. There is no new configuration key, and no fallback in
+    either direction (hard rule 8).
+
+    One run, one serving posture. A roster half live and half fixture would
+    publish, in one attempt layer at one ordinal, records whose receipts say
+    `fixture://` beside records from a rented card -- and every consumer that
+    compares witnesses across an act would be comparing two different kinds of
+    evidence without being told. An absent chair has no serving row to read and
+    is `dead` in either posture, so it names no mode here.
+    """
+    modes: dict[str, str] = {}
+    for chair in context.witness_chairs:
+        resolved = context.registry.resolve(chair)
+        if not isinstance(resolved, ChairIdentity):
+            continue
+        try:
+            modes[chair] = serving_mode_for(recipes, resolved, tier)
+        except ServingError as error:
+            raise ContractError(
+                f"the serving posture of chair {chair!r} could not be resolved: {error}"
+            ) from error
+    postures = {
+        mode: sorted(name for name, value in modes.items() if value == mode)
+        for mode in modes.values()
+    }
+    if len(postures) > 1:
+        raise ContractError(
+            f"this run's witness roster mixes serving postures {postures}; one run reads its "
+            "witnesses one way. Seal a catalogue whose rows for every configured witness chair "
+            "are the same kind, or run the fixture catalogue"
+        )
+    return modes
+
+
+def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
+    """Build the client a live pass reads one chair through.
+
+    Every part of it belongs to the run: the registry that resolved the chair,
+    the receipt publisher bound to this same `StageContext` (so the receipt a
+    Testimonium names is one this run really wrote), the catalogue the run
+    sealed, and the decoding posture its `config_digest` covers. Nothing here
+    starts anything -- `ChairClient.__enter__` does, later, once.
+
+    A stage test supplies its own factory instead (`main(serving_factory=...)`),
+    which is the same in-process injection seam `registry_factory` already is
+    and, for the same reason, is deliberately not a command-line flag: a `--fake`
+    route to a fake answering under a configured chair's name is the one thing
+    this framework exists to refuse.
+    """
+    policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
+    manager = ServingManager(
+        registry=context.registry,
+        recipes=bound_serving_recipes(context),
+        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+        launcher=SubprocessLauncher(),
+        http=UrllibHttpTransport(),
+        receipt_publisher=StageContextReceiptPublisher(context),
+        log_root=context.tree.resolve(f"{ATTESTATORES}/serving-logs"),
+        residency_lease=FileResidencyLease(context.tree.resolve("pod-gpu.lock")),
+        producer="pipeline/3_attestatores/run.py",
+    )
+    return ChairClient(
+        manager=manager,
+        identity=identity,
+        tier=tier,
+        retain=lambda data: retained_blob_ref(context, data),
+        decoding_config_sha256=decoding_sha256,
+        record_temperature=policy["reading_of_record"]["temperature"],
+        # Wired bare, the way the serving README describes.
+        # `ServiceHandle.receipt_reference` is a read-only mapping proxy and
+        # `RunTree.read_run_receipt` accepts its own reference type or a plain
+        # `dict` and refuses anything else by name; `ChairClient.__enter__`
+        # copies at that seam, so no stage-side conversion is left to do.
+        read_receipt=context.tree.read_run_receipt,
+    )
+
+
+def retained_blob_ref(context, data: bytes) -> dict[str, str]:
+    """Retain bytes in this stage's own content-addressed blob store."""
+    digest, published = context.tree.put_blob(ATTESTATORES, data)
+    return {"relative_path": published.relative_path, "sha256": digest}
+
+
+def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
+    """Convert one `LiveAttempt` into the `Attempt` every write path shares.
+
+    A rename, not a remap: `live_witness` derives exactly the facts
+    `resolve_attempt` derives, from a retained response instead of a declared
+    one, plus the three the live boundary adds.
+    """
+    return Attempt(
+        outcome=live.outcome,
+        native_payload=live.native_payload,
+        witness_reported=live.witness_reported,
+        format_capabilities=(
+            dict(live.format_capabilities) if live.format_capabilities is not None else None
+        ),
+        health=dict(live.health),
+        reason=live.reason,
+        raw_response_ref=dict(live.raw_response_ref) if live.raw_response_ref else None,
+        observation_payload=live.observation_payload,
+        native_capture=dict(live.native_capture) if live.native_capture is not None else None,
+        serving_call_ref=dict(live.call_record_ref) if live.call_record_ref else None,
+        receipt_ref=dict(live.receipt_ref) if live.receipt_ref else None,
+        raw_response_kind=live.raw_response_kind,
+    )
+
+
+def _sealed_page_testimonia(context, ordinal: int) -> dict[tuple[int, str], dict[str, Any]]:
+    """Every page Testimonium already sealed at this ordinal, by page and chair."""
+    sealed: dict[tuple[int, str], dict[str, Any]] = {}
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        payload = record.get("payload")
+        if not isinstance(payload, dict) or payload.get("attempt_ordinal") != ordinal:
+            continue
+        page_ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
+        if isinstance(page_ordinal, int) and isinstance(chair, str):
+            sealed[(page_ordinal, chair)] = record
+    return sealed
+
+
+def served_live(context, provenance: Any) -> bool:
+    """Did a chair really serve the record this provenance belongs to?
+
+    The receipt is the one place that answers it: the fixture posture writes
+    `fixture://offline-chair-runner` out loud (`common/stage.fixture_serving_details`),
+    a live start writes the endpoint that actually answered. Read rather than
+    inferred from which optional fields a payload happens to carry, because a
+    page record of a live Chandra response carries neither a retained model
+    view nor a serving-call reference and is still a live record.
+    """
+    reference = provenance.get("receipt_ref") if isinstance(provenance, dict) else None
+    if not isinstance(reference, dict):
+        return False
+    receipt = context.tree.read_run_receipt(dict(reference))
+    return not str(receipt.get("endpoint", "")).startswith("fixture://")
+
+
+def _page_capture_from_record(
+    context, record: dict[str, Any], what: str
+) -> tuple[Attempt, dict[str, Any] | None]:
+    """Rebuild one page capture from a record the interrupted pass already sealed.
+
+    A live chair cannot reproduce immutable bytes, so a resumed live pass never
+    re-asks for a page some sealed record already describes; it rebuilds the
+    page facts from that record instead (GOVERNANCE 4). A record whose own
+    receipt says the fixture posture served it is refused by name: rebuilding a
+    live page record from it would attribute a declared response to a chair
+    that served this run.
+    """
+    payload = record["payload"]
+    provenance = payload.get("provenance")
+    if not served_live(context, provenance):
+        raise SchemaRefusal(
+            f"{what} names no live serving receipt, so it was not written by a live pass; a "
+            "live pass cannot resume over a fixture-posture record, and re-asking the chair "
+            "would replace immutable evidence with different bytes"
+        )
+    capture = payload.get("native_capture")
+    return (
+        Attempt(
+            outcome=record["outcome"],
+            native_payload=payload["payload"],
+            witness_reported=None,
+            format_capabilities=payload["format_capabilities"],
+            health=payload["content_health"],
+            reason=payload.get("reason"),
+            raw_response_ref=capture["raw_response_ref"] if capture is not None else None,
+            native_capture=capture,
+            receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
+            # Derived from the capture rather than read off the record: the
+            # sealed record here may be a *page* Testimonium, whose own closed
+            # schema has no place for this field, and a capture's retained
+            # reference is by definition the adapter's own output bytes. There
+            # is nothing to guess.
+            raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT if capture is not None else None,
+        ),
+        capture,
+    )
+
+
+def resumed_page_captures(
+    context,
+    *,
+    acts_by_page: dict[int, list[dict[str, Any]]],
+    page_chairs: list[str],
+    ordinal: int,
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    sealed_pairs: frozenset[tuple[str, str]],
+) -> dict[tuple[int, str], tuple[Attempt, dict[str, Any]]]:
+    """Every page response a resumed live pass must not ask for a second time.
+
+    Two sealed records can hold one: the page Testimonium itself, and -- when
+    the interrupted pass got as far as the act layer but not the page layer --
+    the act-scoped compatibility record of any act whose *primary* page is this
+    one, which this boundary derives from the very same page response. A page
+    that neither describes was never answered at this ordinal and is asked for
+    normally; a continuation page is exactly that case, because no act record is
+    ever derived from a continuation page's response.
+
+    More than one act on the page can carry that compatibility record (the
+    happy fixture's a1 and a2 are both primary on page 1), and every one of
+    them is checked, not just the first found: they all claim to derive from
+    the same page response, so a disagreement between them is a record
+    problem this boundary must name rather than silently resolve by taking
+    whichever act sorts first.
+    """
+    sealed_records = _sealed_page_testimonia(context, ordinal)
+    captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] = {}
+    for page_ordinal, page_acts in sorted(acts_by_page.items()):
+        for chair in page_chairs:
+            record = sealed_records.get((page_ordinal, chair))
+            if record is not None:
+                captures[(page_ordinal, chair)] = _page_capture_from_record(
+                    context,
+                    record,
+                    f"the page Testimonium sealed for page {page_ordinal}, chair {chair!r}",
+                )
+                continue
+            candidates: list[tuple[str, Attempt]] = []
+            for act in page_acts:
+                pair = (act["act_id"], chair)
+                if act["page_ordinal"] != page_ordinal or pair not in sealed_pairs:
+                    continue
+                attempt = attempts_by_pair[pair]
+                if attempt.outcome not in ATTEMPTED_WITNESS_OUTCOMES:
+                    # `dead`/`not-run`: this pair was never shown pixels, so it
+                    # neither stands in for a response nor disagrees with one --
+                    # a not-run act sealed by live_attempt_pass's own first loop
+                    # (a held crop, a refused proposal) is not a fixture-posture
+                    # record wearing this act's name, it is simply not evidence
+                    # of this page's response either way.
+                    continue
+                if attempt.serving_call_ref is None:
+                    # An *attempted* outcome naming no serving call is the
+                    # fixture posture's own shape: every live attempt names the
+                    # call record of the request that produced it, whether or
+                    # not its adapter's retained view could be published beside
+                    # it.
+                    raise SchemaRefusal(
+                        f"the Testimonium sealed for act {act['act_id']} and chair {chair!r} at "
+                        f"ordinal {ordinal} names no serving call, so it was not written by a "
+                        "live pass; a live pass cannot resume over a fixture-posture record"
+                    )
+                candidates.append((act["act_id"], attempt))
+            if not candidates:
+                continue
+            first_act_id, first_attempt = candidates[0]
+            for act_id, attempt in candidates[1:]:
+                if (
+                    attempt.raw_response_ref != first_attempt.raw_response_ref
+                    or attempt.native_capture != first_attempt.native_capture
+                    or attempt.outcome != first_attempt.outcome
+                ):
+                    raise SchemaRefusal(
+                        f"the Testimonia sealed for page {page_ordinal}, chair {chair!r} "
+                        f"disagree between act {first_act_id!r} and act {act_id!r} about which "
+                        "response produced them; a resumed page capture cannot be rebuilt from "
+                        "records that do not agree about their own evidence"
+                    )
+            captures[(page_ordinal, chair)] = (first_attempt, first_attempt.native_capture)
+    return captures
+
+
+def live_attempt_pass(
+    context,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    sealed_pairs: frozenset[tuple[str, str]],
+    *,
+    serving_factory,
+    tier: str,
+) -> tuple[int, bool, dict[tuple[int, str], tuple[Attempt, dict[str, Any]]]]:
+    """The same pass, asked of chairs that really serve: chair-outer, one request
+    at a time, and every response published before the next one is requested.
+
+    Three rulings meet here and are all executable code rather than intent.
+    Sequential serving and "one chair runs its whole span, then the next"
+    (2026-08-05, 2026-08-20) are `feeding.stage_major_schedule` and
+    `SingleChairResidency`: one resident chair, a deterministic chair-outer
+    order, and a named refusal if a schedule ever served one unit twice or
+    returned to a chair already unloaded. Response-as-arrival is the publish
+    inside the serve callback: an interrupted pass leaves sealed Testimonia and
+    their retained bytes, never N x M model calls with nothing on disk.
+
+    The unit of work is the chair's own scope. An act-scoped chair is asked once
+    per act; a page-scoped chair is asked once per *page*, and its act-scoped
+    compatibility records are derived from that one page response rather than
+    from a second request per act -- which is what `witness_scope` has always
+    meant and what the fixture path already does with a declared page response.
+    """
+    page_chairs = declared_page_witness_chairs(context)
+    _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
+    live_page_chairs = sorted(
+        chair
+        for chair in context.witness_chairs
+        if chair in page_chairs and isinstance(context.registry.resolve(chair), ChairIdentity)
+    )
+    page_captures = resumed_page_captures(
+        context,
+        acts_by_page=acts_by_page,
+        page_chairs=live_page_chairs,
+        ordinal=ordinal,
+        attempts_by_pair=attempts_by_pair,
+        sealed_pairs=sealed_pairs,
+    )
+    recorded = 0
+    isolated_crop_failure = False
+
+    # Everything no chair has to answer for: a pair already sealed at this
+    # ordinal (counted, never re-asked, never rewritten) and a pair no chair was
+    # shown pixels for at all. Published first, so the folder already accounts
+    # for them if the first request refuses.
+    for act in acts:
+        regions, not_read = regions_by_act[act["act_id"]]
+        if not_read is not None and act["outcome"] != "held":
+            isolated_crop_failure = True
+        for chair in context.witness_chairs:
+            pair = (act["act_id"], chair)
+            if pair in sealed_pairs:
+                recorded += 1
+                continue
+            attempt = attempts_by_pair[pair]
+            if attempt is PENDING_LIVE_ATTEMPT:
+                continue
+            publish_attempt(
+                context,
+                act=act,
+                chair=chair,
+                resolved=context.registry.resolve(chair),
+                ordinal=ordinal,
+                regions=regions,
+                attempt=attempt,
+                live=True,
+            )
+            recorded += 1
+
+    # A resumed page capture answers for its page's response, but not for
+    # every act view that response feeds: an interruption between two of a
+    # page's own act publications leaves the later ones sealed nowhere, and a
+    # resumed pass that only reused the page capture would never revisit them
+    # -- `resumed_page_captures` records that the response happened, this
+    # loop finishes publishing what it answers for. Only a pair still
+    # `PENDING_LIVE_ATTEMPT` is published; the pairs the non-serving loop
+    # above already published or sealed are untouched. Runs after that loop
+    # so a pair it published is no longer `PENDING_LIVE_ATTEMPT` here and is
+    # not published a second time.
+    for (page_ordinal, chair), (attempt, _capture) in page_captures.items():
+        recorded += publish_page_act_views(
+            context,
+            chair=chair,
+            resolved=context.registry.resolve(chair),
+            attempt=attempt,
+            page_ordinal=page_ordinal,
+            page_acts=acts_by_page[page_ordinal],
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
+        )
+
+    # One schedule per chair, concatenated: `stage_major_schedule` orders one
+    # chair's own units, and a chair's unit is a page or an act depending on its
+    # sealed scope, so there is no single act list that could describe them all.
+    # Concatenating keeps every guarantee the executor checks -- contiguous
+    # chair blocks, no chair returned to, no unit served twice, one parish.
+    units: dict[tuple[str, str], Any] = {}
+    schedule: list[dict[str, str]] = []
+    for chair in sorted(set(context.witness_chairs)):
+        resolved = context.registry.resolve(chair)
+        if not isinstance(resolved, ChairIdentity):
+            continue
+        rows: list[dict[str, Any]] = []
+        if chair in page_chairs:
+            for page_ordinal in sorted(acts_by_page):
+                if (page_ordinal, chair) in page_captures:
+                    continue
+                # The page's own sealed subject id, not a synthesized name: the
+                # schedule is a record of what was served, and a page unit is
+                # addressed by the page the Exemplar sealed.
+                unit_id = page_identity(context.fixture, page_ordinal)
+                units[(chair, unit_id)] = page_ordinal
+                rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
+        else:
+            for act in acts:
+                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_LIVE_ATTEMPT:
+                    continue
+                units[(chair, act["act_id"])] = act
+                rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
+        schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
+
+    def serve(client: ChairClient, row: dict[str, str]) -> None:
+        nonlocal recorded
+        chair = row["chair"]
+        resolved = context.registry.resolve(chair)
+        adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+        unit = units[(chair, row["act_id"])]
+        if chair in page_chairs:
+            recorded += _serve_page_unit(
+                context,
+                client=client,
+                chair=chair,
+                resolved=resolved,
+                adapter=adapter,
+                page_ordinal=unit,
+                page_acts=acts_by_page[unit],
+                ordinal=ordinal,
+                regions_by_act=regions_by_act,
+                attempts_by_pair=attempts_by_pair,
+                page_captures=page_captures,
+            )
+        else:
+            recorded += _serve_act_unit(
+                context,
+                client=client,
+                chair=chair,
+                resolved=resolved,
+                adapter=adapter,
+                act=unit,
+                ordinal=ordinal,
+                regions=regions_by_act[unit["act_id"]][0],
+                attempts_by_pair=attempts_by_pair,
+            )
+
+    def load(chair: str) -> ChairClient:
+        client = serving_factory(context, context.registry.resolve(chair), tier)
+        client.__enter__()
+        return client
+
+    def unload(chair: str, client: ChairClient) -> None:
+        del chair
+        client.__exit__(None, None, None)
+
+    if schedule:
+        try:
+            feeding.execute_stage_major_schedule(
+                schedule,
+                residency=feeding.SingleChairResidency(load, unload),
+                serve=serve,
+            )
+        except ServingError as error:
+            # A serving refusal is this stage's refusal to report, not a
+            # traceback: the bytes of every response that did arrive are already
+            # retained and every Testimonium published before it is sealed.
+            raise ContractError(f"a live witness reading was refused: {error}") from error
+
+    unresolved = sorted(
+        pair for pair, value in attempts_by_pair.items() if value is PENDING_LIVE_ATTEMPT
+    )
+    if unresolved:
+        raise FatalAccounting(
+            f"the live pass finished with {len(unresolved)} unresolved witness attempt(s) "
+            f"{unresolved[:3]}; every configured chair answers for every expected act, or the "
+            "record says why"
+        )
+    return recorded, isolated_crop_failure, page_captures
+
+
+# The engine words a live reading may carry into a record: vLLM's own `stop`
+# and `length`, the fixture transport's synonyms for the same two facts, and the
+# explicit marker for an engine that reported no stop reason at all. Anything
+# else is a word this system has never measured a meaning for.
+_LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
+
+
+def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
+    """Refuse a live response whose engine stop word cannot be recorded honestly.
+
+    An engine word outside `_LIVE_ENGINE_STOP_WORDS` has no measured meaning
+    here: recording it would put a word into a truncation channel nothing can
+    read, and mapping it to either "complete" or "cut off" would be a
+    measurement nobody made (GOVERNANCE 10, and the same rule
+    `pipeline/4_perlector/truncation.py` applies by refusing an unknown engine
+    string by name). The check runs on `transport_stop_reason` alone, so it
+    also catches an unmeasured word on a response `ChairClient` could not parse
+    into a reading at all: a wire body no adapter parsed still names its engine
+    word verbatim inside the retained `chair-call-record.v1` blob, and a word
+    this pipeline has never measured a meaning for is exactly as unpublishable
+    there as on a parsed capture.
+
+    It refuses before the response's own record is published, with its bytes
+    already retained by the client (GOVERNANCE 2).
+
+    A *reported-nothing* boundary used to be refused here as well, for Churro
+    alone, because the shared page contract asked a two-valued question of a
+    three-state fact and would have published `truncated: false` over a
+    boundary nothing observed. `common/native_witness.py` now measures the
+    third state, so that refusal is gone rather than merely relaxed: an
+    unreported word publishes `truncated: null` with basis `not-recorded`, on
+    the page record and the act record alike.
+    """
+    if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
+        raise ContractError(
+            f"{what} reports transport_stop_reason {transport_stop_reason!r}, which this "
+            "pipeline has never measured a meaning for; recording it as complete or as cut "
+            "off would assert a boundary nobody observed. The response bytes are retained "
+            "and nothing was published for it"
+        )
+
+
+def _serve_act_unit(
+    context,
+    *,
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    adapter,
+    act: dict[str, Any],
+    ordinal: int,
+    regions: list[dict],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+) -> int:
+    """One act-scoped chair, one act: ask, derive, publish, before the next act."""
+    presentation = presentation_for_region(regions[0])
+    built = live_witness.act_chair_request(context, adapter, presentation)
+    response = client.read(built.request)
+    live = live_witness.live_attempt_from_response(
+        context,
+        adapter,
+        resolved.witness_adapter,
+        response,
+        presentation=presentation,
+        presented=built.presented,
+        prompt=built.prompt,
+        generation_declared=built.request.generation_declared,
+        parser="text",
+    )
+    transport_stop_reason = (
+        response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
+    )
+    refuse_unpublishable_stop_word(
+        transport_stop_reason,
+        f"the {resolved.witness_adapter} response for act {act['act_id']}",
+    )
+    attempt = attempt_from_live(live)
+    attempts_by_pair[(act["act_id"], chair)] = attempt
+    publish_attempt(
+        context,
+        act=act,
+        chair=chair,
+        resolved=resolved,
+        ordinal=ordinal,
+        regions=regions,
+        attempt=attempt,
+        live=True,
+    )
+    return 1
+
+
+def publish_page_act_views(
+    context,
+    *,
+    chair: str,
+    resolved: ChairIdentity,
+    attempt: Attempt,
+    page_ordinal: int,
+    page_acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+) -> int:
+    """Publish every still-pending act view one page chair's response feeds.
+
+    The act-scoped records are the same facts as the page record -- outcome,
+    retained text, health, retained bytes -- because they are the same response.
+    Only an act whose *primary* page is this one takes its view from here: a
+    continuation's act view belongs to the act's own page, and the far page's
+    reading reaches that act through the page record its attachment names.
+
+    Shared by `_serve_page_unit` (a page response this pass just received) and
+    `live_attempt_pass` (a page response a resumed pass recovered from a sealed
+    record, per the interrupted-mid-page repair below). Only a pair still
+    `PENDING_LIVE_ATTEMPT` is published: a pair the interrupted pass already
+    sealed for this page is left exactly as it was.
+    """
+    recorded = 0
+    for act in page_acts:
+        pair = (act["act_id"], chair)
+        if (
+            act["page_ordinal"] != page_ordinal
+            or attempts_by_pair[pair] is not PENDING_LIVE_ATTEMPT
+        ):
+            continue
+        attempts_by_pair[pair] = attempt
+        publish_attempt(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions_by_act[act["act_id"]][0],
+            attempt=attempt,
+            live=True,
+        )
+        recorded += 1
+    return recorded
+
+
+def _serve_page_unit(
+    context,
+    *,
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    adapter,
+    page_ordinal: int,
+    page_acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
+) -> int:
+    """One page-scoped chair, one page: one request, then every act view it feeds."""
+    presentation = presentation_for_page(context, page_ordinal)
+    request = live_witness.page_chair_request(
+        context, adapter, resolved.witness_adapter, presentation
+    )
+    response = client.read(request)
+    live = live_witness.captured_page_attempt(
+        context, page_ordinal, chair, resolved.witness_adapter, adapter, response
+    )
+    transport_stop_reason = (
+        response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
+    )
+    refuse_unpublishable_stop_word(
+        transport_stop_reason,
+        f"the {resolved.witness_adapter} response for page {page_ordinal}",
+    )
+    attempt = attempt_from_live(live)
+    page_captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
+    return publish_page_act_views(
+        context,
+        chair=chair,
+        resolved=resolved,
+        attempt=attempt,
+        page_ordinal=page_ordinal,
+        page_acts=page_acts,
+        ordinal=ordinal,
+        regions_by_act=regions_by_act,
+        attempts_by_pair=attempts_by_pair,
+    )
+
+
 def witness_bound_reading_acts(context) -> frozenset[str]:
     """Every act whose reading was already established from this act's testimony.
 
@@ -3835,8 +4894,60 @@ def republish_act_attachment(
     )
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run every configured chair through one attempt, or reread one named chair."""
+def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
+    """Say, once and out loud, which fixture declarations a live pass does not read.
+
+    The fixture is this run's corpus: its pages, acts, continuations and
+    proposals are what a live chair is shown. Its *declared responses* are the
+    offline posture's stand-in for a model, and a live pass reads none of them —
+    every outcome here comes from a response a chair really returned. Nothing is
+    lost: those rows are still in the sealed fixture, and every record this pass
+    writes names the receipt of the moment that produced it, so no reader can
+    mistake one posture's record for the other's. What would be lost is an
+    operator's ability to notice, which is what this line is for (GOVERNANCE 2).
+    """
+    families = ("testimony", "witness_failure", "witness_empty", "witness_not_run")
+    counted = {
+        family: sum(
+            1
+            for row in context.fixture.get(family, [])
+            if isinstance(row, dict)
+            and row.get("chair") in live_chairs
+            and row.get("scenario") in (None, context.scenario)
+        )
+        for family in ("churro_page_response", "native_observation", *families)
+    }
+    # `chandra_anchor` keys on `page_ordinal`, not `chair` -- a page anchor is
+    # not any one witness's row -- so the `chair in live_chairs` filter above
+    # cannot be reused for it. `publish_page_testimonia_and_attachments` drops
+    # every declared anchor unconditionally once it is passed a live
+    # `page_captures` dict, so every anchor the scenario declares is counted
+    # here, not only the ones a particular chair would have read.
+    counted["chandra_anchor"] = sum(
+        1
+        for row in context.fixture.get("chandra_anchor", [])
+        if isinstance(row, dict) and row.get("scenario") in (None, context.scenario)
+    )
+    declared = {family: count for family, count in counted.items() if count}
+    if declared:
+        print(
+            "Attestatores live pass: the sealed fixture declares witness rows this posture does "
+            f"not read {dict(sorted(declared.items()))}; every outcome below came from a chair "
+            "that served it",
+            file=sys.stderr,
+        )
+
+
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
+    """Run every configured chair through one attempt, or reread one named chair.
+
+    ``serving_factory(context, identity, tier) -> ChairClient`` is the live
+    boundary's in-process injection seam, exactly as ``registry_factory`` is for
+    chair resolution and for exactly the same reason: a command-line route to a
+    fake serving a configured chair's name is the thing this framework refuses.
+    It is consulted only when the sealed serving catalogue says this run's
+    witness chairs are live.
+    """
     parser = stage_parser(__doc__.splitlines()[0], accepts_chair=True)
     parser.add_argument(
         "--attempt-ordinal",
@@ -3861,6 +4972,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
+    # The serving posture of this run's witnesses, read from the sealed
+    # serving-recipe rows and nothing else (SPEC_A section 2.1). Resolved before
+    # any act is read, because it decides which pass structure runs.
+    modes = witness_serving_modes(context, bound_serving_recipes(context), args.placement_tier)
+    live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")
     acts = expected_acts(context)
     try:
         index = _attempt_history(context)
@@ -3903,6 +5019,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     isolated_crop_failure = False
     if args.operation == "reread":
+        if live_chairs:
+            # A live reread is a second request to a chair that already answered
+            # this act, at a new ordinal. Nothing about it is wrong in principle
+            # -- it is what GOVERNANCE 11 bounds recovery with -- but it needs
+            # its own residency, its own per-response publication and its own
+            # answer to what an act-scoped reread of a page witness means, and
+            # none of that is built. Refused by name rather than half-performed
+            # into a pass that starts a chair and cannot publish what it hears.
+            raise ContractError(
+                "this run's witness chairs serve live, and no live reread is built: a reread "
+                "asks one chair for one act again, and the live boundary here publishes a whole "
+                "pass chair-outer. Run the whole pass at the next ordinal, or reread under the "
+                "fixture catalogue"
+            )
         if not args.act or not args.chair:
             raise ContractError(
                 "a reread names the one act and the one chair it rereads; without both it "
@@ -3923,6 +5053,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
+            # Read in both postures: `declarations_for` refuses a fixture that
+            # contradicts itself at this ordinal, which is a fact about the
+            # sealed inputs rather than about who answers. The live resolver
+            # below then reads none of it.
             declarations = declarations_for(context, ordinal)
             regions_by_act, attempts_by_pair, sealed_pairs = preflight_appendable_ordinals(
                 context,
@@ -3930,7 +5064,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ordinal,
                 declarations,
                 index,
-                resume_incomplete_pass=not has_prior_boundary,
+                # A live pass always reuses a pair already sealed at this
+                # ordinal: a live chair cannot reproduce immutable bytes, so
+                # asking again could only produce a collision (GOVERNANCE 4).
+                resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
+                resolve=pending_live_attempt if live_chairs else None,
             )
         except ContractError as error:
             # An ordinary preflight refusal holds this pass before it writes any
@@ -3940,20 +5078,37 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 raise
             print(f"Attestatores refused this pass: {error}", file=sys.stderr)
             return EXIT_HELD
-        recorded, isolated_crop_failure = attempt_pass(
-            context,
-            acts,
-            ordinal,
-            regions_by_act,
-            attempts_by_pair,
-            sealed_pairs,
-        )
+        page_captures = None
+        if live_chairs:
+            refuse_unread_fixture_declarations(context, live_chairs)
+            recorded, isolated_crop_failure, page_captures = live_attempt_pass(
+                context,
+                acts,
+                ordinal,
+                regions_by_act,
+                attempts_by_pair,
+                sealed_pairs,
+                serving_factory=default_serving_factory
+                if serving_factory is None
+                else serving_factory,
+                tier=args.placement_tier,
+            )
+        else:
+            recorded, isolated_crop_failure = attempt_pass(
+                context,
+                acts,
+                ordinal,
+                regions_by_act,
+                attempts_by_pair,
+                sealed_pairs,
+            )
         publish_page_testimonia_and_attachments(
             context,
             acts=acts,
             ordinal=ordinal,
             regions_by_act=regions_by_act,
             attempts_by_pair=attempts_by_pair,
+            page_captures=page_captures,
         )
 
     if recorded == 0:
