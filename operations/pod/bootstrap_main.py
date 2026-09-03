@@ -125,7 +125,13 @@ from .bootstrap import (
     SubprocessBootstrapActions,
 )
 from .durable import atomic_write, canonical_json, exclusive_write
-from .models import looks_like_credential_field, require_utc, utc_now
+from .models import (
+    CREDENTIAL_VALUE_PREFIXES,
+    looks_like_credential_field,
+    looks_like_credential_value,
+    require_utc,
+    utc_now,
+)
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
@@ -419,8 +425,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--serving-recipes-config",
         type=Path,
         help="the serving-profile catalogue preflight smokes against; defaults to "
-        "<repository>/config/serving_recipes.toml, the fixture-only catalogue -- a real "
-        "launch names config/serving_recipes_real.toml explicitly",
+        "<repository>/config/serving_recipes.toml, the fixture-only catalogue, and may be "
+        "defaulted only when --models-config is the shipped fixture roster "
+        "config/models.toml -- any other roster must name its catalogue explicitly "
+        "(config/serving_recipes_real.toml for the real roster) or the plan is refused",
     )
     parser.add_argument(
         "--submission-manifest",
@@ -566,6 +574,24 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         page_witness_file = _require_contained(
             page_witness_file, volume_mount_path, "--page-witness-file", report_path=report_path
         )
+    # The roster and the catalogue select one serving stack together -- which
+    # chairs exist, and the vLLM profile each is served under -- so a plan that
+    # names a roster other than the shipped fixture one and lets the catalogue
+    # default would preflight the real chairs against the fixture-only
+    # catalogue. `pipeline/orchestrator/run.py` says exactly that about its own
+    # pair, and `operations/operator/surface._roster_argv` refuses the half-pair
+    # outright. Here the mismatch is worse than a wrong answer: it is only
+    # discovered after the pod has billed for the boot and the model fetch, so
+    # it is refused at plan time, before anything is spent.
+    default_roster = (repository / "config" / "models.toml").resolve()
+    if args.serving_recipes_config is None and models_config != default_roster:
+        raise PlanRefusal(
+            f"--models-config {models_config} is not the shipped fixture roster "
+            f"{default_roster}, and --serving-recipes-config was not supplied; the roster and "
+            "the catalogue name one serving stack together, and defaulting the catalogue here "
+            "would preflight this roster's chairs against the fixture-only catalogue. Name both",
+            report_path=report_path,
+        )
     serving_recipes_config = _require_contained(
         args.serving_recipes_config or (repository / "config" / "serving_recipes.toml"),
         repository,
@@ -684,32 +710,14 @@ def _require_launch_token_named(
         )
 
 
-_CREDENTIAL_VALUE_PREFIXES = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
-_CREDENTIAL_VALUE_SAFE_CHARACTERS = frozenset(" /\\.:@")
+def _credential_shape(value: str) -> str:
+    """Say what made the value look like a secret, without repeating any of it."""
 
-
-def _looks_like_credential_value(value: str) -> bool:
-    """A shape check independent of ``looks_like_credential_field``'s name check.
-
-    That predicate asks whether a *name* names itself a secret; a real leaked
-    secret value carries no such name.  This catches a value shaped like one: a
-    known provider prefix, or an opaque, separator-free run of 20+ mixed
-    alphanumeric characters -- excluding a plain lowercase-hex identifier (a
-    git commit, a manifest digest), which this argv legitimately carries and
-    which a real credential essentially never is.
-    """
-
-    if value.startswith(_CREDENTIAL_VALUE_PREFIXES):
-        return True
-    if len(value) < 20 or any(
-        character in _CREDENTIAL_VALUE_SAFE_CHARACTERS for character in value
-    ):
-        return False
-    if all(character in "0123456789abcdef" for character in value):
-        return False
-    return any(character.isalpha() for character in value) and any(
-        character.isdigit() for character in value
-    )
+    if looks_like_credential_field(value):
+        return "it reads as a secret's own name"
+    if value.startswith(CREDENTIAL_VALUE_PREFIXES):
+        return "a known provider key prefix"
+    return f"an opaque run of {len(value)} mixed alphanumeric characters"
 
 
 def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
@@ -717,7 +725,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
 
     Two independent checks: ``looks_like_credential_field`` asks whether the
     *name* implied by the value looks like a secret's name (a marker word);
-    ``_looks_like_credential_value`` asks whether the value's own *shape* looks
+    ``models.looks_like_credential_value`` asks whether the value's own *shape* looks
     like an opaque token, regardless of what it is named. Neither is a proof --
     a value can be a real secret without either marker, and this refusal cannot
     see into ``--transfer-target-factory``'s runtime capability at all.
@@ -739,8 +747,19 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
         previous = ""
         if flag == "--keep-env":
             continue
-        if value and (looks_like_credential_field(value) or _looks_like_credential_value(value)):
-            raise PlanRefusal(f"argv value looks like a credential and was refused: {value!r}")
+        if value and (looks_like_credential_field(value) or looks_like_credential_value(value)):
+            # The value itself is deliberately not repeated. This refusal is
+            # printed to the pod's own transcript and `pod_run` prints it to
+            # stderr as well, and `refuse` can write it into a report on the
+            # retained volume -- so echoing a value that was refused *because it
+            # looks like a credential* would put the suspected secret in three
+            # more places. The flag and the shape are what an operator needs.
+            where = f"the value after {flag}" if flag else "a bare argv value"
+            raise PlanRefusal(
+                f"{where} looks like a credential and was refused "
+                f"({_credential_shape(value)}); the value is not repeated here, because this "
+                "refusal reaches the transcript and the volume"
+            )
 
 
 def scrub_environment(
@@ -930,7 +949,15 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
             ) from error
         return plan.fixture, witness, page_bytes
     witness = seams.page_witness()
-    page = plan.preflight_root / "golden-page.png"
+    # Named for the witness it carries, not `golden-page.png`: a second
+    # PREFLIGHT under the same launch -- a resumed journal, a restarted
+    # container -- draws a fresh CSPRNG witness, and a fixed name would put
+    # those pixels over the page the first preflight's receipts already name by
+    # digest. Evidence is added, never replaced (GOVERNANCE 4), exactly as
+    # `PodPreflightReceiptPublisher` does for the three records beside it. The
+    # witness is URL-safe by construction (`secrets.token_urlsafe`), so it is a
+    # filename as it stands.
+    page = plan.preflight_root / "golden-page" / f"{witness}.png"
     page_bytes = render_golden_page(page, witness)
     return page, witness, page_bytes
 

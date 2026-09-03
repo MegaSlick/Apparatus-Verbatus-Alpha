@@ -194,7 +194,14 @@ def test_the_rendered_request_loads_through_cli_request_once_every_value_is_supp
         repository_commit="b" * 40,
         hard_deadline=hard_deadline,
     )
-    raw["metadata"] = {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600"}
+    # The metadata placeholder the rendering prints is deliberately left as it
+    # stands: it is the one field the earlier version of this test replaced,
+    # which meant the printed document was never the document that was loaded.
+    # The launch seals the real margin from the spend policy on every create,
+    # so the placeholder is a non-blank string `_request` must accept.
+    assert raw["metadata"] == {
+        "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "<the sealed policy value>"
+    }
     path = tmp_path / "boot-a.json"
     path.write_text(json.dumps(raw), encoding="utf-8")
 

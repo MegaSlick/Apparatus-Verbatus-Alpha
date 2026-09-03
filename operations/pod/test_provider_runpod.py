@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import pytest
 
+from . import notify_hooks
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AccountBalanceObservation,
@@ -1154,6 +1155,86 @@ def test_a_raising_notify_hook_never_prevents_the_observation() -> None:
     observed = live()
 
     assert observed.available_usd == Decimal("76.5")
+    # ... and the failure is not swallowed: GOVERNANCE 2 wants it visible where
+    # the money decision is written, which is the observation's own source.
+    assert "balance notification raised and was contained" in observed.source
+    assert "notify.sh is not on PATH" in observed.source
+
+
+def test_a_notification_that_was_never_delivered_is_named_in_the_observation() -> None:
+    """A ping refused on sight or not delivered is a fact about this reading."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    outcome = notify_hooks.NotifyOutcome(True, False, "no topic configured")
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=lambda *_: outcome)
+
+    observed = live()
+
+    assert "balance notification: Phone notification: NOT DELIVERED" in observed.source
+    assert "no topic configured" in observed.source
+
+
+def test_a_delivered_notification_leaves_the_observation_source_alone() -> None:
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    outcome = notify_hooks.NotifyOutcome(True, True, "delivered")
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=lambda *_: outcome)
+
+    observed = live()
+
+    assert "balance notification" not in observed.source
+
+
+def test_set_balance_notify_wires_the_hook_the_host_cli_reaches() -> None:
+    """The seam ``cli.py --notify`` calls by duck type.
+
+    The comment here used to claim the CLI wired ``notify_hooks.notify_balance``
+    into this observer, and no tracked path could: the provider comes from an
+    untracked ``--provider-factory``, so the constructor argument had no caller.
+    A named method on the returned object is the one place the host CLI can
+    reach a vendor adapter, exactly as ``--record-fixture`` reaches
+    ``record_exchanges``.
+    """
+
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is None
+
+    def hook(balance: Decimal, spend: Decimal | None) -> notify_hooks.NotifyOutcome:
+        return notify_hooks.NotifyOutcome(True, True, "delivered")
+
+    live.set_balance_notify(hook)
+
+    assert live.balance_observer.notify is hook
+
+
+def test_set_balance_notify_refuses_a_provider_with_no_balance_source() -> None:
+    """A fake transport builds no observer, so ``--notify`` cannot conjure one.
+
+    Refused by name rather than silently doing nothing: a caller that asked for
+    balance pings and will get none has to be told which.
+    """
+
+    faked = provider(ScriptedTransport([]))
+    assert faked.balance_observer is None
+
+    with pytest.raises(ValueError, match="no balance source to notify from"):
+        faked.set_balance_notify(lambda balance, spend: None)
+
+
+def test_set_balance_notify_refuses_an_injected_observer() -> None:
+    """An injected observer is an opaque callable; wiring into it is not this
+    adapter's to do, and pretending otherwise would report a hook that is not
+    there."""
+
+    faked = provider(ScriptedTransport([]))
+    faked.balance_observer = lambda: None
+
+    with pytest.raises(ValueError, match="injected"):
+        faked.set_balance_notify(lambda balance, spend: None)
 
 
 def _serve(handler_class):  # type: ignore[no-untyped-def]
@@ -1326,6 +1407,91 @@ def test_record_exchanges_writes_every_exchange_scrubbed_and_replayable(tmp_path
     assert create["response_body"]["costPerHr"] == Decimal("0.77")
     assert record.pod_id == created["id"]
     assert (recorder.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A provider body cannot forge a money value on its way to disk.
+
+    The Decimal mark used to be a fixed sentinel rewritten by a regex over the
+    whole serialized line, and a recorded string keeps whatever NUL bytes it
+    carried (`_scrub_body` decodes with errors="replace"). A body echoing
+    NUL + `decimal:` + digits + NUL would have been rewritten from a JSON
+    string into a bare number: evidence altered with no record of it
+    (GOVERNANCE 4). The mark now carries a per-line nonce chosen after the
+    body was read.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    forged = "\x00decimal:99999\x00"
+    recorder = FixtureRecorder(tmp_path / "forged.jsonl", now=lambda: NOW)
+    recorder.record(
+        "GET",
+        "/pods",
+        None,
+        status=200,
+        response_body=json.dumps({"costPerHr": 0.77, "note": forged}).encode(),
+    )
+    recorder.close()
+
+    [entry] = read_fixture(recorder.path)
+    body = (
+        json.loads(entry["response_body"])
+        if isinstance(entry["response_body"], str)
+        else entry["response_body"]
+    )
+    assert body["note"] == forged
+    assert body["costPerHr"] == 0.77
+
+
+def test_a_non_finite_money_value_is_refused_rather_than_written_as_a_marker(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`NaN` and `Infinity` are not JSON numbers.
+
+    Marked and left unconverted, one would have written a literal marker string
+    into the fixture, which the replay side reads back as a shape no test
+    covers. A named failure is the honest answer.
+    """
+
+    from .fixture import _dumps
+
+    with pytest.raises(ValueError, match="non-finite Decimal"):
+        _dumps({"total": Decimal("NaN")})
+
+
+def test_a_credential_shaped_value_under_an_innocuous_key_is_scrubbed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The name check alone let a token through under a harmless key.
+
+    The recorder is the one place on this branch that deliberately writes
+    provider request and response bodies to disk; a RunPod answer echoing a key
+    inside `dockerArgs`, `message` or an env value would have landed there
+    marked `verbatim: true` with an empty `scrubbed` list.
+
+    The probe is an opaque mixed-alphanumeric run rather than a value carrying
+    a vendor prefix: this repository's own ingress scanner recognises the
+    prefixed shape and would refuse the commit that added the test.
+    """
+
+    from .fixture import SCRUBBED, FixtureRecorder, read_fixture
+
+    recorder = FixtureRecorder(tmp_path / "leaky.jsonl", now=lambda: NOW)
+    recorder.record(
+        "POST",
+        "/pods",
+        None,
+        status=200,
+        response_body=json.dumps(
+            {"message": "started with Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8", "id": "pod-abc123"}
+        ).encode(),
+    )
+    recorder.close()
+
+    [entry] = read_fixture(recorder.path)
+    assert entry["verbatim"] is False
+    assert entry["response_body"]["message"] == SCRUBBED
+    assert "response_body.message" in entry["scrubbed"]
+    # And an ordinary provider id is still recorded as itself: the shape test
+    # is narrow on purpose, or the fixture stops being replayable.
+    assert entry["response_body"]["id"] == "pod-abc123"
 
 
 def test_concurrent_record_calls_never_share_a_sequence(tmp_path) -> None:  # type: ignore[no-untyped-def]

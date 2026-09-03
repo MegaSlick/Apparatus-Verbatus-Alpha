@@ -295,10 +295,11 @@ class GraphQLBalanceObserver:
         # `None` by default -- exactly like `balance_observer` itself two
         # classes up -- so every offline test that builds this observer
         # directly, as most of this file's tests do, never touches
-        # `operations/notify/notify.sh`. `RunPodProvider` wires the real
-        # `notify_hooks.notify_balance` in only when *it* builds this observer
-        # as the default for a live transport (below), which no offline test
-        # both builds and calls.
+        # `operations/notify/notify.sh`. The real `notify_hooks.notify_balance`
+        # arrives only through `RunPodProvider`: as its `balance_notify`
+        # argument when *it* builds this observer as the default for a live
+        # transport (below), or through `set_balance_notify`, which is what
+        # `cli.py --notify` reaches. No offline test both builds and calls it.
         self.notify = notify
 
     def __call__(self) -> AccountBalanceObservation:
@@ -324,21 +325,47 @@ class GraphQLBalanceObserver:
         balance = _money_field(myself, "clientBalance")
         spend_per_hour = _money_field(myself, "currentSpendPerHr")
         observed_at = self.now()
-        if self.notify is not None:
-            # Best-effort, never raised: a notification hook must never turn a
-            # successful observation into a failed one (ruling (b) -- tracking
-            # plus notifications only, no new enforcement).
-            try:
-                self.notify(balance, spend_per_hour)
-            except Exception:  # noqa: BLE001 - a notification hook must never propagate
-                pass
-        return AccountBalanceObservation(
-            balance,
-            observed_at,
-            (
-                f"RunPod GraphQL myself.clientBalance ({BALANCE_CURRENCY}); "
-                f"currentSpendPerHr={spend_per_hour}"
-            ),
+        source = (
+            f"RunPod GraphQL myself.clientBalance ({BALANCE_CURRENCY}); "
+            f"currentSpendPerHr={spend_per_hour}"
+        )
+        note = self._ping(balance, spend_per_hour)
+        if note is not None:
+            source = f"{source}; {note}"
+        return AccountBalanceObservation(balance, observed_at, source)
+
+    def _ping(self, balance: Decimal, spend_per_hour: Decimal) -> str | None:
+        """Notify the phone; return a note when the ping did not land.
+
+        Best-effort, never raised: a notification hook must never turn a
+        successful observation into a failed one (ruling (b) -- tracking plus
+        notifications only, no new enforcement). But a ping that was refused
+        on sight, never delivered, or raised is itself a fact about this
+        observation, and GOVERNANCE 2 does not let it disappear into a bare
+        ``pass``. It comes back as a note appended to the observation's own
+        ``source``, which every spend assessment and launch record already
+        carries, so a phone that never rang says so where the money decision
+        is written down. A delivered ping adds nothing: the caller that wired
+        the hook records that outcome itself.
+        """
+
+        if self.notify is None:
+            return None
+        try:
+            outcome = self.notify(balance, spend_per_hour)
+        except Exception as error:  # noqa: BLE001 - a notification hook must never propagate
+            detail = f"balance notification raised and was contained: {error!r}"
+            if len(detail) > 160:
+                detail = f"{detail[:160]} (reason truncated at 160 characters)"
+            return detail
+        if getattr(outcome, "delivered", False):
+            return None
+        line = getattr(outcome, "line", None)
+        if callable(line):
+            return f"balance notification: {line()}"
+        return (
+            "balance notification: the hook returned "
+            f"{type(outcome).__name__}, which reports no outcome"
         )
 
 
@@ -415,15 +442,19 @@ class RunPodProvider:
             # a fake transport gets none, so the offline suite's "balance
             # source was not configured" refusal is still reachable, and the
             # provider never touches the key -- `sibling` carries it across.
-            # `balance_notify` is the ONLY way a phone notification reaches
-            # this observer: it defaults to `None`, so a bare live-transport
+            # `balance_notify` here and `set_balance_notify` below are the ONLY
+            # two ways a phone notification reaches this observer, and both are
+            # opt-in: the parameter defaults to `None`, so a bare live-transport
             # provider -- including the pod-side one `timer_context_from_
             # environment` builds, and any host call that omits `--notify`
             # -- carries no hook at all, never pinging a phone unasked. The
-            # host CLI wires the real `notify_hooks.notify_balance` in here
-            # only when `args.notify` is set (see `cli.py`'s `_notifier`
-            # construction site), so --notify is the single gate for every
-            # phone notification a launch can send, balance included.
+            # host CLI reaches the seam rather than this parameter, because the
+            # provider comes from an untracked `--provider-factory` that this
+            # tree never constructs: `cli.py`'s `_wire_balance_notify` calls
+            # `set_balance_notify` under `args.notify`, duck-typed exactly as
+            # `--record-fixture` reaches `record_exchanges`. So `--notify` is
+            # the single gate for every phone notification a launch can send,
+            # balance included.
             balance_observer = GraphQLBalanceObserver(
                 transport.sibling(root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"),
                 now=now,
@@ -456,6 +487,35 @@ class RunPodProvider:
         observer = self.balance_observer
         if isinstance(observer, GraphQLBalanceObserver):
             observer.transport = RecordingTransport(observer.transport, recorder)
+
+    def set_balance_notify(
+        self, notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
+    ) -> None:
+        """Wire the phone hook into the observer this adapter built, under ``--notify``.
+
+        `cli.py` calls this by duck type, so that surface names no vendor -- the
+        same shape `--record-fixture` uses for `record_exchanges`. Only the
+        default `GraphQLBalanceObserver` this adapter constructed for a live
+        transport can be wired: an injected observer is an opaque callable and
+        is left alone, and a fake transport built no observer at all, so
+        `--notify` can never conjure a balance ping where there is no balance
+        source. Both of those refuse by name rather than silently doing
+        nothing, because a caller that asked for balance pings and got none
+        must be told which.
+        """
+
+        observer = self.balance_observer
+        if observer is None:
+            raise ValueError(
+                "this provider has no balance source to notify from; nothing observes a "
+                "balance, so no balance notification can be sent"
+            )
+        if not isinstance(observer, GraphQLBalanceObserver):
+            raise ValueError(
+                f"this provider's balance source is an injected {type(observer).__name__}; "
+                "only the observer this adapter builds for a live transport can be wired"
+            )
+        observer.notify = notify
 
     # -- the seven verbs ---------------------------------------------------
 

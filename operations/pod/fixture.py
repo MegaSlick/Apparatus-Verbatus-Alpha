@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import urllib.parse
 from datetime import datetime
@@ -49,16 +50,22 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Literal, Mapping, Protocol
 
-from .models import looks_like_credential_field, utc_now
+from .models import looks_like_credential_field, looks_like_credential_value, utc_now
 
 FIXTURE_SCHEMA = "provider-exchange.v1"
 SCRUBBED = "SCRUBBED"
 
-# NUL cannot appear unescaped in JSON text, and ``ensure_ascii`` writes it as
-# ``\u0000``, so a marked Decimal is a string no provider body can collide with.
+# The mark that survives `json.dumps` and is rewritten back into a bare
+# number.  NUL cannot appear unescaped in JSON text and `ensure_ascii`
+# escapes it, but that alone is not a value a provider body cannot produce:
+# a recorded string is decoded with errors="replace" and keeps whatever NUL
+# bytes it carried, so a body echoing NUL + `decimal:` + number-shaped
+# characters + NUL would be rewritten from a JSON string into a bare number
+# -- evidence altered with no record of it (GOVERNANCE 4).  A fresh nonce
+# per line closes that: the mark a body would have to wear is chosen after
+# the body was read, and is never reused.
 _DECIMAL_MARK = "\x00decimal:"
 _DECIMAL_END = "\x00"
-_DECIMAL_PATTERN = re.compile(r'"\\u0000decimal:([-+0-9.Ee]+)\\u0000"')
 
 BodyKind = Literal["absent", "text", "json-text", "json-object"]
 """What shape ``response_body`` actually holds, apart from ``verbatim``.
@@ -201,7 +208,39 @@ def _scrub(value: object, where: str, scrubbed: list[str]) -> object:
         return result
     if isinstance(value, (list, tuple)):
         return [_scrub(item, f"{where}[{index}]", scrubbed) for index, item in enumerate(value)]
+    if isinstance(value, str) and _carries_a_credential_shaped_word(value):
+        # The name check above asks whether a *key* names itself a secret. A
+        # real leaked value carries no such name: a provider answer echoing a
+        # key inside a `dockerArgs`, `message` or env-value string would land
+        # in the drill fixture verbatim with an empty `scrubbed` list. This is
+        # the same shape test `bootstrap_main` applies to argv, so a
+        # credential-shaped value is replaced and named whatever innocuous key
+        # it sat under. It is deliberately narrow -- 20+ opaque mixed
+        # alphanumeric characters, no path or URL punctuation, never a plain
+        # hex digest -- so ordinary provider ids, digests and paths still
+        # record verbatim and the fixture stays replayable.
+        scrubbed.append(where)
+        return SCRUBBED
     return value
+
+
+def _carries_a_credential_shaped_word(value: str) -> bool:
+    """The shared shape test, applied to the leaf and to each word inside it.
+
+    A provider answer rarely hands back a bare key: it hands back
+    ``"started with sk-..."`` or a `dockerArgs` line with one in it. Testing
+    only the whole leaf would miss exactly the case this exists for, so the
+    leaf is split on whitespace and each word stripped of the quoting and
+    grouping marks a value picks up at its edges -- the same reading
+    `notify_hooks` applies to a notification line.
+    """
+
+    if looks_like_credential_value(value):
+        return True
+    return any(
+        stripped and looks_like_credential_value(stripped)
+        for stripped in (word.strip("\"'(),;:") for word in value.split())
+    )
 
 
 _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+\S+")
@@ -271,12 +310,35 @@ def _scrub_body(body: bytes | None, scrubbed: list[str]) -> tuple[object, bool, 
 
 
 def _dumps(value: object) -> str:
-    """JSON with ``Decimal`` written as the number it was, not a float or a string."""
+    """JSON with ``Decimal`` written as the number it was, not a float or a string.
+
+    The mark carries a nonce chosen for this line alone, so no recorded string
+    -- hostile or merely odd -- can wear the mark and be rewritten into a bare
+    number on its way to disk.  A non-finite ``Decimal`` is refused rather than
+    marked: ``NaN`` and ``Infinity`` are not JSON numbers, and a money value
+    that is one of them is a named failure here, never a fixture line the
+    replay side reads back as a leftover marker string.
+    """
+
+    nonce = secrets.token_hex(8)
+    prefix = f"{_DECIMAL_MARK}{nonce}:"
 
     def mark(item: object) -> object:
         if isinstance(item, Decimal):
-            return f"{_DECIMAL_MARK}{item}{_DECIMAL_END}"
+            if not item.is_finite():
+                raise ValueError(f"fixture record cannot serialize the non-finite Decimal {item}")
+            return f"{prefix}{item}{_DECIMAL_END}"
         raise TypeError(f"fixture record cannot serialize {type(item).__name__}")
 
     text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=mark)
-    return _DECIMAL_PATTERN.sub(r"\1", text)
+    pattern = re.compile('"' + _escaped_mark(nonce) + r"([-+0-9.Ee]+)" + _ESCAPED_NUL + '"')
+    return pattern.sub(r"\1", text)
+
+
+# What `json.dumps(..., ensure_ascii=True)` writes a NUL byte as, and therefore
+# what the mark looks like in the serialized text the pattern below rewrites.
+_ESCAPED_NUL = "\\\\u0000"
+
+
+def _escaped_mark(nonce: str) -> str:
+    return _ESCAPED_NUL + "decimal:" + re.escape(nonce) + ":"

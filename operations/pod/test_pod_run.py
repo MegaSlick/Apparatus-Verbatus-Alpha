@@ -200,9 +200,11 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     assert report["serving_config_inputs"] == SERVING_INPUTS
     assert report["bootstrap"]["color"] == "green"
     assert report["approved_storage_roots"] == [str(ws.volume.resolve())]
+    assert report["skipped_storage_roots"] == []
     assert report["orchestrator_argv"] == command
     # Then it held: the run finished at once, and the process still ticked to
     # the shared hard deadline rather than exiting into `completed-early`.
+    assert report["held_to_hard_deadline"] is True
     assert clock.seconds == 4.0
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
@@ -235,11 +237,85 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
     assert report["exit_code"] == expected_exit
     assert report["orchestrator_exit"] == orchestrator_exit
     if state == "failed":
-        assert "outside its own complete/held/halted vocabulary" in report["detail"]
+        assert "outside its own complete/held/halted/fatal vocabulary" in report["detail"]
     else:
         assert report["detail"] is None
-    assert _report(ws, "pod-run-report-hold.json")["state"] == f"holding-after-{state}"
-    assert clock.seconds == 2.0
+    # A run that finished -- held, like complete -- holds to the hard deadline,
+    # because `pod_timer` reads an early child exit as `completed-early` and
+    # closes the pod with a non-green timer report. A run that did *not* finish
+    # returns at once instead: holding a rented card to the deadline for a
+    # halted or failed run bills for nothing (GOVERNANCE 8, hard rule 2), which
+    # is the same close the red-bootstrap branch already takes.
+    holding = state == "held"
+    assert report["held_to_hard_deadline"] is holding
+    hold_path = ws.volume / "pod-run-report-hold.json"
+    if holding:
+        assert _report(ws, "pod-run-report-hold.json")["state"] == f"holding-after-{state}"
+        assert clock.seconds == 2.0
+    else:
+        assert not hold_path.exists()
+        assert clock.seconds == 0.0
+
+
+def test_a_root_the_policy_names_and_this_machine_lacks_is_in_the_run_report(
+    tmp_path: Path,
+) -> None:
+    """GOVERNANCE 2: the narrowing is recorded, not only the approval.
+
+    The shipped policy names two roots and no machine has both -- a pod has no
+    local ``private/``, a laptop has no mounted volume -- so the gate almost
+    always enforces a shorter list than the policy approved. Naming the skipped
+    root only in the all-absent refusal left the ordinary case silent.
+    """
+
+    ws = _workspace(tmp_path)
+    absent = tmp_path / "never-mounted"
+    _policy(ws, roots=[str(ws.volume), str(absent)])
+    _submission(ws)
+    clock = Clock()
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=0),
+    )
+
+    assert exit_code == EXIT_COMPLETE
+    report = _report(ws)
+    assert report["approved_storage_roots"] == [str(ws.volume.resolve())]
+    [skipped] = report["skipped_storage_roots"]
+    assert str(absent) in skipped and "does not exist" in skipped
+
+
+def test_a_structural_orchestrator_refusal_is_named_not_called_unrecognised(
+    tmp_path: Path,
+) -> None:
+    """``EXIT_FATAL`` (2) is a named orchestrator exit (`common/stage.py`).
+
+    Reporting it as a code outside the vocabulary sent a reader hunting a
+    transcript for a problem the exit code had already named.
+    """
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=2),
+    )
+
+    assert exit_code == EXIT_FAILED
+    report = _report(ws)
+    assert "EXIT_FATAL (2)" in report["detail"]
+    assert "refused structurally" in report["detail"]
+    assert "outside its own" not in report["detail"]
 
 
 def test_an_orchestrator_that_cannot_start_is_a_failed_run_not_a_traceback(
@@ -262,6 +338,10 @@ def test_an_orchestrator_that_cannot_start_is_a_failed_run_not_a_traceback(
     assert report["state"] == "failed"
     assert report["orchestrator_exit"] is None
     assert "could not start" in report["detail"]
+    # An orchestrator that never started has nothing to hold the pod open for.
+    assert report["held_to_hard_deadline"] is False
+    assert clock.seconds == 0.0
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
 
 
 def test_a_red_bootstrap_step_never_starts_the_orchestrator(tmp_path: Path) -> None:

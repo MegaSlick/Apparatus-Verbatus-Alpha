@@ -59,11 +59,11 @@ def test_notify_launch_sends_lease_card_and_ceiling() -> None:
     assert "\n" not in message
 
 
-def test_notify_close_sends_lease_state_and_elapsed() -> None:
+def test_notify_close_sends_lease_state_and_the_billed_window() -> None:
     runner = FakeRunner()
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=612, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=612, runner=runner
     )
 
     assert outcome.delivered
@@ -71,6 +71,11 @@ def test_notify_close_sends_lease_state_and_elapsed() -> None:
     assert "lease-abc123" in message
     assert "verified" in message
     assert "612" in message
+    # The number is pod creation to the verified billing cutoff, and nothing on
+    # this path observes a stop time. It is named for what it is: "ran 612s"
+    # reported a measurement no instrument took (GOVERNANCE 10).
+    assert "billed" in message
+    assert "ran" not in message
 
 
 def test_notify_balance_sends_balance_and_spend_rate() -> None:
@@ -152,7 +157,7 @@ def test_a_message_naming_a_url_is_refused_before_sending(verified_state: str) -
     outcome = notify_close(
         lease_id="lease-abc123",
         verified_state=verified_state,
-        elapsed_seconds=10,
+        billed_seconds=10,
         runner=runner,
     )
 
@@ -167,7 +172,7 @@ def test_a_lowercase_hex_identifier_is_not_mistaken_for_a_credential() -> None:
     runner = FakeRunner()
 
     outcome = notify_close(
-        lease_id="a" * 40, verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="a" * 40, verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert outcome.delivered
@@ -177,7 +182,7 @@ def test_a_multi_line_message_is_refused_before_sending() -> None:
     runner = FakeRunner()
 
     outcome = notify_close(
-        lease_id="lease\nabc", verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="lease\nabc", verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert not outcome.attempted
@@ -191,7 +196,7 @@ def test_a_nonzero_exit_is_reported_not_raised() -> None:
     runner = FakeRunner(returncode=1, stderr="no topic configured\n")
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert outcome.attempted
@@ -203,7 +208,7 @@ def test_a_transport_failure_is_reported_not_raised() -> None:
     runner = FakeRunner(raise_error=OSError("no such file or directory: sh"))
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert outcome.attempted
@@ -215,7 +220,7 @@ def test_a_timeout_is_reported_not_raised() -> None:
     runner = FakeRunner(raise_error=subprocess.TimeoutExpired(cmd=["sh"], timeout=10.0))
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert outcome.attempted
@@ -237,7 +242,7 @@ def test_an_unexpected_runner_exception_is_reported_not_raised() -> None:
     )
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
     )
 
     assert outcome == NotifyOutcome(True, False, outcome.detail)
@@ -253,7 +258,7 @@ def test_a_keyboard_interrupt_still_propagates() -> None:
 
     with pytest.raises(KeyboardInterrupt):
         notify_close(
-            lease_id="lease-abc123", verified_state="verified", elapsed_seconds=10, runner=runner
+            lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
         )
 
 
@@ -267,7 +272,7 @@ def test_no_outcome_from_this_module_ever_raises() -> None:
         FakeRunner(raise_error=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
     ):
         outcome = notify_close(
-            lease_id="lease-abc123", verified_state="verified", elapsed_seconds=1, runner=runner
+            lease_id="lease-abc123", verified_state="verified", billed_seconds=1, runner=runner
         )
         assert isinstance(outcome, NotifyOutcome)
 
@@ -276,7 +281,7 @@ def test_a_long_stderr_reason_is_bounded() -> None:
     runner = FakeRunner(returncode=1, stderr="x" * 500)
 
     outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", elapsed_seconds=1, runner=runner
+        lease_id="lease-abc123", verified_state="verified", billed_seconds=1, runner=runner
     )
 
     assert len(outcome.detail) < 200

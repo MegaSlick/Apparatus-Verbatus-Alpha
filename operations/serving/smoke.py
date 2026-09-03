@@ -91,6 +91,15 @@ def render_golden_page(path: Path, witness: str) -> bytes:
     later refuse. The rendered bytes are decoded again before being returned:
     a page the decoder cannot read would reach the chair as a request it could
     only fail, and this is where that would be found.
+
+    **The page is verified before it takes its name, and never replaces one.**
+    The pixels go to a temporary beside ``path`` and are decoded there, so a
+    page the decoder rejects is never left lying under the real name for a
+    later reader to trust. It is then linked into place: identical bytes are a
+    no-op, and different bytes at the same name are refused rather than
+    written over. Every receipt that names a golden page names it by digest,
+    and a page that could be silently replaced is the one artefact those
+    add-only receipts point at (GOVERNANCE 4).
     """
 
     VisionSmokeCall(witness)
@@ -125,9 +134,21 @@ def render_golden_page(path: Path, witness: str) -> bytes:
         )
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    page.save(path, format="PNG")
-    encoded = path.read_bytes()
-    _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
+    staging = path.with_name(f".{path.name}.render-{secrets.token_hex(4)}")
+    try:
+        page.save(staging, format="PNG")
+        encoded = staging.read_bytes()
+        _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
+        try:
+            os.link(staging, path)
+        except FileExistsError:
+            if path.read_bytes() != encoded:
+                raise ServingConfigurationError(
+                    f"a different golden page already exists at {path}; preflight evidence "
+                    "is added, never written over -- render this page under its own name"
+                ) from None
+    finally:
+        staging.unlink(missing_ok=True)
     return encoded
 
 

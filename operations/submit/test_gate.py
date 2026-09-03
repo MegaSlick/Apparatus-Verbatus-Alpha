@@ -17,6 +17,7 @@ stop refusing good ones would not be a fix.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -134,25 +135,63 @@ def test_the_shipped_policy_names_the_pod_volume_mount_as_a_root(policy):
     assert "/workspace/private" in policy["storage_roots"]
 
 
-def test_the_full_shipped_policy_resolves_to_just_the_local_root_off_a_mounted_pod(policy):
-    """A host with no pod mounted still gets a usable gate, off the shipped file as-is.
+def test_the_full_shipped_policy_still_yields_a_usable_gate_on_any_machine(policy):
+    """The unmodified two-root shipped policy resolves wherever the suite runs.
 
-    ``gate.approved_storage_roots`` resolves each listed root independently.
-    The pod volume root is real only while a pod has it mounted, so running
-    the *unmodified* two-root shipped policy through the gate on a plain
-    checkout -- this test machine included -- still returns exactly the local
-    ``private/`` root: the absent pod-volume root is skipped, not treated as
-    a reason to refuse the whole list. ``operations/pod/test_pod_run.py``
-    proves the pod side the same way, with just the volume substituted in.
+    ``gate.resolve_storage_roots`` resolves each listed root independently, so
+    a plain checkout gets the local ``private/`` root and a pod with the volume
+    mounted gets both. The assertion is written against *this* machine's own
+    facts rather than against the absence of ``/workspace/private``: this suite
+    is meant to run on the pod too -- the branch adds a pod entrypoint and a
+    pod dependency group -- and pinning the laptop's answer would turn the one
+    machine the money is spent on into a red test for correct behaviour. The
+    skip itself is proven synthetically below, where both halves are ours.
     """
-    resolved = gate.approved_storage_roots(policy)
-    assert resolved
-    assert all(root.is_dir() for root in resolved)
-    assert any(root.name == "private" for root in resolved)
-    assert not any(str(root) == "/workspace/private" for root in resolved), (
-        "this test machine has no pod volume mounted, so the pod root must be "
-        "the one skipped, not silently admitted"
+    resolved = gate.resolve_storage_roots(policy)
+    assert resolved.roots
+    assert all(root.is_dir() for root in resolved.roots)
+    assert any(root.name == "private" for root in resolved.roots)
+    pod_root = Path("/workspace/private")
+    admitted = any(root == pod_root for root in resolved.roots)
+    assert admitted == pod_root.is_dir(), (
+        "the pod volume root is admitted exactly when this machine has it mounted"
     )
+    if not admitted:
+        assert any("/workspace/private" in entry for entry in resolved.skipped)
+
+
+def test_a_skipped_root_comes_back_beside_the_resolved_ones_not_only_in_a_refusal(tmp_path, policy):
+    """GOVERNANCE 2: the narrowing is a fact about the run, on every path.
+
+    Naming a skipped root only when *every* root fails left the ordinary case
+    -- a partially resolving policy, which is nearly every machine -- returning
+    a quietly shorter approved list. ``pod_run`` writes both lists into its run
+    report from here.
+    """
+    present = tmp_path / "present"
+    present.mkdir()
+    absent = tmp_path / "absent"
+
+    resolved = gate.resolve_storage_roots(dict(policy, storage_roots=[str(absent), str(present)]))
+
+    assert resolved.roots == (present.resolve(),)
+    [skipped] = resolved.skipped
+    assert str(absent) in skipped and "does not exist" in skipped
+
+
+def test_a_not_a_directory_root_is_skipped_and_named(tmp_path, policy):
+    present = tmp_path / "present"
+    present.mkdir()
+    file_root = tmp_path / "a-file"
+    file_root.write_text("not a directory", encoding="utf-8")
+
+    resolved = gate.resolve_storage_roots(
+        dict(policy, storage_roots=[str(file_root), str(present)])
+    )
+
+    assert resolved.roots == (present.resolve(),)
+    [skipped] = resolved.skipped
+    assert str(file_root) in skipped and "not a directory" in skipped
 
 
 def test_a_policy_naming_no_storage_roots_is_refused(policy):

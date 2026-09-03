@@ -69,10 +69,21 @@ def render_boot_a_request(
     if not policy.configured:
         return BootARequest(_refusal(), True, None, None, None)
     # Narrowing, not a check: `SpendPolicy.__post_init__` raises on a configured
-    # policy missing any ceiling.
-    assert policy.hard_lifetime_seconds is not None
-    assert policy.max_hourly_usd is not None
-    assert policy.max_estimated_metered_cost_usd is not None
+    # policy missing any ceiling. Stated as a raise rather than three `assert`s
+    # because `python -O` strips asserts, and under -O a policy that reached
+    # here short a ceiling would fail on the money path with a TypeError
+    # comparing Decimal to None instead of naming what is missing. The rest of
+    # this package avoids `assert` for exactly that reason.
+    if (
+        policy.hard_lifetime_seconds is None
+        or policy.max_hourly_usd is None
+        or policy.max_estimated_metered_cost_usd is None
+    ):
+        raise ValueError(
+            "a configured spend policy must name hard_lifetime_seconds, max_hourly_usd and "
+            "max_estimated_metered_cost_usd; the Boot A request cannot be rendered against a "
+            "ceiling that is not there"
+        )
     card = cheapest_card(placement)
     lifetime = min(BOOT_A_HARD_LIFETIME_SECONDS, policy.hard_lifetime_seconds)
     pod_cost = _cents(card.hourly_usd * Decimal(lifetime) / Decimal(3600))

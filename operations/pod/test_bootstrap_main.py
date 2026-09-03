@@ -788,6 +788,48 @@ def test_refuses_a_models_config_outside_the_checked_out_repository(
     assert "checked-out repository" in err
 
 
+def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The roster and the catalogue select one serving stack together.
+
+    ``--models-config`` is required and ``--serving-recipes-config`` defaulted
+    to the fixture-only catalogue, so a pod launched with the real roster and
+    no explicit catalogue preflighted the real chairs against the fixture
+    catalogue -- the exact mismatch ``pipeline/orchestrator/run.py`` names and
+    ``operations/operator/surface._roster_argv`` refuses. On this path it would
+    have surfaced only after the pod billed for the boot and the model fetch.
+    """
+
+    ws = _workspace(tmp_path)
+    ws.models_config = ws.repository / "config" / "models-real.toml"
+    clock = Clock()
+
+    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--serving-recipes-config was not supplied" in err
+    assert "fixture-only catalogue" in err
+
+
+def test_the_real_roster_is_accepted_when_its_catalogue_is_named(tmp_path: Path) -> None:
+    """Naming both halves is the way through; the pairing rule refuses neither."""
+
+    from .bootstrap_main import build_parser, resolve_plan
+
+    ws = _workspace(tmp_path)
+    ws.models_config = ws.repository / "config" / "models-real.toml"
+    catalogue = ws.repository / "config" / "serving_recipes_real.toml"
+    clock = Clock()
+    argv = _argv(ws, extra=("--serving-recipes-config", str(catalogue)))
+
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+
+    assert plan.models_config == ws.models_config.resolve()
+    assert plan.serving_recipes_config == catalogue.resolve()
+
+
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
 
 
@@ -1061,11 +1103,11 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     # The evidence is on the volume under this launch's preflight directory,
     # content-addressed, three records per chair, beside the golden page.
     preflight_root = ws.volume / "preflight" / ws.report_path.stem
-    assert (preflight_root / "golden-page.png").is_file()
-    assert (
-        record["golden_page_sha256"]
-        == hashlib.sha256((preflight_root / "golden-page.png").read_bytes()).hexdigest()
-    )
+    # Named for the witness it carries, so a second preflight under this launch
+    # adds a page rather than writing over the one these receipts name.
+    page = preflight_root / "golden-page" / f"{WITNESS}.png"
+    assert page.is_file()
+    assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
     for kind in ("receipts", "launch-audits", "serving-evidence"):
         assert len(list((preflight_root / kind / "sha256").glob("*.json"))) == len(identities)
     assert not record["assembly_proven"], "fakes are not a real assembly claim"
@@ -1113,7 +1155,15 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
             # A different, still-valid golden page -- `_verify_png` must pass
             # so the swap is read as a legitimate page and not merely as a
             # corrupt file the smoke would refuse for an unrelated reason.
-            render_golden_page(page_path, "swappedPageWitnessDoesNotMatch99")
+            # Written over the file directly rather than through
+            # `render_golden_page`, because that is what this simulates: some
+            # other writer replacing the bytes on a retained volume.
+            # `render_golden_page` itself refuses to replace a page it did not
+            # write, which is a different property, proven in test_smoke.py.
+            swapped = page_path.with_name("swapped.png")
+            render_golden_page(swapped, "swappedPageWitnessDoesNotMatch99")
+            page_path.write_bytes(swapped.read_bytes())
+            swapped.unlink()
         return (UtilizationSample(Decimal("71"), Decimal("31")),)
 
     seams = PreflightSeams(
@@ -1144,7 +1194,7 @@ def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_by
     ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
     clock = Clock()
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
-    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page.png"
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page" / f"{WITNESS}.png"
     seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
         tmp_path, identities, page_path, swap_after_call=len(identities)
     )
@@ -1172,7 +1222,7 @@ def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Pat
     assert len(identities) > 1
     clock = Clock()
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
-    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page.png"
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page" / f"{WITNESS}.png"
     seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
         tmp_path, identities, page_path, swap_after_call=1
     )
@@ -1274,7 +1324,7 @@ def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
 
     assert record["color"] == "green"
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
-    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page.png").exists()
+    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page").exists()
 
 
 class _NotCalled(BaseException):

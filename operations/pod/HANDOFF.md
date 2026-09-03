@@ -452,7 +452,13 @@ this record.
   not an acceptable cost for naming a volume path in a file most callers never touch
   a pod through, so `approved_storage_roots` now resolves each listed root
   independently and refuses only when *none* of them resolve — an absent root is
-  named in the refusal detail and skipped, never silently dropped. A host with no pod
+  skipped, never silently dropped. A later review round found the other half of that
+  promise unkept: the skipped list was discarded whenever at least one root resolved,
+  so on the success path — which is every ordinary run — the narrowing was invisible.
+  `gate.resolve_storage_roots` now returns the resolved roots and the skipped ones
+  together, `approved_storage_roots` is the thin wrapper over it for callers with
+  nowhere to record the rest, and `pod_run` writes both lists into its run report
+  (`approved_storage_roots`, `skipped_storage_roots`) on every run. A host with no pod
   mounted gets exactly the local `private/` root back from the unmodified shipped
   policy; a pod with the volume mounted gets both. `operations/submit/test_gate.py`
   covers both new shapes (one absent root beside one present one; every root absent)
@@ -465,17 +471,27 @@ this record.
   as it did before this policy file named a pod volume at all.
 
 - **`operations/pod/notify_hooks.py`.** Covered in the module list above. `cli.py` wires
-  it behind the existing `--notify` flag (a green create/adopt prints
+  all three moments behind the existing `--notify` flag (a green create/adopt prints
   `launch_notification`; any result carrying a `close_report` prints
-  `close_notification`, green or not). `RunPodProvider` takes an explicit
-  `balance_notify` parameter, defaulted to `None`; only a caller that supplies it gets
-  the hook wired into the default `GraphQLBalanceObserver` it builds for a live
-  transport. A bare live-transport construction — including the one the pod's own
-  `timer_context_from_environment` performs, which has no way to receive `--notify`
-  at all — carries no hook, so a plain `verbatus pod create` with no `--notify` can
-  never page a phone from a balance observation, and `--notify` stays the single gate
-  for every phone notification a launch can send. Both hook points are the minimal
-  wiring, not a rebuild of either file: `notify_bridge.py`'s existing
+  `close_notification`, green or not; and `balance_notification` says whether the
+  balance hook was wired and carries one line per ping). The balance half was the one
+  a review round found unwired: the code claimed `cli.py` installed it and no tracked
+  path did, because the provider comes from an untracked `--provider-factory` this
+  repository never constructs. It is wired now through `set_balance_notify`, duck-typed
+  exactly as `--record-fixture` reaches `record_exchanges` — a named method on the
+  object the factory returned is the only place the host CLI can reach a vendor
+  adapter. `RunPodProvider` still takes an explicit `balance_notify` constructor
+  parameter, defaulted to `None`, and both routes are opt-in, so a bare live-transport
+  construction — including the one the pod's own `timer_context_from_environment`
+  performs, which has no way to receive `--notify` at all — carries no hook, a plain
+  `verbatus pod create` with no `--notify` can never page a phone from a balance
+  observation, and `--notify` stays the single gate for every phone notification a
+  launch can send. A provider with no seam is recorded, not refused (ruling (b) makes
+  this tracking-only; a launch must not fail because a phone was unreachable), and a
+  ping that did not land is folded into the observation's own `source` rather than
+  swallowed. `test_pod_runtime.py` drives the balance half end to end through
+  `cli.main` against `FakeProvider`, which now carries the same seam. Both hook points
+  are the minimal wiring, not a rebuild of either file: `notify_bridge.py`'s existing
   spend-floor-warning seam is untouched.
 
 - **The nested bootstrap report-path token binding, closed.**

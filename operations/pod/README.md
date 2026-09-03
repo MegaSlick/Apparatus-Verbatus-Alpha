@@ -377,19 +377,55 @@ check.
   under hard rule 1, made once rather than per-launch — so a submission
   folder under either listed root is approved and one outside every listed
   root is refused here, by name, before a model is fetched on a billing card.
+  **The ruling that listing rests on, recorded here so it is readable inside
+  the repository.** On 2026-09-01 Tyrel ruled that everything a pod produces
+  is kept on the attached network volume until it is exported locally with the
+  results, the Perlector training inputs included; the consequence taken from
+  it is that the volume is an approved storage root for the duration of a run,
+  and that `verbatus fetch-run` is the export path home. The verbatim ruling
+  and its date are in `workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md`,
+  which is gitignored like the whole workbench — so the operative decision is
+  written out here as well, in the project's voice, rather than resting on a
+  citation nobody reading this tree can open.
+  **The narrowing is recorded, not only the approval.** The shipped policy
+  names two roots and almost no machine has both: a pod has no local
+  `private/`, a laptop has no mounted volume. `gate.resolve_storage_roots`
+  returns the roots that resolved *and* the ones that did not, and `pod_run`
+  writes both into its run report (`approved_storage_roots` and
+  `skipped_storage_roots`), on every run rather than only in the all-absent
+  refusal, so a reader can tell which list was actually enforced (GOVERNANCE
+  2).
   **There is no `--placement-tier` flag.** The consult that asked for this
   entrypoint named one; the orchestrator and the stage parser accept none and
   no stage reads a tier as the code stands, so `pod_run` records the tier the
   green `PREFLIGHT` receipt measured in its run report and refuses a green
-  bootstrap whose receipt carries none. After the run it holds to the shared
-  hard deadline exactly as `bootstrap_main` does (a liveness line beside the
-  run report, never over it), because `pod_timer.run_with_bootstrap` treats any
-  child exit before the deadline as `completed-early` and closes the pod with a
-  non-green timer report; that hold is paid idle time between a finished run
-  and the deadline, and closing early on a complete run would be a `pod_timer`
-  contract change this unit does not make. `test_pod_run.py` drives all of it
+  bootstrap whose receipt carries none. **It holds only for a run that
+  finished.** After `complete` or `held` it holds to the shared hard deadline
+  exactly as `bootstrap_main` does (a liveness line beside the run report,
+  never over it), because `pod_timer.run_with_bootstrap` treats any child exit
+  before the deadline as `completed-early` and closes the pod with a non-green
+  timer report; that hold is paid idle time between a finished run and the
+  deadline, and closing early on a complete run would be a `pod_timer` contract
+  change this unit does not make. After `halted`, `failed`, or an orchestrator
+  that could not start, it returns at once and lets the timer close the pod —
+  the same cheap close the red-bootstrap branch already takes, because holding
+  a rented card to the deadline for a run that produced nothing further is
+  paying for nothing (GOVERNANCE 8, hard rule 2). Nothing is lost by leaving:
+  the run tree, both reports, the journal and the preflight evidence are on the
+  volume, which outlives the pod, and `verbatus fetch-run` reads it over S3 with
+  no pod running. Which way it went is in the run report's
+  `held_to_hard_deadline`. `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
+  **The roster and the catalogue are named together or the plan is refused.**
+  `bootstrap_main` defaults `--serving-recipes-config` to the fixture-only
+  `config/serving_recipes.toml`, which is right only while `--models-config` is
+  the shipped fixture roster; any other roster must name its catalogue
+  explicitly, or the plan is refused before the boot. A real roster resolving
+  against the fixture catalogue is the mismatch `pipeline/orchestrator/run.py`
+  names and `operations/operator/surface._roster_argv` refuses, and on this path
+  it would otherwise be discovered only after the pod had billed for the boot
+  and the model fetch.
 - `notify_hooks.py` is a small, vendor-neutral phone-notification seam, distinct from
   `notify_bridge.py`'s narrower spend-floor-warning one. It sends exactly one short line
   through `operations/notify/notify.sh` at each of three moments — launch (lease id,
@@ -399,15 +435,26 @@ check.
   URL markers before the shell call, and a message that fails is never sent. It refuses
   nothing else, and a failed ping never blocks or changes a launch or close decision
   (ruling (b): tracking plus notifications only, no new enforcement). `cli.py` wires
-  launch and close notifications behind the existing `--notify` flag. `RunPodProvider`
-  takes an explicit `balance_notify` parameter, defaulted to `None`; only a caller that
-  supplies it gets the hook wired into the default `GraphQLBalanceObserver` it builds
-  for a live transport — a bare live-transport construction, including the one the
-  pod's own `timer_context_from_environment` performs, carries none, so `--notify`
-  stays the single gate for every phone notification a launch can send, balance
-  included, and a pod never pages a phone on its own. `test_notify_hooks.py` proves the
+  all three behind the existing `--notify` flag. Launch and close it calls directly.
+  The balance hook it installs through `set_balance_notify`, duck-typed exactly as
+  `--record-fixture` reaches `record_exchanges`, because the provider itself comes
+  from an untracked `--provider-factory` this repository never constructs — a named
+  method on the returned object is the only place the host CLI can reach a vendor
+  adapter. `RunPodProvider` also takes an explicit `balance_notify` constructor
+  parameter, defaulted to `None`; both routes are opt-in, so a bare live-transport
+  construction — including the one the pod's own `timer_context_from_environment`
+  performs — carries no hook, `--notify` stays the single gate for every phone
+  notification a launch can send, balance included, and a pod never pages a phone on
+  its own. A provider with no such seam is *recorded*, never refused: the launch
+  record's `balance_notification` says whether the hook was wired and carries one line
+  per ping sent, delivered or not, and the observer folds a ping that did not land into
+  the observation's own `source` so the spend record carries it too (GOVERNANCE 2).
+  The close line says `billed Ns from creation` rather than `ran Ns`, because the
+  number is pod creation to the verified billing cutoff and no stop time is observed
+  anywhere on this path. `test_notify_hooks.py` proves the
   three messages, the no-secret and no-URL refusals, and that a failed ping is
-  reported, never raised, offline against a fake runner.
+  reported, never raised, offline against a fake runner; `test_pod_runtime.py` drives
+  the balance half end to end through `cli.main` against `FakeProvider`.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use

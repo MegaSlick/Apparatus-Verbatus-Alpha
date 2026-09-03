@@ -34,14 +34,25 @@ cannot be mistaken for a completed run.  Whatever the outcome, the report at
 before the exit code says it -- except the dry run, which writes no report at
 all (see below).
 
-**The bootstrap-and-hold contract is unchanged.**  ``pod_timer.run_with_bootstrap``
-treats any child exit before the hard deadline -- exit 0 included -- as
-``completed-early`` and closes the pod with a non-green timer report, so after
-the run this process holds to the shared hard deadline exactly as
-``bootstrap_main`` does, re-journaling a liveness line beside the run report.
-That hold is paid idle time between a finished run and the deadline; closing
-early on a complete run would be a ``pod_timer`` contract change and is not
-made here.
+**The bootstrap-and-hold contract is unchanged for a run that finished.**
+``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
+-- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
+timer report, so after a ``complete`` or ``held`` run this process holds to the
+shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
+liveness line beside the run report.  That hold is paid idle time between a
+finished run and the deadline; closing early on a complete run would be a
+``pod_timer`` contract change and is not made here.
+
+**A run that did not finish returns instead, and the pod closes.**  ``halted``,
+``failed``, and "the orchestrator could not start" get no hold: holding one of
+those bills a rented card at the sealed hourly rate, to the hard deadline, for
+a run that produced nothing further -- exactly what the red-bootstrap branch
+already refuses to pay, and what GOVERNANCE 8 and hard rule 2 are for.  Nothing
+is lost by leaving: the run tree, both reports, the journal and the preflight
+evidence are on the *volume*, which outlives the pod, and ``verbatus fetch-run``
+reads it over S3 with no pod running.  The run report records which way it went
+in ``held_to_hard_deadline``, so the choice is in the durable record and not
+only here (GOVERNANCE 2).
 
 **No placement-tier flag.**  The consult that asked for this entrypoint named
 ``--placement-tier``; neither the orchestrator nor any stage parser accepts one
@@ -77,6 +88,7 @@ from typing import Callable, Mapping, MutableMapping, Sequence
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
+from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.submit import gate
@@ -123,6 +135,21 @@ _ORCHESTRATOR_EXITS = {
     ORCHESTRATOR_HELD: EXIT_HELD,
     ORCHESTRATOR_HALTED: EXIT_HALTED,
 }
+
+# Which outcomes are worth paying the rest of the lease for. `pod_timer.
+# run_with_bootstrap` reads any child exit before the hard deadline as
+# `completed-early` and closes the pod with a non-green timer report, so a run
+# that finished its work has to hold: closing early on a complete run would
+# turn a good run into a non-green timer record, and that is a `pod_timer`
+# contract change this unit does not make. A run that did *not* finish has no
+# such claim on the meter. `halted`, `failed`, and "the orchestrator could not
+# start" hold a rented card, at the sealed hourly rate, until the deadline for
+# nothing -- the same waste the bootstrap-red branch above already refuses to
+# pay, and the one failure GOVERNANCE 8 and hard rule 2 exist to prevent. The
+# evidence argument does not save the hold either: the run tree, the reports
+# and the preflight evidence are all on the *volume*, which outlives the pod
+# and is read by `verbatus fetch-run` over S3 with no pod running at all.
+_HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
 
@@ -336,18 +363,23 @@ def resolve_run_plan(
     )
 
 
-def require_approved_submission_folder(plan: RunPlan) -> tuple[str, ...]:
+def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Ask the data gate what the Door will ask, before the bootstrap spends anything.
 
-    Returns the approved roots for the run report.  A refusal names the policy
-    file and says whose decision the missing root is.
+    Returns the approved roots *and* the listed roots that did not resolve on
+    this machine, both for the run report.  A pod has no local ``private/`` and
+    a laptop has no mounted volume, so this gate almost always enforces a
+    shorter list than the policy names; the run report says which one it was
+    (GOVERNANCE 2), rather than leaving the narrowing to be inferred from a
+    refusal that did not happen.  A refusal names the policy file and says
+    whose decision the missing root is.
     """
 
     try:
         policy = gate.load_policy(plan.data_gate_policy)
-        roots = gate.approved_storage_roots(policy)
+        resolved = gate.resolve_storage_roots(policy)
         gate.require_approved_storage_location(
-            plan.submission_folder, roots, "submission folder on the volume"
+            plan.submission_folder, resolved.roots, "submission folder on the volume"
         )
     except gate.GateRefusal as error:
         raise RunRefusal(
@@ -357,7 +389,7 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[str, ...]:
             "run was started",
             report_path=plan.report_path,
         ) from error
-    return tuple(str(root) for root in roots)
+    return tuple(str(root) for root in resolved.roots), resolved.skipped
 
 
 def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
@@ -433,7 +465,7 @@ def main(
     try:
         args = build_parser().parse_args(run_argv)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
-        approved_roots = require_approved_submission_folder(plan)
+        approved_roots, skipped_roots = require_approved_submission_folder(plan)
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
 
@@ -447,6 +479,11 @@ def main(
         "run_root": str(plan.run_root),
         "plan": plan.to_record(),
         "approved_storage_roots": list(approved_roots),
+        # Named on every run, not only when every root is missing: the roots
+        # this machine did not have are what makes the enforced list shorter
+        # than the approved policy, and a reader of this report should not have
+        # to guess which (GOVERNANCE 2).
+        "skipped_storage_roots": list(skipped_roots),
         "hard_deadline": _stamp(hard_deadline),
         "started_at": started_at,
     }
@@ -513,20 +550,46 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_FAILED and failure_detail is None:
+        # `EXIT_FATAL` is a *named* orchestrator exit (`common/stage.py`:
+        # structural or fatal), it simply has no run state of its own here. It
+        # is reported as the refusal it is: telling a reader the code was
+        # unrecognised would send them hunting a transcript for a problem the
+        # exit already named.
         failure_detail = (
-            f"the orchestrator exited {orchestrator_exit}, outside its own complete/held/halted "
-            "vocabulary; read its transcript and the run tree before calling this run anything"
+            "the orchestrator exited EXIT_FATAL (2): it refused structurally rather than "
+            "completing, holding, or halting. Read its transcript and the run tree before "
+            "calling this run anything"
+            if orchestrator_exit == ORCHESTRATOR_FATAL
+            else f"the orchestrator exited {orchestrator_exit}, outside its own "
+            "complete/held/halted/fatal vocabulary; read its transcript and the run tree "
+            "before calling this run anything"
         )
     state = _STATE_FOR_EXIT[exit_code]
+    holding = exit_code in _HOLD_AFTER_EXITS
     final: dict[str, object] = {
         **running,
         "state": state,
         "exit_code": exit_code,
         "orchestrator_exit": orchestrator_exit,
         "detail": failure_detail,
+        "held_to_hard_deadline": holding,
+        "hold_detail": (
+            "the run finished; holding to the hard deadline so the pod timer does not read "
+            "this as completed-early"
+            if holding
+            else "the run did not finish; returning at once so the pod timer closes the pod "
+            "rather than billing the rest of the lease for nothing. Every record is on the "
+            "volume, which outlives the pod"
+        ),
         "finished_at": _stamp(now()),
     }
     _write_run_report(plan, final)
+    if not holding:
+        print(
+            f"pod_run {plan.run_id}: {state} (exit {exit_code}); returning now so the pod "
+            "timer closes the pod"
+        )
+        return exit_code
     print(f"pod_run {plan.run_id}: {state} (exit {exit_code}); holding to the hard deadline")
     hold(
         report_path=plan.hold_path,

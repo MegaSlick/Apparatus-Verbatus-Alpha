@@ -517,6 +517,46 @@ def looks_like_credential_field(value: str) -> bool:
     return any(marker in normalized for marker in _CREDENTIAL_MARKERS)
 
 
+CREDENTIAL_VALUE_PREFIXES = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
+"""Public beside the predicate below: a caller that has to say *why* a value
+was refused, without repeating the value, needs the same list this uses."""
+_CREDENTIAL_VALUE_SAFE_CHARACTERS = frozenset(" /\\.:@")
+
+
+def looks_like_credential_value(value: str) -> bool:
+    """A shape check independent of ``looks_like_credential_field``'s name check.
+
+    That predicate asks whether a *name* names itself a secret; a real leaked
+    secret value carries no such name.  This catches a value shaped like one: a
+    known provider prefix, or an opaque, separator-free run of 20+ mixed
+    alphanumeric characters -- excluding a plain lowercase-hex identifier (a
+    git commit, a manifest digest), which the pod argv legitimately carries and
+    which a real credential essentially never is.
+
+    Public, and here rather than in `bootstrap_main`, for the same reason
+    `looks_like_credential_field` is: three boundaries depend on it now --
+    `bootstrap_main`'s argv refusal, and `fixture.py`'s scrub of the request
+    and response bodies a drill writes to disk -- and a shape test that each
+    of them re-expressed privately is a shape test that drifts apart one copy
+    at a time. (`notify_hooks` deliberately keeps its own re-expression: a
+    notification line is free-form prose split into words, not an argv token
+    or a JSON leaf, and it treats `.`, `/`, `:` and `@` as unsafe where this
+    one treats them as ordinary path and URL punctuation.)
+    """
+
+    if value.startswith(CREDENTIAL_VALUE_PREFIXES):
+        return True
+    if len(value) < 20 or any(
+        character in _CREDENTIAL_VALUE_SAFE_CHARACTERS for character in value
+    ):
+        return False
+    if all(character in "0123456789abcdef" for character in value):
+        return False
+    return any(character.isalpha() for character in value) and any(
+        character.isdigit() for character in value
+    )
+
+
 def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
     """Controller receipts are durable evidence; capability material is forbidden.
 

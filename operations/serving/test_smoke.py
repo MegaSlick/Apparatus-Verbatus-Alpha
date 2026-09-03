@@ -57,6 +57,37 @@ def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap
     assert witness.encode() not in encoded
 
 
+def test_a_second_render_never_writes_over_a_different_golden_page(tmp_path: Path) -> None:
+    """Evidence is added, never replaced (GOVERNANCE 4).
+
+    The preflight receipts beside the page are content-addressed and refuse
+    differing bytes at one address; the page they all point at used to be the
+    one artefact a repeated or resumed PREFLIGHT could silently overwrite.
+    """
+
+    page = tmp_path / "preflight" / "golden-page.png"
+    first = render_golden_page(page, fresh_page_witness())
+
+    with pytest.raises(ServingConfigurationError, match="never written over"):
+        render_golden_page(page, fresh_page_witness())
+
+    assert page.read_bytes() == first
+    assert [item.name for item in page.parent.iterdir()] == ["golden-page.png"]
+
+
+def test_re_rendering_the_same_witness_is_a_no_op_not_a_refusal(tmp_path: Path) -> None:
+    """Identical bytes at the same name are the same evidence, not a conflict."""
+
+    witness = fresh_page_witness()
+    page = tmp_path / "preflight" / "golden-page.png"
+
+    first = render_golden_page(page, witness)
+    second = render_golden_page(page, witness)
+
+    assert first == second == page.read_bytes()
+    assert [item.name for item in page.parent.iterdir()] == ["golden-page.png"]
+
+
 def test_two_differently_witnessed_pages_render_different_pixels(tmp_path: Path) -> None:
     # A render_golden_page that stopped drawing the witness (a blank white
     # page) would still be a decodable PNG under the pixel cap with no

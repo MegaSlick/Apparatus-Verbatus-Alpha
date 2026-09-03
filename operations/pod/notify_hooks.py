@@ -8,7 +8,7 @@ this package's spend gates decide. It only tells `operations/notify/notify.sh`
 one short line, three times in a lease's life --
 
 - launch: the lease id, the card, and the hourly ceiling that governs it
-- close: the lease id, the verified close state, and how long it ran
+- close: the lease id, the verified close state, and the billed window
 - each balance observation: the balance and the spend rate the observer
   reported
 
@@ -23,7 +23,7 @@ call, against the same two independent markers this codebase already uses
 elsewhere to flag a value as credential-shaped -- a marker word in the text
 (`models.looks_like_credential_field`'s word list) and an opaque,
 separator-free run of 20+ mixed alphanumeric characters
-(`bootstrap_main._looks_like_credential_value`'s shape test) -- plus a bare
+(`models.looks_like_credential_value`'s shape test) -- plus a bare
 `http://`/`https://` substring, because a URL in a phone notification is a
 disclosure channel `operations/pod/README.md` never asks for. The check is
 local to this module rather than importing either private helper: neither
@@ -199,18 +199,27 @@ def notify_close(
     *,
     lease_id: str,
     verified_state: str,
-    elapsed_seconds: object,
+    billed_seconds: object,
     runner: Runner = default_runner,
 ) -> NotifyOutcome:
-    """One line at close: which lease, the verified state, how long it ran.
+    """One line at close: which lease, the verified state, the billed window.
 
     ``verified_state`` names the outcome exactly as the close report does
     (``verified``, ``unverified``, ``pending-reconciliation``, ...) -- never
     reworded into a friendlier phrase that could read as more certain than
     `operations/pod/shutdown.py`'s own verification actually established.
+
+    ``billed_seconds`` is pod creation to the close's *billing cutoff*, which
+    is what `CloseReport` carries; no stop time is observed anywhere on this
+    path, and the cutoff can stand up to `billing_cutoff_margin_seconds` past
+    the moment the pod was seen gone. The message says "billed" rather than
+    "ran" for that reason: a number is reported as the thing that was actually
+    measured (GOVERNANCE 10), never as the nearer-sounding one.
     """
 
-    message = f"pod close: lease {lease_id}, {verified_state}, ran {elapsed_seconds}s"
+    message = (
+        f"pod close: lease {lease_id}, {verified_state}, billed {billed_seconds}s from creation"
+    )
     return _send(message, runner=runner)
 
 

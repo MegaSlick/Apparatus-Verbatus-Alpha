@@ -6943,21 +6943,27 @@ def test_cli_record_fixture_writes_a_scrubbed_replayable_file(
 
 
 def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     clock = Clock()
     provider = fake(clock)
     fixture_path = tmp_path / "fixture.jsonl"
 
-    with pytest.raises(ValueError, match="FakeProvider cannot"):
-        _drive_cli(
-            tmp_path,
-            monkeypatch,
-            provider,
-            clock,
-            command=["--record-fixture", str(fixture_path), "create", "--request"],
-        )
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["--record-fixture", str(fixture_path), "create", "--request"],
+    )
 
+    # A named refusal and this command's own "refused, nothing paid" status.
+    # `operations/pod/README.md` promises the flag is refused "by name before
+    # any preview", and a Python traceback is not a named refusal.
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert "FakeProvider cannot" in printed["detail"]
     assert not fixture_path.exists()
     assert provider.create_requests == []
 
@@ -7039,6 +7045,128 @@ def test_cli_without_the_notify_flag_never_calls_the_hook(
     assert "launch_notification" not in record
 
 
+def test_cli_notify_flag_pages_the_phone_on_every_balance_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The third notification moment, wired end to end through ``cli.main``.
+
+    The branch advertised phone hooks at launch, close *and* balance, and only
+    the first two were reachable: the balance hook could be supplied to
+    ``RunPodProvider``'s constructor, which this repository never calls -- the
+    provider comes from an untracked ``--provider-factory``. ``cli.py`` now
+    installs it through the duck-typed ``set_balance_notify`` seam, the same
+    shape ``--record-fixture`` uses to reach ``record_exchanges``, so the only
+    place the host CLI *can* reach a vendor adapter is the one it uses.
+
+    Driven against ``FakeProvider``, which carries the same seam: no provider
+    account, no credential, no GraphQL call, and a fake stands in for
+    ``notify_hooks.notify_balance`` so nothing spawns ``notify.sh``.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    calls: list[dict[str, object]] = []
+
+    def fake_notify_balance(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
+        calls.append(kwargs)
+        return cli.notify_hooks.NotifyOutcome(True, True, "delivered")
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", fake_notify_balance)
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_launch",
+        lambda **kwargs: cli.notify_hooks.NotifyOutcome(True, True, "delivered"),
+    )
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    # The launch's own spend gate observed the balance, and that reading is the
+    # one the phone got -- not merely a later one.
+    assert calls, "a green create observes the account balance and must page the phone"
+    assert all(call["balance_usd"] == Decimal("100.00") for call in calls)
+    record = _last_json_object(capsys.readouterr().out)
+    assert record["balance_notification"]["wiring"].startswith("wired:")
+    assert record["balance_notification"]["sent"] == ["Phone notification: sent."] * len(calls)
+
+
+def test_cli_without_the_notify_flag_never_wires_the_balance_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--notify`` is the single gate for all three moments, balance included."""
+
+    clock = Clock()
+    provider = fake(clock)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", lambda **kwargs: calls.append(kwargs))
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=False)
+
+    assert exit_code == 0
+    assert calls == []
+    assert provider._balance_notify is None
+    record = _last_json_object(capsys.readouterr().out)
+    assert "balance_notification" not in record
+
+
+def test_a_provider_with_no_balance_seam_is_recorded_never_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ruling (b): notifications add tracking, never enforcement.
+
+    A provider that cannot take the hook must not turn a green launch into a
+    refusal -- but the launch record has to say the phone will not ring for a
+    balance reading, or the operator is relying on something that is not there
+    (GOVERNANCE 2).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    monkeypatch.delattr(type(provider), "set_balance_notify")
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_launch",
+        lambda **kwargs: cli.notify_hooks.NotifyOutcome(True, True, "delivered"),
+    )
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    record = _last_json_object(capsys.readouterr().out)
+    assert "has no balance-notification seam" in record["balance_notification"]["wiring"]
+    assert record["balance_notification"]["sent"] == []
+
+
+def test_a_raising_balance_hook_never_fails_the_launch_and_is_still_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`notify_hooks` promises never to raise; the promise is contained anyway.
+
+    A balance ping that blew up must not fail the observation the spend gate
+    made its decision on, and must not vanish either.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+
+    def raising_notify_balance(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
+        raise RuntimeError("the notifier broke")
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", raising_notify_balance)
+    monkeypatch.setattr(
+        cli.notify_hooks,
+        "notify_launch",
+        lambda **kwargs: cli.notify_hooks.NotifyOutcome(True, True, "delivered"),
+    )
+
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    assert exit_code == 0
+    record = _last_json_object(capsys.readouterr().out)
+    sent = record["balance_notification"]["sent"]
+    assert sent and all("raised and was contained" in line for line in sent)
+
+
 def test_notify_launch_and_close_calls_close_for_a_non_green_result_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7082,7 +7210,8 @@ def test_notify_launch_and_close_calls_close_for_a_non_green_result_too(
     assert launch_calls == [], "a non-green result must not report a launch"
     assert len(close_calls) == 1
     assert close_calls[0]["verified_state"] == result.close_report.state.value
-    assert isinstance(close_calls[0]["elapsed_seconds"], float)
+    # Named for what it measures: creation to the verified billing cutoff.
+    assert isinstance(close_calls[0]["billed_seconds"], float)
     assert record["close_notification"] == "Phone notification: sent."
 
 
