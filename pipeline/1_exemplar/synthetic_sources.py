@@ -430,8 +430,8 @@ def image_page_pdf(
 
     Each entry names `width`, `height`, `dictionary` (the XObject dictionary text
     before `/Length`) and `raw` (the stream bytes). `xobject_count` above one
-    repeats the same reference under extra names, which is how the
-    more-than-one-XObject refusal is exercised.
+    repeats the same reference under extra names, which builds a page carrying
+    several XObject names so the whole-page render can be proved against it.
     """
     builder = PdfBuilder()
     image_numbers = [
@@ -477,19 +477,6 @@ def gray_image(width: int, height: int, value: int) -> dict:
             "/BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /FlateDecode"
         ),
         "raw": zlib.compress(bytes([value]) * (width * height)),
-    }
-
-
-def jpeg_image(width: int, height: int) -> dict:
-    """A DCTDecode image XObject entry carrying a genuine embedded JPEG."""
-    return {
-        "width": width,
-        "height": height,
-        "dictionary": (
-            f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
-            "/BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /DCTDecode"
-        ),
-        "raw": jpeg(width, height),
     }
 
 

@@ -87,8 +87,8 @@ def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, An
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise SchemaRefusal(f"geometry policy at {path} cannot be read: {error}") from error
     document = _closed(document, {"geometry"}, "geometry policy document")
-    geometry = _validate_geometry_policy(document["geometry"])
-    return {"config_sha256": digest_bytes(data), **geometry}
+    policy = _validate_geometry_policy(document["geometry"])
+    return {"config_sha256": digest_bytes(data), **policy}
 
 
 def _validate_geometry_policy(value: object) -> dict[str, Any]:
@@ -827,7 +827,7 @@ def _derive_resolution(
             # and it swallowed the ambiguity: coincident geometry is exactly the
             # case a reader must be shown, not a parent-child claim. It is
             # reachable now that identical geometry at two scores is deliberately
-            # retained as two raw signals (R2 seat 1's proposal_id repair), and
+            # retained as two raw signals (the R2 proposal_id repair), and
             # wherever two sources' boxes coincide. Recorded as an ambiguity;
             # containment below stays a strict relation.
             if left["aabb"] == right["aabb"]:
@@ -860,8 +860,8 @@ def _derive_resolution(
     # read past." A tight geometric filter would let an occlusion the resolver
     # itself misjudged (e.g. a coarse polygon, or ink actually extending past its
     # drawn edge) silently clear proposals it should have flagged. The page-wide
-    # flag is intentionally conservative, decided by the R2 audit seat
-    # (2026-08-16); a geometric-intersection narrowing is future work if the
+    # flag is intentionally conservative, decided in the R2 audit (2026-08-16);
+    # a geometric-intersection narrowing is future work if the
     # review-queue cost is measured and found to matter, never a default.
     # The same question, asked of the other source. Two occlusion envelopes under
     # one `occlusion_id` are an identity collision exactly as two raw proposals

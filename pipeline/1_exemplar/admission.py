@@ -142,8 +142,10 @@ def inspect_source(
 ) -> AdmissionOutcome:
     """Decode one single-raster source and compare its declared digest.
 
-    Page containers are deliberately returned to the door for fan-out.  Everything
-    else is decoded into pixels before admission; extension spelling is never read.
+    A page container reaching here is a caller error rather than an outcome: the
+    door fans it out before this is ever called, so it raises instead of filing a
+    refusal the door would record as an artifact.  Everything else is decoded into
+    pixels before admission; extension spelling is never read.
     """
     if not data:
         return AdmissionOutcome(
