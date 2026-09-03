@@ -728,11 +728,21 @@ def validate_page_testimonium_record(
         capture = payload.get("native_capture")
         if capture is not None:
             retained.append(capture["raw_response_ref"])
-        # Sorted the way the envelope stores inputs, exactly as the act-scoped
-        # seam above does. Comparing against the payload's own order passes only
-        # while the retained paths happen to sort after the presented image.
+        # Named once each, before the sort, exactly as the producer names them
+        # (`pipeline/3_attestatores/run.py::_named_once`). One retained response
+        # can honestly appear twice in the payload -- a page whose partition was
+        # derived from the very bytes its own native capture describes reaches
+        # the same content-addressed blob through `raw_response_refs` and
+        # through `native_capture`, and a page-edge overshoot finding is
+        # required to make that blob traceable through `raw_response_refs` while
+        # the capture still names it. It is one response, not two, and
+        # `common/contracts/envelope.validate_input_refs` refuses a repeated
+        # path outright, so a record that listed it twice could never have been
+        # written; concatenating without de-duplication here therefore built an
+        # expectation no publishable record can meet, and refused a correct
+        # record one stage after it was correctly published.
         expected_inputs = sorted(
-            expected_inputs + retained,
+            _distinct_inputs(expected_inputs + retained),
             key=lambda item: (item["relative_path"], item["sha256"]),
         )
         if record.get("inputs") != expected_inputs:
@@ -1226,17 +1236,30 @@ def act_attachment_view(
                     f"{role!r} its own primary-page fact contradicts; the page relationship "
                     "is false; rebuild the page Testimonium from the attachment denominator"
                 )
-            if not is_act_primary_page and (
-                attachment["attached"]
-                or attachment["alignment"]
-                != {
-                    "status": "unaligned",
-                    "reason": "continuation-page-no-act-anchor",
-                }
-            ):
+            # The alignment only. `attached` is deliberately NOT checked here,
+            # and was: the pair contradicted each other for a page witness that
+            # really did report geometry over a continuation region. The
+            # geometric derivation a few lines above requires `attached` to
+            # equal that overlap, and this rule required it to be false whatever
+            # the overlap said -- so a chair whose response covers the
+            # continuation half of an act could satisfy neither rule in either
+            # state, and no honest record existed. Unreachable while no served
+            # page witness parsed; reachable the moment one did
+            # (`pipeline/3_attestatores/HANDOFF.md`), which is why it is fixed
+            # rather than documented. What the continuation page genuinely lacks
+            # is an ANCHOR -- the anchor is derived from the act's own primary
+            # page, so there is no comparison view to compute here even when the
+            # geometry attaches -- and that is exactly what this now says. An
+            # attached-but-unaligned entry is already a shape the branches below
+            # admit: `geometric-overlap` basis, a null span, and an explicit
+            # unaligned reason.
+            if not is_act_primary_page and attachment["alignment"] != {
+                "status": "unaligned",
+                "reason": "continuation-page-no-act-anchor",
+            }:
                 raise SchemaRefusal(
                     f"act {act_id} continuation-page attachment for chair {chair!r} claims "
-                    "an act anchor; this compatibility record has no page-specific anchor; "
+                    "an act anchor; this page carries no act-specific anchor; "
                     "retain it as continuation-page-no-act-anchor"
                 )
             current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
