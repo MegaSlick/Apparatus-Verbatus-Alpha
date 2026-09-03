@@ -898,7 +898,18 @@ def test_the_refusal_census_survives_an_artifact_that_decodes_to_a_non_object(
     assert census == {"unreadable record": 1}
 
 
-def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tmp_path, capsys):
+def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refused_per_file(
+    tmp_path, capsys
+):
+    """Each duplicate is admitted and reported; no *file* is refused for being one.
+
+    The run itself is refused at the close, by the test below -- this one stops
+    before `_finish_door_run` deliberately, because what it pins is the half
+    that survives that refusal: both admissions, the `duplicate_of` link, one
+    stored blob for both copies, and the complete per-filename report an
+    operator reads back. Dropping the second copy would be an automated
+    exclusion, and GOVERNANCE reserves those to Tyrel.
+    """
     data = png(3, 2)
     sources = [
         SourceEntry(1, "source-a.png", digest_bytes(data)),
@@ -947,7 +958,7 @@ def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tm
     ]
     door._announce_duplicate_report(tree, report)
     summary = capsys.readouterr().err
-    assert "1 duplicate source(s) admitted across 1 page ordinal(s)" in summary
+    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
     assert "source-a.png" not in summary
     assert "source-b.png" not in summary
 
@@ -983,7 +994,7 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
         door._finish_door_run(context, tree, admitted)
 
     message = str(refusal.value)
-    assert "[1] and [2]" in message
+    assert "ordinal(s) 1 and 2 carry identical bytes" in message
     assert "derives one page identity from more than one submitted file" in message
     # By ordinal, never by filename: `run_stage` prints this to stderr, and the
     # data-handling logging rule excludes a declared path from that channel.
@@ -1041,7 +1052,7 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
         door._finish_door_run(context, tree, admitted)
 
     message = str(refusal.value)
-    assert "[1, 2] and [3, 4]" in message
+    assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
     assert "scan-1.pdf" not in message
     assert "scan-2.pdf" not in message
 
