@@ -630,16 +630,25 @@ def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
     force on every page of every real run, sealed in no config and named in no
     inventory, under a module comment claiming no default was left in the file.
     It is gone rather than sealed, so what is asserted here is that zero means
-    *no length in the test at all* rather than a length set to zero: two
-    x-ranges that meet exactly at a pixel share a column, one pixel apart they
-    do not, and the keyword itself is no longer accepted. A future default
-    would fail this test rather than quietly restore the reach nobody reviewed.
+    *no length in the test at all* rather than a length set to zero: the
+    keyword itself is no longer accepted.
+
+    `_x_range` reports the half-open pixel span `[x, x+w)`, so two ranges that
+    only touch (one ends exactly where the other starts) share no pixel
+    column and must not corroborate a continuation; a one-pixel real overlap
+    must. Both are stated in physical pixel columns below, not endpoint
+    arithmetic, so the fixture reads the same way the bug did: at pixel 99,
+    the trailing group's last column, does the leading group also start
+    there or one column later?
     """
-    trailing = component(40, 280, 60, 20)  # x-range [40, 100], bottom on page A's edge
+    trailing = component(40, 280, 60, 20)  # x-range [40, 100): pixel columns 40..99
     page_a_groups = group([trailing], PAGE_W, PAGE_H)
 
-    touching = component(100, 0, 60, 30)  # x-range [100, 160]: meets page A's at 100
-    assert continuation(page_a_groups, PAGE_H, group([touching], PAGE_W, PAGE_H)) is not None
+    touching = component(100, 0, 60, 30)  # x-range [100, 160): first column 100, no shared pixel
+    assert continuation(page_a_groups, PAGE_H, group([touching], PAGE_W, PAGE_H)) is None
+
+    overlapping = component(99, 0, 60, 30)  # x-range [99, 159): shares column 99 with trailing
+    assert continuation(page_a_groups, PAGE_H, group([overlapping], PAGE_W, PAGE_H)) is not None
 
     apart = component(101, 0, 60, 30)  # x-range [101, 161]: one pixel clear of it
     assert continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H)) is None

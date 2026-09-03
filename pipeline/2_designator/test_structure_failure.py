@@ -888,6 +888,26 @@ def test_fallback_tiles_refuse_a_band_count_or_overlap_they_cannot_cut_under():
         grouping.fallback_tiles(100, 200, bands=4, overlap_px=-1)
 
 
+def test_fallback_tiles_refuse_more_bands_than_the_page_is_tall():
+    """A sealed band count the page cannot honestly cut is refused, not clamped.
+
+    `structure-status` publishes the sealed policy's `fallback_bands` as the
+    geometry this page executed under (SPEC_C 4.2). A `min(bands, page_h)`
+    clamp here would silently cut fewer bands than that record claims, so a
+    page shorter than the sealed band count is refused by name instead of
+    being quietly given a smaller grid than its own record says it got.
+    """
+    import grouping
+
+    with pytest.raises(ContractError, match="4 bands cannot be cut on a 3px-tall page"):
+        grouping.fallback_tiles(100, 3, bands=4, overlap_px=0)
+    # A page exactly as tall as the band count is the boundary, not a refusal:
+    # every band is exactly one pixel high, none is zero.
+    tiles = grouping.fallback_tiles(100, 4, bands=4, overlap_px=0)
+    assert len(tiles) == 4
+    assert all(tile["bounds"]["h"] >= 1 for tile in tiles)
+
+
 def test_designator_refuses_two_proposals_with_identical_bounds_on_one_page():
     """The new act identity has no ordinal fallback for coincident proposals."""
     from types import SimpleNamespace

@@ -379,7 +379,17 @@ def find_continuation_candidate(
         return None
     # Tolerance zero: plain interval intersection, no slack. See the docstring
     # -- this is the absence of a policy value, not one silently set to zero.
-    if not _intervals_overlap(_x_range(trailing), _x_range(leading), 0):
+    #
+    # Not `_intervals_overlap(..., 0)`: `_x_range` returns the half-open pixel
+    # span `[x, x+w)`, and `_intervals_overlap`'s `<=`-free comparison treats
+    # equal touching endpoints as overlap -- correct for the *tolerance*
+    # call sites, where a gap exactly equal to the reach is meant to still
+    # attach, but wrong here, where two columns whose edges merely touch
+    # (`[40,100)` beside `[100,160)`) share no pixel and must not corroborate
+    # a continuation. This is the direct non-empty-intersection test instead.
+    trailing_x0, trailing_x1 = _x_range(trailing)
+    leading_x0, leading_x1 = _x_range(leading)
+    if trailing_x0 >= leading_x1 or leading_x0 >= trailing_x1:
         return None
     return {"page_a_group": trailing, "page_b_group": leading}
 
@@ -439,8 +449,19 @@ def fallback_tiles(
         raise ContractError(f"a fallback grid of {bands} bands cuts nothing")
     if not _plain_int(overlap_px) or overlap_px < 0:
         raise ContractError(f"fallback overlap {overlap_px} is not a non-negative integer")
+    if bands > page_h:
+        # Not silently clamped: `structure-status` publishes the sealed band
+        # count as the geometry this page executed under (SPEC_C 4.2), and a
+        # quiet `min(bands, page_h)` here would make that record describe a
+        # grid this call never actually cut -- a zero-height band is not a
+        # crop, so the sealed count and the executed count would read as one
+        # number while being two. A page this short under this policy is
+        # refused by name instead.
+        raise ContractError(
+            f"a fallback grid of {bands} bands cannot be cut on a {page_h}px-tall page: "
+            "at least one band would have zero height"
+        )
 
-    bands = min(bands, page_h)
     tiles: list[ActGroup] = []
     for index in range(bands):
         # Integer edges computed from the index so the last band always ends

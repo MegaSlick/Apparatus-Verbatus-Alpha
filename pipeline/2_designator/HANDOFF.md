@@ -1004,8 +1004,15 @@ proportion (`margin_bp`'s basis, not the six height-based fields'), and if a rea
 corpus ever shows consecutive pages need it, it enters the config as a basis
 point and arrives as a required keyword.
 `test_grouping.py::test_find_continuation_candidate_shares_a_column_with_no_slack_at_all`
-holds all three halves down: touching x-ranges corroborate, one pixel apart does
-not, and the keyword is refused.
+holds all three halves down: touching x-ranges do not corroborate, one shared
+pixel does, and the keyword is refused. `_x_range` reports the half-open pixel
+span `[x, x+w)`, so two ranges that meet exactly at an endpoint share no pixel
+column at all — a review-round correction to this same test (`grouping.py`'s
+`find_continuation_candidate`) after it was first found asserting the reverse,
+because `_intervals_overlap`'s boundary-inclusive comparison is right for the
+*tolerance* call sites (a gap up to the reach is meant to still attach) and
+wrong for this zero-tolerance one, which now tests non-empty intersection
+directly instead of going through that shared helper.
 
 Seven fields are integer basis points of a page dimension — `margin_bp` of the
 page's **width**, the other six of its **height** — and each resolves
