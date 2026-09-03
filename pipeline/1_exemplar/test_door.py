@@ -2070,17 +2070,15 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     carry ("exited 2"), so the run stops at the stage that still had the
     filenames in hand.
 
-    **What the door's refusal does not do is bar a hand-driven Exemplar**, and
-    this test says so rather than implying otherwise: no stage in this tree
-    requires its predecessor's completion seal, so a caller who runs the
-    programs one by one past a non-zero exit still gets a sealed merged page.
-    That is not this refusal's job and is left as it stands — the last assertion
-    here is that such a page is still refused by name at the first consumer that
-    would read it twice, which is the second line of defence
-    (`common/exemplar_boundary._refuse_a_merged_page_no_consumer_reads_yet`).
+    **A hand-driven Exemplar is barred too.** This used to be the one place a
+    caller who ran the programs one by one, past the door's non-zero exit,
+    still got a sealed merged page — `run.py::_open`'s real-ingress branch
+    built its `StageContext` directly instead of going through
+    `common.stage.open_context`, so it never called `verify_predecessor_seal`.
+    Closed: the real-ingress branch now calls it itself, so the Exemplar
+    refuses by name on the door's missing `stage-seal`, before publishing
+    anything — the same boundary `open_context` gives every other stage.
     """
-    from common.exemplar_boundary import verify_exemplar_corpus_seal
-
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1234.png": data, "iPhone/FS-1234 copy.png": data}
@@ -2118,23 +2116,12 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
         capture_output=True,
         text=True,
     )
-    assert sealed.returncode == 0, sealed.stderr
-    run = tree.read_run()
+    assert sealed.returncode != 0
+    assert "predecessor door has no stage-seal" in sealed.stderr
     manifest = tree.build_manifest(EXEMPLAR)
-    entry = next(item for item in manifest["artifacts"] if item["kind"] == "page")
-    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-    assert sorted(row["ordinal"] for row in page["payload"]["submission_rows"]) == [1, 2], (
-        "the two files are one sealed page, which is exactly what the door refused"
+    assert [item for item in manifest["artifacts"] if item["kind"] == "page"] == [], (
+        "the exemplar must refuse before sealing the merged page the door refused"
     )
-    with pytest.raises(ContractError, match="would mint each act on it twice"):
-        verify_exemplar_corpus_seal(
-            tree,
-            run,
-            manifest,
-            {row["ordinal"]: row for row in run["source_manifest"]},
-            {1: page},
-            {1: entry},
-        )
 
 
 def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, monkeypatch):
