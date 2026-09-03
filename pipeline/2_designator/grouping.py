@@ -51,14 +51,24 @@ class ActGroup(TypedDict):
     rationale: str
 
 
-# No geometric policy in this module carries a default any more -- the four
-# grouping thresholds below, and the fallback grid's band count and overlap at
-# the foot of this file. `run.py` resolves each one, per page, from a sealed
-# basis-point config and that page's own dimensions (SPEC_C section 2, "Where
-# resolution happens"), and passes the resolved pixel integers in on every call. A caller
-# that forgets one now fails loudly rather than running under a value nobody
-# reviewed for this page -- `geometry.load_padding_config`'s own docstring is
-# the precedent: "refused loudly rather than defaulted".
+# No geometric policy in this module carries a default any more. The list is
+# short enough to be complete rather than gestured at: `group_page`'s four
+# thresholds, `find_continuation_candidate`'s two per-page edge reaches, and
+# the fallback grid's band count and overlap at the foot of this file -- eight
+# values, all of them required keyword arguments. `run.py` resolves each one,
+# per page, from a sealed basis-point config and that page's own dimensions
+# (SPEC_C section 2, "Where resolution happens"), and passes the resolved pixel
+# integers in on every call. A caller that forgets one now fails loudly rather
+# than running under a value nobody reviewed for this page --
+# `geometry.load_padding_config`'s own docstring is the precedent: "refused
+# loudly rather than defaulted".
+#
+# There was a ninth: `find_continuation_candidate` used to take a
+# `column_overlap_px` slack with a default of 0, which no caller ever set, no
+# config sealed and no inventory named -- so every real continuation decision
+# ran at 0px under a value nobody had reviewed, while this comment claimed
+# totality above it. It is gone rather than sealed, and the reasoning is at its
+# call site: zero is not a threshold set to zero, it is the absence of one.
 
 
 def _plain_int(value: object) -> bool:
@@ -310,7 +320,6 @@ def find_continuation_candidate(
     *,
     edge_reach_a_px: int,
     edge_reach_b_px: int,
-    column_overlap_px: int = 0,
 ) -> dict[str, Any] | None:
     """A page-break continuation candidate, found by geometry alone.
 
@@ -326,17 +335,34 @@ def find_continuation_candidate(
     reach -- one value serving both pages silently assumed they shared a
     height, which a real corpus does not guarantee.
 
-    All three reaches are refused by name when they are not non-negative
-    plain integers, exactly as `group_page` refuses its own four. This is the
+    Both reaches are refused by name when they are not non-negative plain
+    integers, exactly as `group_page` refuses its own four. This is the
     module's stated contract, and it earns its place here more than anywhere
     else: a float or negative reach changes whether an act is judged to run on
     across a page break, and the failure that hides behind is an act read on
     one side of the break and delivered as a whole one.
+
+    **The column-share test takes no slack value, and must not grow one by
+    default.** It used to accept a `column_overlap_px` tolerance defaulting to
+    zero, which no caller ever passed: a geometric policy in force on every
+    page of every real run, sealed in no config and named in no inventory. What
+    it is set to now is not zero-the-threshold but no threshold at all -- two
+    x-ranges share a column when they actually meet. That is the strict end of
+    the test, and unlike an absolute pixel slack it does not quietly mean
+    something different on a 3508px scan than on a 260px fixture, because there
+    is no length in it to scale. A run may under-corroborate rather than
+    over-corroborate, and this check is recorded rather than gating
+    (`run.py::_publish_act_group`), so a miss is a `false` on the act-group
+    record and never a lost continuation. If a real corpus ever shows that
+    consecutive pages need horizontal slack here -- binding skew, a re-mounted
+    scan -- it enters `config/designator_grouping.toml` as a basis point of the
+    page's own width, beside `margin_bp`, and arrives as a required keyword
+    like every other value this module takes. It does not come back as a
+    default.
     """
     for name, value in (
         ("page A edge reach", edge_reach_a_px),
         ("page B edge reach", edge_reach_b_px),
-        ("column overlap", column_overlap_px),
     ):
         if not _plain_int(value) or value < 0:
             raise ContractError(f"{name} {value}px is not a non-negative integer")
@@ -351,7 +377,9 @@ def find_continuation_candidate(
         return None
     if leading["anchors"]:
         return None
-    if not _intervals_overlap(_x_range(trailing), _x_range(leading), column_overlap_px):
+    # Tolerance zero: plain interval intersection, no slack. See the docstring
+    # -- this is the absence of a policy value, not one silently set to zero.
+    if not _intervals_overlap(_x_range(trailing), _x_range(leading), 0):
         return None
     return {"page_a_group": trailing, "page_b_group": leading}
 

@@ -536,14 +536,13 @@ def test_group_page_refuses_a_negative_or_non_integer_threshold(name, bad_value)
         ("edge_reach_a_px", True),
         ("edge_reach_b_px", -1),
         ("edge_reach_b_px", 1.5),
-        ("column_overlap_px", -1),
-        ("column_overlap_px", 1.5),
+        ("edge_reach_b_px", True),
     ],
 )
 def test_find_continuation_candidate_refuses_a_negative_or_non_integer_reach(name, bad_value):
     """The one geometric decision here whose failure is an act cut in half.
 
-    `group_page` refuses its four thresholds by name; these three decide
+    `group_page` refuses its four thresholds by name; these two decide
     whether an act is judged to run on across a page break, and a float or a
     negative reach silently changes that answer rather than failing.
     """
@@ -621,3 +620,29 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
         )
         is None
     )
+
+
+def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
+    """The column-share test is plain intersection: no tolerance, in either direction.
+
+    `find_continuation_candidate` used to take a `column_overlap_px` slack
+    defaulting to zero that no caller ever passed -- a geometric policy in
+    force on every page of every real run, sealed in no config and named in no
+    inventory, under a module comment claiming no default was left in the file.
+    It is gone rather than sealed, so what is asserted here is that zero means
+    *no length in the test at all* rather than a length set to zero: two
+    x-ranges that meet exactly at a pixel share a column, one pixel apart they
+    do not, and the keyword itself is no longer accepted. A future default
+    would fail this test rather than quietly restore the reach nobody reviewed.
+    """
+    trailing = component(40, 280, 60, 20)  # x-range [40, 100], bottom on page A's edge
+    page_a_groups = group([trailing], PAGE_W, PAGE_H)
+
+    touching = component(100, 0, 60, 30)  # x-range [100, 160]: meets page A's at 100
+    assert continuation(page_a_groups, PAGE_H, group([touching], PAGE_W, PAGE_H)) is not None
+
+    apart = component(101, 0, 60, 30)  # x-range [101, 161]: one pixel clear of it
+    assert continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H)) is None
+
+    with pytest.raises(TypeError):
+        continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H), column_overlap_px=1)

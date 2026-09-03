@@ -986,6 +986,27 @@ they were the worst two to have missed. `fallback_overlap_bp` is a basis point
 of the page's own height like the others; `fallback_bands` is a bare count,
 because a page twice as tall gets bands twice as tall rather than twice as many.
 
+**A twelfth candidate was found and deleted rather than sealed, and the count
+stays eleven.** `grouping.find_continuation_candidate` also carried a
+`column_overlap_px` slack defaulting to `0` — horizontal tolerance on the test
+that decides whether page A's trailing group and page B's leading group share a
+column, and so whether an act is judged to run across a page break. No caller
+ever passed it, so every real continuation decision ran at 0px under a value in
+no config, on no `structure-status` record and in no inventory, which is exactly
+the shape of the ninth/tenth/eleventh above. The parameter is gone. What was
+being defaulted to zero is not a threshold but the absence of one: with no
+tolerance the test is plain interval intersection, which — unlike an absolute
+8px overlap — means the same thing on a 3508px scan as on a 260px fixture,
+because there is no length in it to scale. Zero is also the strict end, and this
+check is recorded rather than gating, so the direction of a miss is a `false` on
+an act-group record, never a lost continuation. Slack here would be a page-width
+proportion (`margin_bp`'s basis, not the six height-based fields'), and if a real
+corpus ever shows consecutive pages need it, it enters the config as a basis
+point and arrives as a required keyword.
+`test_grouping.py::test_find_continuation_candidate_shares_a_column_with_no_slack_at_all`
+holds all three halves down: touching x-ranges corroborate, one pixel apart does
+not, and the keyword is refused.
+
 Seven fields are integer basis points of a page dimension — `margin_bp` of the
 page's **width**, the other six of its **height** — and each resolves
 bit-identically to its retired constant on the 200×260 fixture pages, so no
