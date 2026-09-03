@@ -403,6 +403,28 @@ def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bo
     )
 
 
+def _failed_parse_composition(
+    parse_reason: str, transport_stop_reason: str, cut_off: bool | None
+) -> tuple[str, str]:
+    """Compose a parse failure's ``reason`` suffix and content-health basis.
+
+    Shared by the act-scoped and page-scoped parse-failure branches so a
+    provider-truncated response cannot go on being folded into one and
+    dropped from the other. When ``cut_off`` is a recognized cut-off word,
+    both strings name the truncation ahead of the underlying parse reason;
+    otherwise both are the parse reason verbatim.
+    """
+
+    if cut_off:
+        cut_note = (
+            f"the provider stopped the response at its bound "
+            f"(transport_stop_reason {transport_stop_reason!r}) and "
+        )
+        basis = f"response cut off by the provider ({transport_stop_reason!r}); {parse_reason}"
+        return f"{cut_note}{parse_reason}", basis
+    return parse_reason, parse_reason
+
+
 def _blob_ref(context: Any, data: bytes) -> dict[str, str]:
     """Retain ``data`` and return the closed ``{relative_path, sha256}`` reference shape."""
 
@@ -565,14 +587,16 @@ def live_attempt_from_response(
         )
     # "failed" (dai.v1's only other parse state) lands here: it produced no
     # text this attempt can call a reading.
-    reason = parsed["reason"]
+    reason_suffix, basis = _failed_parse_composition(
+        parsed["reason"], transport_stop_reason, cut_off
+    )
     return LiveAttempt(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
         format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-        health=_unrecordable_health(reason),
-        reason=f"the provider response was retained but not usable: {reason}",
+        health=_unrecordable_health(basis),
+        reason=f"the provider response was retained but not usable: {reason_suffix}",
         raw_response_ref=dict(capture["raw_response_ref"]),
         native_capture=capture,
         call_record_ref=dict(response.call_record_ref),
@@ -676,24 +700,14 @@ def captured_page_attempt(
         if parsed["state"] == "failed"
         else f"the response shape was not recognized: {parsed.get('outcome')}"
     )
-    cut_note = (
-        f"the provider stopped the response at its bound "
-        f"(transport_stop_reason {transport_stop_reason!r}) and "
-        if cut_off
-        else ""
-    )
-    basis = (
-        f"response cut off by the provider ({transport_stop_reason!r}); {parse_reason}"
-        if cut_off
-        else parse_reason
-    )
+    reason_suffix, basis = _failed_parse_composition(parse_reason, transport_stop_reason, cut_off)
     return LiveAttempt(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
         format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
         health=_unrecordable_health(basis),
-        reason=f"the provider response was retained but not usable: {cut_note}{parse_reason}",
+        reason=f"the provider response was retained but not usable: {reason_suffix}",
         raw_response_ref=dict(capture["raw_response_ref"]),
         native_capture=capture,
         call_record_ref=dict(response.call_record_ref),

@@ -650,6 +650,67 @@ def test_live_attempt_from_response_failed_on_a_parser_failure(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained even on failure
 
 
+def test_live_attempt_from_response_cut_off_and_parser_failure_names_both(tmp_path: Path):
+    # A response the provider cut off at its bound, and that the adapter's own
+    # parser then rejected, must read as both on the act path exactly as on
+    # the page path (`test_captured_page_attempt_cut_off_and_parser_failure_names_both`):
+    # naming only the parse failure would let a truncated act masquerade as
+    # bad ink instead of an exhausted bound.
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
+    )
+    adapter = _stub_adapter(
+        retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
+    )
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.outcome == "failed"
+    assert "stopped the response at its bound" in attempt.reason
+    assert "unterminated output element" in attempt.reason
+    assert "length" in attempt.health["truncation_basis"]
+    assert "unterminated output element" in attempt.health["truncation_basis"]
+
+
+def test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason(
+    tmp_path: Path,
+):
+    # Without a recognized cut-off, the act path's parse-failure reason and
+    # content-health basis stay exactly the parse reason -- no truncation
+    # language gets folded in when the provider never reported one.
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="not valid for this parser", finish_reason="stop")
+    )
+    adapter = _stub_adapter(
+        retain_result={"parse": {"state": "failed", "reason": "could not decode as text"}}
+    )
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.outcome == "failed"
+    assert attempt.reason == (
+        "the provider response was retained but not usable: could not decode as text"
+    )
+    assert attempt.health["truncation_basis"] == "could not decode as text"
+    assert "stopped the response at its bound" not in attempt.reason
+
+
 def test_live_attempt_from_response_failed_on_a_malformed_wire_body(tmp_path: Path):
     # No choices at all: parse_openai_reading refuses before any native parse
     # is possible, and `ChairClient.read` records `parse_problem`, not content.
