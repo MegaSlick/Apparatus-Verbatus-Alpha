@@ -47,6 +47,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import urllib.parse
 from datetime import datetime
@@ -183,16 +184,48 @@ class RecordingTransport:
         self.recorder = recorder
 
     def request(self, method: str, path: str, body: Mapping[str, object] | None = None):  # type: ignore[no-untyped-def]
+        """The provider's own answer always wins over a broken recorder.
+
+        A POST that reaches the provider can create a real, billing pod
+        whether or not this recorder can write its evidence line afterward --
+        a full disk or a permission problem on the fixture path is a fact
+        about this drill, not about whether the pod exists. Letting
+        ``recorder.record`` raise here would propagate out of ``self.inner
+        .request`` as if the provider call itself had failed: a caller such
+        as ``PodRuntime._create_locked`` catches exactly that broad
+        ``Exception`` and reports ``PROVIDER_FAILURE`` with no pod identity
+        and no lease, when in fact a pod was created and is now billing
+        unleashed. So a recorder failure is caught here, named loudly on
+        stderr (GOVERNANCE 2: nothing is lost silently), and never allowed to
+        stand in for the provider's own exception.
+        """
+
         try:
             response: _Response = self.inner.request(method, path, body)  # type: ignore[attr-defined]
         except Exception as error:
-            self.recorder.record(
-                method, path, body, status=None, response_body=None, error=repr(error)
-            )
+            try:
+                self.recorder.record(
+                    method, path, body, status=None, response_body=None, error=repr(error)
+                )
+            except Exception as record_error:
+                print(
+                    f"pod fixture recorder failed to record a transport failure for "
+                    f"{method} {path}: {record_error}",
+                    file=sys.stderr,
+                )
             raise
-        self.recorder.record(
-            method, path, body, status=int(response.status), response_body=bytes(response.body)
-        )
+        try:
+            self.recorder.record(
+                method, path, body, status=int(response.status), response_body=bytes(response.body)
+            )
+        except Exception as record_error:
+            print(
+                f"pod fixture recorder failed to record a successful response for "
+                f"{method} {path}: {record_error}; the provider action itself succeeded "
+                "and this response is returned as though nothing had gone wrong with "
+                "the recording",
+                file=sys.stderr,
+            )
         return response
 
 

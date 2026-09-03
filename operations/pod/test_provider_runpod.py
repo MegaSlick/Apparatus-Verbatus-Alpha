@@ -426,6 +426,52 @@ def test_create_without_a_launch_token_refuses_before_any_request() -> None:
     assert transport.calls == []
 
 
+class _BreakingRecorder:
+    """Stands in for a ``FixtureRecorder`` whose disk write fails.
+
+    A real recorder writing to a full disk or an unwritable fixture path
+    raises from ``record``. This double reproduces exactly that, on the
+    success path only, so a test can prove the created pod's identity
+    survives a broken recorder rather than being reported as a provider
+    failure with the pod lost.
+    """
+
+    def record(self, method, path, request_body, *, status, response_body, error=None):  # type: ignore[no-untyped-def]
+        if status is not None:
+            raise OSError("no space left on device")
+        return {}
+
+
+def test_a_recorder_failure_after_a_real_create_never_loses_the_pod_identity(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``fixture.RecordingTransport`` must not let a broken evidence write
+    masquerade as a failed provider call.
+
+    Before the fix, ``FixtureRecorder.record`` raising after a successful
+    POST propagated out of ``RunPodProvider.create`` exactly as a real
+    ``ProviderFailure`` would -- ``PodRuntime._create_locked`` catches that
+    broad exception and reports ``PROVIDER_FAILURE`` with no pod record and
+    no lease, even though the provider had already created a real, billing
+    pod. ``create`` here must still return the pod RunPod actually created,
+    and the recorder's own failure must be named on stderr rather than
+    silently dropped (GOVERNANCE 2).
+    """
+
+    from .fixture import RecordingTransport
+
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+    live = provider(transport)
+    live.transport = RecordingTransport(live.transport, _BreakingRecorder())
+
+    record = live.create(request())
+
+    assert record.pod_id == "pod-1"
+    err = capsys.readouterr().err
+    assert "pod fixture recorder failed to record a successful response" in err
+    assert "provider action itself succeeded" in err
+
+
 # -- the effective runtime contract the pod actually got -------------------
 
 
