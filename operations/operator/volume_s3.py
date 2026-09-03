@@ -465,7 +465,19 @@ class S3VolumeObjectReader:
                         f"more than {MAX_LISTED_KEYS} objects under {prefix!r}; that is not the "
                         "shape of one run tree and was not walked further"
                     )
-            if not page.get("IsTruncated", False):
+            truncated = page.get("IsTruncated")
+            if not isinstance(truncated, bool):
+                # A page with no usable `IsTruncated` used to read exactly like
+                # `False` -- complete -- so a client answer missing or
+                # malforming the one field this reader trusts to know it has
+                # seen everything could end the walk early and let `fetch-run`
+                # record "verified" over a listing that was never proven whole.
+                raise VolumeTransferRefusal(
+                    f"the network volume answered a listing of {prefix!r} with no usable "
+                    "IsTruncated flag; a listing this reader cannot tell complete from "
+                    "partial is not evidence of the run"
+                )
+            if not truncated:
                 return tuple(keys)
             token = page.get("NextContinuationToken")
             if not isinstance(token, str) or not token:

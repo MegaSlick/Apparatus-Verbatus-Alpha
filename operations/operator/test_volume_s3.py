@@ -717,6 +717,26 @@ def test_a_single_page_past_the_key_bound_is_refused_by_name() -> None:
         _reader(client).list_keys("runs/r1/")
 
 
+@pytest.mark.parametrize("bad_value", [None, "false", 0, 1])
+def test_a_page_with_no_usable_istruncated_is_a_refusal_not_a_complete_listing(
+    bad_value: object,
+) -> None:
+    """A page missing or malforming ``IsTruncated`` used to read exactly like
+    ``False`` -- a listing this reader cannot tell complete from partial must
+    not be recorded as verified over what could be a hidden remaining page.
+    """
+
+    class UntruncatedShapedClient(FakeListingClient):
+        def list_objects_v2(self, **_kwargs):  # type: ignore[no-untyped-def]
+            page: dict = {"Contents": [{"Key": "runs/r1/a"}]}
+            if bad_value is not None:
+                page["IsTruncated"] = bad_value
+            return page
+
+    with pytest.raises(VolumeTransferRefusal, match="no usable IsTruncated flag"):
+        _reader(UntruncatedShapedClient({})).list_keys("runs/r1/")
+
+
 def test_a_listing_the_volume_refuses_is_a_refusal_not_an_empty_run() -> None:
     class RefusingClient(FakeListingClient):
         def list_objects_v2(self, **_kwargs):  # type: ignore[no-untyped-def]

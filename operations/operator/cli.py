@@ -433,7 +433,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state,
             notifier=notify_bridge.shell_notifier() if args.notify else notify_bridge.silent,
         )
-        volume = _network_volume(getattr(args, "network_volume", None))
+        volume = _network_volume(getattr(args, "network_volume", None), verb=args.verb)
         if volume is None:
             _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
         else:
@@ -978,21 +978,34 @@ def load_request(path: str | Path) -> PodCreateRequest:
         ) from error
 
 
-def _network_volume(value: str | None) -> VolumeSpec | None:
-    """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback."""
+def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
+    """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
+
+    The error code names the verb this parse is for, not only the volume
+    problem: `UPLOAD_VOLUME_UNAVAILABLE`'s registered copy tells the operator
+    to run `verbatus upload` again, which is the right advice for `upload`
+    and `ingest` but sends a `fetch-run` operator -- who asked to read a run
+    tree home, not send one -- toward sending files instead. `fetch-run`
+    reports the same malformed-input refusal as `FETCH_RUN_FAILED`, whose
+    copy names `verbatus fetch-run`, exactly as `OperatorSurface.fetch_run`
+    already does for the volume failures it detects further downstream.
+    """
 
     if value is None:
         return None
+    code = (
+        ErrorCode.FETCH_RUN_FAILED if verb == "fetch-run" else ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
+    )
     datacenter, separator, volume_id = value.partition(":")
     if not separator or not datacenter or not volume_id:
         raise OperatorError(
-            ErrorCode.UPLOAD_VOLUME_UNAVAILABLE,
+            code,
             detail="a network volume is written as DATACENTER:VOLUME_ID, for example EU-CZ-1:abc123",
         )
     try:
         return VolumeSpec(datacenter_id=datacenter, volume_id=volume_id)
     except VolumeTransferRefusal as error:
-        raise OperatorError(ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)) from error
+        raise OperatorError(code, detail=str(error)) from error
 
 
 def _interactive_arguments() -> list[str]:
@@ -1158,7 +1171,23 @@ def _interactive_arguments() -> list[str]:
                 "Fetch-run needs a run ID, a local folder and a network volume. Nothing changed."
             )
             return []
-        return ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
+        arguments = ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
+        # The launch's preflight/ tree comes home on its own; the bootstrap
+        # report, the pod-run report, and the bootstrap journal are named
+        # with the launch token at paths this verb cannot derive on its own
+        # (`fetch_run.add_argument("--evidence-key", ...)` above), so this
+        # route asks for each by name -- optional, blank skips it -- rather
+        # than only being reachable through the command line's repeatable
+        # `--evidence-key`.
+        for label in (
+            "Volume key for the bootstrap report (leave blank to skip)",
+            "Volume key for the pod-run report (leave blank to skip)",
+            "Volume key for the bootstrap journal (leave blank to skip)",
+        ):
+            evidence_key = _ask(label)
+            if evidence_key:
+                arguments.extend(("--evidence-key", evidence_key))
+        return arguments
     if verb == "export":
         return ["export"]
     if verb == "close":

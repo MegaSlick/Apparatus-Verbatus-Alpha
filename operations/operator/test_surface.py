@@ -2360,7 +2360,7 @@ def test_the_operator_does_not_read_the_ledger_before_the_door(
 def test_console_interrupt_never_prints_a_raw_traceback(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupt(_value):  # type: ignore[no-untyped-def]
+    def interrupt(_value, *, verb):  # type: ignore[no-untyped-def]
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "_network_volume", interrupt)
@@ -3114,6 +3114,60 @@ def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
         "/approved/batch",
         "--sealed-manifest",
         "/reviewed/submission.json",
+    ]
+
+
+def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The double-click route asks by name for the bootstrap report, the
+    pod-run report, and the bootstrap journal -- exactly what
+    ``--evidence-key`` is for -- each independently optional."""
+
+    answers = iter(
+        (
+            "fetch-run",
+            "brought-home",
+            "/local/into",
+            "EU-CZ-1:vol123",
+            "runs/brought-home/bootstrap-report.json",
+            "runs/brought-home/pod-run-report.json",
+            "",  # bootstrap journal left blank
+        )
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "fetch-run",
+        "--run-id",
+        "brought-home",
+        "--into",
+        "/local/into",
+        "--network-volume",
+        "EU-CZ-1:vol123",
+        "--evidence-key",
+        "runs/brought-home/bootstrap-report.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report.json",
+    ]
+
+
+def test_interactive_fetch_run_needs_no_evidence_key_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three blank answers mean none, not a refusal: every evidence key is optional."""
+
+    answers = iter(("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "fetch-run",
+        "--run-id",
+        "brought-home",
+        "--into",
+        "/local/into",
+        "--network-volume",
+        "EU-CZ-1:vol123",
     ]
 
 
@@ -5117,3 +5171,63 @@ def test_cli_fetch_run_reads_the_named_volume_and_never_a_local_stand_in(
     assert (
         cli.main(["--workspace", str(tmp_path), "fetch-run", "--run-id", "x", "--into", "y"]) == 2
     )
+
+
+def test_cli_fetch_run_names_itself_not_upload_on_a_malformed_volume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A malformed ``--network-volume`` on ``fetch-run`` must not send the
+    operator toward ``verbatus upload``.
+
+    ``UPLOAD_VOLUME_UNAVAILABLE``'s registered copy ends "run `verbatus
+    upload` again", which is backwards advice for an operator who asked to
+    read a run tree home. ``_network_volume`` is verb-aware for exactly this
+    reason: on ``fetch-run`` the same malformed-input refusal is
+    ``FETCH_RUN_FAILED``, whose copy names ``verbatus fetch-run``, matching
+    every other volume failure this verb can hit further downstream
+    (``OperatorSurface.fetch_run``).
+    """
+
+    exit_code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "fetch-run",
+            "--run-id",
+            "brought-home",
+            "--into",
+            str(tmp_path / "local"),
+            "--network-volume",
+            "EU-CZ-1",
+        ]
+    )
+
+    assert exit_code == 2
+    printed = capsys.readouterr().out
+    assert "verbatus fetch-run" in printed
+    assert "verbatus upload" not in printed
+
+
+def test_cli_upload_still_names_itself_on_a_malformed_volume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The verb-aware error code leaves ``upload``'s own behavior untouched."""
+
+    exit_code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "upload",
+            "--source",
+            str(tmp_path / "pages"),
+            "--sealed-manifest",
+            str(tmp_path / "sealed-manifest.json"),
+            "--network-volume",
+            "EU-CZ-1",
+        ]
+    )
+
+    assert exit_code == 2
+    printed = capsys.readouterr().out
+    assert "verbatus upload" in printed
+    assert "verbatus fetch-run" not in printed
