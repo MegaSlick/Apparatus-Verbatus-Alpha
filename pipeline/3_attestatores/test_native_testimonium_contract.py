@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs import ChairRegistry
+from common.chairs.models import AbsentChair
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
@@ -825,6 +826,12 @@ def test_an_absent_chair_cannot_carry_a_serving_receipt():
     absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config.chairs[
         "secondary_proposer"
     ]
+    assert isinstance(absent, AbsentChair), (
+        "this test needs an absent roster entry; secondary_proposer is now configured "
+        "in config/models.toml, so provenance_for would fall through to the "
+        "configured-return path instead of raising -- pick a different absent entry "
+        "or re-derive this test's fixture"
+    )
     with pytest.raises(ContractError, match="absent"):
         attestatores.provenance_for(
             context,

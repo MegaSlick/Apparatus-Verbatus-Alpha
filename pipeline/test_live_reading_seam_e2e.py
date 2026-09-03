@@ -538,17 +538,17 @@ class WitnessWorld:
 class ReaderWorld:
     """The Perlector's single resident chair, over one scripted endpoint."""
 
-    def __init__(self, catalogue: Path, work: Path, answer: ScriptedAnswer) -> None:
+    def __init__(self, catalogue: Path, work: Path, *, finish_reason: Any) -> None:
         self.catalogue = catalogue
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
-        self.answer = answer
+        self.finish_reason = finish_reason
         self.endpoint: RecordingEndpoint | None = None
 
     def factory(self, context, identity, tier: str) -> ChairClient:
         policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
         endpoint = VaryingReadingEndpoint(
-            finish_reason=self.answer.finish_reason,
+            finish_reason=self.finish_reason,
             served_model_id=f"served-{identity.role}",
             blob_store=_TreeBlobs(context, PERLECTOR),
             assert_retained_before_next_request=True,
@@ -678,9 +678,7 @@ def live_seam(designated, witnessed, tmp_path_factory) -> SimpleNamespace:
     work = tmp_path_factory.mktemp("live-seam-complete")
     run_root = work / "runs"
     shutil.copytree(witnessed.run_root, run_root)
-    reader = ReaderWorld(
-        designated.catalogue, work / "reader", ScriptedAnswer(content=READING, finish_reason="stop")
-    )
+    reader = ReaderWorld(designated.catalogue, work / "reader", finish_reason="stop")
     exit_code = run_in_process(
         perlector,
         run_root,
@@ -929,11 +927,7 @@ def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held
         assert payload["native_capture"]["transport_stop_reason"] == STOP_REASON_UNREPORTED
         assert payload["content_health"]["truncated"] is None
 
-    reader = ReaderWorld(
-        designated.catalogue,
-        tmp_path / "reader",
-        ScriptedAnswer(content=READING, finish_reason=ABSENT),
-    )
+    reader = ReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason=ABSENT)
     assert (
         run_in_process(
             perlector,
@@ -966,11 +960,7 @@ def test_an_engine_word_this_pipeline_never_measured_stops_the_pass_publishing_n
     """
     run_root = tmp_path / "runs"
     shutil.copytree(witnessed.run_root, run_root)
-    reader = ReaderWorld(
-        designated.catalogue,
-        tmp_path / "reader",
-        ScriptedAnswer(content=READING, finish_reason="abort"),
-    )
+    reader = ReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason="abort")
     with pytest.raises(EngineSignalRefusal, match="abort"):
         run_in_process(
             perlector,

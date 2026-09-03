@@ -16,6 +16,7 @@ are live and let the run bind it exactly as a real one would.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import shutil
@@ -156,6 +157,11 @@ def _live_catalogue(destination: Path) -> Path:
     marker = '[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"'
     head, *perlector_rows = source.split(marker)
     assert len(perlector_rows) == 3, "the fixture catalogue no longer carries three Perlector rows"
+    assert "[[profiles]]" not in perlector_rows[-1], (
+        "a profile follows the last Perlector row; this helper only writes the "
+        "head plus one live Perlector row, so that trailing profile would be "
+        "dropped from the rebuilt catalogue"
+    )
     row = _live_row(_perlector_identity())
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_perlector.toml"
@@ -631,27 +637,116 @@ def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
     )
 
 
-def test_a_duplicated_page_render_input_still_refuses_the_double_count(live_run):
+def _reading_inputs_composition() -> ast.expr:
+    """The exact expression `_read_the_acts` assigns to `reading_inputs`.
+
+    A behavioural route to this property is closed: `row["inputs"]` duplicates
+    would have to be forged upstream and injected through the whole 780-line
+    pass driver, and with no legitimate duplicate anywhere in the fixtures a
+    whole-list `_distinct_inputs(row["inputs"] + reproof_inputs + [...])` is
+    order-preserving and output-identical to the scoped version -- invisible
+    to every behavioural test in this stage. So this reads the source, the
+    same precedent as `test_live_reader.py`'s pass-kind test: the property is
+    about which slice the dedup is *permitted* to cover, not what one fixed
+    set of inputs happens to produce.
+    """
+    source = Path(perlector.__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    read_the_acts = next(
+        (
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.FunctionDef) and node.name == "_read_the_acts"
+        ),
+        None,
+    )
+    if read_the_acts is None:
+        raise AssertionError("run.py no longer defines _read_the_acts")
+    assign = next(
+        (
+            node
+            for node in ast.walk(read_the_acts)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "reading_inputs"
+        ),
+        None,
+    )
+    if assign is None:
+        raise AssertionError(
+            "_read_the_acts no longer assigns reading_inputs; this test reads "
+            "that expression by AST"
+        )
+    return assign.value
+
+
+def _evaluate_reading_inputs(
+    *,
+    row_inputs: list[dict[str, str]],
+    reproof_inputs: list[dict[str, str]],
+    draft_ref,
+    finding_ref,
+) -> list[dict[str, str]]:
+    expression = ast.Expression(body=_reading_inputs_composition())
+    ast.fix_missing_locations(expression)
+    code = compile(expression, filename=str(perlector.__file__), mode="eval")
+    return eval(
+        code,
+        {"_distinct_inputs": perlector._distinct_inputs},
+        {
+            "row": {"inputs": row_inputs},
+            "reproof_inputs": reproof_inputs,
+            "draft_ref": draft_ref,
+            "finding_ref": finding_ref,
+        },
+    )
+
+
+def test_a_duplicated_page_render_input_still_refuses_the_double_count():
     """The dedup added for a repeated re-proof reference must stay scoped to
     the re-proof: `row["inputs"]` (the image, testimonia, attachment and prior
     references) can never legitimately repeat, and a duplicate there must
     still hit the envelope's own two-digests-for-one-path refusal rather than
-    being silently absorbed by `_distinct_inputs` across the whole list."""
+    being silently absorbed by `_distinct_inputs` across the whole list.
+
+    This reads `_read_the_acts`'s own `reading_inputs` expression (see
+    `_reading_inputs_composition`) rather than a local reimplementation of it,
+    because a local copy proves nothing about what `run.py` actually does."""
     page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
-    row_inputs = [page, page]
-    reproof_inputs: list[dict[str, str]] = []
-    deduped = [
-        reference
-        for reference in perlector._distinct_inputs(reproof_inputs)
-        if reference not in row_inputs
-    ]
-    reading_inputs = row_inputs + deduped
+    draft_ref = {"relative_path": "4_perlector/blobs/sha256/bb", "sha256": "b" * 64}
+    finding_ref = {"relative_path": "4_perlector/blobs/sha256/cc", "sha256": "c" * 64}
+    reading_inputs = _evaluate_reading_inputs(
+        row_inputs=[page, page],
+        reproof_inputs=[],
+        draft_ref=draft_ref,
+        finding_ref=finding_ref,
+    )
     assert reading_inputs.count(page) == 2, (
         "a page repeated in row['inputs'] must reach the envelope's own "
-        "double-count refusal unchanged, not be collapsed here"
+        "double-count refusal unchanged, not be collapsed by the production "
+        "composition"
     )
     with pytest.raises(SchemaRefusal, match="is listed twice"):
         validate_input_refs(reading_inputs)
+
+
+def test_a_repeated_reproof_reference_still_collapses_to_one_first_named_entry():
+    """The other half of the same property: a re-proof that re-names the
+    establishing blob must still collapse to a single entry, in first-named
+    order -- so the fix for the finding above cannot be "delete the dedup
+    entirely", which would also break this."""
+    page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
+    reproof = {"relative_path": "4_perlector/blobs/sha256/dd", "sha256": "d" * 64}
+    draft_ref = {"relative_path": "4_perlector/blobs/sha256/bb", "sha256": "b" * 64}
+    finding_ref = {"relative_path": "4_perlector/blobs/sha256/cc", "sha256": "c" * 64}
+    reading_inputs = _evaluate_reading_inputs(
+        row_inputs=[page],
+        reproof_inputs=[reproof, reproof, page],
+        draft_ref=draft_ref,
+        finding_ref=finding_ref,
+    )
+    assert reading_inputs == [page, reproof, draft_ref, finding_ref]
 
 
 # --- the refusals this wiring adds --------------------------------------------

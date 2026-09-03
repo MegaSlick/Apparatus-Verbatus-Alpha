@@ -407,6 +407,26 @@ def test_missing_delivered_pixels_is_refused_before_the_wire(tmp_path: Path) -> 
     assert endpoint.requests == []
 
 
+def test_an_autopsia_view_missing_region_refs_is_refused_not_a_bare_keyerror(
+    tmp_path: Path,
+) -> None:
+    client, _endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    view = dict(dossier["cross_capture_autopsia"]["views"][0])
+    del view["region_refs"]
+    dossier["cross_capture_autopsia"] = dict(dossier["cross_capture_autopsia"], views=[view])
+    with client:
+        with pytest.raises(ContractError, match="does not name both region_refs"):
+            _reader(client, chair).read(
+                dossier,
+                pass_kind="perlectio",
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+
+
 def test_text_is_returned_exactly_never_stripped(tmp_path: Path) -> None:
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")

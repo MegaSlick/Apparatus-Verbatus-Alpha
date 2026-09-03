@@ -86,6 +86,24 @@ continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
 is an independent fact from a fixture-posture response, so it is skipped rather
 than raised on.
 
+**Known asymmetry: cut-off composition is page-only.** `captured_page_attempt`
+composes `cut_note` into its `reason` string and folds `transport_stop_reason`
+into `_unrecordable_health`'s `basis` when a parse failure lands on a response
+the provider itself cut off at its bound, so that case reads as an exhausted
+bound rather than plain bad ink. `live_attempt_from_response` (the act path)
+does not mirror this: on the same parse-failure branch it sets
+`reason = parsed["reason"]` verbatim and `health=_unrecordable_health(reason)`,
+never naming a cut-off even when `cut_off` is true. This is a real gap between
+the two paths, not shared composition, so no test asserts the act path composes
+the note — asserting it would assert behaviour the code does not have. Left
+open deliberately (fix seat, R1): closing it means deciding whether an
+act-scoped chair should report a cut bound the same way a page-scoped one does,
+which is a policy call over evidence framing, not a defect this candidate's
+verdict list charged this seat with. Recorded here per governance rule 7
+rather than left silent; the follow-up is either mirroring the composition
+onto `live_attempt_from_response` with its own test, or a recorded decision
+that the act path intentionally reports parse failure alone.
+
 Recovering a page's response is not the same as finishing every act view it
 owes: an interruption between two of a *single* page's own act publications
 (the happy fixture's `a1`/`a2`, both primary on page 1) used to leave the later

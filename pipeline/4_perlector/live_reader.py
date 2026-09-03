@@ -171,6 +171,17 @@ class VLLMReader:
                 "the order delivered pixels were sent in cannot be recovered from region_id or "
                 "source_page_id order alone"
             )
+        if any(
+            not isinstance(view, dict)
+            or not isinstance(view.get("region_refs"), list)
+            or not isinstance(view.get("page_render_refs"), list)
+            for view in autopsia["views"]
+        ):
+            raise ContractError(
+                f"act {dossier.get('act_key')!r}: a cross-capture autopsia view does not name "
+                "both region_refs and page_render_refs, so the order the delivered pixels were "
+                "sent in cannot be recovered"
+            )
         image_sha256s = tuple(
             [ref["sha256"] for view in autopsia["views"] for ref in view["region_refs"]]
             + [ref["sha256"] for view in autopsia["views"] for ref in view["page_render_refs"]]

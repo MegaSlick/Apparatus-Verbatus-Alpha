@@ -551,7 +551,11 @@ def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_r
     # `native_capture: None` both satisfy mere presence while carrying nothing
     # retained, and such a record reaches no refusal at all -- the test would
     # then fail pointing at the Perlector rather than at its own fixture.
-    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
+    testimony = _page_record_with(
+        context,
+        lambda payload: bool(payload.get(retained)),
+        what=f"a non-empty {retained!r} to unbind",
+    )
     perlector.validate_page_testimonium_record(context, testimony, proposals)
 
     payload = testimony["payload"]
@@ -582,7 +586,11 @@ def test_a_native_capture_that_repeats_a_partition_response_is_bound_once(real_r
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
-    testimony = _page_record_with(context, lambda payload: bool(payload.get("native_capture")))
+    testimony = _page_record_with(
+        context,
+        lambda payload: bool(payload.get("native_capture")),
+        what="a page Testimonium with a native_capture",
+    )
     perlector.validate_page_testimonium_record(context, testimony, proposals)
 
     capture_ref = testimony["payload"]["native_capture"]["raw_response_ref"]
@@ -605,6 +613,7 @@ def test_a_native_capture_that_repeats_a_partition_response_is_bound_once(real_r
             and payload["raw_response_refs"][0]["sha256"]
             != own["native_capture"]["raw_response_ref"]["sha256"]
         ),
+        what="a second page Testimonium with a distinct raw_response_refs digest",
     )
     distinct_ref = dict(other_testimony["payload"]["raw_response_refs"][0])
     unbound_extra = copy.deepcopy(repeated)
@@ -613,17 +622,27 @@ def test_a_native_capture_that_repeats_a_partition_response_is_bound_once(real_r
         perlector.validate_page_testimonium_record(context, unbound_extra, proposals)
 
 
-def _page_record_with(context, predicate):
-    """The first page Testimonium in the sealed tree that satisfies `predicate`."""
-    return next(
-        record
-        for record in (
-            context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-            for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
-            if entry["kind"] == "page-testimonium"
-        )
-        if predicate(record["payload"])
+def _page_record_with(context, predicate, what: str):
+    """The first page Testimonium in the sealed tree that satisfies `predicate`.
+
+    `what` names the fixture shape being sought, in plain English, so a
+    missing match reads as a fixture gap rather than a bare lambda repr.
+    """
+    match = next(
+        (
+            record
+            for record in (
+                context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+                for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+                if entry["kind"] == "page-testimonium"
+            )
+            if predicate(record["payload"])
+        ),
+        None,
     )
+    if match is None:
+        raise AssertionError(f"no page Testimonium in the sealed fixture has {what}")
+    return match
 
 
 @pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
@@ -641,7 +660,11 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
     # `native_capture: None` both satisfy mere presence while carrying nothing
     # retained, and such a record reaches no refusal at all -- the test would
     # then fail pointing at the Perlector rather than at its own fixture.
-    testimony = _page_record_with(context, lambda payload: bool(payload.get(retained)))
+    testimony = _page_record_with(
+        context,
+        lambda payload: bool(payload.get(retained)),
+        what=f"a non-empty {retained!r} to forge a non-attempt over",
+    )
 
     forged = copy.deepcopy(testimony)
     forged["outcome"] = "not-run"

@@ -533,12 +533,14 @@ def test_a_fixture_perlectio_carries_no_engine_call(published_payload):
 
 
 def test_a_live_reading_records_its_engine_call_against_the_widened_set(published_payload):
-    """The live half: the field is validated, never merely tolerated.
+    """The live half: the key is closed-set enforced, never merely tolerated.
 
     Against the fixture field set the same payload refuses as an unexpected
     field, so a record that grew one without its schema growing too cannot
-    publish — and against the widened set it validates, so the widening is a
-    real schema rather than a hole.
+    publish — and against the widened set it validates. This proves the
+    widening covers the `engine_call` *key*, membership only: the shape of
+    the value (its own required fields, and that `response_sha256` matches
+    `raw_response_ref`) is `engine_call_inputs`'s job, not exercised here.
     """
     payload = copy.deepcopy(published_payload)
     payload["engine_call"] = {

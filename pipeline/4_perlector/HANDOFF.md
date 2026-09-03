@@ -825,7 +825,9 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
 The live reading seam this stage sits in was built by several seats across eight
 units. The record of which seat wrote which unit is the dispatch record — the
 workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
-`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`), which name the model each
+`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`). These are session-local
+dispatch scripts kept outside the repository (in the workbench, gitignored),
+not tracked paths this record can point to; they name the model each
 seat was dispatched as. **The commit trailers on this branch are self-reported
 and several are wrong**: some Opus and Sonnet seats copied the host's own
 `Co-Authored-By` line. Where a trailer and this table disagree, this table is

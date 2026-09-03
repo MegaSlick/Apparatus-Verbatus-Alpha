@@ -874,6 +874,29 @@ def test_captured_page_attempt_cut_off_empty_is_failed_not_confirmed_blank(tmp_p
     assert attempt.health["truncated"] is True
 
 
+def test_captured_page_attempt_cut_off_and_parser_failure_names_both(tmp_path: Path):
+    # A response the provider cut off at its bound, and that the adapter's own
+    # parser then rejected, must read as both: naming only the parse failure
+    # would let a truncated response masquerade as bad ink instead of an
+    # exhausted bound.
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
+    )
+    adapter = _stub_adapter(
+        retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
+    )
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+    )
+
+    assert attempt.outcome == "failed"
+    assert "stopped the response at its bound" in attempt.reason
+    assert "unterminated output element" in attempt.reason
+    assert "length" in attempt.health["truncation_basis"]
+    assert "unterminated output element" in attempt.health["truncation_basis"]
+
+
 def test_captured_page_attempt_unreported_empty_is_failed_not_confirmed_blank(tmp_path: Path):
     # An empty page response whose stop boundary was never reported is no more
     # a confirmed blank page than one the provider admits it cut off -- the

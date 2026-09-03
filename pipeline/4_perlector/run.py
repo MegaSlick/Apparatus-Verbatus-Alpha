@@ -3234,10 +3234,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
     # A live chair is started on first use, not here. In fixture mode there is
     # nothing to start and the reader exists from this line; in live mode the
-    # loop below starts one the first time an act actually needs a reading, so a
-    # resumed pass whose acts are all already sealed never loads a 27B model onto
-    # a card that bills by the hour to read nothing. `service` owns the shutdown
-    # from the moment the client exists.
+    # loop below starts one the first time an act actually clears capacity and
+    # needs a reading, so a resumed pass whose acts are all already sealed --
+    # or all over capacity -- never loads a 27B model onto a card that bills
+    # by the hour to read nothing. `service` owns the shutdown from the moment
+    # the client exists.
     reader = None if serving_mode == "live" else FixtureReader(context.fixture, context.scenario)
     receipt_ref: dict[str, str] | None = None
 
@@ -3335,22 +3336,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        if reader is None:
-            # First act of a live pass that actually needs reading. One chair for
-            # the whole run, entered once here and stopped once at the end: the
-            # sequential-serving posture, and the reason this is a single `is
-            # None` rather than a per-act start.
-            reader, receipt_ref = _live_reader(
-                context,
-                args,
-                chair=chair,
-                protocol_config=protocol_config,
-                decoding_policy=decoding_policy,
-                decoding_sha256=decoding_sha256,
-                serving_factory=serving_factory,
-                service=service,
-            )
-
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
@@ -3430,6 +3415,22 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             )
             acknowledged += 1
             continue
+
+        if reader is None:
+            # First act of a live pass that actually clears capacity and needs
+            # reading. One chair for the whole run, entered once here and
+            # stopped once at the end: the sequential-serving posture, and the
+            # reason this is a single `is None` rather than a per-act start.
+            reader, receipt_ref = _live_reader(
+                context,
+                args,
+                chair=chair,
+                protocol_config=protocol_config,
+                decoding_policy=decoding_policy,
+                decoding_sha256=decoding_sha256,
+                serving_factory=serving_factory,
+                service=service,
+            )
 
         base_dossier = dossier_module.build_dossier(
             context,
