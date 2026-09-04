@@ -30,8 +30,43 @@ above comes from the published documentation, never from an observed response,
 so the exact accepted `gpuTypeIds` string and the provider's real post-DELETE
 timing are confirmed at the first authorised live run, not here.
 
+**Account balance: GraphQL, documentation read online on 2026-09-02.** Neither
+REST route publishes the account balance; only the GraphQL `myself` object
+carries `clientBalance` and `currentSpendPerHr`. The pages that settle what
+`GraphQLBalanceObserver` below sends and expects, each with its check date:
+
+- `docs.runpod.io/sdks/graphql/configurations` (2026-09-02) — endpoint
+  `https://api.runpod.io/graphql`, JSON body `{"query": ...}`, and the key
+  **as the `api_key` query parameter**: "All requests go to
+  `https://api.runpod.io/graphql` with your API key included as a query
+  parameter." No header form is documented for GraphQL, so that is how it is
+  sent, and every error string and fixture record here scrubs the query. The
+  same page now says: "The GraphQL API is deprecated and will be retired in
+  early 2027. For new integrations, use REST API v2." — so this observer
+  has a sunset of its own; `V2_MIGRATION.md` records it.
+- `graphql-spec.runpod.io` (2026-09-02) — `User.clientBalance: Float`,
+  `User.currentSpendPerHr: Float`, `underBalance: Boolean`, `minBalance:
+  Float`, `spendLimit: Int`, `clientLifetimeSpend: Float`. **No description
+  and no currency on any of them.**
+- Currency is therefore observed from documentation, not from a call:
+  `docs.runpod.io/accounts-billing/billing` (2026-09-02) says credits are
+  added by choosing "a dollar amount" and names an "$80 per hour" default
+  spend limit; `docs.runpod.io/api-reference/billing/GET/billing/pods`
+  (2026-09-02) names `amount` as "Charge in USD". Against that,
+  `docs.runpod.io/api-reference/pods/GET/pods/podId` (2026-09-02) describes
+  `costPerHr` as "Cost in Runpod credits per hour". The observation's
+  `source` says "US dollars per the vendor's billing documentation" — a
+  documented reading, never a claim the query itself returned a currency —
+  and the first authorised live run compares the number against the console.
+- `docs.runpod.io/api-reference-v2/billing/get-aggregated-billing-history`
+  and `.../get-pod-billing-history` (2026-09-02) — historical spend only;
+  neither reports a balance, so the v2 migration does not retire this
+  observer.
+
 **Credential:** supplied to `UrllibRunPodTransport` explicitly at construction.
 Nothing here reads a credential from a tracked file (`operations/pod/README.md`).
+The GraphQL sibling transport is derived from the REST one by
+`UrllibRunPodTransport.sibling`, so the provider never handles the key itself.
 """
 
 from __future__ import annotations
@@ -48,7 +83,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol
 
+from . import notify_hooks
 from .controllers import PodDeadmanTimer
+from .fixture import FixtureRecorder, RecordingTransport
 from .lease import PodLease
 from .models import (
     BILLING_BUCKET_WIDTH,
@@ -66,6 +103,7 @@ from .models import (
     ProviderFailure,
     ProviderStatus,
     as_decimal,
+    looks_like_credential_field,
     parse_billing_cutoff_margin_seconds,
     require_utc,
     utc_now,
@@ -74,6 +112,19 @@ from .pod_timer import TimerContext
 from .shutdown import VerifiedShutdown
 
 RUNPOD_REST_ROOT = "https://rest.runpod.io/v1"
+
+RUNPOD_GRAPHQL_ROOT = "https://api.runpod.io"
+GRAPHQL_PATH = "/graphql"
+"""Where the account balance lives. REST v1 and v2 both lack it (module docstring)."""
+
+BALANCE_QUERY = "query { myself { clientBalance currentSpendPerHr } }"
+"""Exactly the two fields the spend gate needs; nothing else is requested, so a
+response carrying anything credential-shaped is refused rather than trusted."""
+
+BALANCE_CURRENCY = "US dollars per the vendor's billing documentation"
+"""Observed from the pages the module docstring names, never from the query."""
+
+_CREDENTIAL_PLACEMENTS = frozenset({"header", "query"})
 
 LAUNCH_TOKEN_ENV = "VERBATUS_LAUNCH_TOKEN"
 """The env key `create` correlates a recovery lookup against. It rides in the
@@ -146,15 +197,36 @@ class UrllibRunPodTransport:
         *,
         timeout_seconds: float = 30.0,
         root: str = RUNPOD_REST_ROOT,
+        credential_placement: str = "header",
     ) -> None:
         if not isinstance(capability, str) or not capability.strip():
             raise ValueError("RunPod API key must be supplied explicitly at runtime")
         if timeout_seconds <= 0:
             raise ValueError("RunPod HTTP timeout must be positive")
+        if credential_placement not in _CREDENTIAL_PLACEMENTS:
+            raise ValueError("RunPod credential placement must be 'header' or 'query'")
         self.capability = capability
         self.timeout_seconds = timeout_seconds
         self.root = root.rstrip("/")
+        # "header" is REST's documented `Authorization: Bearer`; "query" is
+        # GraphQL's documented `?api_key=` (module docstring). The query form
+        # is used only where the documentation offers nothing else.
+        self.credential_placement = credential_placement
         self.opener = urllib.request.build_opener(_RefuseRedirects)
+
+    def sibling(self, *, root: str, credential_placement: str) -> "UrllibRunPodTransport":
+        """The same capability and timeout, pointed at another documented root.
+
+        The provider derives its GraphQL transport through this rather than by
+        reading ``capability`` itself: the key stays inside transports.
+        """
+
+        return UrllibRunPodTransport(
+            self.capability,
+            timeout_seconds=self.timeout_seconds,
+            root=root,
+            credential_placement=credential_placement,
+        )
 
     def request(
         self, method: str, path: str, body: dict[str, object] | None = None
@@ -162,29 +234,179 @@ class UrllibRunPodTransport:
         if not path.startswith("/") or "//" in path[1:]:
             raise ProviderFailure("RunPod request path must be an absolute single-slash API path")
         encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.root}{path}",
-            data=encoded,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.capability}",
-                "Accept": "application/json",
-                **({"Content-Type": "application/json"} if encoded is not None else {}),
-            },
-        )
+        url = f"{self.root}{path}"
+        headers = {
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if encoded is not None else {}),
+        }
+        if self.credential_placement == "query":
+            if "?" in path:
+                raise ProviderFailure(
+                    "RunPod query-placed credential cannot share a path that already carries a "
+                    "query string"
+                )
+            url = f"{url}?{urllib.parse.urlencode({'api_key': self.capability})}"
+        else:
+            headers["Authorization"] = f"Bearer {self.capability}"
+        request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=self.timeout_seconds) as response:
                 observed = HttpResponse(int(response.status), _bounded_read(response))
         except urllib.error.HTTPError as error:
             observed = HttpResponse(int(error.code), _bounded_read(error))
         except (urllib.error.URLError, OSError) as error:
-            raise ProviderFailure(f"RunPod HTTP request failed: {error}") from error
+            # `reason`, never `str(error)` with a URL in it: in query placement
+            # the URL carries the key, and this message reaches records.
+            raise ProviderFailure(
+                f"RunPod HTTP request failed: {getattr(error, 'reason', error)}"
+            ) from error
         if 300 <= observed.status < 400:
             raise ProviderFailure(
                 f"RunPod answered {method} {path} with HTTP {observed.status}; the API root is "
                 "fixed and a redirect was not followed"
             )
         return observed
+
+
+class GraphQLBalanceObserver:
+    """`myself { clientBalance currentSpendPerHr }`, refused by name on every doubt.
+
+    The zero-argument callable `RunPodProvider.observe_account_balance` runs
+    on its bounded thread. It refuses, naming the reason: a non-200 status; a
+    3xx (the transport already refuses to follow one); a body that is not a
+    JSON object; a GraphQL `errors` array; a missing `data`, `myself`,
+    `clientBalance` or `currentSpendPerHr`; a value that is not a JSON number
+    (`null`, a string, a boolean); a negative balance, since
+    `AccountBalanceObservation` cannot carry one and a gate that read it
+    as zero would be wrong in the unsafe direction; and any key anywhere in
+    the response that looks credential-shaped, because the query asked for
+    two numbers and a body carrying a key or token is not the answer to it.
+    """
+
+    def __init__(
+        self,
+        transport: HttpTransport,
+        *,
+        now: Callable[[], datetime] = utc_now,
+        notify: Callable[[Decimal, Decimal], object] | None = None,
+    ) -> None:
+        self.transport = transport
+        self.now = now
+        # `None` by default -- exactly like `balance_observer` itself two
+        # classes up -- so every offline test that builds this observer
+        # directly, as most of this file's tests do, never touches
+        # `operations/notify/notify.sh`. The real `notify_hooks.notify_balance`
+        # arrives only through `RunPodProvider`: as its `balance_notify`
+        # argument when *it* builds this observer as the default for a live
+        # transport (below), or through `set_balance_notify`, which is what
+        # `cli.py --notify` reaches. No offline test both builds and calls it.
+        self.notify = notify
+
+    def __call__(self) -> AccountBalanceObservation:
+        response = self.transport.request("POST", GRAPHQL_PATH, {"query": BALANCE_QUERY})
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod balance query returned HTTP {response.status}: "
+                f"{_body_summary(response.body)}"
+            )
+        payload = _object(response.body, "RunPod balance")
+        _refuse_credential_shaped(payload, "RunPod balance response")
+        errors = payload.get("errors")
+        if errors:
+            raise ProviderFailure(
+                f"RunPod balance query answered with errors: {_first_error(errors)}"
+            )
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            raise ProviderFailure("RunPod balance response is missing field data")
+        myself = data.get("myself")
+        if not isinstance(myself, Mapping):
+            raise ProviderFailure("RunPod balance response is missing field data.myself")
+        balance = _money_field(myself, "clientBalance")
+        spend_per_hour = _money_field(myself, "currentSpendPerHr")
+        observed_at = self.now()
+        source = (
+            f"RunPod GraphQL myself.clientBalance ({BALANCE_CURRENCY}); "
+            f"currentSpendPerHr={spend_per_hour}"
+        )
+        note = self._ping(balance, spend_per_hour)
+        if note is not None:
+            source = f"{source}; {note}"
+        return AccountBalanceObservation(balance, observed_at, source)
+
+    def _ping(self, balance: Decimal, spend_per_hour: Decimal) -> str | None:
+        """Notify the phone; return a note when the ping did not land.
+
+        Best-effort, never raised: a notification hook must never turn a
+        successful observation into a failed one (ruling (b) -- tracking plus
+        notifications only, no new enforcement). But a ping that was refused
+        on sight, never delivered, or raised is itself a fact about this
+        observation, and GOVERNANCE 2 does not let it disappear into a bare
+        ``pass``. It comes back as a note appended to the observation's own
+        ``source``, which every spend assessment and launch record already
+        carries, so a phone that never rang says so where the money decision
+        is written down. A delivered ping adds nothing: the caller that wired
+        the hook records that outcome itself.
+        """
+
+        if self.notify is None:
+            return None
+        try:
+            outcome = self.notify(balance, spend_per_hour)
+        except Exception as error:  # noqa: BLE001 - a notification hook must never propagate
+            detail = f"balance notification raised and was contained: {error!r}"
+            if len(detail) > 160:
+                detail = f"{detail[:160]} (reason truncated at 160 characters)"
+            return detail
+        if getattr(outcome, "delivered", False):
+            return None
+        line = getattr(outcome, "line", None)
+        if callable(line):
+            return f"balance notification: {line()}"
+        return (
+            "balance notification: the hook returned "
+            f"{type(outcome).__name__}, which reports no outcome"
+        )
+
+
+def _money_field(row: Mapping[str, object], name: str) -> Decimal:
+    if name not in row:
+        raise ProviderFailure(f"RunPod balance response is missing field data.myself.{name}")
+    value = row[name]
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise ProviderFailure(
+            f"RunPod balance field {name} is not a number: {type(value).__name__}"
+        )
+    parsed = Decimal(value)
+    if not parsed.is_finite() or parsed < 0:
+        raise ProviderFailure(
+            f"RunPod balance field {name} is {parsed}; a negative or non-finite value cannot "
+            "clear a balance floor and is refused rather than read as zero"
+        )
+    return parsed
+
+
+def _refuse_credential_shaped(value: object, label: str, where: str = "") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            name = str(key)
+            if looks_like_credential_field(name):
+                raise ProviderFailure(
+                    f"{label} carries a credential-shaped field {where}{name}; the query asked "
+                    "for two numbers and this answer is refused unread"
+                )
+            _refuse_credential_shaped(item, label, f"{where}{name}.")
+    elif isinstance(value, list):
+        for item in value:
+            _refuse_credential_shaped(item, label, where)
+
+
+def _first_error(errors: object) -> str:
+    if isinstance(errors, list) and errors and isinstance(errors[0], Mapping):
+        message = errors[0].get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:300]
+    return "unreadable error payload"
 
 
 class RunPodProvider:
@@ -209,10 +431,35 @@ class RunPodProvider:
         balance_observer: Callable[[], AccountBalanceObservation] | None = None,
         balance_timeout_seconds: float = BALANCE_OBSERVATION_TIMEOUT_SECONDS,
         now: Callable[[], datetime] = utc_now,
+        balance_notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
+        | None = None,
     ) -> None:
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
+        if balance_observer is None and isinstance(transport, UrllibRunPodTransport):
+            # The default observer exists exactly when a live credential does:
+            # a fake transport gets none, so the offline suite's "balance
+            # source was not configured" refusal is still reachable, and the
+            # provider never touches the key -- `sibling` carries it across.
+            # `balance_notify` here and `set_balance_notify` below are the ONLY
+            # two ways a phone notification reaches this observer, and both are
+            # opt-in: the parameter defaults to `None`, so a bare live-transport
+            # provider -- including the pod-side one `timer_context_from_
+            # environment` builds, and any host call that omits `--notify`
+            # -- carries no hook at all, never pinging a phone unasked. The
+            # host CLI reaches the seam rather than this parameter, because the
+            # provider comes from an untracked `--provider-factory` that this
+            # tree never constructs: `cli.py`'s `_wire_balance_notify` calls
+            # `set_balance_notify` under `args.notify`, duck-typed exactly as
+            # `--record-fixture` reaches `record_exchanges`. So `--notify` is
+            # the single gate for every phone notification a launch can send,
+            # balance included.
+            balance_observer = GraphQLBalanceObserver(
+                transport.sibling(root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"),
+                now=now,
+                notify=balance_notify,
+            )
         self.balance_observer = balance_observer
         self.balance_timeout_seconds = balance_timeout_seconds
         self.now = now
@@ -225,6 +472,50 @@ class RunPodProvider:
         # transaction; see `observe_account_balance`.
         self._balance_in_flight = False
         self._balance_lock = threading.Lock()
+
+    def record_exchanges(self, recorder: FixtureRecorder) -> None:
+        """Route every transport this adapter owns through the fixture recorder.
+
+        `cli.py --record-fixture` calls this by duck type, so the CLI stays
+        vendor-blind. The balance observer's transport is wrapped as well when
+        it is one this adapter built, because the drill's evidence should show
+        the balance answer beside the pod answers; an injected observer is an
+        opaque callable and is left alone.
+        """
+
+        self.transport = RecordingTransport(self.transport, recorder)
+        observer = self.balance_observer
+        if isinstance(observer, GraphQLBalanceObserver):
+            observer.transport = RecordingTransport(observer.transport, recorder)
+
+    def set_balance_notify(
+        self, notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
+    ) -> None:
+        """Wire the phone hook into the observer this adapter built, under ``--notify``.
+
+        `cli.py` calls this by duck type, so that surface names no vendor -- the
+        same shape `--record-fixture` uses for `record_exchanges`. Only the
+        default `GraphQLBalanceObserver` this adapter constructed for a live
+        transport can be wired: an injected observer is an opaque callable and
+        is left alone, and a fake transport built no observer at all, so
+        `--notify` can never conjure a balance ping where there is no balance
+        source. Both of those refuse by name rather than silently doing
+        nothing, because a caller that asked for balance pings and got none
+        must be told which.
+        """
+
+        observer = self.balance_observer
+        if observer is None:
+            raise ValueError(
+                "this provider has no balance source to notify from; nothing observes a "
+                "balance, so no balance notification can be sent"
+            )
+        if not isinstance(observer, GraphQLBalanceObserver):
+            raise ValueError(
+                f"this provider's balance source is an injected {type(observer).__name__}; "
+                "only the observer this adapter builds for a live transport can be wired"
+            )
+        observer.notify = notify
 
     # -- the seven verbs ---------------------------------------------------
 

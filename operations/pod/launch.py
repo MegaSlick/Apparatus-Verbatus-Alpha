@@ -35,6 +35,7 @@ from .models import (
     PodEstimate,
     PodRecord,
     SpendRefusal,
+    rebind_nested_flag,
     utc_now,
 )
 from .notify_bridge import Notifier, NotifyOutcome, silent
@@ -119,12 +120,23 @@ def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
 
 
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
-    """Fold the launch token into the pod-side report path's file name.
+    """Fold the launch token into every report path the launch seals.
 
     A volume outlives any one pod, so an unbound report path lets a second
     launch's durable evidence overwrite the first's (GOVERNANCE 4).  Binding
     happens once, here, at sealing time -- the request's own validation then
     refuses a report path that does not carry the sealed token.
+
+    This binds two things, not one: the outer timer's own ``--report-path``,
+    and, when the nested bootstrap argv sealed inside
+    ``--bootstrap-command-json`` carries its own ``--report-path``, that path
+    too.  Only the outer path was bound before; ``bootstrap_main.resolve_plan``
+    requires the same sealed ``VERBATUS_LAUNCH_TOKEN`` in *its* report path's
+    name (``_require_launch_token_named``), so an unbound nested path refused
+    at pod-side plan time -- after the pod had already started billing.
+    ``operations/pod/boot_a_request.py``'s own docstring named this as an
+    unbound seam left for this unit; it is closed here rather than left for a
+    later one, per CLAUDE.md hard rule 13.
 
     ``PodCreateRequest.__post_init__`` already refuses a command that does not
     carry exactly one ``--report-path`` with a value, so neither refusal below
@@ -139,10 +151,64 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     index = command.index("--report-path") + 1
     if index >= len(command):
         raise ValueError("pod request --report-path flag carries no value")
-    original = PurePosixPath(command[index])
+    bound_path = _bound_report_path(command[index], launch_token)
+    command = command[:index] + (bound_path,) + command[index + 1 :]
+
+    if "--bootstrap-command-json" in command:
+        nested_index = command.index("--bootstrap-command-json") + 1
+        if nested_index < len(command):
+            bound_nested = _bind_nested_report_path(command[nested_index], launch_token)
+            command = command[:nested_index] + (bound_nested,) + command[nested_index + 1 :]
+
+    return command
+
+
+def _bound_report_path(raw_path: str, launch_token: str) -> str:
+    original = PurePosixPath(raw_path)
     bound_name = f"{original.stem}-{launch_token}{original.suffix}"
-    bound_path = str(original.with_name(bound_name))
-    return command[:index] + (bound_path,) + command[index + 1 :]
+    return str(original.with_name(bound_name))
+
+
+def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> str:
+    """Bind the launch token into a nested bootstrap argv's own ``--report-path``.
+
+    ``--bootstrap-command-json`` carries a second, JSON-encoded argv that
+    ``pod_timer`` runs as the pod's mandatory bootstrap step
+    (``operations/pod/boot_a_request.py`` renders ``bootstrap_main --hold-only``
+    this way for Boot A). ``models._required_timer_arguments`` has already
+    proven this decodes to a non-empty JSON array of non-empty strings before
+    a request reaches this helper, so no further shape-checking is needed
+    here. A nested argv carrying no ``--report-path`` of its own -- the
+    library-module placeholder the tests use, which exits before ever
+    reading one -- is returned unchanged rather than treated as a refusal:
+    binding a path that was never asked for would be inventing one.
+
+    Binding is done through :func:`operations.pod.models.rebind_nested_flag`,
+    which reads the argv the same way
+    :func:`operations.pod.models._nested_flag_values` does -- both spellings
+    ``--report-path value`` and ``--report-path=value`` -- so the binder and
+    the money-path validator that re-checks its output cannot drift apart
+    the way they once did (the binder recognized only the separate-value
+    spelling, so an equals-form nested path was left unbound and then
+    permanently refused downstream: no launch token can be pre-written by
+    an operator, since it is minted inside ``create``).
+
+    ``models._required_timer_arguments`` refuses a nested ``--report-path``
+    that carries more than one occurrence, or one that carries no value,
+    before this helper ever runs -- so a truncated or duplicated nested flag
+    is not reachable through ``create``. Those shapes are still passed
+    through unrebound here rather than made to raise, the same way
+    ``_bind_report_path_to_launch``'s own unreachable-through-``create``
+    refusals above are kept as a named contract rather than assumed: a
+    caller other than ``create`` should not have to trust that argv shape
+    by accident.
+    """
+
+    argv = json.loads(bootstrap_command_json)
+    bound = rebind_nested_flag(
+        argv, "--report-path", lambda raw: _bound_report_path(raw, launch_token)
+    )
+    return json.dumps(bound)
 
 
 SPEND_ALERT_DEBOUNCE_SECONDS: Final = 900

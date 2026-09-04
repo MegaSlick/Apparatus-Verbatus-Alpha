@@ -60,13 +60,39 @@ log-directory default: the pod assembler must give every manager for the same
 card the same stable lock path. The launcher passes that lock descriptor to
 the exact vLLM child, so a controller crash cannot release the lease while its
 child remains resident. The default command is
-`sys.executable -m vllm serve`: the executable and the inspected installed
-distribution therefore come from the same Python environment. That equality is
-enforced, not merely defaulted — a supplied `command_prefix` naming a different
-interpreter is refused at construction unless the caller also supplies the
-`PackageInspector` for the environment it launches. Otherwise the exact package
-pin would pass against distributions the engine never imports, and the launch
-audit's `runtime_packages.observed` would measure the wrong Python.
+`sys.executable -m vllm.entrypoints.cli.main serve`: the executable and the
+inspected installed distribution therefore come from the same Python
+environment. The module is `vllm.entrypoints.cli.main`, not `vllm` itself —
+checked against the pinned vLLM 0.27.1's own published wheel, not assumed:
+`vllm/__main__.py` is absent from its central directory (and from the tree at
+v0.10.1, v0.27.1, and v0.28.0), so `python -m vllm` raises `No module named
+vllm.__main__` before a request is ever served, while `vllm.entrypoints.cli.main`
+is the module vLLM's own `[project.scripts] vllm =
+"vllm.entrypoints.cli.main:main"` console script points at and it ends with
+`if __name__ == "__main__": main()`. That equality between launcher and
+inspected interpreter is enforced, not merely defaulted — a supplied
+`command_prefix` naming a different interpreter is refused at construction
+unless the caller also supplies the `PackageInspector` for the environment it
+launches. Otherwise the exact package pin would pass against distributions the
+engine never imports, and the launch audit's `runtime_packages.observed` would
+measure the wrong Python.
+
+**Where the pinned stack comes from.** This package asserts the pins; it never
+installs them. For the real catalogue the installer is the pod: `pyproject.toml`
+carries a `pod` dependency group — `vllm 0.27.1`, `transformers 5.14.1`,
+`qwen-vl-utils 0.0.14`, under `sys_platform == 'linux' and platform_machine ==
+'x86_64'` markers — resolved in `uv.lock`, and `operations/pod/bootstrap.py`
+syncs it with `--group pod`. Those versions and every
+`required_packages` row in `config/serving_recipes_real.toml` are the same
+bytes, and `operations/pod/test_pod_run.py` fails if they ever stop being: a
+group that drifted from the catalogue would mean a pod that downloads about ten
+gigabytes of wheels and is then refused by the pin assertion above, on a billing
+card. `operations/pod/README.md`'s "The serving stack, re-planned and locked"
+carries why those three versions and no others, chair by chair, with the vendor
+pages and the date they were read. Nothing there is a claim that the stack has
+run: the versions were chosen from published metadata, every real row is still
+`unproven`, and the first boot is what turns an installable stack into a served
+one.
 
 The command uses the verified base snapshot; gives the API a stable
 `--served-model-name`; and passes the typed profile flags. For a Hugging Face

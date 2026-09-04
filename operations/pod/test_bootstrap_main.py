@@ -12,6 +12,7 @@ reading ``models.toml``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from . import bootstrap_main
 from .bootstrap import BootstrapStep, BootstrapStepFailure
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
@@ -456,6 +458,43 @@ def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
     assert "positive finite number" in record["reason"]
 
 
+def test_a_refusal_report_write_failure_is_named_not_swallowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_write_refusal_report`` used to return ``None`` whether it wrote the
+    report or hit an ``OSError`` -- ``refuse`` could not tell, so a refusal
+    that also failed to leave its durable reason exited exactly like a clean
+    one. GOVERNANCE 2 binds the write failure too: it must be named on
+    stderr, and the refusal exit code stays exactly what it was.
+    """
+
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = [
+        "--volume-mount-path",
+        str(ws.volume),
+        "--report-path",
+        str(ws.report_path),
+        "--hold-only",
+        "--interval-seconds",
+        "0",
+    ]
+
+    def broken_atomic_write(path, payload):  # type: ignore[no-untyped-def]
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(bootstrap_main, "atomic_write", broken_atomic_write)
+
+    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--interval-seconds must be a positive finite number" in err
+    assert "refusal report could not be written" in err
+    assert "no space left on device" in err
+    assert not ws.report_path.exists()
+
+
 def test_refuses_missing_required_plan_arguments(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -698,6 +737,64 @@ def test_holds_when_the_report_path_carries_the_launch_token(tmp_path: Path) -> 
     assert exit_code == 0
 
 
+def test_hold_only_reaches_the_hold_through_the_real_launch_binding(tmp_path: Path) -> None:
+    """The regression this unit closes.
+
+    ``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
+    argv nested inside ``--bootstrap-command-json``, with no launch token in
+    either report path -- ``launch._bind_report_path_to_launch`` folds the
+    token in at sealing time. Before this unit, that helper bound only the
+    outer timer's ``--report-path``: the nested one reached the pod still
+    unbound, and ``resolve_plan`` refused it (this module's own
+    ``test_refuses_a_report_path_missing_the_launch_token`` proves that
+    refusal in isolation). This test drives the real templates and the real
+    binding helper end to end -- not a hand-written argv standing in for
+    them -- so a regression in either module's report-path handling is
+    caught here rather than only in a unit test of one side.
+    """
+
+    from types import SimpleNamespace
+
+    from . import boot_a_request
+    from .launch import _bind_report_path_to_launch
+
+    ws = _workspace(tmp_path)
+    launch_token = "launch-" + "c" * 20
+    card = SimpleNamespace(gpu_type_id="fake-48gb")
+    request = boot_a_request.pod_request(
+        card,
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="test-volume",
+        repository_commit="b" * 40,
+        volume_mount_path=str(ws.volume),
+    )
+
+    bound_command = _bind_report_path_to_launch(tuple(request["docker_start_cmd"]), launch_token)
+    nested_index = bound_command.index("--bootstrap-command-json") + 1
+    nested_argv = json.loads(bound_command[nested_index])
+    assert nested_argv[:3] == ["python", "-m", "operations.pod.bootstrap_main"]
+    assert launch_token in nested_argv[nested_argv.index("--report-path") + 1]
+    argv = nested_argv[3:]
+
+    clock = Clock()
+    environment = _environ(clock, lifetime=2.0, extra={"VERBATUS_LAUNCH_TOKEN": launch_token})
+
+    exit_code = main(
+        argv,
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+    )
+
+    assert exit_code == 0
+    assert clock.seconds == 2.0
+    report = json.loads(
+        (ws.volume / f"bootstrap-hold-only-report-{launch_token}.json").read_text(encoding="utf-8")
+    )
+    assert report["state"] == "hold-only"
+
+
 # --- store-root and chair config stay inside their required container -------
 
 
@@ -727,6 +824,48 @@ def test_refuses_a_models_config_outside_the_checked_out_repository(
     err = capsys.readouterr().err
     assert "--models-config" in err
     assert "checked-out repository" in err
+
+
+def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The roster and the catalogue select one serving stack together.
+
+    ``--models-config`` is required and ``--serving-recipes-config`` defaulted
+    to the fixture-only catalogue, so a pod launched with the real roster and
+    no explicit catalogue preflighted the real chairs against the fixture
+    catalogue -- the exact mismatch ``pipeline/orchestrator/run.py`` names and
+    ``operations/operator/surface._roster_argv`` refuses. On this path it would
+    have surfaced only after the pod billed for the boot and the model fetch.
+    """
+
+    ws = _workspace(tmp_path)
+    ws.models_config = ws.repository / "config" / "models-real.toml"
+    clock = Clock()
+
+    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--serving-recipes-config was not supplied" in err
+    assert "fixture-only catalogue" in err
+
+
+def test_the_real_roster_is_accepted_when_its_catalogue_is_named(tmp_path: Path) -> None:
+    """Naming both halves is the way through; the pairing rule refuses neither."""
+
+    from .bootstrap_main import build_parser, resolve_plan
+
+    ws = _workspace(tmp_path)
+    ws.models_config = ws.repository / "config" / "models-real.toml"
+    catalogue = ws.repository / "config" / "serving_recipes_real.toml"
+    clock = Clock()
+    argv = _argv(ws, extra=("--serving-recipes-config", str(catalogue)))
+
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+
+    assert plan.models_config == ws.models_config.resolve()
+    assert plan.serving_recipes_config == catalogue.resolve()
 
 
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
@@ -857,6 +996,373 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
     assert exit_code == 2
     assert not ws.report_path.exists()
+
+
+# --- PREFLIGHT is wired to the real registry and the serving seam ----------
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PROVEN_TIER = "generic-48gb"
+WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+
+
+def _toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f'"{key}" = {_toml_value(item)}' for key, item in value.items()) + " }"
+        )
+    text = str(value)
+    return f"'{text}'" if '"' in text else f'"{text}"'
+
+
+def _render_recipes(rows: list[dict[str, object]]) -> str:
+    lines = ['schema = "serving-recipes.v1"', ""]
+    for row in rows:
+        lines.append("[[profiles]]")
+        lines.extend(f"{key} = {_toml_value(value)}" for key, value in row.items())
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspace, dict]:
+    """A checked-out repository whose fixture roster has launchable vLLM rows.
+
+    The committed catalogue holds fixture rows only, which the manager refuses
+    by name, so the roster's five configured chairs get a vLLM row at every
+    tier here -- proven or unproven as the test asks -- and the real
+    ``config/models.toml``, manifests and model fixtures are copied in so
+    ``ChairRegistry.ensure`` verifies real local snapshots.
+    """
+
+    import shutil
+
+    from common.chairs.config import load_models_toml
+    from common.chairs.models import AbsentChair
+    from operations.serving.test_manager import profile_row, seal_rows
+
+    ws = _workspace(tmp_path)
+    shutil.copytree(ROOT / "config", ws.repository / "config")
+    for stray in ("serving_recipes.toml", "serving_recipes_real.toml", "models-real.toml"):
+        (ws.repository / "config" / stray).unlink()
+    models = load_models_toml(ws.models_config)
+    identities = {
+        role: chair for role, chair in models.chairs.items() if not isinstance(chair, AbsentChair)
+    }
+    rows = []
+    for port, (role, chair) in enumerate(sorted(identities.items()), start=8100):
+        for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus"):
+            row = profile_row(
+                recipe=chair.serving_recipe,
+                chair=role,
+                served_model_id=f"{role}-api",
+                port=port,
+                tier=tier,
+            )
+            row["gpu_memory_utilization"] = "0.50"
+            row["preflight_state"] = preflight_state
+            rows.append(row)
+    recipes = ws.repository / "config" / "serving_recipes.toml"
+    recipes.write_text(
+        _render_recipes(seal_rows(rows, identities)),
+        encoding="utf-8",
+    )
+    return ws, identities
+
+
+def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS):  # type: ignore[no-untyped-def]
+    from decimal import Decimal
+
+    from operations.pod.preflight import GpuProfile, UtilizationSample
+    from operations.serving.test_manager import FakeHttp, FakeLauncher, FakePackages
+
+    from .bootstrap_main import PreflightSeams
+
+    http = FakeHttp(
+        model_ids=tuple(f"{role}-api" for role in identities),
+        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+    )
+    launcher = FakeLauncher(http)
+
+    class Probe:
+        def profile(self, dtype: str) -> GpuProfile:
+            return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
+
+    seams = PreflightSeams(
+        page_witness=lambda: witness,
+        utilization=lambda: (UtilizationSample(Decimal("71"), Decimal("31")),),
+        gpu_probe=Probe(),
+        launcher=launcher,
+        http=http,
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        residency_lock=tmp_path / "pod-gpu.lock",
+    )
+    return seams, http, launcher
+
+
+def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
+    tmp_path: Path,
+) -> None:
+    """The fixture roster, the real ``ChairRegistry``, and the serving fakes.
+
+    Nothing here is a fixture pass borrowed into preflight: every chair's cache
+    is verified by ``ChairRegistry.ensure`` against the committed model
+    fixtures, every chair is started through ``ServingManager`` (a fake
+    launcher and loopback), and every smoke answer is the witness this
+    preflight rendered onto its own golden page moments before.
+    """
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    seams, http, launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["placement_tier"] == PROVEN_TIER
+    assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities)
+    assert {receipt["chair"] for receipt in record["smoke_receipts"]} == set(identities)
+    assert all(
+        receipt["page_witness_matches"] is True and "PAGE-WITNESS" not in json.dumps(receipt)
+        for receipt in record["smoke_receipts"]
+    )
+    # One vLLM child per chair, started and stopped in turn; the witness never
+    # left the pod in a prompt -- it reached the chair only as pixels.
+    assert len(launcher.calls) == len(identities)
+    assert all(process.poll() is not None for process in launcher.processes)
+    assert not any(WITNESS in json.dumps(body) for _method, _url, body in http.calls if body)
+    # The evidence is on the volume under this launch's preflight directory,
+    # content-addressed, three records per chair, beside the golden page.
+    preflight_root = ws.volume / "preflight" / ws.report_path.stem
+    # Named for the witness it carries, so a second preflight under this launch
+    # adds a page rather than writing over the one these receipts name.
+    page = preflight_root / "golden-page" / f"{WITNESS}.png"
+    assert page.is_file()
+    assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
+    for kind in ("receipts", "launch-audits", "serving-evidence"):
+        assert len(list((preflight_root / kind / "sha256").glob("*.json"))) == len(identities)
+    assert not record["assembly_proven"], "fakes are not a real assembly claim"
+
+
+def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    identities: dict,
+    page_path: Path,
+    *,
+    swap_after_call: int,
+    witness: str = WITNESS,
+):
+    """``_preflight_seams``, but its ``utilization`` seam swaps the golden page
+
+    on disk after the ``swap_after_call``-th chair's smoke -- ``VisionSmokeCall``
+    calls ``utilization()`` only after that chair has already read and sent the
+    page's bytes, so this reproduces a volume write racing the run without
+    touching any of ``bootstrap_main``'s own code.
+    """
+
+    from decimal import Decimal
+
+    from operations.pod.preflight import GpuProfile, UtilizationSample
+    from operations.serving.smoke import render_golden_page
+    from operations.serving.test_manager import FakeHttp, FakeLauncher, FakePackages
+
+    from .bootstrap_main import PreflightSeams
+
+    http = FakeHttp(
+        model_ids=tuple(f"{role}-api" for role in identities),
+        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+    )
+    launcher = FakeLauncher(http)
+
+    class Probe:
+        def profile(self, dtype: str) -> GpuProfile:
+            return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
+
+    calls = {"count": 0}
+
+    def utilization() -> tuple:
+        calls["count"] += 1
+        if calls["count"] == swap_after_call:
+            # A different, still-valid golden page -- `_verify_png` must pass
+            # so the swap is read as a legitimate page and not merely as a
+            # corrupt file the smoke would refuse for an unrelated reason.
+            # Written over the file directly rather than through
+            # `render_golden_page`, because that is what this simulates: some
+            # other writer replacing the bytes on a retained volume.
+            # `render_golden_page` itself refuses to replace a page it did not
+            # write, which is a different property, proven in test_smoke.py.
+            swapped = page_path.with_name("swapped.png")
+            render_golden_page(swapped, "swappedPageWitnessDoesNotMatch99")
+            page_path.write_bytes(swapped.read_bytes())
+            swapped.unlink()
+        return (UtilizationSample(Decimal("71"), Decimal("31")),)
+
+    seams = PreflightSeams(
+        page_witness=lambda: witness,
+        utilization=utilization,
+        gpu_probe=Probe(),
+        launcher=launcher,
+        http=http,
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        residency_lock=tmp_path / "pod-gpu.lock",
+    )
+    return seams, http, launcher
+
+
+def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_bytes(
+    tmp_path: Path,
+) -> None:
+    """The regression this unit closes: the sealed digest used to be a fourth,
+
+    unbound read of the page, taken after every chair had already smoked it.
+    A swap on the volume in that window used to seal a digest naming bytes no
+    chair ever read, while every smoke receipt still carried the real one.
+    """
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page" / f"{WITNESS}.png"
+    seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
+        tmp_path, identities, page_path, swap_after_call=len(identities)
+    )
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    supplied = {receipt["supplied_fixture_sha256"] for receipt in record["smoke_receipts"]}
+    assert len(supplied) == 1
+    assert record["golden_page_sha256"] == next(iter(supplied))
+    assert record["golden_page_sha256"] != hashlib.sha256(page_path.read_bytes()).hexdigest()
+
+
+def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Path) -> None:
+    """A swap between two chairs' smokes means one preflight measured two
+
+    different pages -- a shape the old single ``golden_page_sha256`` field
+    could not even represent, let alone refuse.
+    """
+
+    from .bootstrap import BootstrapStepFailure
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    assert len(identities) > 1
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    page_path = ws.volume / "preflight" / ws.report_path.stem / "golden-page" / f"{WITNESS}.png"
+    seams, _http, _launcher = _preflight_seams_swapping_the_page_on_call(
+        tmp_path, identities, page_path, swap_after_call=1
+    )
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        _build_preflight(plan, seams)()
+
+    assert "disagree on the golden page's digest" in failure.value.detail
+
+
+def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
+    tmp_path: Path,
+) -> None:
+    """The code as it stands: an unproven row refuses launch before any process.
+
+    Every row in ``config/serving_recipes_real.toml`` is unproven today, so this
+    is exactly the first real preflight's shape -- red at ``smoke-read-failed``
+    for every chair, with the refusal naming the row, and nothing launched.
+    """
+
+    from .bootstrap import BootstrapStepFailure
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="unproven")
+    clock = Clock()
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        _build_preflight(plan, seams)()
+
+    detail = failure.value.detail
+    assert "smoke-read-failed" in detail
+    assert "preflight_state='unproven'" in detail
+    assert all(role in detail for role in identities)
+    assert launcher.calls == []
+
+
+def test_a_supplied_golden_page_needs_its_witness_file_and_the_reverse(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    page_only = main(
+        _argv(ws, extra=("--fixture", str(ws.volume / "page.png"))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+    witness_only = main(
+        _argv(ws, extra=("--page-witness-file", str(ws.volume / "witness.txt"))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+
+    assert (page_only, witness_only) == (2, 2)
+    err = capsys.readouterr().err
+    assert err.count("--fixture and --page-witness-file name one golden page together") == 2
+
+
+def test_a_serving_recipes_config_outside_the_repository_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    elsewhere = tmp_path / "elsewhere" / "serving_recipes.toml"
+
+    exit_code = main(
+        _argv(ws, extra=("--serving-recipes-config", str(elsewhere))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+
+    assert exit_code == 2
+    assert "--serving-recipes-config" in capsys.readouterr().err
+
+
+def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
+    tmp_path: Path,
+) -> None:
+    """The operator-rendered route: both halves come from the volume, verbatim."""
+
+    from operations.serving.smoke import render_golden_page
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    witness = "operatorRenderedWitness0123456789abcdefXYZ"
+    page = ws.volume / "operator-golden-page.png"
+    render_golden_page(page, witness)
+    witness_file = ws.volume / "operator-witness.txt"
+    witness_file.write_text(witness + "\n", encoding="utf-8")
+    clock = Clock()
+    argv = _argv(ws, extra=("--fixture", str(page), "--page-witness-file", str(witness_file)))
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities, witness=witness)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
+    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page").exists()
 
 
 class _NotCalled(BaseException):

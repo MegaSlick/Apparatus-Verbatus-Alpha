@@ -343,6 +343,51 @@ def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
             raise ValueError("docker_start_cmd must not invoke a shell before the pod timer module")
 
 
+def _nested_flag_values(argv: list[str], flag: str) -> list[str | None]:
+    """Every occurrence of a flag's value in a decoded nested argv.
+
+    ``bootstrap_main``'s own parser accepts both ``--report-path value`` and
+    ``--report-path=value``; a validator that only recognized one spelling
+    would wave the other through unbound and uninspected. This collects
+    every occurrence -- rather than returning on the first match -- so a
+    caller can tell "flag absent" (empty list), "flag present but carries
+    no value" (a ``None`` entry, e.g. the flag is the argv's last item),
+    and "flag present more than once" (more than one entry) apart. Merging
+    those cases, as a function that returns a single value would, lets a
+    truncated or duplicated flag reach the pod unbound and uninspected.
+    """
+
+    values: list[str | None] = []
+    for index, item in enumerate(argv):
+        if item == flag:
+            values.append(argv[index + 1] if index + 1 < len(argv) else None)
+        elif item.startswith(f"{flag}="):
+            values.append(item.split("=", 1)[1])
+    return values
+
+
+def rebind_nested_flag(argv: list[str], flag: str, transform) -> list[str]:
+    """Rewrite a flag's value in a decoded nested argv, in either spelling.
+
+    Shares its reading of ``argv`` with :func:`_nested_flag_values` on
+    purpose -- a binder and its validator that each parsed the flag their
+    own way is exactly how ``--report-path=value`` was left unbound while
+    ``--report-path value`` was bound (the binder recognized only the
+    separate-value spelling). The flag's absence is left alone rather than
+    invented: a nested argv naming no ``--report-path`` at all -- the
+    library-module placeholder the tests use -- is not this function's to
+    fill in.
+    """
+
+    bound = list(argv)
+    for index, item in enumerate(bound):
+        if item == flag and index + 1 < len(bound):
+            bound[index + 1] = transform(bound[index + 1])
+        elif item.startswith(f"{flag}="):
+            bound[index] = f"{flag}={transform(item.split('=', 1)[1])}"
+    return bound
+
+
 def _required_timer_arguments(
     command: tuple[str, ...], volume_mount_path: str, metadata: Mapping[str, str]
 ) -> None:
@@ -397,6 +442,41 @@ def _required_timer_arguments(
             "pod timer report path must include this launch's token, "
             "so a second launch on the same volume cannot overwrite its evidence"
         )
+    # The nested bootstrap argv (``bootstrap_main --hold-only`` for Boot A) can
+    # carry its own ``--report-path`` -- launch.py's ``_bind_report_path_to_launch``
+    # binds the launch token into it at sealing time, the same as the outer
+    # path above. That binding is best-effort by design (a nested argv naming
+    # no ``--report-path`` at all, e.g. the library-module placeholder the
+    # tests use, is left alone rather than having one invented for it) so
+    # nothing downstream re-validated the result -- a request shape the binder
+    # could not handle would reach the pod unbound and refuse only at plan
+    # time, after billing had already started. Re-validated here, at the same
+    # money-path gate as the outer path, so that gap is closed before create
+    # rather than found on the pod.
+    nested_report_paths = _nested_flag_values(bootstrap, "--report-path")
+    if len(nested_report_paths) > 1:
+        raise ValueError("pod bootstrap command must carry at most one nested --report-path value")
+    if nested_report_paths and nested_report_paths[0] is None:
+        raise ValueError("pod bootstrap command's nested --report-path flag carries no value")
+    if nested_report_paths:
+        nested_report_path = nested_report_paths[0]
+        nested_path = PurePosixPath(nested_report_path)
+        if (
+            ".." in nested_report_path.split("/")
+            or not nested_path.is_absolute()
+            or nested_path == volume_path
+            or not nested_path.is_relative_to(volume_path)
+        ):
+            raise ValueError(
+                "pod bootstrap command's nested --report-path must be inside the "
+                "attached volume mount"
+            )
+        if launch_token and launch_token not in nested_path.name:
+            raise ValueError(
+                "pod bootstrap command's nested --report-path must include this "
+                "launch's token, so a second launch on the same volume cannot "
+                "overwrite its evidence"
+            )
     # A bad interval would refuse inside the pod -- for a non-numeric value,
     # in argparse before the timer object even exists -- so refuse it here,
     # before any paid create, where refusals belong.  Both argv spellings the
@@ -435,6 +515,46 @@ def looks_like_credential_field(value: str) -> bool:
 
     normalized = value.lower().replace("-", "_")
     return any(marker in normalized for marker in _CREDENTIAL_MARKERS)
+
+
+CREDENTIAL_VALUE_PREFIXES = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
+"""Public beside the predicate below: a caller that has to say *why* a value
+was refused, without repeating the value, needs the same list this uses."""
+_CREDENTIAL_VALUE_SAFE_CHARACTERS = frozenset(" /\\.:@")
+
+
+def looks_like_credential_value(value: str) -> bool:
+    """A shape check independent of ``looks_like_credential_field``'s name check.
+
+    That predicate asks whether a *name* names itself a secret; a real leaked
+    secret value carries no such name.  This catches a value shaped like one: a
+    known provider prefix, or an opaque, separator-free run of 20+ mixed
+    alphanumeric characters -- excluding a plain lowercase-hex identifier (a
+    git commit, a manifest digest), which the pod argv legitimately carries and
+    which a real credential essentially never is.
+
+    Public, and here rather than in `bootstrap_main`, for the same reason
+    `looks_like_credential_field` is: three boundaries depend on it now --
+    `bootstrap_main`'s argv refusal, and `fixture.py`'s scrub of the request
+    and response bodies a drill writes to disk -- and a shape test that each
+    of them re-expressed privately is a shape test that drifts apart one copy
+    at a time. (`notify_hooks` deliberately keeps its own re-expression: a
+    notification line is free-form prose split into words, not an argv token
+    or a JSON leaf, and it treats `.`, `/`, `:` and `@` as unsafe where this
+    one treats them as ordinary path and URL punctuation.)
+    """
+
+    if value.startswith(CREDENTIAL_VALUE_PREFIXES):
+        return True
+    if len(value) < 20 or any(
+        character in _CREDENTIAL_VALUE_SAFE_CHARACTERS for character in value
+    ):
+        return False
+    if all(character in "0123456789abcdef" for character in value):
+        return False
+    return any(character.isalpha() for character in value) and any(
+        character.isdigit() for character in value
+    )
 
 
 def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:

@@ -146,6 +146,15 @@ DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
 DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
 )
+# The grouping and reconciliation thresholds the Designator's structure pass runs
+# under: which marks join into one act, how far a chain reaches, and how many
+# residual components one page's conservation record may enumerate before the page
+# is held as a single review item. They decide what is marked out and what is held,
+# so two runs under different thresholds produce different acts from identical
+# pixels — the same reason padding is sealed, one step earlier in the same stage.
+DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
+)
 DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
 )
@@ -1528,6 +1537,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--designator-geometry-config", default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
     )
     parser.add_argument(
+        "--designator-grouping-config",
+        default=str(DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH),
+        help=(
+            "the sealed grouping, structure and conservation thresholds the Designator's "
+            "pass resolves per page"
+        ),
+    )
+    parser.add_argument(
         "--perlector-instrument-per-mille",
         type=int,
         default=0,
@@ -1769,6 +1786,7 @@ def run_config_bindings(
     pdf_render_config_sha256: str | None = None,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -1795,7 +1813,7 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding and geometry policy, Armarium projection configuration,
+    Designator padding, geometry and grouping policy, Armarium projection configuration,
     recovery policy, decoding policy, the run-level hard-failure policy,
     serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
     declares byte-backed pages only, so
@@ -1864,6 +1882,30 @@ def run_config_bindings(
             "the Designator geometry configuration binding at "
             f"{designator_geometry_config_path} could not be read"
         ) from error
+    # Hashed here and parsed at the point of use — geometry's shape exactly, and
+    # deliberately not `triage_modes`', which is validated here as well.
+    #
+    # The schema this file has to satisfy lives in
+    # `pipeline/2_designator/grouping_config.py::load_grouping_config`, and
+    # `common/` may never import a stage module: `common/README.md` says "it never
+    # imports back" and `common/chairs/test_chairs_import_boundary.py` reads every
+    # file under `common/` through `ast` to enforce it. Reaching that loader from
+    # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
+    # holds to the same rule across stage directories — would buy a bind-time
+    # refusal by breaking two live guards, so the refusal for a *malformed* file
+    # sits where the loader already is: the Designator's structure pass,
+    # loading it in `initial_pass` and proving it against this digest through
+    # `require_sealed_config("designator-grouping", ...)`, with
+    # `load_grouping_config` refusing loudly there, before the stage marks
+    # anything out. An *unreadable* file still refuses right here, at run
+    # creation, exactly as geometry's does.
+    try:
+        grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator grouping configuration binding at "
+            f"{designator_grouping_config_path} could not be read"
+        ) from error
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -1921,6 +1963,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
                 "designator_geometry_config_sha256": geometry_config_digest,
+                "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
@@ -1960,13 +2003,14 @@ def run_config_bindings(
         # merely re-derive them.
         #
         # Every name here is bound into `config_digest` above, and every name here
-        # has a point of use that requires it: padding and geometry at the
-        # Designator's crop, alignment at the Attestatores, the shard limit at run
-        # creation, the two Perlector policies at the reading, `recovery` at the
-        # Recensor, the Designator recovery pass and the orchestrator's dispatch,
-        # `pdf-render` at the Door that parsed it, and `hard-failure` at the
-        # orchestrator's own checkpoint. A name sealed with no point of use would
-        # read as a closed window that nothing actually shuts.
+        # has a point of use that requires it: padding, geometry and grouping at
+        # the Designator's crop and structure pass, alignment at the
+        # Attestatores, the shard limit at run creation, the two Perlector
+        # policies at the reading, `recovery` at the Recensor, the Designator
+        # recovery pass and the orchestrator's dispatch, `pdf-render` at the Door
+        # that parsed it, and `hard-failure` at the orchestrator's own
+        # checkpoint. A name sealed with no point of use would read as a closed
+        # window that nothing actually shuts.
         #
         # `hard-failure` is the family's fourth member and the last to be sealed.
         # It is the one the orchestrator reads BEFORE the run exists — the tally
@@ -1977,6 +2021,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
+            "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
@@ -2420,8 +2465,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     proposal seal exists, so no unbuilt structural model is being prescribed.
 
     The fixture's own acts are a *floor*, never a ceiling: every one must
-    appear, and the seal may also carry acts the fixture never declared. Two
-    kinds exist, and neither is fixture data, so neither can be checked against
+    appear, and the seal may also carry acts the fixture never declared. Three
+    kinds exist, and none is fixture data, so none can be checked against
     it — `_verify_minted_act_rows` checks each against the one thing it *can*
     be checked against: its own Designator evidence record, recomputed rather
     than trusted. A **residual** act (`_publish_residual_holds`) is ink
@@ -2429,6 +2474,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     **page-fallback** act (`_publish_page_fallback`) is the predetermined crop
     grid cut over a page the structure pass found nothing on, and is `proposed`,
     because the whole point of cutting it is that it goes downstream to be read.
+    A **page-residual** act is the whole page held in place of more residuals
+    than the sealed bound allows to be minted separately, and is `held`.
     """
     fixture_acts = context.fixture.get("act", [])
     expected = {
@@ -2470,14 +2517,24 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     # and always fired; which act it accused was a coin flip, which is the kind of
     # evidence nobody can act on twice. Found by the Opus read of this branch,
     # which demonstrated five different orders over six keys in five runs.
+    # One read of the hold artifacts for both directions. Each
+    # `_designator_records_by_subject` call walks the stage's whole manifest and
+    # opens every record of its kind, and a page held for over-bound residuals is
+    # by construction a run with many holds — the case where reading them twice
+    # costs most is the one the second direction was added for.
+    holds_by_subject = _designator_records_by_subject(context, "hold")
     _verify_minted_act_rows(
-        context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
+        context,
+        {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))},
+        holds_by_subject,
     )
-    _verify_every_conservation_residual_is_accounted(context, observed)
+    _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
 def _verify_every_conservation_residual_is_accounted(
-    context, observed: dict[str, dict[str, Any]]
+    context,
+    observed: dict[str, dict[str, Any]],
+    holds_by_subject: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Every residual a conservation record found must reach the denominator.
 
@@ -2499,14 +2556,48 @@ def _verify_every_conservation_residual_is_accounted(
 
     Position within `residual_components` orders evidence only; identity binds
     the residual class and its bounds, so a new component cannot rename one.
+
+    A record may also decline to enumerate, and that is the one case where the
+    list's absence is not a gap: a page whose reconciliation exceeded the sealed
+    residual bound is held as a single `page-residual` review item instead of as
+    that many held acts, and the components are then recomputable from the sealed
+    page bytes rather than carried. The tolerance is exactly as wide as the thing
+    that earns it — one page-residual hold, naming this page, judged against the
+    same bound this record recorded. A withheld record with no such row is the
+    silent loss this check exists to prevent, wearing a policy's name.
     """
+    if holds_by_subject is None:
+        holds_by_subject = _designator_records_by_subject(context, "hold")
+    accounted_pages = _page_residual_holds_by_page(holds_by_subject, observed)
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = record.get("payload")
-        components = payload.get("residual_components") if isinstance(payload, Mapping) else None
+        payload = payload if isinstance(payload, Mapping) else {}
+        enumeration = payload.get("residual_enumeration")
+        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+            _verify_withheld_page_is_held_as_one_item(
+                page_id, payload, accounted_pages.get(page_id, [])
+            )
+            continue
+        if enumeration != RESIDUAL_ENUMERATION_COMPLETE:
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} records its residual enumeration as "
+                f"{enumeration!r}, which is outside the closed set {RESIDUAL_ENUMERATIONS}; a "
+                "consumer cannot tell a page with no unclaimed ink from one whose unclaimed ink "
+                "was counted and not listed without being told which it is"
+            )
+        components = payload.get("residual_components")
         if not isinstance(components, list):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} carries no residual-component list "
                 "to reconcile the denominator against"
+            )
+        declared_count = payload.get("residual_component_count")
+        if not _is_count(declared_count) or declared_count != len(components):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} names residual_component_count "
+                f"{declared_count!r} but its residual_components list carries {len(components)} "
+                "entries; on an enumerated page the count a reviewer is told is the count the "
+                "list itself supports, recomputed rather than believed"
             )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, Mapping) else None
@@ -2526,6 +2617,67 @@ def _verify_every_conservation_residual_is_accounted(
                 )
 
 
+def _page_residual_holds_by_page(
+    holds_by_subject: dict[str, dict[str, Any]], observed: dict[str, dict[str, Any]]
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Every page-residual hold in the run, indexed by the page it holds.
+
+    Read from the Designator's own artifacts rather than from the seal rows, so
+    that a hold the denominator never accounted for is a refusal here instead of
+    an absence nothing notices. `_verify_minted_act_rows` has already proven each
+    of these against the sealed page and its conservation record; what this index
+    is for is the other direction — finding the page that has no hold at all.
+    """
+    by_page: dict[str, list[Mapping[str, Any]]] = {}
+    for act_id, hold in holds_by_subject.items():
+        payload = hold.get("payload") if isinstance(hold.get("payload"), Mapping) else {}
+        if "page_bounds" not in payload:
+            continue
+        row = observed.get(act_id)
+        if row is None:
+            raise FatalAccounting(
+                f"the Designator published a page-residual hold for act {act_id}, which the "
+                "proposal seal's expected-act denominator does not account for; a page held in "
+                "place of its residuals is a unit this run reports, not evidence beside the "
+                "denominator"
+            )
+        by_page.setdefault(row["page_id"], []).append(payload)
+    return by_page
+
+
+def _verify_withheld_page_is_held_as_one_item(
+    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
+) -> None:
+    """A record that withheld its components owes exactly one page-residual row.
+
+    And that row must have been judged against the bound this record itself
+    names. A hold carrying a laxer bound than the reconciliation applied would
+    describe a decision the run never took, which is the same class of untruth
+    as the missing row: both leave a reviewer reading a policy that was not the
+    one in force.
+    """
+    if len(holds) != 1:
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record withheld its residual components, but the run "
+            f"carries {len(holds)} page-residual holds for that page rather than exactly one; "
+            "unlisted ink is accounted for by the single review item that replaced it, or it is "
+            "lost silently"
+        )
+    bound = payload.get("max_residual_components")
+    if not _is_count(bound):
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record withheld its residual components without "
+            "naming the integer bound it was judged against"
+        )
+    held_bound = holds[0].get("max_residual_components")
+    if not _is_count(held_bound) or held_bound != bound:
+        raise FatalAccounting(
+            f"page {page_id} is held against a bound of {held_bound!r} residual components "
+            f"while its own conservation record applied {bound}; the held page and the "
+            "reconciliation that held it must name one policy, as one integer"
+        )
+
+
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
@@ -2537,7 +2689,40 @@ def fallback_page_act_key(page_ordinal: int) -> str:
     return f"page-fallback:{page_ordinal}"
 
 
-def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
+# How much of a page's residual reconciliation its conservation record actually
+# enumerates. A closed pair, named once, because the whole point of the withheld
+# value is that a consumer must be able to tell "this page had no residual" from
+# "this page's residuals were counted and not listed" — and a third spelling
+# appearing on one side of that distinction is how the two become one again.
+RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
+RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
+RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD)
+
+# Why a page held in place of its residual components was held. The Designator
+# declares the closed hold vocabulary and imports this name into it, and this
+# module checks a page-residual hold against the same constant, so the producer
+# and the verifier cannot spell the one machine-readable statement of the cause
+# differently -- the same reason `page_residual_act_key` is defined here and
+# recomputed there.
+PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
+
+
+def page_residual_act_key(page_ordinal: int) -> str:
+    """The label of the one act a page held for over-bound residual scatter becomes.
+
+    The same presentation-only role `fallback_page_act_key` has, and named here
+    for the same reason: the Designator writes it and this module recomputes it,
+    so the two may not spell it differently. Identity is carried by the closed
+    ``page-residual`` act class over the page rectangle, never by this string.
+    """
+    return f"page-residual:{page_ordinal}"
+
+
+def _verify_minted_act_rows(
+    context,
+    extra_rows: dict[str, dict[str, Any]],
+    holds_by_subject: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Every expected-act row beyond the fixture's own denominator.
 
     Two units the Designator may add beyond what the fixture declares, and no
@@ -2560,12 +2745,22 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
     identity must recompute against the page's own `structure-status` record,
     which is what independently says the structure pass found nothing there.
 
-    The evidence index is built once for the whole set rather than per row.
-    Every residual component on a page mints one of these rows, and a speckled
-    or foxed page reconciles to tens of thousands of them, so a per-row walk of
-    the stage's whole artifact tree makes ordinary input quadratic in itself.
+    A **page-residual** act is the third, and it is a *held* row like the first:
+    a page whose conservation reconciled more unclaimed components than the
+    sealed bound allows becomes one review item instead of that many. Both held
+    kinds arrive here as a `hold` record, so the routing between them is the
+    rectangle the hold names — `residual_bounds` for one component, `page_bounds`
+    for the whole page — and a hold naming both is refused by name rather than
+    resolved in either direction.
+
+    The evidence index is built once for the whole set rather than per row, and
+    the caller may hand in the hold index it already holds. Every residual
+    component on a page mints one of these rows, and a speckled or foxed page
+    reconciles to tens of thousands of them, so a per-row walk of the stage's
+    whole artifact tree makes ordinary input quadratic in itself.
     """
-    holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
+    if holds_by_subject is None:
+        holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
     fallbacks_by_subject = (
         _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
     )
@@ -2574,7 +2769,7 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
             raise FatalAccounting(
                 f"act {act_id} extends the denominator beyond the fixture but claims a "
                 "continuation; a residual has no declared continuation to claim, and neither "
-                "has a page-fallback act"
+                "has a page-fallback or page-residual act"
             )
         if row["outcome"] == "proposed":
             _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject)
@@ -2583,7 +2778,7 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
             raise FatalAccounting(
                 f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
                 "'proposed'; the only units that may extend the denominator beyond the fixture "
-                "are a conservation residual and a page-fallback act"
+                "are a conservation residual, a page-residual hold, and a page-fallback act"
             )
         hold = holds_by_subject.get(act_id)
         if hold is None:
@@ -2592,6 +2787,13 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+        # Presence, not shape: a hold whose `page_bounds` is malformed is still a
+        # page-residual hold making a malformed claim, and must be refused as one
+        # rather than fall through to the component path and be accused of
+        # carrying no residual bounds.
+        if "page_bounds" in payload:
+            _verify_page_residual_act_row(context, act_id, row, hold)
+            continue
         bounds = payload.get("residual_bounds")
         if not isinstance(bounds, dict):
             raise FatalAccounting(
@@ -2606,6 +2808,47 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
                 f"hold record names: {error}"
             ) from error
         _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
+
+
+def _prove_page_wide_act_rectangle(
+    context, act_id: str, page_id: str, ordinal: int, bounds: dict, act_class: str
+) -> None:
+    """The read/re-derive proof both page-wide act rows share, parameterized by class.
+
+    Recomputes the sealed page's own rectangle from its sealed bytes rather than
+    trusting the bounds a record claims, refuses a rectangle that is not the
+    whole page, and re-derives the act's identity against the reserved
+    ``act_class`` and that rectangle. Shared verbatim by
+    `_verify_page_fallback_act_row` and `_verify_page_residual_act_row` — the
+    two rows differ only in which act class they mint and which premise gates
+    them, both handled by their own callers before and after this proof.
+    """
+    sources = [
+        source
+        for source in context.run.get("source_manifest", [])
+        if source.get("ordinal") == ordinal
+    ]
+    if len(sources) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
+        )
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    width, height = dimensions(page_bytes)
+    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
+    if bounds != full_page_bounds:
+        raise FatalAccounting(
+            f"act {act_id}'s {act_class} rectangle {bounds} is not the complete sealed page "
+            f"rectangle {full_page_bounds}"
+        )
+    try:
+        verify_identity(act_id, "act", act_bindings(page_id, act_class, bounds))
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the reserved {act_class} class and the "
+            f"page rectangle its own record names: {error}"
+        ) from error
 
 
 def _verify_page_fallback_act_row(
@@ -2647,34 +2890,9 @@ def _verify_page_fallback_act_row(
             f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
             "derived fallback key, and page rectangle it must bind"
         )
-    sources = [
-        source
-        for source in context.run.get("source_manifest", [])
-        if source.get("ordinal") == ordinal
-    ]
-    if len(sources) != 1:
-        raise FatalAccounting(
-            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
-        )
-    page = context.tree.read_artifact(
-        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-fallback"
     )
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    width, height = dimensions(page_bytes)
-    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
-    if bounds != full_page_bounds:
-        raise FatalAccounting(
-            f"act {act_id}'s page-fallback rectangle {bounds} is not the complete sealed page "
-            f"rectangle {full_page_bounds}"
-        )
-    try:
-        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-fallback", bounds))
-    except IdentityRefusal as error:
-        raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-fallback class and the "
-            f"page rectangle its own record names: {error}"
-        ) from error
     inputs = record.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
         raise FatalAccounting(
@@ -2695,6 +2913,188 @@ def _verify_page_fallback_act_row(
             "'fallback-tiles'; a predetermined grid may not be minted over a page the "
             "structure pass actually found regions on"
         )
+
+
+def _verify_page_residual_act_row(
+    context, act_id: str, row: dict[str, Any], hold: dict[str, Any]
+) -> None:
+    """The held row that stands for a whole page, checked against its own evidence.
+
+    A page-residual act says something no other minted row says: *this page's
+    reconciliation found more unclaimed components than the sealed bound allows,
+    so the page is one review item and the components are not listed*. That makes
+    it the one row whose evidence a reader cannot open and count for themselves,
+    which is exactly why none of it may be believed here.
+
+    Five things are recomputed rather than read. The rectangle comes from the
+    sealed page bytes, so a hold naming a rectangle that is not the whole page —
+    or naming a page it was not minted over — refuses however self-consistent its
+    own identity is. The identity is re-derived against the reserved
+    ``page-residual`` class and that rectangle. The premise is followed to the
+    page's own `conservation` record through the digest-checked hop, never by
+    address, and that record has to *itself* say the count exceeded the bound the
+    hold names and that its enumeration was withheld. And the record must carry
+    no `residual_components` key at all: an empty list would mean a page with no
+    unclaimed ink, which is the opposite claim, and the key's absence is what
+    makes every existing consumer fail loudly instead of reading absence as none.
+
+    The bound itself is not merely internally consistent, it is bound to the run.
+    `max_residual_components` is a Designator grouping-policy parameter (SPEC_C
+    1), and this run sealed a `designator-grouping` digest for exactly that
+    policy at `open_context`. A hold naming its own bound and never naming which
+    grouping configuration it was judged against would let a Designator invent
+    any bound it liked; the hold's `grouping_config_sha256` is checked against
+    `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
+    is bound to the policy this run actually sealed, not merely to itself.
+
+    The hold's own `residual_component_count` is held to the record's. It is the
+    number a reviewer reads off the review item, and a hold free to name a
+    different one would put a figure in front of a person that no artifact in the
+    run supports. GOVERNANCE 10: the count is a measurement, so it is checked
+    against the thing that measured it.
+
+    The `reason_code` and `blocking_page_ordinal` are checked too, and they are
+    the cheapest checks here for the field that carries the most: the hold
+    vocabulary is closed so that a consumer can branch on the cause without
+    parsing prose, and this is the one hold whose evidence a reviewer cannot open
+    and count for themselves. A page-residual hold arriving under another cause's
+    code, or blaming another page, would be routed by everything downstream as
+    that other thing.
+    """
+    payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+    if "residual_bounds" in payload:
+        raise FatalAccounting(
+            f"act {act_id}'s hold names both a residual rectangle and a page rectangle; a hold "
+            "accounts for one component of unclaimed ink or for a whole page held in place of "
+            "its components, and nothing may decide which of the two it meant"
+        )
+    bounds = payload.get("page_bounds")
+    ordinal = row["page_ordinal"]
+    expected_key = page_residual_act_key(ordinal)
+    if (
+        not isinstance(bounds, dict)
+        or payload.get("act_key") != row["act_key"]
+        or payload.get("act_key") != expected_key
+        or payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != ordinal
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
+            "derived page-residual key, and page rectangle it must bind"
+        )
+    if (
+        payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE
+        or payload.get("blocking_page_ordinal") != ordinal
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold records its cause as "
+            f"{payload.get('reason_code')!r} against page "
+            f"{payload.get('blocking_page_ordinal')!r} rather than "
+            f"{PAGE_RESIDUAL_REASON_CODE!r} against page {ordinal}; the hold vocabulary is "
+            "closed so that a consumer can branch on the cause without reading prose"
+        )
+    grouping_digest = payload.get("grouping_config_sha256")
+    if not isinstance(grouping_digest, str) or not grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not name the sealed grouping "
+            "configuration digest its residual bound was judged against"
+        )
+    sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
+    if sealed_grouping_digest is None:
+        # Named apart from drift below, the way `require_sealed_config` names
+        # them apart: a run that never sealed the policy and a hold that names
+        # the wrong one need different things done about them, and one message
+        # printing `None` as the digest sends both operators to the same place.
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, but this run sealed no designator-grouping digest at all "
+            "for it to be judged against; the bound behind a held page cannot be bound to a "
+            "policy the run never named"
+        )
+    if grouping_digest != sealed_grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, which is not the designator-grouping digest "
+            f"{sealed_grouping_digest!r} this run sealed at binding time; a Designator free to "
+            "invent the grouping policy behind its bound could hold any page it likes"
+        )
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-residual"
+    )
+    inputs = hold.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not reference exactly one conservation "
+            "artifact to check its premise against"
+        )
+    conservation = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=row["page_id"]
+    )
+    _verify_page_residual_premise(act_id, row["page_id"], payload, conservation)
+
+
+def _verify_page_residual_premise(
+    act_id: str, page_id: str, hold_payload: Mapping[str, Any], conservation: dict[str, Any]
+) -> None:
+    """The conservation record's own account of why this page is held as one item."""
+    payload = conservation.get("payload")
+    payload = payload if isinstance(payload, Mapping) else {}
+    bound = hold_payload.get("max_residual_components")
+    declared = hold_payload.get("residual_component_count")
+    if not _is_count(bound) or not _is_count(declared):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not name an integer residual component "
+            "count and the integer bound it was judged against"
+        )
+    enumeration = payload.get("residual_enumeration")
+    if enumeration != RESIDUAL_ENUMERATION_WITHHELD:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for withheld residual enumeration, but that "
+            f"page's own conservation record records its enumeration as {enumeration!r} rather "
+            f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
+            "over a reconciliation that enumerated its components"
+        )
+    # Checked only once the record has already proven it means to withhold: a
+    # record that enumerated its components is refused above for that alone,
+    # whatever its outcome says, and folding this check in ahead of that one
+    # would report the wrong reason for the same wrong record.
+    outcome = conservation.get("outcome")
+    if outcome != "held":
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} as one review item, but that page's own "
+            f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
+            "record standing behind a held page may not still say it was proposed"
+        )
+    if "residual_components" in payload:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
+            "conservation record still carries a residual_components key; the key is omitted "
+            "when it is withheld, so that no consumer reads a present list as the complete one"
+        )
+    measured = payload.get("residual_component_count")
+    if not _is_count(measured):
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record names no integer residual component count "
+            f"for act {act_id} to be held against"
+        )
+    if measured != declared:
+        raise FatalAccounting(
+            f"act {act_id} reports {declared} residual components while page {page_id}'s own "
+            f"conservation record measured {measured}; the count a reviewer is shown is the "
+            "count the reconciliation took, never a second figure beside it"
+        )
+    if measured <= bound:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
+            f"but that page's conservation record measured {measured}, which does not exceed it; "
+            "a page whose reconciliation stays within the bound owes one held act per residual, "
+            "not one held page"
+        )
+
+
+def _is_count(value: Any) -> bool:
+    """A plain non-negative integer. `bool` is an `int` and is not a count."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _verify_residual_traces_to_conservation(
@@ -2838,6 +3238,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,

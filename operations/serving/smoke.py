@@ -11,17 +11,32 @@ fixture request and :class:`~.preflight.ServingSmokeReader` corroborates that
 state after this call returns; concurrent calls would cross those records.
 ``ServingManager.start`` and ``PreflightRunner`` currently enforce sequential
 use outside this class.
+
+The pod's own golden page.  ``operations/pod/bootstrap_main.py`` is the one
+production caller of this callable, and it has no fixture author standing by:
+``fresh_page_witness`` draws the witness from the CSPRNG and
+``render_golden_page`` puts it into pixels, once per preflight, so the value a
+chair must read back was never in a committed file, a prompt, or an earlier
+run's report.  ``NvidiaSmiUtilization`` is the sampler that same caller wires:
+one ``nvidia-smi`` read after the answer, and the process's own load average
+for the CPU figure.  A sampler that cannot measure returns no samples, which
+``PreflightRunner`` turns into ``utilization-missing`` -- an empty instrument
+is red, never a quiet green.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
+import secrets
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from common.chairs.models import ChairIdentity
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
@@ -36,6 +51,155 @@ _MAXIMUM_UTILIZATION_SAMPLES = 1_024
 _MAXIMUM_PNG_BYTES = 64 * 1024 * 1024
 _FIXTURE_MIME_TYPE = "image/png"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# 32 bytes of CSPRNG output, URL-safe: 43 characters, all inside the witness
+# alphabet `VisionSmokeCall` accepts and comfortably inside its length bound.
+_WITNESS_ENTROPY_BYTES = 32
+# The rendered page. Large type on a wide page, so the witness is a line of
+# text a vision model reads rather than a strip of bitmap glyphs, and the whole
+# page still sits under the smallest tier's longest-edge cap (1344 pixels,
+# config/pod_placement.toml) so `_verify_png` never refuses it. The witness
+# line's width varies with which characters the CSPRNG drew (a run of wide
+# glyphs measures far past a run of narrow ones), so the font size is not
+# fixed: `render_golden_page` measures the line and shrinks from
+# `_GOLDEN_PAGE_FONT_SIZE` down to `_GOLDEN_PAGE_FONT_FLOOR` until it fits
+# inside the page width minus both margins, and refuses to render rather than
+# let PIL clip a line silently off the canvas.
+_GOLDEN_PAGE_SIZE = (1280, 400)
+_GOLDEN_PAGE_MARGIN = 48
+_GOLDEN_PAGE_FONT_SIZE = 40
+_GOLDEN_PAGE_FONT_FLOOR = 24
+_GOLDEN_PAGE_FONT_STEP = 2
+_NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
+
+
+def fresh_page_witness() -> str:
+    """One unguessable witness for one golden page, from the CSPRNG.
+
+    ``VisionSmokeCall`` states that entropy and rotation are the fixture
+    author's job; on the pod that author is this function, called once per
+    preflight by ``bootstrap_main`` immediately before the page is rendered.
+    """
+
+    return secrets.token_urlsafe(_WITNESS_ENTROPY_BYTES)
+
+
+def render_golden_page(path: Path, witness: str) -> bytes:
+    """Put ``PAGE-WITNESS: <witness>`` into the pixels of a fresh PNG at ``path``.
+
+    The witness is validated the way the callable validates it, before any
+    pixel is drawn, so a page cannot be rendered for a value the smoke would
+    later refuse. The rendered bytes are decoded again before being returned:
+    a page the decoder cannot read would reach the chair as a request it could
+    only fail, and this is where that would be found.
+
+    **The page is verified before it takes its name, and never replaces one.**
+    The pixels go to a temporary beside ``path`` and are decoded there, so a
+    page the decoder rejects is never left lying under the real name for a
+    later reader to trust. It is then linked into place: identical bytes are a
+    no-op, and different bytes at the same name are refused rather than
+    written over. Every receipt that names a golden page names it by digest,
+    and a page that could be silently replaced is the one artefact those
+    add-only receipts point at (GOVERNANCE 4).
+    """
+
+    VisionSmokeCall(witness)
+    line = f"{_WITNESS_PREFIX}{witness}"
+    page = Image.new("L", _GOLDEN_PAGE_SIZE, color="white")
+    draw = ImageDraw.Draw(page)
+    max_width = _GOLDEN_PAGE_SIZE[0] - 2 * _GOLDEN_PAGE_MARGIN
+
+    font = None
+    for size in range(_GOLDEN_PAGE_FONT_SIZE, _GOLDEN_PAGE_FONT_FLOOR - 1, -_GOLDEN_PAGE_FONT_STEP):
+        candidate = ImageFont.load_default(size=size)
+        if draw.textlength(line, font=candidate) <= max_width:
+            font = candidate
+            break
+    if font is None:
+        raise ServingConfigurationError(
+            f"golden-page witness of length {len(witness)} does not fit the page width "
+            f"at any font size down to the {_GOLDEN_PAGE_FONT_FLOOR}pt legibility floor"
+        )
+
+    origin = (_GOLDEN_PAGE_MARGIN, _GOLDEN_PAGE_SIZE[1] // 2)
+    draw.text(origin, line, fill="black", font=font, anchor="lm")
+    # Confirm the drawn result rather than trusting the fitted measurement: a
+    # bounding box that still spills past the canvas (any axis) would mean a
+    # chair is sent a page with the witness cut off, so refuse instead of
+    # sending a request it can only fail.
+    left, top, right, bottom = draw.textbbox(origin, line, font=font, anchor="lm")
+    if left < 0 or top < 0 or right > _GOLDEN_PAGE_SIZE[0] or bottom > _GOLDEN_PAGE_SIZE[1]:
+        raise ServingConfigurationError(
+            "golden-page witness text renders outside the page bounds even at the "
+            f"{_GOLDEN_PAGE_FONT_FLOOR}pt legibility floor"
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.render-{secrets.token_hex(4)}")
+    try:
+        page.save(staging, format="PNG")
+        encoded = staging.read_bytes()
+        _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
+        try:
+            os.link(staging, path)
+        except FileExistsError:
+            if path.read_bytes() != encoded:
+                raise ServingConfigurationError(
+                    f"a different golden page already exists at {path}; preflight evidence "
+                    "is added, never written over -- render this page under its own name"
+                ) from None
+    finally:
+        staging.unlink(missing_ok=True)
+    return encoded
+
+
+class NvidiaSmiUtilization:
+    """The production utilization sampler ``bootstrap_main`` hands ``VisionSmokeCall``.
+
+    One sample per call: ``utilization.gpu`` from ``nvidia-smi`` and the
+    one-minute load average per CPU for the CPU figure. Both are measurements
+    taken *after* the smoke answer, so they say what the card and the host were
+    doing around the read, and nothing more -- no threshold here claims a card
+    is saturated. A failed or unparseable read returns an empty tuple, which
+    ``PreflightRunner`` reports as ``utilization-missing``.
+    """
+
+    def __init__(
+        self,
+        *,
+        runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+        load_average: Callable[[], tuple[float, float, float]] | None = None,
+        cpu_count: Callable[[], int | None] | None = None,
+    ) -> None:
+        self.runner = runner or self._run
+        self.load_average = load_average or os.getloadavg
+        self.cpu_count = cpu_count or os.cpu_count
+
+    def __call__(self) -> tuple[UtilizationSample, ...]:
+        try:
+            query = self.runner(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]
+            )
+            if query.returncode != 0:
+                return ()
+            gpu_percent = Decimal(query.stdout.strip().splitlines()[0].strip())
+            cpus = self.cpu_count() or 0
+            if cpus <= 0:
+                return ()
+            load = Decimal(str(self.load_average()[0])) / Decimal(cpus) * Decimal(100)
+            cpu_percent = min(load, Decimal(100)).quantize(Decimal("0.1"))
+            return (UtilizationSample(gpu_percent, cpu_percent),)
+        except (OSError, ValueError, IndexError, InvalidOperation, subprocess.SubprocessError):
+            return ()
+
+    @staticmethod
+    def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_NVIDIA_SMI_TIMEOUT_SECONDS,
+        )
 
 
 @dataclass(frozen=True, slots=True)
