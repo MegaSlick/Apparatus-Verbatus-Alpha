@@ -21,13 +21,19 @@ Use the procedure named here only when its trigger fires:
 These numbers are cited by hooks, tests, and agent briefs. Append; never insert or reuse.
 
 1. **Tyrel decides** governance, governed-document changes, paid or live infrastructure,
-   exclusions, declarations that the pipeline is proven, disclosure, deployment, opening
-   a pull request, destructive or hard-to-recover operations, and merging.
+   exclusions, declarations that the pipeline is proven, disclosure, deployment,
+   destructive or hard-to-recover operations, and any merge or pull request outside the
+   standing grants in rule 4 and rule 14.
 2. **No live pod without his permission in that session.** Verify shutdown against
    provider state and billing.
 3. **A session never works from `main`.** Work reaches it through a pull request.
-4. **Never open a pull request without his say-so.** The first push and its pull request
-   are one permission; later pushes to that open pull request are part of the same work.
+4. **Queued work opens its own pull request; new work asks first.** Work named in
+   `workbench/active/HANDOFF.md` or `NEXT_SESSION_BRIEF.md` as queued may be pushed and
+   opened as a pull request once its gate is green, one open pull request at a time, and
+   Tyrel is told each time one opens (his standing grant; the dated record is in the
+   standing ledger). Work not in that queue is named to him before its first push; a
+   session does not enlarge the queue by writing a note. Later pushes to an open pull
+   request are part of the same work.
 5. **Never share, rebase, force-push, or amend a branch that is not yours.**
 6. **Nothing enters uninspected.** If the accountable session cannot justify a line, it
    does not enter.
@@ -47,6 +53,14 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
     source, and measurement; record the decision and reason. A hard question does not
     become Tyrel's by being hard. Do not park an engineering choice in a TODO, deferred
     list, handoff, or pull request. Rule 7 requires a visible decision, not a deferral.
+14. **The session merges under three conditions, and reports it.** A pull request is merged
+    by the session only when its head already contains `origin/main` as freshly fetched
+    and, on that exact head, every review thread is resolved, CI is green, and the local
+    gate (`.githooks/check-all.sh`) exits 0. A gate on a tip that does not contain the
+    fetched `origin/main` proves nothing about the merge and does not count. A red or
+    partial gate never merges; the merge is reported by number and head (Tyrel's
+    standing grant; the dated record is in the standing ledger). Tyrel may still merge
+    anything himself.
 
 **Settled permanently (his ruling; the dated record is in the standing ledger):**
 vendor-licence analysis (non-commercial
@@ -127,14 +141,19 @@ an unnamed carry is a finding at review wherever the reading happened.
 
 ## Pushing and merging
 
-The first push and pull request need Tyrel's clear approval. Push the finished task, not a
-stream of checkpoints. Later pushes to the same open pull request need no repeat approval,
-but say when they happen. Never push directly to `main`; never force-push work you do not
-exclusively own. Tyrel alone merges.
+Queued work is pushed and opened as a pull request under hard rule 4; unqueued work is
+named to Tyrel first. Push the finished task, not a stream of checkpoints. Later pushes
+to the same open pull request need no repeat approval, but say when they happen. Never
+push directly to `main`; never force-push work you do not exclusively own. Merging
+follows hard rule 14. GitHub no longer requires a branch to be up to date with `main`
+before merging (his ruling, in the same ledger), so the session runs `git fetch origin`
+first, merges the fetched `origin/main` into the branch itself, and gates that head; the
+gate on the merged result is what stands in for the server's check, and a stale
+`origin/main` makes it worthless.
 
-**A standing push grant is per-queue and dies with its queue.** It covers the branches it
-was asked about and nothing after them; never read a past queue's grant as covering a new
-one. Ask again.
+**A push grant outside hard rule 4 is per-queue and dies with its queue.** It covers the
+branches it was asked about and nothing after them; never read a past queue's grant as
+covering a new one. Ask again.
 
 **Never chain a push, pull request, or merge behind piped test output.** A pipeline's exit
 status is its last command's, so `gate | tail && push` runs the push after a *failed* gate
