@@ -2721,12 +2721,19 @@ def _verify_real_act_denominator(
             if hold is not None and isinstance(hold.get("payload"), dict)
             else {}
         )
-        proposal_regions = [
-            record
-            for record in records
-            if record["kind"] == "region"
-            and isinstance(record["payload"].get("transform"), Mapping)
-        ]
+        proposal_regions = [record for record in records if record["kind"] == "region"]
+        for record in proposal_regions:
+            # Refused, never filtered out. A region whose transform is not an
+            # object names no page, so it lands in neither the own-page nor the
+            # far-page list -- and dropping it silently would let a published
+            # continuation crop vanish beneath a `has_continuation=False` row,
+            # which is the loss `_verify_structural_act_row` exists to catch.
+            if not isinstance(record["payload"].get("transform"), Mapping):
+                raise FatalAccounting(
+                    f"act {act_id}'s proposal region {record['artifact_id']!r} carries no "
+                    "transform object, so the page it was cut from cannot be read; a region "
+                    "the denominator cannot place is not a region it may pass over"
+                )
         regions = [
             record
             for record in proposal_regions
@@ -3878,18 +3885,28 @@ def _refuse_incompatible_real_reuse(
     absent.extend(name for name in _REAL_DOOR_ONLY_SEALED_NAMES if name not in sealed)
     if not differing and not moved and not absent:
         return
-    named = list(differing)
+    # Three independent sentences, not three clauses spliced into one frame. The
+    # frame was "run X is bound to different {clauses} than the currently loaded
+    # run inputs", which reads correctly only for the roster clause: an absent
+    # name produced "bound to different this run sealed no digest for the
+    # data-handling configuration ... than the currently loaded run inputs".
+    # This is the sentence an operator acts on, so it says one thing at a time.
+    named: list[str] = []
+    if differing:
+        named.append(
+            f"run {run_id!r} is bound to different {', '.join(differing)} than the currently "
+            "loaded run inputs"
+        )
     if moved:
-        named.append(f"sealed configuration {', '.join(moved)} moved")
+        named.append(f"run {run_id!r} sealed configuration {', '.join(moved)} moved")
     if absent:
         named.append(
-            f"this run sealed no digest for the {', '.join(absent)} configuration, so a "
+            f"run {run_id!r} sealed no digest for the {', '.join(absent)} configuration, so a "
             "stage cannot prove which bytes it is bound to"
         )
     raise IncompatibleReuse(
-        f"run {run_id!r} is bound to different {'; '.join(named)} than the currently loaded "
-        "run inputs. No stage work was written. Resume with the original sealed inputs, or "
-        "start a new run for the changed inputs"
+        ". ".join(named) + ". No stage work was written. Resume with the original sealed "
+        "inputs, or start a new run for the changed inputs"
     )
 
 

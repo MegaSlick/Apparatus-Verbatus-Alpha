@@ -191,6 +191,10 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+# Sentinel: "publish the ordinary transform", as against an explicit `None`.
+_WELL_FORMED = object()
+
+
 def _row(
     act: str, key: str, page: str, ordinal: int, outcome: str, evidence: list[dict]
 ) -> dict[str, Any]:
@@ -293,13 +297,23 @@ class _Designator:
         )
         return act
 
-    def propose_far_page_region(self, act: str, key: str, ordinal: int, bounds: dict[str, int]):
+    def propose_far_page_region(
+        self,
+        act: str,
+        key: str,
+        ordinal: int,
+        bounds: dict[str, int],
+        *,
+        transform: dict[str, Any] | None | object = _WELL_FORMED,
+    ):
         """A second, far-page region for an act `propose` already minted a row for.
 
         Shaped exactly as `propose`'s own region, on the far page a continuation
         would be cut over. No row is appended -- one act still seals one row --
         so the caller is responsible for splicing the returned record's
         reference into that row's own `evidence` list before sealing.
+        `transform` may be overridden to publish a region the consumer cannot
+        place; a producer can write one, so the consumer is held to refusing it.
         """
         page = self.pages[ordinal]
         page_id = page["subject_id"]
@@ -318,7 +332,9 @@ class _Designator:
                     "source_page_ordinal": ordinal,
                     "source_page_id": page_id,
                     "bounds": bounds,
-                },
+                }
+                if transform is _WELL_FORMED
+                else transform,
                 "raw_bounds": bounds,
                 "padding": None,
                 "image_path": page["payload"]["image_path"],
@@ -570,6 +586,30 @@ def test_a_structural_row_denying_a_continuation_the_designator_actually_cut_is_
 
     with pytest.raises(FatalAccounting, match="has_continuation"):
         expected_acts(context)
+
+
+def test_a_far_page_region_the_denominator_cannot_place_is_refused_not_dropped(real_root):
+    """A region with no transform object names no page, and must not vanish.
+
+    `has_continuation` is reconciled against the far-page regions the Designator
+    actually cut. A region whose `transform` is not an object belongs to neither
+    page list, so filtering it out silently would leave a `False` flag agreeing
+    with an empty far-page count while a continuation crop sat published beside
+    it -- and the Attestatores append the far page only when the flag is set.
+    """
+    designator = _Designator(real_root)
+    act = designator.propose(1, designator.rectangle(1))
+    key = designator.rows[-1]["act_key"]
+    far_region = designator.propose_far_page_region(
+        act, key, 2, designator.rectangle(2), transform=None
+    )
+    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="carries no transform object") as refusal:
+        expected_acts(context)
+    assert act in str(refusal.value)
 
 
 def test_a_malformed_real_minted_row_never_mentions_the_fixture(real_root):
