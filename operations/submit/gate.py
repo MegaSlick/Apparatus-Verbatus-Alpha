@@ -171,17 +171,46 @@ def _parse_policy(raw: bytes, path: Path | str) -> dict[str, Any]:
     return record
 
 
-def approved_storage_roots(policy: dict[str, Any]) -> tuple[Path, ...]:
-    """The exact locations the approved policy allows real material to live in.
+class ResolvedStorageRoots(NamedTuple):
+    """The roots that resolved, and every listed root that did not.
+
+    ``skipped`` is returned rather than logged and dropped because a narrowed
+    approved-root set is a fact about the run: on a pod the local ``private/``
+    root does not exist, on a laptop the pod volume does not, and in both cases
+    the gate quietly enforces a shorter list than the policy names. GOVERNANCE 2
+    does not let that live only inside a refusal that did not happen, so the
+    caller gets it on the success path too and writes it into its own record.
+    """
+
+    roots: tuple[Path, ...]
+    skipped: tuple[str, ...]
+
+
+def resolve_storage_roots(policy: dict[str, Any]) -> ResolvedStorageRoots:
+    """The exact locations the approved policy allows real material to live in,
+    beside every listed root that did not resolve here.
 
     A relative entry is resolved against the repository root, so `private/` in the
     policy means this checkout's `private/` and not whatever `private/` the current
     working directory happens to sit beside.
+
+    Each listed root is resolved independently rather than all-or-nothing: the
+    shipped policy names both the local ``private/`` root, present on every
+    checkout, and the pod's network-volume root, present only while a pod has
+    it mounted. A root that does not resolve on *this* machine is skipped, not
+    silently dropped -- ``GateRefusal`` is raised only when every listed root
+    fails to resolve, and its message names each skipped root and why, so a
+    host with no pod mounted still gets the local root and a pod still gets
+    both, while a policy whose roots are entirely absent is still a failed
+    check, never an unrestricted one. Every skipped root comes back here, on
+    the success path as well as in the refusal, so a caller with a durable
+    record can say which roots this machine did not have.
     """
     raw_roots = policy.get("storage_roots")
     if not isinstance(raw_roots, list) or not raw_roots:
         raise GateRefusal("the data-handling policy names no approved storage roots")
     roots: list[Path] = []
+    skipped: list[str] = []
     for raw_root in raw_roots:
         if not isinstance(raw_root, str) or not raw_root.strip():
             raise GateRefusal("a data-handling storage root is not a non-empty path")
@@ -190,14 +219,30 @@ def approved_storage_roots(policy: dict[str, Any]) -> tuple[Path, ...]:
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as error:
-            raise GateRefusal(
-                f"approved storage root {raw_root!r} does not exist; an unresolvable "
-                "root is a failed check, never an unrestricted one"
-            ) from error
+            skipped.append(f"{raw_root!r} (does not exist: {error})")
+            continue
         if not resolved.is_dir():
-            raise GateRefusal(f"approved storage root {raw_root!r} is not a directory")
+            skipped.append(f"{raw_root!r} (not a directory)")
+            continue
         roots.append(resolved)
-    return tuple(roots)
+    if not roots:
+        raise GateRefusal(
+            "none of the data-handling policy's approved storage roots resolve on this "
+            f"machine; an unresolvable root is a failed check, never an unrestricted one. "
+            f"Skipped: {skipped}"
+        )
+    return ResolvedStorageRoots(tuple(roots), tuple(skipped))
+
+
+def approved_storage_roots(policy: dict[str, Any]) -> tuple[Path, ...]:
+    """Just the resolved roots, for a caller with nowhere to record the rest.
+
+    Every caller that keeps a durable record of what it enforced should use
+    :func:`resolve_storage_roots` and write the skipped list down beside the
+    approved one.
+    """
+
+    return resolve_storage_roots(policy).roots
 
 
 def require_approved_storage_location(

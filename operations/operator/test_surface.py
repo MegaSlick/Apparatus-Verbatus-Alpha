@@ -2360,7 +2360,7 @@ def test_the_operator_does_not_read_the_ledger_before_the_door(
 def test_console_interrupt_never_prints_a_raw_traceback(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupt(_value):  # type: ignore[no-untyped-def]
+    def interrupt(_value, *, verb):  # type: ignore[no-untyped-def]
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "_network_volume", interrupt)
@@ -3114,6 +3114,60 @@ def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
         "/approved/batch",
         "--sealed-manifest",
         "/reviewed/submission.json",
+    ]
+
+
+def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The double-click route asks by name for the bootstrap report, the
+    pod-run report, and the bootstrap journal -- exactly what
+    ``--evidence-key`` is for -- each independently optional."""
+
+    answers = iter(
+        (
+            "fetch-run",
+            "brought-home",
+            "/local/into",
+            "EU-CZ-1:vol123",
+            "runs/brought-home/bootstrap-report.json",
+            "runs/brought-home/pod-run-report.json",
+            "",  # bootstrap journal left blank
+        )
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "fetch-run",
+        "--run-id",
+        "brought-home",
+        "--into",
+        "/local/into",
+        "--network-volume",
+        "EU-CZ-1:vol123",
+        "--evidence-key",
+        "runs/brought-home/bootstrap-report.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report.json",
+    ]
+
+
+def test_interactive_fetch_run_needs_no_evidence_key_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three blank answers mean none, not a refusal: every evidence key is optional."""
+
+    answers = iter(("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "fetch-run",
+        "--run-id",
+        "brought-home",
+        "--into",
+        "/local/into",
+        "--network-volume",
+        "EU-CZ-1:vol123",
     ]
 
 
@@ -4213,8 +4267,9 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
     """
     readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
     # A multi-word cell like `spend show` documents the verb plus its
-    # subcommand; the verb is its first word.
-    documented = set(re.findall(r"^\| `([a-z]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
+    # subcommand; the verb is its first word. A hyphen is part of a verb's
+    # name (`fetch-run`), not a word boundary.
+    documented = set(re.findall(r"^\| `([a-z-]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
     subparsers_action = next(
         action
         for action in cli.build_parser()._actions
@@ -4476,3 +4531,703 @@ def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
     lines = _surface(tmp_path, provider=provider).status()
 
     assert identity.owner_token not in "\n".join(lines)
+
+
+# --- the run verb carries the real-roster pair, together or not at all --------
+
+
+def test_run_forwards_the_roster_pair_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+    roster = tmp_path / "config" / "models-real.toml"
+    catalogue = tmp_path / "config" / "serving_recipes_real.toml"
+
+    with pytest.raises(OperatorError) as interrupted:
+        surface.run(
+            run_id="real-roster-run",
+            models_config=roster,
+            serving_recipes_config=catalogue,
+        )
+
+    assert interrupted.value.code is ErrorCode.RUN_INTERRUPTED
+    [(command, _cwd)] = observed
+    assert _argv_value(command, "--models-config") == str(roster.absolute())
+    assert _argv_value(command, "--serving-recipes-config") == str(catalogue.absolute())
+
+
+def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="fixture-roster-run")
+
+    [(command, _cwd)] = observed
+    assert "--models-config" not in command and "--serving-recipes-config" not in command
+
+
+@pytest.mark.parametrize("supplied", ["models_config", "serving_recipes_config"])
+def test_run_refuses_half_a_roster_before_any_child_starts(tmp_path: Path, supplied: str) -> None:
+    """One roster half without the other would seal the real chairs against the
+    fixture catalogue, or the reverse; the orchestrator digests both together."""
+
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="half-roster", **{supplied: tmp_path / "half.toml"})
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert "supply both or neither" in str(refusal.value.detail)
+    assert not observed
+
+
+def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    roster = tmp_path / "models-real.toml"
+    catalogue = tmp_path / "serving_recipes_real.toml"
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "run",
+                "--run-id",
+                "real-run",
+                "--models-config",
+                str(roster),
+                "--serving-recipes-config",
+                str(catalogue),
+            ]
+        )
+        == 0
+    )
+    assert observed["models_config"] == roster
+    assert observed["serving_recipes_config"] == catalogue
+
+
+# --- fetch-run: the tree comes home digest-checked, never overwriting ---------
+
+
+class DirectoryRunReader:
+    """A directory standing in for the volume's S3 view, as the launch drill does."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.overrides: dict[str, bytes] = {}
+        self.fetched: list[str] = []
+
+    def list_keys(self, prefix: str) -> tuple[str, ...]:
+        keys = [
+            path.relative_to(self.root).as_posix()
+            for path in sorted(self.root.rglob("*"))
+            if path.is_file()
+        ]
+        return tuple(key for key in keys if key.startswith(prefix))
+
+    def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
+        self.fetched.append(key)
+        payload = self.overrides.get(key, (self.root / key).read_bytes())
+        assert len(payload) <= max_bytes
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        return len(payload)
+
+
+def _volume_run(tmp_path: Path, run_id: str = "brought-home") -> tuple[Path, DirectoryRunReader]:
+    """A real, sealed run tree under `runs/<id>` on a directory standing in for the volume."""
+
+    from common.chairs.models import ChairIdentity, ServingDetails
+    from common.chairs.receipts import build_receipt
+    from common.contracts.envelope import build_envelope
+    from common.contracts.identities import artifact_id as make_artifact_id
+    from common.contracts.stages import DESIGNATOR
+    from common.runtree.store import RunTree
+
+    volume = tmp_path / "volume"
+    page = b"synthetic page one"
+    tree = RunTree.create(
+        volume / "runs",
+        run_id,
+        source_manifest=[
+            {"relative_path": "proof/page-1.png", "sha256": _sha256(page), "ordinal": 1}
+        ],
+        config_digest="c" * 64,
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1", "attestator_2", "attestator_3"],
+    )
+    tree.put_blob(DESIGNATOR, page)
+    tree.publish_artifact(
+        build_envelope(
+            run_id=run_id,
+            artifact_id=make_artifact_id(DESIGNATOR, "proposal", "pg_0123456789abcdef"),
+            subject_id="pg_0123456789abcdef",
+            stage=DESIGNATOR,
+            kind="proposal",
+            outcome="proposed",
+            config_digest="c" * 64,
+            adapter_revision="fake-designator-v0",
+            inputs=[],
+            payload={"proposals": 2},
+        )
+    )
+    tree.write_manifest(DESIGNATOR)
+    # A real serving receipt, so a fetch's never-entered digest arm for
+    # `receipts/sha256/` is exercised the same as the blob and artifact arms.
+    identity = ChairIdentity(
+        role="attestator_1",
+        source="local-repository",
+        repo=None,
+        path="fixture/attestator_1",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/attestator_1.json",
+        adapter_of=None,
+        serving_recipe="fake-attestator-v0",
+        license_note="fixture only",
+    )
+    details = ServingDetails(
+        tokenizer_revision="a" * 64,
+        seed=0,
+        context_cap=4096,
+        pixel_cap=1_000_000,
+        engine="fixture-engine",
+        engine_version="v0",
+        dtype="float32",
+        adapter_identity=None,
+        endpoint="http://fixture.invalid/seat",
+        started_at="2026-08-03T00:00:00Z",
+    )
+    tree.write_run_receipt(build_receipt(identity, details))
+    # Publication residue a crashed pod leaves beside the manifest: skipped by
+    # name, never fetched as evidence.
+    (tree.root / "2_designator" / ".manifest.json.tmp-residue").write_bytes(b"half")
+    return volume, DirectoryRunReader(volume)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _files_under(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.name.startswith(".")
+    }
+
+
+def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert _files_under(into / "brought-home") == _files_under(volume / "runs" / "brought-home")
+    assert not (into / "brought-home" / "2_designator" / ".manifest.json.tmp-residue").exists()
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert payload["fetched"] == len(_files_under(volume / "runs" / "brought-home"))
+    assert payload["reused"] == 0
+    assert payload["stages_verified"] == ["designator"]
+    # Every artifact here is recorded by a stored manifest, so none of them was
+    # verified "by their own envelope" -- naming them all was a false statement
+    # about what was measured (GOVERNANCE 10) and made the field useless for
+    # telling a crashed stage's artifacts from the rest.
+    assert payload["envelope_only_artifacts"] == []
+    assert payload["excluded_publication_temporaries"] == [
+        "2_designator/.manifest.json.tmp-residue"
+    ]
+    assert payload["zero_gpu_hours"] is True
+    assert any("every one checked against the run tree's own digests" in line for line in messages)
+    # The first thing fetched was the authority, then the inventories, then
+    # what they account for -- so a bad object stops the fetch at itself.
+    assert reader.fetched[0] == "runs/brought-home/run.json"
+    assert reader.fetched[1].endswith("/manifest.json")
+
+    again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    repeated = surface.receipts.read(again)["payload"]
+    assert repeated["fetched"] == 0
+    assert repeated["reused"] == payload["fetched"]
+
+
+def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, bytes]:
+    """A launch's PREFLIGHT tree beside the run tree, as `bootstrap_main` writes it.
+
+    A golden page, a serving log, and one content-addressed receipt -- the
+    three shapes this pass has to handle: opaque bytes, plain text, and an
+    object whose name is its own digest.
+    """
+
+    page = b"\x89PNG\r\n\x1a\nsynthetic golden page"
+    log = b"vllm: served attestator_1\n"
+    receipt = b'{"schema":"serving-receipt.v1"}'
+    written = {
+        f"preflight/{stem}/golden-page/witness-abc.png": page,
+        f"preflight/{stem}/logs/attestator_1.log": log,
+        f"preflight/{stem}/receipts/sha256/{_sha256(receipt)}.json": receipt,
+    }
+    for key, payload in written.items():
+        target = volume / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return written
+
+
+def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
+    tmp_path: Path,
+) -> None:
+    """The run tree is not the whole record of a run that billed a card.
+
+    The launch's PREFLIGHT tree -- which chairs were preflighted, against which
+    catalogue digests, at what measured tier -- is written outside
+    ``runs/<run_id>/`` and used to have no tracked path home, while the volume
+    it lives on is destroyed under the retention policy (GOVERNANCE 6). What
+    still cannot be fetched by name is said out loud rather than left to be
+    inferred from an empty folder (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    written = _volume_evidence(volume)
+    printed: list[str] = []
+    surface = _surface(tmp_path, output=printed)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert any("none came home" in line for line in printed)
+    evidence_root = into / "evidence"
+    for key, payload in written.items():
+        assert (evidence_root / key).read_bytes() == payload
+    payload = surface.receipts.read(receipt)["payload"]["evidence"]
+    assert payload["fetched"] == len(written)
+    assert payload["reused"] == 0
+    assert payload["refusals"] == []
+    assert {entry["key"] for entry in payload["objects"]} == set(written)
+    assert all(entry["sha256"] == _sha256(written[entry["key"]]) for entry in payload["objects"])
+    assert "bootstrap journal" in payload["records_only_by_name"]
+    assert "--evidence-key" in payload["records_only_by_name"]
+    # No key was named, so here the field may say outright that none came home.
+    assert "No key was named this call" in payload["records_only_by_name"]
+
+    again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    repeated = surface.receipts.read(again)["payload"]["evidence"]
+    assert repeated["fetched"] == 0
+    assert repeated["reused"] == len(written)
+
+
+def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
+    tmp_path: Path,
+) -> None:
+    """The launch-bound reports are named by the operator who knows their keys.
+
+    A key that is not there is recorded as a refusal and never brings the
+    verified run tree down with it -- losing a proven fetch because a log file
+    could not be read would be the wrong trade.
+
+    And the receipt may not contradict itself while it does this: a payload that
+    records the pod-run report fetched with its digest cannot also assert that
+    the pod-run report was not fetched. The field states the derivation limit
+    and how many keys this call named; what arrived is read off ``objects`` and
+    ``refusals`` (GOVERNANCE 10).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    report = b'{"schema":"pod-run-report.v1"}'
+    (volume / "pod-run-report-launch7.json").write_bytes(report)
+    printed: list[str] = []
+    surface = _surface(tmp_path, output=printed)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(
+        run_id="brought-home",
+        into=into,
+        reader=reader,
+        evidence_keys=("pod-run-report-launch7.json", "pod-run-report-absent.json"),
+    )
+
+    outcome = surface.receipts.read(receipt)["payload"]
+    assert outcome["state"] == "verified"
+    evidence = outcome["evidence"]
+    assert (into / "evidence" / "pod-run-report-launch7.json").read_bytes() == report
+    assert [entry["key"] for entry in evidence["objects"]] == ["pod-run-report-launch7.json"]
+    assert any("pod-run-report-absent.json" in reason for reason in evidence["refusals"])
+    limit = evidence["records_only_by_name"]
+    assert "2 key(s) were named this call" in limit
+    assert "No key was named this call" not in limit
+    assert "not fetched" not in limit
+    # The console must not contradict the receipt either.
+    assert any("2 key(s) were named this call" in line for line in printed)
+    assert not any("none came home" in line for line in printed)
+
+
+def test_fetch_run_records_a_content_addressed_evidence_object_that_forged_its_name(
+    tmp_path: Path,
+) -> None:
+    """An evidence receipt must still hash to its own name."""
+
+    volume, reader = _volume_run(tmp_path)
+    written = _volume_evidence(volume)
+    [addressed] = [key for key in written if "/receipts/sha256/" in key]
+    reader.overrides[addressed] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    outcome = surface.receipts.read(receipt)["payload"]
+    assert outcome["state"] == "verified", "the run tree itself is untouched by this"
+    evidence = outcome["evidence"]
+    assert any("not the one its name claims" in reason for reason in evidence["refusals"])
+    assert not (into / "evidence" / addressed).exists()
+
+
+def test_fetch_run_refuses_a_receipt_that_does_not_hash_to_its_name(tmp_path: Path) -> None:
+    """The receipt arm of the content-addressed digest check, not just the blob arm."""
+
+    volume, reader = _volume_run(tmp_path)
+    receipts_dir = volume / "runs" / "brought-home" / "receipts" / "sha256"
+    [receipt] = [path for path in receipts_dir.iterdir() if path.is_file()]
+    relative = receipt.relative_to(volume / "runs" / "brought-home").as_posix()
+    reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert relative in str(refusal.value.detail)
+    assert "content-addressed" in str(refusal.value.detail)
+    # The forged bytes were fetched fresh (no local copy existed) before the
+    # digest check ran; the refusal must not leave them under their real name.
+    assert not (into / "brought-home" / relative).exists()
+
+
+def test_fetch_run_refuses_an_object_no_stage_accounts_for(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "notes.txt").write_text("stray", encoding="utf-8")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "runs/brought-home/notes.txt" in str(refusal.value.detail)
+    assert reader.fetched == []  # refused at the listing, before a byte moved
+
+
+def test_fetch_run_refuses_an_artifact_whose_bytes_differ_from_its_manifest(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path)
+    manifest = json.loads(
+        (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").read_text("utf-8")
+    )
+    [entry] = manifest["artifacts"]
+    reader.overrides[f"runs/brought-home/{entry['relative_path']}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "its stage manifest records" in str(refusal.value.detail)
+    # The forged bytes were fetched fresh (no local copy existed) before the
+    # digest check ran; the refusal must not leave them under their real name.
+    assert not (tmp_path / "local" / "brought-home" / entry["relative_path"]).exists()
+
+
+def test_fetch_run_brings_home_a_stage_that_never_reached_finish(tmp_path: Path) -> None:
+    """A stage whose last write never reached ``StageContext.finish()`` -- a crash,
+
+    an ``EXIT_FATAL``, a ``SIGKILL``, or the pod timer destroying the pod at the
+    hard deadline -- writes artifacts with no ``manifest.json``. Such a stage is
+    still brought home, its artifacts verified through their own envelope
+    (the same checks a stored manifest would apply), and the outcome is named
+    ``verified-partial``, never ``verified``.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified-partial"
+    assert payload["unmanifested_stages"] == ["designator"]
+    assert payload["stages_verified"] == []
+    [envelope_only] = payload["envelope_only_artifacts"]
+    assert envelope_only.startswith("2_designator/artifacts/")
+    assert (into / "brought-home" / "2_designator" / "artifacts").exists()
+    assert not (into / "brought-home" / "2_designator" / "manifest.json").exists()
+
+
+def test_fetch_run_still_refuses_a_forged_artifact_in_an_unmanifested_stage(
+    tmp_path: Path,
+) -> None:
+    """No manifest to check a forged artifact against does not mean no check at all."""
+
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
+    artifacts_dir = volume / "runs" / "brought-home" / "2_designator" / "artifacts"
+    [artifact_path] = [path for path in artifacts_dir.rglob("*.json") if path.is_file()]
+    relative = artifact_path.relative_to(volume / "runs" / "brought-home").as_posix()
+    reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert not (tmp_path / "local" / "brought-home" / relative).exists()
+    # And no empty run-tree skeleton either: a refused fetch that left the
+    # directories behind put a structure on disk no completed fetch wrote, which
+    # the partial receipt does not mention and a later fetch would walk.
+    assert not (tmp_path / "local" / "brought-home").exists()
+
+
+def test_fetch_run_refuses_a_blob_that_does_not_hash_to_its_name(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    blobs = volume / "runs" / "brought-home" / "2_designator" / "blobs" / "sha256"
+    [blob] = [path for path in blobs.iterdir() if path.is_file()]
+    reader.overrides[f"runs/brought-home/2_designator/blobs/sha256/{blob.name}"] = b"other"
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "not the one its name claims" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_manifest_the_fetched_artifacts_do_not_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A manifest naming an artifact that never arrived does not reconcile."""
+
+    volume, reader = _volume_run(tmp_path)
+    manifest_path = volume / "runs" / "brought-home" / "2_designator" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["artifacts"].append(
+        {
+            "artifact_id": "proposal_deadbeefdeadbeef",
+            "kind": "proposal",
+            "subject_id": "pg_deadbeefdeadbeef",
+            "outcome": "proposed",
+            "relative_path": "2_designator/artifacts/proposal/proposal_deadbeefdeadbeef.json",
+            "sha256": "d" * 64,
+        }
+    )
+    reader.overrides["runs/brought-home/2_designator/manifest.json"] = canonical_bytes(manifest)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "does not match the manifest the fetched artifacts rebuild" in str(refusal.value.detail)
+
+
+def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:
+    _volume, reader = _volume_run(tmp_path)
+    into = tmp_path / "local"
+    local_run = into / "brought-home" / "run.json"
+    local_run.parent.mkdir(parents=True)
+    local_run.write_bytes(b"a different run wearing this name\n")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "was not overwritten" in str(refusal.value.detail)
+    assert local_run.read_bytes() == b"a different run wearing this name\n"
+    assert [path.name for path in local_run.parent.iterdir()] == ["run.json"]
+
+
+def test_fetch_run_refuses_a_prefix_with_nothing_under_it(tmp_path: Path) -> None:
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="never-written", into=tmp_path / "local", reader=reader)
+
+    assert "nothing is stored under 'runs/never-written/'" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_prefix_with_no_run_authority(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "run.json").unlink()
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "no run.json under" in str(refusal.value.detail)
+    assert reader.fetched == []
+
+
+def test_fetch_run_refuses_a_tampered_run_authority(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    authority = json.loads((volume / "runs" / "brought-home" / "run.json").read_text("utf-8"))
+    authority["config_digest"] = "e" * 64
+    reader.overrides["runs/brought-home/run.json"] = canonical_bytes(authority)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert "self-hash" in str(refusal.value.detail)
+    assert reader.fetched == ["runs/brought-home/run.json"]
+
+
+def test_fetch_run_needs_a_network_volume_when_no_reader_is_supplied(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local")
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "--network-volume" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_bad_run_id_by_name(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(
+            run_id="Not A Run", into=tmp_path / "local", reader=DirectoryRunReader(tmp_path)
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "run_id" in str(refusal.value.detail)
+
+
+def test_fetch_run_writes_a_partial_receipt_when_it_stops(tmp_path: Path) -> None:
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "stray.bin").write_bytes(b"?")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    receipt = surface._descriptor_receipt("fetch-run")
+    assert receipt is not None
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "partial"
+    assert "stray.bin" in payload["detail"]
+
+
+def test_cli_fetch_run_reads_the_named_volume_and_never_a_local_stand_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def fetch_run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "fetch-run",
+                "--run-id",
+                "brought-home",
+                "--into",
+                str(tmp_path / "local"),
+                "--network-volume",
+                "EU-CZ-1:vol123",
+            ]
+        )
+        == 0
+    )
+    assert observed["run_id"] == "brought-home"
+    assert observed["into"] == tmp_path / "local"
+    assert observed["volume"].volume_id == "vol123"
+    assert observed["volume"].datacenter_id == "EU-CZ-1"
+    assert (
+        cli.main(["--workspace", str(tmp_path), "fetch-run", "--run-id", "x", "--into", "y"]) == 2
+    )
+
+
+def test_cli_fetch_run_names_itself_not_upload_on_a_malformed_volume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A malformed ``--network-volume`` on ``fetch-run`` must not send the
+    operator toward ``verbatus upload``.
+
+    ``UPLOAD_VOLUME_UNAVAILABLE``'s registered copy ends "run `verbatus
+    upload` again", which is backwards advice for an operator who asked to
+    read a run tree home. ``_network_volume`` is verb-aware for exactly this
+    reason: on ``fetch-run`` the same malformed-input refusal is
+    ``FETCH_RUN_FAILED``, whose copy names ``verbatus fetch-run``, matching
+    every other volume failure this verb can hit further downstream
+    (``OperatorSurface.fetch_run``).
+    """
+
+    exit_code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "fetch-run",
+            "--run-id",
+            "brought-home",
+            "--into",
+            str(tmp_path / "local"),
+            "--network-volume",
+            "EU-CZ-1",
+        ]
+    )
+
+    assert exit_code == 2
+    printed = capsys.readouterr().out
+    assert "verbatus fetch-run" in printed
+    assert "verbatus upload" not in printed
+
+
+def test_cli_upload_still_names_itself_on_a_malformed_volume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The verb-aware error code leaves ``upload``'s own behavior untouched."""
+
+    exit_code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "upload",
+            "--source",
+            str(tmp_path / "pages"),
+            "--sealed-manifest",
+            str(tmp_path / "sealed-manifest.json"),
+            "--network-volume",
+            "EU-CZ-1",
+        ]
+    )
+
+    assert exit_code == 2
+    printed = capsys.readouterr().out
+    assert "verbatus upload" in printed
+    assert "verbatus fetch-run" not in printed

@@ -256,6 +256,52 @@ def build_parser() -> PlainParser:
         "--submission-manifest", type=Path, help="self-hashed ledger for the real folder"
     )
     run.add_argument("--data-gate-policy", type=Path, help="approved-storage policy for real input")
+    run.add_argument(
+        "--models-config",
+        type=Path,
+        help="the chair roster to seal into this run (config/models-real.toml for the real "
+        "chairs); always paired with --serving-recipes-config",
+    )
+    run.add_argument(
+        "--serving-recipes-config",
+        type=Path,
+        help="the serving catalogue the roster's chairs are served under "
+        "(config/serving_recipes_real.toml with the real roster); always paired with "
+        "--models-config",
+    )
+
+    fetch_run = verbs.add_parser(
+        "fetch-run",
+        help="bring one run tree back from the network volume, every object digest-checked",
+    )
+    fetch_run.add_argument("--run-id", required=True, help="the run pod_run wrote on the volume")
+    fetch_run.add_argument(
+        "--into",
+        type=Path,
+        required=True,
+        help="local run root; the tree lands at <into>/<run-id> and an existing file there "
+        "is compared, never replaced",
+    )
+    fetch_run.add_argument(
+        "--network-volume",
+        metavar="DATACENTER:VOLUME_ID",
+        required=True,
+        help=(
+            "the RunPod network volume the run was written to, for example EU-CZ-1:abc123. "
+            "Reading it needs no pod and uses no GPU-hours. Credentials are read from "
+            "RUNPOD_S3_ACCESS_KEY and RUNPOD_S3_SECRET_KEY in your environment, never from a "
+            "file here"
+        ),
+    )
+    fetch_run.add_argument(
+        "--evidence-key",
+        action="append",
+        metavar="KEY",
+        help="one more volume key to bring home beside the run tree, repeatable. The "
+        "launch's preflight/ tree comes home on its own; the bootstrap and run reports and "
+        "the bootstrap journal are named with the launch token at paths this verb cannot "
+        "derive, so name them here. The receipt says which were fetched and which were not",
+    )
 
     export = verbs.add_parser(
         "export", help="copy the recorded base Armarium evidence locally and print reconciliation"
@@ -387,12 +433,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             state,
             notifier=notify_bridge.shell_notifier() if args.notify else notify_bridge.silent,
         )
-        volume = _network_volume(getattr(args, "network_volume", None))
+        volume = _network_volume(getattr(args, "network_volume", None), verb=args.verb)
         if volume is None:
             _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
         else:
             _print("Verbatus will not start, adopt or close any pod: that stays offline.")
-            _print(f"You asked it to send files to {volume.describe()}.")
+            if args.verb == "fetch-run":
+                _print(f"You asked it to read a run tree from {volume.describe()}.")
+            else:
+                _print(f"You asked it to send files to {volume.describe()}.")
         if args.verb == "launch":
             request = load_request(args.request)
             spend = args.spend or workspace / "config" / "spend.toml"
@@ -442,6 +491,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 submission_folder=args.submission_folder,
                 submission_manifest=args.submission_manifest,
                 data_gate_policy=args.data_gate_policy,
+                models_config=args.models_config,
+                serving_recipes_config=args.serving_recipes_config,
+            )
+        elif args.verb == "fetch-run":
+            surface.fetch_run(
+                run_id=args.run_id,
+                into=args.into,
+                volume=volume,
+                evidence_keys=tuple(args.evidence_key or ()),
             )
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
@@ -920,21 +978,34 @@ def load_request(path: str | Path) -> PodCreateRequest:
         ) from error
 
 
-def _network_volume(value: str | None) -> VolumeSpec | None:
-    """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback."""
+def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
+    """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
+
+    The error code names the verb this parse is for, not only the volume
+    problem: `UPLOAD_VOLUME_UNAVAILABLE`'s registered copy tells the operator
+    to run `verbatus upload` again, which is the right advice for `upload`
+    and `ingest` but sends a `fetch-run` operator -- who asked to read a run
+    tree home, not send one -- toward sending files instead. `fetch-run`
+    reports the same malformed-input refusal as `FETCH_RUN_FAILED`, whose
+    copy names `verbatus fetch-run`, exactly as `OperatorSurface.fetch_run`
+    already does for the volume failures it detects further downstream.
+    """
 
     if value is None:
         return None
+    code = (
+        ErrorCode.FETCH_RUN_FAILED if verb == "fetch-run" else ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
+    )
     datacenter, separator, volume_id = value.partition(":")
     if not separator or not datacenter or not volume_id:
         raise OperatorError(
-            ErrorCode.UPLOAD_VOLUME_UNAVAILABLE,
+            code,
             detail="a network volume is written as DATACENTER:VOLUME_ID, for example EU-CZ-1:abc123",
         )
     try:
         return VolumeSpec(datacenter_id=datacenter, volume_id=volume_id)
     except VolumeTransferRefusal as error:
-        raise OperatorError(ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)) from error
+        raise OperatorError(code, detail=str(error)) from error
 
 
 def _interactive_arguments() -> list[str]:
@@ -942,7 +1013,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, export, close, status, spend, review, advance, or backup."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1091,6 +1162,32 @@ def _interactive_arguments() -> list[str]:
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]
+    if verb == "fetch-run":
+        run_id = _ask("The run ID pod_run wrote on the volume")
+        into = _ask("Local folder to bring the run tree into")
+        volume = _ask("Network volume, as DATACENTER:VOLUME_ID")
+        if not run_id or not into or not volume:
+            _print(
+                "Fetch-run needs a run ID, a local folder and a network volume. Nothing changed."
+            )
+            return []
+        arguments = ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
+        # The launch's preflight/ tree comes home on its own; the bootstrap
+        # report, the pod-run report, and the bootstrap journal are named
+        # with the launch token at paths this verb cannot derive on its own
+        # (`fetch_run.add_argument("--evidence-key", ...)` above), so this
+        # route asks for each by name -- optional, blank skips it -- rather
+        # than only being reachable through the command line's repeatable
+        # `--evidence-key`.
+        for label in (
+            "Volume key for the bootstrap report (leave blank to skip)",
+            "Volume key for the pod-run report (leave blank to skip)",
+            "Volume key for the bootstrap journal (leave blank to skip)",
+        ):
+            evidence_key = _ask(label)
+            if evidence_key:
+                arguments.extend(("--evidence-key", evidence_key))
+        return arguments
     if verb == "export":
         return ["export"]
     if verb == "close":

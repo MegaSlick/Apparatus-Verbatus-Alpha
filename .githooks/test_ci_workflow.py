@@ -154,12 +154,55 @@ def _pinned(requirements):
     return pins
 
 
+# The chamber image and the everyday non-frozen gate install only these two
+# groups (`.githooks/check-all.sh` and the Dockerfile both name them). `pod` is
+# installed only by `operations/pod/bootstrap.py`, on the pod itself, never on
+# a laptop or in the chamber image -- putting a ~10 GB CUDA stack into the
+# image it is not is not a gap requirements-dev.txt should close. A future
+# laptop-side group has to earn its way into IMAGE_GROUPS explicitly; the
+# marker assertion below is the tripwire that catches one that tries to ride
+# along silently instead.
+IMAGE_GROUPS = ("test", "audit")
+
+
 def test_the_image_requirements_match_the_projects_declared_direct_environment():
     """Both independently consumed declarations must pin the same direct environment."""
     import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    group_entries = [entry for group in project["dependency-groups"].values() for entry in group]
+    dependency_groups = project["dependency-groups"]
+    excluded_entries = [
+        entry
+        for name, group in dependency_groups.items()
+        if name not in IMAGE_GROUPS
+        for entry in group
+    ]
+    # Two different problems, reported separately. A PEP 735
+    # `{include-group = "..."}` table here is a shape this test does not
+    # understand, not an entry missing a marker -- the comment further down
+    # explains that those tables are a real thing to expect -- and folding both
+    # into one assertion made a future group that used one fail with a message
+    # naming the wrong problem.
+    excluded_tables = [entry for entry in excluded_entries if not isinstance(entry, str)]
+    assert all(
+        isinstance(entry, dict) and set(entry) == {"include-group"} for entry in excluded_tables
+    ), (
+        f"unrecognised non-string dependency-group entries outside {IMAGE_GROUPS}: "
+        f"{excluded_tables}; this test compares environment markers and does not know "
+        "what these declare"
+    )
+    unmarked = [entry for entry in excluded_entries if isinstance(entry, str) and ";" not in entry]
+    assert not unmarked, (
+        f"dependency-group entries outside {IMAGE_GROUPS} without an environment "
+        f"marker: {unmarked}; an unmarked entry would install everywhere "
+        "and this test would silently stop comparing it"
+    )
+    group_entries = [
+        entry
+        for name, group in dependency_groups.items()
+        if name in IMAGE_GROUPS
+        for entry in group
+    ]
     # PEP 735 lets a group hold `{include-group = "..."}` tables. `_pinned` would
     # be handed the table and fail on `entry.strip()` with an AttributeError,
     # reporting a type error where this test is meant to report environment

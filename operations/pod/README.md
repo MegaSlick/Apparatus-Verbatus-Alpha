@@ -89,20 +89,40 @@ check.
   left as-is by this record-only unit rather than migrated: no v2 field name is
   asserted anywhere in this repository, and writing one in without fetching
   v2's actual create-body schema would trade one unverified assumption for
-  another on a money path. The migration is its own section of work — record
-  each v2 page and its check date the way the four v1 pages are recorded here
-  today, then touch code — not something this unit does.
+  another on a money path. **That record now exists: `V2_MIGRATION.md` beside
+  this file** maps every v1 endpoint, field, status code and lifecycle word the
+  adapter uses to its v2 counterpart, each with the documentation page and the
+  date it was read, names the ones with none, and ends with the plan the next
+  unit executes. Two of its findings change the shape of that work rather than
+  its schedule: the v2 create body has **no `interruptible` field and no
+  `dockerStartCmd`** (only a single `args` string for the image's entrypoint),
+  so the two facts the paragraph above says v1 proves are, under v2, facts the
+  next unit must find another page for or put to Tyrel as a rule-9 conflict.
+  No v2 code is in this tree; the v1 adapter is unchanged by the record.
 
-  **A second, independent gap the ruling does not close on its own: there is no
-  account-balance observer anywhere in this tree.** `RunPodProvider.balance_observer`
-  is an injected callable with no default; `observe_account_balance` raises
-  "RunPod account balance source was not configured" until one is supplied, and
-  `spend.py`'s balance-floor gate then refuses every paid action. The
-  2026-09-01 research found balance and spend observability only in GraphQL
-  (`myself { clientBalance currentSpendPerHr }`) and located no REST v1 or v2
-  equivalent in that pass — documented absence, not a verified negative; on
-  that reading the version move does not touch balance. No live pod — not even the Boot A
-  drill below — can be created until this observer exists. `fake_provider.py`
+  **The account-balance observer now exists, inside the adapter.**
+  `GraphQLBalanceObserver` in `provider_runpod.py` POSTs the one documented
+  query — `myself { clientBalance currentSpendPerHr }` — to RunPod's GraphQL
+  endpoint through the same redirect-refusing, size-bounded urllib transport
+  the REST verbs use, with the key placed as the `api_key` query parameter
+  because that is the only form the GraphQL documentation publishes (the
+  module docstring names the page and date); every error string and fixture
+  record scrubs it. It is the **default** `balance_observer` whenever the
+  provider is built over a live `UrllibRunPodTransport`, derived by
+  `UrllibRunPodTransport.sibling` so the provider never handles the key; a
+  fake transport still gets none, so the "balance source was not configured"
+  refusal remains reachable offline. It refuses by name a non-200, a redirect
+  (never followed), a body that is not a JSON object, a GraphQL `errors`
+  array, a missing `data`, `myself`, `clientBalance` or `currentSpendPerHr`, a
+  value that is not a JSON number, a negative balance, and any
+  credential-shaped key anywhere in the answer — the query asked for two
+  numbers. **Currency is a documented reading, not an observed one:** the
+  GraphQL schema names none; the billing pages say USD and "a dollar amount";
+  the v1 pod page says "Runpod credits per hour"; the observation's `source`
+  says "US dollars per the vendor's billing documentation" and the first live
+  run compares the figure against the console. The GraphQL route itself is
+  now documented as retiring in early 2027 and neither v2 billing endpoint
+  reports a balance — `V2_MIGRATION.md` §1 carries that. `fake_provider.py`
   has a fixed local price sheet, exact-token crash recovery, and injected
   failures only.
 - `shutdown.py` is written before launch. Its only green close result requires a
@@ -270,11 +290,31 @@ check.
   target stays optional: no submission manifest on the volume is a vacuous
   success and this process needs no object-store client at all; a manifest
   present with no configured target is a refusal, never a silently skipped
-  upload. `PREFLIGHT` stays honestly red: no production `ChairCacheVerifier` or
-  `SmokeReader` exists anywhere in this repository, only fixture adapters in
-  tests and the operator's offline surface — Spec 05 owns that real assembly,
-  and this file wires named stand-ins rather than borrow a fixture pass into a
-  live pod's preflight. Both the ordinary hold and the `--hold-only` drill
+  upload. `PREFLIGHT` is wired to the real things now: `RegistryChairCacheVerifier`
+  runs `ChairRegistry.ensure` over the plan's roster for the cache half, and the
+  smoke half is the serving package's own production seam
+  (`assemble_serving_smoke_reader` around `ServingManager`), fed
+  `operations/serving/smoke.py::VisionSmokeCall` with a witness the pod draws
+  from the CSPRNG and renders onto a golden page under
+  `<volume>/preflight/<report stem>/` moments before the read — so the value a
+  chair must read back was never in a committed file or a prompt. The serving
+  receipt, launch audit and evidence manifest each smoke publishes land
+  content-addressed in that same directory (`PodPreflightReceiptPublisher`),
+  because no run tree exists yet for a `StageContext` to own them; the
+  catalogue is `--serving-recipes-config` (default the fixture-only
+  `config/serving_recipes.toml`; a real launch names
+  `config/serving_recipes_real.toml`), and `--fixture` with
+  `--page-witness-file` lets an operator supply a rendered page instead.
+  `test_bootstrap_main.py` proves the wiring green through the real registry
+  over the committed model fixtures and the serving package's fakes, and red
+  by chair name when a row is unproven. **One thing keeps the first real
+  `PREFLIGHT` red, and it is not a wiring fault:** every vLLM row in
+  `config/serving_recipes_real.toml` is `preflight_state = "unproven"`, which
+  `ServingManager.start` refuses by name before it launches anything, so a
+  reviewer must stamp rows proven first (the serving README says that happens
+  after a real-silicon preflight — a circle this unit names rather than cuts).
+  The stack those rows name is installable now, see
+  "The serving stack, re-planned and locked" below. Both the ordinary hold and the `--hold-only` drill
   hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer
   factory reads), so this process's own end approximately coincides with the
   pod-side timer closing the pod regardless. Refusals precede any action: a
@@ -307,6 +347,114 @@ check.
   predicted this unit's tests would close three of deferral 04-5's five
   untested seams; verified against the code as it stands, they do not. See
   the rewritten 04-5 row below for what is and is not actually covered.
+- `pod_run.py`, run as `python -m operations.pod.pod_run <run flags> -- <bootstrap_main
+  argv>`, is the one tracked entrypoint that runs the pipeline on a pod. It is
+  composed from `bootstrap_main` rather than beside it: the argv after `--` is
+  prepared and run through that module's own `prepare`/`run_bootstrap`, so every
+  refusal, the write probe, the credential scrub and the hard deadline are the
+  same ones a plain bootstrap gets. After a green journal it starts
+  `pipeline/orchestrator/run.py` as a subprocess of the pod's own interpreter
+  over the volume — run root `<volume>/runs` (or `--run-root`, inside the
+  volume), `--submission-folder`/`--submission-manifest` inside the volume,
+  `--models-config` and `--serving-recipes-config` taken from the bootstrap plan
+  (the roster `PREFLIGHT` measured is the roster the run serves; naming a
+  different pair here is not offered), `--data-gate-policy` inside the
+  repository — and writes a `pod-run-report.v1` at its launch-bound
+  `--report-path` before, during and after: `bootstrapping`, `running`, then
+  `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`. **Exit
+  codes never read complete for a partial run:** 0 only when the orchestrator
+  returned `EXIT_COMPLETE`; 3 held and 4 halted mirror the orchestrator's own;
+  2 a named refusal before anything ran; 5 a red bootstrap step; 6 an
+  orchestrator that could not start or exited outside its vocabulary. Refusals
+  are by name for every missing input — no `--`, a `--hold-only` bootstrap
+  plan, a run report path that is the bootstrap's or lacks the launch token, a
+  run root or submission outside the volume, a submission folder or manifest
+  that is not there, a policy outside the repository, a bad run id — and **the
+  data gate is asked first**, before a model is fetched on a billing card:
+  `config/data_handling_policy.json` now names the pod volume mount path
+  (`operations/pod/boot_a_request.py`'s sealed `volume_mount_path`) beside the
+  local `private/` root — that listing was a disclosure decision, Tyrel's
+  under hard rule 1, made once rather than per-launch — so a submission
+  folder under either listed root is approved and one outside every listed
+  root is refused here, by name, before a model is fetched on a billing card.
+  **The ruling that listing rests on, recorded here so it is readable inside
+  the repository.** On 2026-09-01 Tyrel ruled that everything a pod produces
+  is kept on the attached network volume until it is exported locally with the
+  results, the Perlector training inputs included; the consequence taken from
+  it is that the volume is an approved storage root for the duration of a run,
+  and that `verbatus fetch-run` is the export path home. The verbatim ruling
+  and its date are in `workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md`,
+  which is gitignored like the whole workbench — so the operative decision is
+  written out here as well, in the project's voice, rather than resting on a
+  citation nobody reading this tree can open.
+  **The narrowing is recorded, not only the approval.** The shipped policy
+  names two roots and almost no machine has both: a pod has no local
+  `private/`, a laptop has no mounted volume. `gate.resolve_storage_roots`
+  returns the roots that resolved *and* the ones that did not, and `pod_run`
+  writes both into its run report (`approved_storage_roots` and
+  `skipped_storage_roots`), on every run rather than only in the all-absent
+  refusal, so a reader can tell which list was actually enforced (GOVERNANCE
+  2).
+  **There is no `--placement-tier` flag.** The consult that asked for this
+  entrypoint named one; the orchestrator and the stage parser accept none and
+  no stage reads a tier as the code stands, so `pod_run` records the tier the
+  green `PREFLIGHT` receipt measured in its run report and refuses a green
+  bootstrap whose receipt carries none. **It holds only for a run that
+  finished.** After `complete` or `held` it holds to the shared hard deadline
+  exactly as `bootstrap_main` does (a liveness line beside the run report,
+  never over it), because `pod_timer.run_with_bootstrap` treats any child exit
+  before the deadline as `completed-early` and closes the pod with a non-green
+  timer report; that hold is paid idle time between a finished run and the
+  deadline, and closing early on a complete run would be a `pod_timer` contract
+  change this unit does not make. After `halted`, `failed`, or an orchestrator
+  that could not start, it returns at once and lets the timer close the pod —
+  the same cheap close the red-bootstrap branch already takes, because holding
+  a rented card to the deadline for a run that produced nothing further is
+  paying for nothing (GOVERNANCE 8, hard rule 2). Nothing is lost by leaving:
+  the run tree, both reports, the journal and the preflight evidence are on the
+  volume, which outlives the pod, and `verbatus fetch-run` reads it over S3 with
+  no pod running. Which way it went is in the run report's
+  `held_to_hard_deadline`. `test_pod_run.py` drives all of it
+  against a fakes-only bootstrap and a recorded orchestrator: no chair is
+  served, no model is called, no provider is reached.
+  **The roster and the catalogue are named together or the plan is refused.**
+  `bootstrap_main` defaults `--serving-recipes-config` to the fixture-only
+  `config/serving_recipes.toml`, which is right only while `--models-config` is
+  the shipped fixture roster; any other roster must name its catalogue
+  explicitly, or the plan is refused before the boot. A real roster resolving
+  against the fixture catalogue is the mismatch `pipeline/orchestrator/run.py`
+  names and `operations/operator/surface._roster_argv` refuses, and on this path
+  it would otherwise be discovered only after the pod had billed for the boot
+  and the model fetch.
+- `notify_hooks.py` is a small, vendor-neutral phone-notification seam, distinct from
+  `notify_bridge.py`'s narrower spend-floor-warning one. It sends exactly one short line
+  through `operations/notify/notify.sh` at each of three moments — launch (lease id,
+  card, hourly ceiling), close (lease id, verified state, elapsed), and each account
+  balance observation (balance and spend rate as the observer reports them) — never a
+  secret, never a URL: every message is checked against the same credential-shape and
+  URL markers before the shell call, and a message that fails is never sent. It refuses
+  nothing else, and a failed ping never blocks or changes a launch or close decision
+  (ruling (b): tracking plus notifications only, no new enforcement). `cli.py` wires
+  all three behind the existing `--notify` flag. Launch and close it calls directly.
+  The balance hook it installs through `set_balance_notify`, duck-typed exactly as
+  `--record-fixture` reaches `record_exchanges`, because the provider itself comes
+  from an untracked `--provider-factory` this repository never constructs — a named
+  method on the returned object is the only place the host CLI can reach a vendor
+  adapter. `RunPodProvider` also takes an explicit `balance_notify` constructor
+  parameter, defaulted to `None`; both routes are opt-in, so a bare live-transport
+  construction — including the one the pod's own `timer_context_from_environment`
+  performs — carries no hook, `--notify` stays the single gate for every phone
+  notification a launch can send, balance included, and a pod never pages a phone on
+  its own. A provider with no such seam is *recorded*, never refused: the launch
+  record's `balance_notification` says whether the hook was wired and carries one line
+  per ping sent, delivered or not, and the observer folds a ping that did not land into
+  the observation's own `source` so the spend record carries it too (GOVERNANCE 2).
+  The close line says `billed Ns from creation` rather than `ran Ns`, because the
+  number is pod creation to the verified billing cutoff and no stop time is observed
+  anywhere on this path. `test_notify_hooks.py` proves the
+  three messages, the no-secret and no-URL refusals, and that a failed ping is
+  reported, never raised, offline against a fake runner; `test_pod_runtime.py` drives
+  the balance half end to end through `cli.main` against `FakeProvider`.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
   subject and both hourly rates just displayed, and carries a random single-use
@@ -399,7 +547,37 @@ The local command surface is `python -m operations.pod.cli`. It requires explici
 untracked provider and controller-armer factories plus a request file, so this repository
 contains neither a credential, a personal provider default, nor an implicit controller
 process. It prints the previewed current price and ceilings before prompting for the exact
-typed confirmation; EOF is a refusal. A preview that is itself refused prints its price
+typed confirmation; EOF is a refusal. **`--record-fixture PATH`** routes every provider
+exchange the launch sees — method, path, request body, status, response body, and a
+raised transport failure — through `fixture.py`'s recorder, appended as JSON lines
+(0600, fsynced per line, never truncated) so a drill boot leaves a replayable fixture
+behind for deferral 04-6. Bodies are stored verbatim unless something in them is
+credential-shaped by either of the two shared predicates — a key that names itself a
+secret by `models.looks_like_credential_field`, or a string leaf under any key at all
+that carries a credential-shaped word by `models.looks_like_credential_value` — in which
+case the body is parsed, those values replaced, re-serialized with money still as
+numbers, and the record says `verbatim: false` and names every scrubbed path; the launch
+token is scrubbed too, by the name predicate, with no exemption. The flag is duck-typed on a provider's
+`record_exchanges` method so the CLI names no vendor; the RunPod adapter wraps its REST
+transport and its own balance observer's transport, and a provider without the method —
+the fake — refuses the flag by name before any preview rather than recording nothing.
+The result record names the fixture path.
+
+**The Boot A request is a tracked module, not a note.** `python -m
+operations.pod.boot_a_request --spend config/spend.toml --placement
+config/pod_placement.toml` renders, from the sealed spend policy and the reviewed card
+table, the plain-language request Tyrel reads before the drill: what it does, the
+cheapest reviewed card and its rate, the hard lifetime (900 seconds, or the policy's
+ceiling if shorter), the ceilings the launch will enforce, the cost if it ran the full
+lifetime, the expected immediate close, the exact command with `--record-fixture` on,
+and the pod request JSON with his four values marked not yet supplied until passed as
+`--image`, `--volume-id`, `--repository-commit`, `--hard-deadline`. `cli.py create`
+refuses to load the JSON until `hard_deadline` is filled in by hand; the
+`VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS` placeholder alongside it needs no hand edit,
+since the launch seals that value from the spend policy on every create or adopt. An
+unconfigured policy renders a
+**refusal** naming what is missing — no command, no request — and exits 2. The text
+authorizes nothing; it is what the per-session gate needs in order to be given. A preview that is itself refused prints its price
 and every reason but withholds the phrase, because a refusal spends no challenge and the
 phrase in that report would still authorize the action if the condition cleared. Its exit status never reads as "nothing happened"
 when something did: 0 is a guarded success, 2 a refusal whose result names no pod, lease,
@@ -462,6 +640,110 @@ an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
+## The serving stack, re-planned and locked
+
+The stack the real roster asks for is now a `pod` dependency group in
+`pyproject.toml`, resolved into `uv.lock`. Every vLLM row in
+`config/serving_recipes_real.toml` names the same three packages, and the group
+carries those exact versions under
+`sys_platform == 'linux' and platform_machine == 'x86_64'` markers:
+
+| Package | Pin | Licence | Why this one |
+|---|---|---|---|
+| `vllm` | `0.27.1` | Apache-2.0 | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
+| `transformers` | `5.14.1` | Apache-2.0 | The version the vLLM 0.27 line's own requirements were bumped to; above vLLM's `transformers >= 5.5.3` floor and above the Perlector's stated `>= 5.8.0` |
+| `qwen-vl-utils` | `0.0.14` | Apache-2.0 | Unchanged; latest, and it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing in this group compiles on the card |
+
+**Licence record for the `pod` group**, per `cleanroom/README.md`'s rule that a
+third-party dependency's source and licence are recorded beside the code (this
+table, and the group's own comment in `pyproject.toml`):
+
+- `vllm` 0.27.1 — Apache-2.0, per the `LICENSE` file at
+  `github.com/vllm-project/vllm` (tag `v0.27.1`).
+- `transformers` 5.14.1 — Apache-2.0, per the `LICENSE` file at
+  `github.com/huggingface/transformers`.
+- `qwen-vl-utils` 0.0.14 — Apache-2.0, per its packaging metadata on PyPI
+  (`pypi.org/project/qwen-vl-utils`); the package is maintained under
+  `github.com/QwenLM/Qwen2.5-VL`, itself Apache-2.0. This session has no
+  network access to fetch either page directly and states the licence as
+  each project's own published metadata, not as a byte fetched here.
+
+**Why the old pins could not be locked.** The catalogue previously pinned
+`vllm 0.10.1` / `transformers 4.57.1`, and `uv lock` refused the group outright:
+
+> Because transformers==4.57.1 depends on huggingface-hub>=0.34.0,<1.0 and
+> verbatus:pod depends on transformers==4.57.1, we can conclude that verbatus:pod
+> depends on huggingface-hub>=0.34.0,<1.0. And because your project depends on
+> huggingface-hub==1.26.0, we can conclude that your project and verbatus:pod are
+> incompatible.
+
+No `transformers` 4.57.x accepts `huggingface-hub` 1.x, so the pair itself had to
+move rather than the project's hub pin.
+
+**What the four chairs actually need, read from their own configuration.** Every
+version below was read on 2026-09-02 from the cited page.
+
+- Chandra-2 (`datalab-to/chandra-ocr-2`, Designator structure and Attestator 1)
+  and the Perlector (`Qwen/Qwen3.8-27B`) both declare
+  `"architectures": ["Qwen3_5ForConditionalGeneration"]`, `"model_type":
+  "qwen3_5"` — a multimodal architecture, not the text-only Qwen3.5 — with
+  `transformers_version` `5.2.0` and `5.8.0.dev0` respectively
+  (`huggingface.co/datalab-to/chandra-ocr-2/raw/main/config.json`,
+  `huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json`).
+- The DAI fine-tune (`Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
+  Attestator 2) and Churro-3B (`stanford-oval/churro-3B`, Attestator 3) both
+  declare `Qwen2_5_VLForConditionalGeneration` / `qwen2_5_vl`, saved by
+  `transformers` `5.2.0` and `4.51.3` (their `raw/main/config.json`). Churro's
+  card names `Qwen/Qwen2.5-VL-3B-Instruct` as its base.
+- vLLM's own recipe page for `Qwen/Qwen3.8-27B` (`recipes.vllm.ai/Qwen/Qwen3.8-27B`)
+  states **vLLM 0.17.0+** and **transformers >= 5.8.0**. Only its DFlash2
+  speculative decoding wants `>= 0.28.0`, and no row here asks for that.
+- vLLM v0.27.1's model registry
+  (`raw.githubusercontent.com/vllm-project/vllm/v0.27.1/vllm/model_executor/models/registry.py`)
+  lists `Qwen3_5ForConditionalGeneration` **and**
+  `Qwen2_5_VLForConditionalGeneration` in `_MULTIMODAL_MODELS`, and the tag's
+  `docs/models/supported_models.md` carries both rows. **One release covers all
+  four chairs; no chair had to be split off onto transformers-direct serving.**
+
+**Why 0.27.1 and not 0.28.0, the newest release.** vLLM 0.28.0 (PyPI upload
+2026-08-26) declares `huggingface_hub>=1.27.0` directly in its metadata, which
+collides with the project's `huggingface_hub==1.26.0`. vLLM 0.27.1 (PyPI upload
+2026-08-11) declares no `huggingface_hub` requirement at all — its hub floor
+arrives only through `transformers`, whose `5.14.1` metadata asks for
+`huggingface-hub<2.0,>=1.5.0`. So 0.27.1 locks beside the project's pin and
+0.28.0 cannot, and nothing in 0.28.0's notes is needed by any chair here.
+
+**Why `flash-attn` was dropped rather than re-pinned.** The Perlector's row used
+to carry `flash-attn 2.7.4.post1`. vLLM does not depend on the PyPI `flash-attn`
+package: v0.27.1's `qwen2_5_vl.py` imports no `flash_attn`, selecting a backend
+through vLLM's own `AttentionBackendEnum` registry instead, and vLLM ships its
+own FlashAttention build. Meanwhile `flash-attn` publishes **no wheel** — its
+latest release, `2.8.3.post1`, is an sdist only — so keeping the pin would have
+meant an hours-long nvcc build against `torch 2.13.0` on a rented card, to
+satisfy a pin the server never imports. Dropping it removes a failure mode and
+costs nothing.
+
+**What is proven, and what only a boot can prove.** Proven here: `uv lock`
+resolves the group (`vllm 0.27.1`, `transformers 5.14.1`, `torch 2.13.0`, 173
+packages added, no previously locked version changed), `uv lock --check` is
+clean, and `uv sync --frozen --python 3.12 --group test --group audit` still
+succeeds on macOS, resolving none of the pod group — the markers hold.
+**Unproven, and only a boot proves it: that the wheels install on the pod image
+and that the four sets of weights actually load and answer under this release.**
+Vendor metadata says the architectures are registered; it does not say these
+specific checkpoints run. Every row therefore stays `preflight_state =
+"unproven"`, and `ServingManager.start` still refuses each by name until a
+reviewer stamps it after a real-silicon preflight.
+
+`bootstrap.py`'s `uv sync` now carries `--group pod`, and its journal records
+`"groups": ["pod"]`. The wheel download (vLLM, torch and the CUDA libraries — on
+the order of ten gigabytes) happens inside `UV_ENVIRONMENT` on the billing card,
+into the container-local `UV_CACHE_DIR` `bootstrap.py` already names and warns
+about; it is paid once per pod and never survives one.
+`operations/pod/test_pod_run.py` holds the group and the catalogue to the same
+bytes as a live test — it was a strict expected failure while no group could
+exist, and it is now the guard against the two drifting apart.
+
 ## First gated live-pod checklist
 
 This is a checklist for one authorized live demonstration, not authorization to create a
@@ -480,8 +762,9 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   rights. DELETE must be accepted for this exact pod, and the billing query must return
   usable, exact-pod records. Do not infer either right from successful creation or GET.
 - [ ] Record whether the provider offers any pod-side TTL / maxRuntime field on create
-  under the version actually used (none appears in the documented v1 create input; 04-4
-  has no provider-side belt without one).
+  under the version actually used (none appears in the documented v1 create input, and
+  `V2_MIGRATION.md` §3 records none found in the v2 create or update documentation
+  either; 04-4 has no provider-side belt without one).
 - [ ] Exercise **a pod that fails field validation and cannot then be auto-terminated**.
   Record any returned identity, the exact launch-token recovery result, whether the
   automatic close path could act, and the manual provider-console recovery if it could
@@ -516,11 +799,14 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   billing rights. See "The boot plan" below for the full split and what it needs from
   Tyrel.
 - [ ] Record the account-balance source and that it reports US dollars rather than
-  credits or another currency. **This item cannot be run at all yet**: no GraphQL
-  balance observer (`myself { clientBalance currentSpendPerHr }`) exists anywhere in
-  this tree, so `RunPodProvider.observe_account_balance` raises and every paid action
-  refuses before either boot can happen. Building that observer is next-section work,
-  not something either boot can substitute for.
+  credits or another currency. The GraphQL observer (`myself { clientBalance
+  currentSpendPerHr }`) now exists and is the adapter's default over a live transport,
+  so this item is runnable; what it must record is the figure the observer read beside
+  the figure the console shows, because the currency in the observation's `source` is
+  read from the vendor's billing pages, not returned by the query, and the v1 pod page
+  calls `costPerHr` "Runpod credits per hour". Record also whether the pod-scoped key
+  is accepted by the GraphQL endpoint at all — the documentation describes key
+  permission tiers without saying which tier `myself` needs.
 - [ ] Before the first real response, prove the durable laptop supervisor, controller
   armer, acknowledgement channel, and long-running bootstrap/service entrypoint work
   together. The tracked Stage 04 tree now supplies `supervise.py`, `controller_armer.py`,
@@ -540,7 +826,22 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   unobserved.
 - [ ] Run the actual GPU, driver, capability, VRAM, disk, chair-cache, and chair smoke-read
   preflight. The committed preflight and roster are fixture and planning evidence, not a
-  measured assembly.
+  measured assembly. `bootstrap_main`'s `PREFLIGHT` is now the real wiring (registry
+  cache verification and a served golden-page smoke through `ServingManager`); before
+  it can go green on real silicon each real row must be stamped proven, and the
+  locked serving stack (see "The serving stack, re-planned and locked") must
+  actually install and load. Record `nvidia-smi`'s driver and CUDA version **before**
+  `uv sync --group pod` runs: the locked stack resolved `torch 2.13.0`, which pulls the
+  CUDA 13 `nvidia-*` wheels, so a pod image whose driver predates CUDA 13 is a refusal
+  to make before paying for the ~10 GB download, not after. Then record whether
+  `uv sync --group pod` completed, how long the wheel download took, and whether each
+  chair's weights loaded under `vllm 0.27.1`, since no offline check can answer that.
+  Record, per chair, whether the pod-rendered golden page's witness was read back and
+  what `nvidia-smi` reported around the read.
+- [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
+  <local root> --network-volume DATACENTER:VOLUME_ID` and record whether every object
+  under `runs/<id>/` listed, fetched and reconciled with the tree's own manifests. The
+  listing and `GetObject` path has never run against a real endpoint.
 - [ ] At the first real response, require Spec 05's harness to publish an immutable
   run-tree artifact on the attached network volume before requesting the next response;
   interrupt the harness and read it back. Stage 04 does not own this response path. Repeat
@@ -556,9 +857,10 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 
 ## Stage 04 deferrals
 
-Nine rows in all: six items Tyrel accepted as deferred on the express condition that the
+Ten rows in all: six items Tyrel accepted as deferred on the express condition that the
 record survives to the pull request, then two disclosed by the pre-push review, then one
-disclosed by the 2026-08-12 independent audit. The first six are accepted deferrals
+disclosed by the 2026-08-12 independent audit, then one found while wiring the pod run
+seam. The first six are accepted deferrals
 carried by his ruling, not oversights — each closes on the named condition, not on being
 noticed again. **This table now records this branch's work against them; rows are kept
 even once closed, marked, so the history of what closed each one is not lost.**
@@ -568,16 +870,16 @@ even once closed, marked, so the history of what closed each one is not lost.**
 | 04-1 | No durable laptop-supervisor driver in the tracked tree | **Closed.** `supervise.py` is that driver: a kernel-lock-owned, restart-safe process per lease, the `EXITED`-closes provider-lifecycle check, and seven offline drills against `FakeProvider` (crash-mid-heartbeat resume, lost-identity `BUSY`-then-close, provider-unreachable non-green, `EXITED`-closes-on-fresh-heartbeat, already-closed-verified no-op, second-driver refusal, foreign-owner-past-deadline break). |
 | 04-2 | No controller armer that observes the real timer report | **Partly closed.** `controller_armer.py`'s `ChannelControllerArmer` performs the real read, arms only on a complete observation, and is fake-proven against every refusal state; `ObservingControllerArmer` performs the identical read and never arms. **New closes-when:** the first authorized boot observes an object written through the pod's mount appearing in the network volume's S3 view, and records the delay. Until then the channel is a designed path, not an observed one. |
 | 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | **Closed.** `bootstrap_main.py` is bootstrap-and-hold: on green it does not exit, because `pod_timer.run_with_bootstrap` treats any child exit before the hard deadline — exit 0 included — as `completed-early` and closes the pod. Holding, not exiting, is the fix. |
-| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input — and the first-boot checklist asks whether v2 offers one (see the checklist row above). |
+| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | **Rewritten.** The old "closes when 04-1 lands" line was wrong about the mechanism. The actual chain: the armer refuses and `launch._arm_or_close` closes the pod; if the launcher itself dies mid-arming, the already-started supervisor closes the unarmed lease once it goes stale; if the pod reaches `EXITED` after arming, `supervise.py`'s every-tick `provider.status()` read now sees it, because `ProviderStatus` carries `provider_state`. **There is no provider-side belt** — no TTL or `maxRuntime` field appears in the documented v1 create input, and `V2_MIGRATION.md` §3 records that none was found in the v2 create or update documentation either; the checklist row above still asks the live run to confirm. |
 | 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | **Mostly still open — verified against the code, not assumed from the plan.** `SPEC_POD.md` §4.5 predicted `bootstrap_main`'s tests would close three of these five; `test_bootstrap_main.py`'s own module docstring says otherwise ("no git, uv, Hugging Face, or GPU probe is ever invoked here" — every test runs through a fakes-only `actions_factory`). Checked against the tree as it stands: `SubprocessBootstrapActions.checkout_commit`'s success path *is* covered, pre-existing in `test_pod_runtime.py` (`test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment`, an injected-subprocess success). The other four remain untested — `sync_uv_environment`'s success path, `pod_timer.main`/`load_timer_context`'s success path, `cli.main`'s success path through the real `module:callable` factory resolution (`test_cli.py` exercises `cli._controller_armer`'s module:callable resolution on its own; what is untested is `cli.main`'s green path end to end, where existing tests monkeypatch `cli._provider`/`cli._controller_armer` before the call), and `UrllibRunPodTransport`'s ordinary success (only its redirect-refusal is exercised against real loopback servers). Closes when: the live pieces this branch adds (`supervise.py`, `controller_armer.py`, `bootstrap_main.py`) now exist to test against; writing those tests is not yet done. |
-| 04-6 | Every RunPod field name is documented, not observed — no live call has been made | Open. Closes when: the first authorised live run. |
+| 04-6 | Every RunPod field name is documented, not observed — no live call has been made | Open. Closes when: the first authorised live run. The instrument for closing it now exists: `cli.py --record-fixture` writes every exchange Boot A sees as a replayable, scrubbed fixture, so the offline suite can be re-founded on observed shapes rather than documented ones once the drill has run. |
 
 Two more, found by the pre-push review of this branch and disclosed here rather than
 fixed on an assumption. Both are Tyrel's to accept or send back:
 
 | # | What is deferred | Status |
 |---|---|---|
-| 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | **Amended to the v2 route**, not closed on this branch. Tyrel ruled on 2026-08-11: *"V2 should be what we use"* — REST v2 documents `createdAt`, a `startTime` snap, and a per-pod cost breakdown, which the ruling itself names as closing this finding. The migration is next-section work (see the v1/v2 paragraph above); until it lands, this row's original text still describes the code, and the first authorised live run still observes the two instants under whichever version is live at the time. |
+| 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | **Amended to the v2 route and now recorded page by page**, not closed. Tyrel ruled on 2026-08-11: *"V2 should be what we use."* `V2_MIGRATION.md` §2.3–2.4 confirms from the v2 pages what the ruling named: the pod object carries `createdAt` and `startedAt` as separate instants, and the billing envelope carries `metadata.query`'s resolved window beside per-record `startTime`/`endTime` and a `totalAmount`/`gpuAmount`/`cpuAmount`/`diskAmount` breakdown. §5 step 4 is the plan that re-anchors the verifier on `createdAt` and compares the requested window against the resolved one. Until that unit lands, this row's original text still describes the code. |
 | 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | **Partly closed.** `bootstrap_main.py` constructs it for the first time in the tracked tree (`_build_cache`), closing the "constructed nowhere" half. It is still exercised by no test — `test_bootstrap_main.py` is fakes-only and never calls `_build_cache` — and the at-most-one same-pin re-fetch is deliberately left unwired (`refetch_same_pin=None`) because `ChairRegistry` has no cache-clear verb, so the behaviour the deferral is about still does not ship. |
 
 One more, found by the 2026-08-12 independent audit of this package and disclosed here
@@ -586,7 +888,13 @@ Tyrel's to accept or send back:
 
 | # | What is deferred | Status |
 |---|---|---|
-| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | Open. Closes when: the first authorised live run observes real bucket posting, then the coverage check is written against observations. |
+| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | Open. Closes when: the first authorised live run observes real bucket posting, then the coverage check is written against observations. `V2_MIGRATION.md` §2.4 records that v2's billing envelope names the window the provider *resolved* (`metadata.query`) and the record count, so under v2 the "declared window" half stops being the runtime's own echo; whether buckets fill it is still the live observation. |
+
+One more, found while wiring the pod run seam. Tyrel's to accept or send back:
+
+| # | What is deferred | Status |
+|---|---|---|
+| 04-10 | The real serving stack cannot be installed on a pod: `config/serving_recipes_real.toml`'s `transformers==4.57.1` requires `huggingface-hub<1.0` and the project pins `huggingface_hub==1.26.0`, so no `pod` dependency group locks (now "The serving stack, re-planned and locked") | **Closed.** Every named condition is met: the pair was re-planned onto `vllm 0.27.1` / `transformers 5.14.1` (researched against the four chairs' own `config.json` files and vLLM's v0.27.1 registry, cited in "The serving stack, re-planned and locked"), the `pod` group carries exactly those pins under Linux/x86_64 markers, `uv lock` resolves, `bootstrap.py` syncs `--group pod`, and `test_pod_run.py`'s expected failure is now a live test binding the group to the catalogue. `flash-attn` was dropped rather than re-pinned, for the reasons given there. **What this does not close:** no wheel has been installed and no weight loaded — the rows stay `preflight_state = "unproven"`, and the first boot is what proves the stack runs. |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
 
@@ -625,9 +933,23 @@ It costs a few dollars in the success case, for the drill's own minutes on a che
   gate for "the boot."
 - Whether he accepts the two-boot split at all, rather than the single boot the
   roadmap names.
-- The GraphQL account-balance observer described above must exist before either boot
-  can create anything — that is engineering, not a decision reserved for him, but no
-  boot is possible until it is built.
+- Nothing else. The GraphQL account-balance observer that used to head this list is
+  built and is the adapter's default; `boot_a_request.py` renders the drill request from
+  his configured policy the moment `config/spend.toml` leaves `unconfigured`.
+
+**One drill-specific finding, recorded and now closed.** `launch.py` used to bind
+the launch token into the timer's `--report-path` at sealing time but not into the
+`--report-path` inside the nested `--bootstrap-command-json`, and `bootstrap_main`
+refuses a report path that lacks the token when `VERBATUS_LAUNCH_TOKEN` is in the pod's
+environment — which it is. In Boot A that refusal was harmless in outcome:
+`bootstrap_main --hold-only` exited non-zero at once, the timer read the child's exit as
+`completed-early` and closed, which is the same immediate close the drill armer already
+forces — but the hold-only journal was never written, so Boot A never observed the hold.
+`_bind_report_path_to_launch` now folds the same sealed token into both the timer's own
+`--report-path` and, when the nested bootstrap argv carries one, its `--report-path`
+too — proven through the real plan/argv path in `test_bootstrap_main.py` (a `--hold-only`
+plan built from a sealed request reaches the hold rather than refusing). `HANDOFF.md`
+carries the closed finding.
 
 **Alternatives considered and declined, one line each.** Push the acknowledgement out
 of the pod over the notify topic — no; it puts a bearer secret in the pod and turns a
