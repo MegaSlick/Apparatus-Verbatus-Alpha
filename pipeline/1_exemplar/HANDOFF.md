@@ -97,7 +97,7 @@ will ever carry real material.
 
 **A real run created before these three names cannot be resumed under this
 build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
-moved one — "this run sealed no digest for the … configuration, so a stage
+moved one — "run 'r1' sealed no digest for the … configuration, so a stage
 cannot prove which bytes it is bound to" — because the two need different
 operator actions: restore the file, versus start the run again on a build that
 seals the name. That is correct and cheap today, and only today: nothing real

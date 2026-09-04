@@ -566,10 +566,23 @@ class StageContext:
         """The sealed named/blinded regime this run's Perlector reads under.
 
         Read straight off this process's own parsed CLI flag rather than off
-        `run.json`: the flag is what `run_config_bindings` folded into
-        `config_digest`, and `open_context`'s existing IncompatibleReuse check
-        already refuses a resumed run supplied a different value, so there is
-        no separate run-authority copy for this property to disagree with.
+        `run.json`, because on both routes something already refuses a resume
+        that supplied a different value, so there is no separate run-authority
+        copy for this property to disagree with. Which check that is differs:
+
+        - fixture ingress: the flag is folded into `config_digest` by
+          `run_config_bindings`, and `open_context`'s IncompatibleReuse check
+          refuses the moved value;
+        - real ingress: `open_context` does not run at all, and the real
+          `config_digest` is not recomputable downstream. What stands here
+          instead is the `run-policy` sealed digest -- the Door seals
+          `real_run_policy_digest` over this flag and its six siblings, and
+          `_refuse_incompatible_real_reuse` recomputes it from this process's
+          argv at every stage open.
+
+        Naming only the first was how this docstring read before, on a branch
+        that had just built the second; a reader checking the claim on the real
+        route would have found the check absent and the argv read unbacked.
         """
         return self.args.witness_context
 
@@ -579,7 +592,11 @@ class StageContext:
 
     @property
     def nuda_per_mille(self) -> int:
-        """The sealed Lectio nuda sampling rate, in thousandths. See `witness_context`."""
+        """The sealed Lectio nuda sampling rate, in thousandths.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.nuda_per_mille
 
     @property
@@ -589,15 +606,28 @@ class StageContext:
         Empty when nothing is sampled. `run_config_bindings` requires the exact
         recognized selector for a non-zero rate; the Perlector later resolves
         that selector to Tyrel's typed approval-record reference in the run tree.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
         """
         return self.args.nuda_approval_ref
 
     @property
     def perlector_instrument_per_mille(self) -> int:
+        """The sealed instrumented-reading rate, in thousandths.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.perlector_instrument_per_mille
 
     @property
     def perlector_instrument_approval_ref(self) -> str:
+        """The selector for the approval the instrumented reading draws under.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.perlector_instrument_approval_ref
 
     @property
