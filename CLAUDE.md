@@ -54,12 +54,13 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
     become Tyrel's by being hard. Do not park an engineering choice in a TODO, deferred
     list, handoff, or pull request. Rule 7 requires a visible decision, not a deferral.
 14. **The session merges under three conditions, and reports it.** A pull request is merged
-    by the session only when its head already contains the current `origin/main` and, on
-    that exact head, every review thread is resolved, CI is green, and the local gate
-    (`.githooks/check-all.sh`) exits 0. A gate on a tip that does not contain
-    `origin/main` proves nothing about the merge and does not count. A red or partial
-    gate never merges; the merge is reported by number and head (Tyrel's standing grant;
-    the dated record is in the standing ledger). Tyrel may still merge anything himself.
+    by the session only when its head already contains `origin/main` as freshly fetched
+    and, on that exact head, every review thread is resolved, CI is green, and the local
+    gate (`.githooks/check-all.sh`) exits 0. A gate on a tip that does not contain the
+    fetched `origin/main` proves nothing about the merge and does not count. A red or
+    partial gate never merges; the merge is reported by number and head (Tyrel's
+    standing grant; the dated record is in the standing ledger). Tyrel may still merge
+    anything himself.
 
 **Settled permanently (his ruling; the dated record is in the standing ledger):**
 vendor-licence analysis (non-commercial
@@ -145,9 +146,10 @@ named to Tyrel first. Push the finished task, not a stream of checkpoints. Later
 to the same open pull request need no repeat approval, but say when they happen. Never
 push directly to `main`; never force-push work you do not exclusively own. Merging
 follows hard rule 14. GitHub no longer requires a branch to be up to date with `main`
-before merging (his ruling, in the same ledger), so the session merges `origin/main`
-into the branch itself and gates that head; the gate on the merged result is what stands
-in for the server's check.
+before merging (his ruling, in the same ledger), so the session runs `git fetch origin`
+first, merges the fetched `origin/main` into the branch itself, and gates that head; the
+gate on the merged result is what stands in for the server's check, and a stale
+`origin/main` makes it worthless.
 
 **A push grant outside hard rule 4 is per-queue and dies with its queue.** It covers the
 branches it was asked about and nothing after them; never read a past queue's grant as
