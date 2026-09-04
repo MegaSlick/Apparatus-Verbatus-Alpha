@@ -102,11 +102,11 @@ from test_attestatores_real_ingress import (  # noqa: E402
 )
 from test_attestatores_real_ingress import _scripts as witness_scripts  # noqa: E402
 from test_live_reading_seam_e2e import (  # noqa: E402
-    READING,
     TIER,
     WITNESS_CHAIRS,
     ReaderWorld,
     WitnessWorld,
+    act_records,
     attestatores,
     perlector,
     snapshot,
@@ -148,7 +148,6 @@ from common.stage import (  # noqa: E402
 # moving — the case `run.json`'s `witness_chairs` cannot see. Imported rather
 # than rewritten, so the unit and the end-to-end move the same bytes.
 from common.test_stage_real_ingress import _appended, _moved_models_config  # noqa: E402
-from operations.serving.fakes import ScriptedAnswer  # noqa: E402
 
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 DESIGNATOR_CLI = PIPELINE / "2_designator" / "run.py"
@@ -270,9 +269,7 @@ def real_run(tmp_path_factory) -> SimpleNamespace:
     witness_exit = run_in_process(
         attestatores, run_root, catalogue, serving_factory=witnesses.factory
     )
-    reader = ReaderWorld(
-        catalogue, work / "reader", ScriptedAnswer(content=READING, finish_reason="stop")
-    )
+    reader = ReaderWorld(catalogue, work / "reader", finish_reason="stop")
     reader_exit = run_in_process(perlector, run_root, catalogue, serving_factory=reader.factory)
     read = snapshot(run_root)
     tail = {
@@ -550,15 +547,17 @@ def test_every_witness_and_the_reader_really_served_this_real_submission(real_ru
     """
     tree = RunTree(real_run.run_root, RUN_ID)
     context = open_real_context(real_run.run_root, real_run.catalogue, ATTESTATORES)
-    records = {
-        (record["subject_id"], record["payload"]["chair"]): record
-        for record in (
-            tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-            if entry["kind"] == "testimonium"
-        )
-    }
+    # `act_records` rather than a dict comprehension of our own: it refuses two
+    # Testimonia for one (act, chair) instead of letting manifest hash order
+    # pick one silently. This tree is a single ordinal-1 pass, so a second
+    # record here would be a duplicate publication or an unintended second
+    # attempt -- and a comprehension would have reported the pass complete
+    # either way (GOVERNANCE 2).
+    records = act_records(tree)
     assert {chair for _act, chair in records} == set(WITNESS_CHAIRS)
+    assert len(records) == len(ACT_KEYS) * len(WITNESS_CHAIRS), (
+        "one Testimonium per act per chair, and no act or chair missing from the count"
+    )
     assert real_run.witnesses.loads == sorted(WITNESS_CHAIRS), "one residency per chair"
     for (act_id, chair), record in records.items():
         payload = record["payload"]
@@ -576,9 +575,13 @@ def test_every_witness_and_the_reader_really_served_this_real_submission(real_ru
             (real_run.run_root / RUN_ID / "4_perlector" / "artifacts" / "perlectio").glob("*.json")
         )
     ]
+    # Counted before it is collapsed to a set: two Perlectiones for one act
+    # would leave the set equal and the run silently double-read.
+    assert len(readings) == len(real_run.acts)
     assert {record["subject_id"] for record in readings} == set(real_run.acts)
-    assert {record["outcome"] for record in readings} == {"read"}
+    assert [record["outcome"] for record in readings] == ["read"] * len(readings)
     served = real_run.reader.endpoint.served
+    assert served, "the reader's endpoint served nothing, so the loop below proves nothing"
     for record in readings:
         call = record["payload"]["engine_call"]
         assert tree.read_bytes(call["raw_response_ref"]["relative_path"]) in served, (
@@ -623,7 +626,11 @@ def test_the_export_would_be_named_by_the_submissions_own_identity(real_run):
     submission_id, fixture_id, run_identity = armarium.export_run_identity(context)
 
     assert submission_id == ledger["self_hash"]
-    assert submission_id == submission_identity(run)
+    # Not `submission_identity(run)` again -- `export_run_identity` calls it, so
+    # that comparison could not fail. The run authority's own rows are the
+    # independent side: every real source row carries the same ledger hash.
+    assert {row["ledger_sha256"] for row in run["source_manifest"]} == {submission_id}
+    assert submission_identity(run) == ledger["self_hash"]
     assert fixture_id is None
     assert run_identity == {"submission_id": submission_id}
     assert "fixture_id" not in run_identity
