@@ -54,6 +54,7 @@ from common.stage import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     REAL_SCENARIO,
     StageContext,
+    _designator_records_by_subject,
     adapter_recipe_for,
     exemplar_page_ids,
     expected_acts,
@@ -370,24 +371,60 @@ class _Designator:
         )
         return act
 
+    def hold_beside(self, act: str, ordinal: int) -> None:
+        """A hold for an act that already has a row: no rectangle in its payload.
+
+        A producer can write one -- an aborted hold, a payload shape that moved
+        -- and it matches no minted class, so the consumer is held to refusing
+        it rather than letting the act's regions reclassify it as structural.
+
+        The row is turned `held` and both records spliced into its evidence,
+        because that is the seal a producer publishing this hold would actually
+        write, and it is the shape nothing else catches:
+        `_verify_proposal_seal_evidence` refuses a `proposed` row carrying any
+        hold, but a `held` row with exactly one hold is precisely what it
+        expects to see.
+        """
+        published = self.context.publish(
+            kind="hold",
+            subject_id=act,
+            outcome="held",
+            payload={
+                "act_key": f"held:{ordinal}:0",
+                "page_ordinal": ordinal,
+                "reason": "hand-built hold naming no rectangle",
+            },
+        )
+        row = self.rows[-1]
+        row["outcome"] = "held"
+        row["evidence"] = sorted(
+            [*row["evidence"], self.context.input_ref(published.relative_path)],
+            key=lambda reference: reference["relative_path"],
+        )
+
     def page_rectangle(self, ordinal: int) -> dict[str, int]:
         width, height = dimensions(
             self.tree.read_bytes(self.pages[ordinal]["payload"]["image_path"])
         )
         return {"x": 0, "y": 0, "w": width, "h": height}
 
-    def fallback_record(self, act: str, ordinal: int) -> None:
+    def fallback_record(self, act: str, ordinal: int, *, attempt: str | None = None) -> None:
         """A page-fallback record, shaped as `_publish_page_fallback` publishes it.
 
         Minus the structure-status input it would cite: these tests stop at the
         classification, and the fallback verifier's own premise check is what
         `common/test_stage_page_residual.py` and the acceptance run already hold.
+
+        `attempt` is what lets a caller publish a *second* record for one act:
+        an artifact id binds stage, kind, subject and attempt, so two records
+        for one subject reach the manifest only when their attempts differ.
         """
         page = self.pages[ordinal]
         self.context.publish(
             kind="page-fallback",
             subject_id=act,
             outcome="proposed",
+            attempt=attempt,
             payload={
                 "act_key": f"page-fallback:{ordinal}",
                 "page_id": page["subject_id"],
@@ -610,6 +647,153 @@ def test_a_far_page_region_the_denominator_cannot_place_is_refused_not_dropped(r
     with pytest.raises(FatalAccounting, match="carries no transform object") as refusal:
         expected_acts(context)
     assert act in str(refusal.value)
+
+
+def _foreign_page_id() -> str:
+    """A well-formed page identity for bytes no run of this submission carries."""
+    return derive_page_id(
+        {"kind": "source", "sha256": digest_bytes(b"a page this submission never held")},
+        {"operation": "whole"},
+    )
+
+
+def test_a_far_page_region_naming_a_page_this_run_never_published_is_refused(real_root):
+    """ "Far" must mean another page *of this run*, not merely "not the row's".
+
+    The far-page list was everything the row's own page id did not match, so a
+    transform naming a page id from nowhere satisfied `has_continuation=True`
+    with a crop no downstream reader could open: the Attestatores would append
+    a page this run's Exemplar never sealed. The region's page is now checked
+    against the run's own page index, which is what makes the far list a list
+    of real pages rather than a list of mismatches.
+    """
+    designator = _Designator(real_root)
+    act = designator.propose(1, designator.rectangle(1))
+    key = designator.rows[-1]["act_key"]
+    bounds = designator.rectangle(2)
+    far_region = designator.propose_far_page_region(
+        act,
+        key,
+        2,
+        bounds,
+        transform={
+            "operation": "crop",
+            "source_page_ordinal": 2,
+            "source_page_id": _foreign_page_id(),
+            "bounds": bounds,
+        },
+    )
+    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
+    designator.rows[-1]["has_continuation"] = True
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="which this run's Exemplar never published") as ref:
+        expected_acts(context)
+    assert act in str(ref.value)
+
+
+def test_a_continuation_region_naming_a_foreign_act_key_is_refused(real_root):
+    """The far region's recomputable facts are recomputed, not only counted.
+
+    `act_key` is the field stages 3-7 join on, and the far region publishes its
+    own copy exactly as the near one does; nothing before this compared them,
+    so a continuation crop could be appended to an act under a key naming a
+    different unit entirely.
+    """
+    designator = _Designator(real_root)
+    act = designator.propose(1, designator.rectangle(1))
+    far_region = designator.propose_far_page_region(
+        act, "structural:9:9", 2, designator.rectangle(2)
+    )
+    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
+    designator.rows[-1]["has_continuation"] = True
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="continuation region names act_key"):
+        expected_acts(context)
+
+
+def test_a_continuation_region_naming_the_wrong_page_ordinal_is_refused(real_root):
+    """And the far ordinal, against the run's page index rather than the row.
+
+    No seal-row field names the far page, so the row cannot be the authority
+    here; the Exemplar's own index is. A continuation whose ordinal disagrees
+    with it would place the crop on the wrong page in every reader that orders
+    by ordinal.
+    """
+    designator = _Designator(real_root)
+    act = designator.propose(1, designator.rectangle(1))
+    key = designator.rows[-1]["act_key"]
+    bounds = designator.rectangle(2)
+    far_region = designator.propose_far_page_region(
+        act,
+        key,
+        2,
+        bounds,
+        transform={
+            "operation": "crop",
+            "source_page_ordinal": 7,
+            "source_page_id": designator.pages[2]["subject_id"],
+            "bounds": bounds,
+        },
+    )
+    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
+    designator.rows[-1]["has_continuation"] = True
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="names source_page_ordinal 7"):
+        expected_acts(context)
+
+
+def test_an_act_whose_hold_names_no_rectangle_is_refused_not_read_as_structural(real_root):
+    """A hold matching no minted class must not be reclassified away.
+
+    A hold naming neither `residual_bounds` nor `page_bounds` matched no minted
+    class, so a `held` act carrying one beside a proposal region fell through
+    to the structural pass, was recomputed as a *proposal* against that region,
+    and passed -- its hold never examined, and its held-ness never reconciled,
+    on the one route where the hold is the only evidence the act was held at
+    all. The evidence check downstream cannot catch it either: one hold is
+    exactly what a `held` row is supposed to carry.
+    """
+    designator = _Designator(real_root)
+    act = designator.propose(1, designator.rectangle(1))
+    designator.hold_beside(act, 1)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="naming neither residual_bounds nor page_bounds"):
+        expected_acts(context)
+
+
+def test_two_page_fallback_records_for_one_act_are_refused_not_silently_last_wins(real_root):
+    """The duplicate rule the hold check already applies, applied to every kind.
+
+    `_designator_records_by_subject` built its index by comprehension, so two
+    records for one subject left whichever the manifest visited last -- an act
+    verified against a rectangle chosen by artifact-hash ordering, while the
+    hold rule beside it refuses the same duplication by name. The helper is
+    called directly here because every caller reads its result for a different
+    purpose and would refuse for its own reason first; what is under test is
+    the index, not any one consumer of it.
+    """
+    designator = _Designator(real_root)
+    page_id = designator.pages[1]["subject_id"]
+    act = derive_act_id(page_id, "page-fallback", designator.page_rectangle(1))
+    designator.fallback_record(act, 1)
+    designator.fallback_record(act, 1, attempt=attempt_id(act, "page-fallback", 2))
+    designator.propose(1, designator.rectangle(1))
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    entries = context.tree.build_manifest(DESIGNATOR)["artifacts"]
+    assert len([entry for entry in entries if entry["kind"] == "page-fallback"]) == 2
+
+    with pytest.raises(FatalAccounting, match="more than one Designator page-fallback record"):
+        _designator_records_by_subject(context, "page-fallback")
 
 
 def test_a_malformed_real_minted_row_never_mentions_the_fixture(real_root):

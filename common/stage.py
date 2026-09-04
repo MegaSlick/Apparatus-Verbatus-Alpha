@@ -2703,6 +2703,12 @@ def _verify_real_act_denominator(
     class, or nothing does (GOVERNANCE 3, hard rule 8).
     """
     fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
+    # One index of this run's own pages, built once. A region's page is checked
+    # against it rather than against the row that cites the region: the row is
+    # the thing under test, so "the transform does not name the row's page"
+    # cannot distinguish a genuine continuation from a transform that names no
+    # page at all, or a page belonging to some other run.
+    page_ordinals = {page_id: ordinal for ordinal, page_id in exemplar_page_ids(context).items()}
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
     observed = {act["act_id"]: act for act in acts}
@@ -2721,6 +2727,19 @@ def _verify_real_act_denominator(
             if hold is not None and isinstance(hold.get("payload"), dict)
             else {}
         )
+        # A hold whose payload names neither rectangle matches no minted class,
+        # so a row carrying one alongside a region used to fall through to the
+        # structural pass -- reclassified as a proposal, its hold never
+        # examined, on the one route where the hold is the only evidence that
+        # the act was held at all. The fixture route refuses the same row by
+        # name; so does this one now.
+        if hold is not None and not {"residual_bounds", "page_bounds"} & set(hold_payload):
+            raise FatalAccounting(
+                f"act {act_id} carries a hold record naming neither residual_bounds nor "
+                "page_bounds, so the rectangle it was held over cannot be recomputed; a held "
+                "act whose hold the denominator cannot read is refused, never reclassified as "
+                "a structural proposal"
+            )
         proposal_regions = [record for record in records if record["kind"] == "region"]
         for record in proposal_regions:
             # Refused, never filtered out. A region whose transform is not an
@@ -2733,6 +2752,19 @@ def _verify_real_act_denominator(
                     f"act {act_id}'s proposal region {record['artifact_id']!r} carries no "
                     "transform object, so the page it was cut from cannot be read; a region "
                     "the denominator cannot place is not a region it may pass over"
+                )
+            # And the page it names must be a page this run has. Without this,
+            # "not the row's own page" was the whole far-page test, so a
+            # transform naming no page at all, or a page id from some other
+            # run, counted as a continuation -- satisfying `has_continuation`
+            # against a crop nothing downstream could ever open.
+            source_page_id = record["payload"]["transform"].get("source_page_id")
+            if source_page_id not in page_ordinals:
+                raise FatalAccounting(
+                    f"act {act_id}'s proposal region {record['artifact_id']!r} names source "
+                    f"page {source_page_id!r}, which this run's Exemplar never published; a "
+                    "region the denominator cannot place on a page of this run is not a "
+                    "region it may pass over"
                 )
         regions = [
             record
@@ -2768,7 +2800,7 @@ def _verify_real_act_denominator(
                 "page-fallback record; real ingress carries no declaration to admit it on"
             )
         if classes == ["proposal"]:
-            _verify_structural_act_row(act_id, row, regions, far_regions)
+            _verify_structural_act_row(act_id, row, regions, far_regions, page_ordinals)
             continue
         minted_rows[act_id] = row
         if hold is not None:
@@ -2784,6 +2816,7 @@ def _verify_structural_act_row(
     row: dict[str, Any],
     regions: list[dict[str, Any]],
     far_regions: list[dict[str, Any]],
+    page_ordinals: dict[str, int],
 ) -> None:
     """A real structural act, recomputed from the rectangle it was minted over.
 
@@ -2811,6 +2844,24 @@ def _verify_structural_act_row(
     the far page only when the flag is set) -- exactly the loss GOALS 1 calls
     worse than a poorly read act. So the far-page count is checked against the
     flag in both directions.
+
+    The far region is then recomputed as far as it can be. Its page is already
+    known to be a page of this run (the denominator walk refuses one that is
+    not, so "far" now means *another page of this run* rather than merely "not
+    the row's"), and beside that its `act_key` must be the row's and its
+    `source_page_ordinal` must be the ordinal this run's own Exemplar gives
+    that page -- both the same facts recomputed for the near region, against
+    the run's page index rather than the row, since no seal-row field names the
+    far page.
+
+    The one fact that cannot be recomputed for a far region is the act
+    identity. `act_bindings` binds one page id, one class and one rectangle,
+    and the rectangle it binds is the near one; a continuation crop is a second
+    cut whose bounds enter no identity anywhere, so there is no digest to
+    reproduce it against. What is required instead is that it carry the
+    `raw_bounds` a consumer needs to open it at all: a continuation region
+    whose rectangle cannot be read is refused, not passed over, because the
+    flag beside it has already promised a downstream reader that crop.
     """
     if len(regions) != 1:
         raise FatalAccounting(
@@ -2852,6 +2903,28 @@ def _verify_structural_act_row(
             f"act {act_id}'s seal row names has_continuation={row['has_continuation']!r}, but "
             f"its Designator evidence names {len(far_regions)} proposal region(s) on a page "
             "other than its own; the two must agree"
+        )
+    if not far_regions:
+        return
+    far_payload = far_regions[0]["payload"]
+    if far_payload.get("act_key") != row["act_key"]:
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region names act_key {far_payload.get('act_key')!r}, "
+            f"but its seal row names act_key {row['act_key']!r}; the two must agree"
+        )
+    far_page_id = far_payload["transform"]["source_page_id"]
+    far_ordinal = far_payload["transform"].get("source_page_ordinal")
+    if far_ordinal != page_ordinals[far_page_id]:
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region on page {far_page_id} names "
+            f"source_page_ordinal {far_ordinal!r}, but that page is ordinal "
+            f"{page_ordinals[far_page_id]} of this submission; the two must agree"
+        )
+    if not isinstance(far_payload.get("raw_bounds"), dict):
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region carries no raw_bounds, so the rectangle cut "
+            "from the far page cannot be read; the row's has_continuation has already promised "
+            "that crop to a reader, and a continuation nothing can open is not one to pass over"
         )
 
 
@@ -3561,12 +3634,26 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
     evidence below, but ahead of it: the denominator check runs first, so an
     extra row must already name its own real evidence record before that later,
     more general evidence check ever sees it.
+
+    A subject named twice refuses, exactly as the duplicate-hold rule in
+    `_verify_real_act_denominator` does. Two records of one kind for one act
+    differ in their attempt, so both reach the manifest, and a dict built by
+    comprehension kept whichever the manifest order visited last -- one act
+    verified against a rectangle chosen by artifact-hash ordering, which is a
+    picker with no one at the controls (GOVERNANCE 3, hard rule 8).
     """
-    return {
-        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == kind
-    }
+    records: dict[str, dict[str, Any]] = {}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != kind:
+            continue
+        subject = entry["subject_id"]
+        if subject in records:
+            raise FatalAccounting(
+                f"{subject} has more than one Designator {kind} record; one subject is "
+                f"evidenced once, and nothing may decide which {kind} record speaks for it"
+            )
+        records[subject] = context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
+    return records
 
 
 def _proposal_evidence_by_subject(
