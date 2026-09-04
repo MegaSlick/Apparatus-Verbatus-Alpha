@@ -141,6 +141,67 @@ def build_door_run(
     return tree, files
 
 
+def build_refused_real_door_run(
+    run_root: Path,
+    run_id: str = "r1",
+    *,
+    files: dict[str, bytes] | None = None,
+    sources: list[SourceEntry] | None = None,
+):
+    """A real-ingress run whose Door published admissions and then refused.
+
+    Same shape as a real duplicate-source refusal
+    (`test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed`
+    in `test_door.py`): `process_sources` runs and admits real pages, but
+    `context.seal_boundary()` / `context.finish(DOOR)` are never called, so no
+    `stage-seal` is written -- exactly what a Door refused by
+    `require_no_duplicate_sources` or `require_some_admitted` leaves behind.
+    """
+    from admission import load_format_policy
+
+    files = dict(PAGES) if files is None else files
+    bindings = sealed_bindings()
+    sources = sources or [
+        SourceEntry(ordinal, name, digest_bytes(data))
+        for ordinal, (name, data) in enumerate(sorted(files.items()), start=1)
+    ]
+    tree = RunTree.create(
+        run_root,
+        run_id,
+        source_manifest=[
+            {
+                "relative_path": entry.declared_path,
+                "sha256": entry.declared_sha256,
+                "ordinal": entry.ordinal,
+            }
+            for entry in sources
+        ],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=real_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="happy",
+        stage=DOOR,
+        adapter_revision=bindings["adapter_recipes"][DOOR],
+        args=None,
+        registry=None,
+    )
+    process_sources(
+        context,
+        tree,
+        sources,
+        lambda path: files[path],
+        policy=load_format_policy(),
+    )
+    return tree, files
+
+
 def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
     """Every split part must seal independently while retaining one shared master."""
     from common.exemplar_boundary import verify_sealed_page_pixels
@@ -654,6 +715,109 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
     # A missing Door boundary must refuse before Exemplar examines admissions;
     # the next test uses a coherent empty boundary to reach the admission check.
     assert "predecessor door has no stage-seal" in result.stderr
+
+
+def test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page(tmp_path):
+    """The real-ingress boundary gap named in this file's own HANDOFF, closed.
+
+    `run.py::_open` cannot call `common.stage.open_context` for a real
+    submission -- that function's fixture/scenario comparison has nothing to
+    compare on a real run -- so it builds its `StageContext` by hand. Before
+    this test existed, that hand-built branch never called
+    `verify_predecessor_seal`: a Door that refused after publishing real
+    admissions (`require_no_duplicate_sources` / `require_some_admitted`,
+    see `test_door.py`) writes no `stage-seal`, but a separately invoked
+    Exemplar would still open and could seal pages from those admissions.
+    Driving the orchestrator never exercises this, because it stops at the
+    Door's non-zero exit -- this is the boundary a directly invoked Exemplar
+    must hold on its own.
+    """
+    tree, _ = build_refused_real_door_run(tmp_path / "runs")
+    admissions = [
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
+    ]
+    assert admissions, "the fixture must actually publish real admissions to be at risk"
+    assert [
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "stage-seal"
+    ] == [], "the door fixture must not have sealed, or this test proves nothing"
+
+    result = run_exemplar(tmp_path / "runs")
+
+    assert result.returncode != 0
+    assert "predecessor door has no stage-seal" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
+def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path):
+    """The successful-Door case the guard above must not also refuse.
+
+    Same real-ingress construction, but the Door reaches `seal_boundary` /
+    `finish` normally -- this is `build_door_run` with `real_ingress_record`
+    substituted for the synthetic-fixture ingress it takes by default.
+    """
+    from admission import load_format_policy
+
+    files = dict(PAGES)
+    bindings = sealed_bindings()
+    sources = [
+        SourceEntry(ordinal, name, digest_bytes(data), declared_size=len(data))
+        for ordinal, (name, data) in enumerate(sorted(files.items()), start=1)
+    ]
+    ledger = submit.build_manifest(
+        [
+            {
+                "relative_path": entry.declared_path,
+                "sha256": entry.declared_sha256,
+                "bytes": entry.declared_size,
+            }
+            for entry in sources
+        ]
+    )
+    sources = [entry._replace(ledger_sha256=ledger["self_hash"]) for entry in sources]
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": entry.declared_path,
+                "sha256": entry.declared_sha256,
+                "ordinal": entry.ordinal,
+                "ledger_sha256": entry.ledger_sha256,
+                "bytes": entry.declared_size,
+            }
+            for entry in sources
+        ],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=real_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="happy",
+        stage=DOOR,
+        adapter_revision=bindings["adapter_recipes"][DOOR],
+        args=None,
+        registry=None,
+    )
+    process_sources(
+        context,
+        tree,
+        sources,
+        lambda path: files[path],
+        policy=load_format_policy(),
+    )
+    context.seal_boundary()
+    context.finish(DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+
+    assert result.returncode == 0, result.stderr
+    assert (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(

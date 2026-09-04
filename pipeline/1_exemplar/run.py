@@ -63,6 +63,7 @@ from common.stage import (  # noqa: E402
     refuse_halted_run,
     run_stage,
     stage_parser,
+    verify_predecessor_seal,
 )
 
 SEAL_SUBJECT = "corpus-seal"
@@ -316,6 +317,7 @@ def _open(args, registry_factory) -> StageContext:
     if mode != REAL_INGRESS:
         return open_context(args, EXEMPLAR, registry_factory=registry_factory)
     refuse_halted_run(tree, EXEMPLAR, args.hard_failure_config)
+    verify_predecessor_seal(tree, EXEMPLAR)
     return StageContext(
         tree=tree,
         run=run,

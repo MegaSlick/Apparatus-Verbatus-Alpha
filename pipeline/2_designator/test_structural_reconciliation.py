@@ -15,6 +15,21 @@ def _load_designator():
     return load_designator("designator_structural_reconciliation_under_test")
 
 
+# `grouping.group_page` no longer carries module defaults for these -- `run.py`
+# resolves them per page from the sealed grouping policy and hands them in.
+# These four are the retired constants at the 200-wide page every test below
+# builds on (margin 0.15 * 200 = 30px, and the three pixel counts unchanged),
+# spelled out here so these tests keep exercising the geometry they always
+# exercised rather than a policy that could be edited out from under them: what
+# is under test is `_match_structural_group`, not the thresholds.
+_THRESHOLDS = {
+    "margin_px": 30,
+    "chain_gap_px": 6,
+    "anchor_reach_px": 2,
+    "brace_min_height_px": 30,
+}
+
+
 def _group(bounds: dict, body_members=()) -> dict:
     return {
         "bounds": bounds,
@@ -93,10 +108,10 @@ def test_two_declared_acts_cannot_both_claim_one_detected_group():
 
     Built on real `grouping.group_page` output rather than a hand-written group:
     two register entries with no margin anchor and three blank rows between them
-    (under `DEFAULT_CHAIN_GAP_PX`) are one detected run, and each declared act's
-    own rectangle lies wholly inside it, so `_match_structural_group` returns the
-    same group for both. Recording it as each act's own `detected_bounds` would
-    claim a corroboration that was never measured.
+    (under the resolved chain gap of 6px) are one detected run, and each declared
+    act's own rectangle lies wholly inside it, so `_match_structural_group`
+    returns the same group for both. Recording it as each act's own
+    `detected_bounds` would claim a corroboration that was never measured.
     """
     import grouping
 
@@ -105,7 +120,9 @@ def test_two_declared_acts_cannot_both_claim_one_detected_group():
     def component(x, y, w, h):
         return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
 
-    groups = grouping.group_page([component(40, 20, 120, 40), component(40, 63, 120, 37)], 200, 300)
+    groups = grouping.group_page(
+        [component(40, 20, 120, 40), component(40, 63, 120, 37)], 200, 300, **_THRESHOLDS
+    )
     assert len(groups) == 1, "the premise of this test is that detection merged the two"
     declared_a = {"x": 40, "y": 20, "w": 120, "h": 40}
     declared_b = {"x": 40, "y": 63, "w": 120, "h": 37}
@@ -146,9 +163,9 @@ def test_brace_linked_acts_each_claim_their_own_group():
     def component(x, y, w, h):
         return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
 
-    brace = component(2, 20, 15, grouping.DEFAULT_BRACE_MIN_HEIGHT_PX + 10)
+    brace = component(2, 20, 15, _THRESHOLDS["brace_min_height_px"] + 10)
     groups = grouping.group_page(
-        [brace, component(40, 20, 120, 20), component(40, 45, 120, 20)], 200, 300
+        [brace, component(40, 20, 120, 20), component(40, 45, 120, 20)], 200, 300, **_THRESHOLDS
     )
     assert len(groups) == 2
     analysis = {"groups": groups}

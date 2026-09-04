@@ -1644,6 +1644,102 @@ def publish_cluster_report(context: StageContext) -> str | None:
     return published.relative_path
 
 
+def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) -> None:
+    """Refuse a submission in which two submitted files derive one page identity.
+
+    Identity binds the bytes, not the manifest row, so two byte-identical files
+    under different names derive one `page_id`; the Exemplar seals one page
+    citing both submission rows, and every stage behind it still works one page
+    per submitted row. Until they process a merged page once per identity, that
+    submission cannot be read correctly, and this is where it is stopped.
+
+    **The whole submission is refused, and never a file.** Dropping the second
+    copy is an automated exclusion, and GOVERNANCE reserves exclusions to Tyrel
+    — `ArmariumCategory.EXCLUDED_WITH_APPROVAL` exists because exclusion is
+    approval-bound. Nor may the door choose the other way and read the merged
+    page once: identical bytes are one page shot twice *or* an export that wrote
+    one scan under two names, and nothing in the bytes tells the two apart. The
+    operator is asked instead, which is what GOVERNANCE 2 is for.
+
+    Ordinals only, never filenames. `run_stage` prints every `ContractError` to
+    stderr, and the data-handling logging rule excludes a declared path from
+    exactly that channel — the same reason `common/exemplar_boundary.py` and
+    `require_some_admitted` name their refusals by ordinal. The duplicate report
+    is sealed *before* this refusal precisely so the per-filename detail exists
+    in the tree: nothing is lost, and the run stops after the evidence is
+    written and before anything else seals.
+
+    There is deliberately no `--allow-duplicate-sources`. A flag that opts past
+    this would let a session wave through a refusal that exists to stop a
+    downstream lie about how many pages were read; if that escape hatch is
+    wanted, it is Tyrel's to add.
+
+    **What this sees is the submitted bytes, which is not every route to one
+    page identity.** The duplicate report groups on `admitted_source_sha256`,
+    the digest of the file as submitted, so this refuses exactly the submissions
+    in which two declared filenames carry identical bytes. A page identity is
+    derived one step further on (`pipeline/1_exemplar/run.py::_page_origin`):
+    for a triage-declared frame it binds the admitted *derivative*, so two
+    sources whose bytes differ and whose derivatives coincide would also seal as
+    one page and are not grouped here. That case is refused by name at the first
+    consumer instead, by `common/exemplar_boundary`'s merged-page check, and it
+    is named here rather than left to be discovered: closing it at this door
+    would mean deriving page identity a second time in this file, and one rule
+    for what makes a page spelled in two places is how the two come to disagree.
+    """
+    if duplicate_report is None:
+        return
+    record = tree.read_artifact(
+        DOOR,
+        "duplicate-report",
+        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
+    )
+    groups = record["payload"].get("groups")
+    # This stage wrote the report moments ago, so a malformed one means the tree
+    # changed underneath the run -- and `run_stage` turns a `ContractError` into
+    # this pipeline's refusal shape while a `KeyError` reaches the operator as a
+    # traceback. The refusal that stops a whole submission is not the place to
+    # exit by exception type.
+    if not isinstance(groups, list) or not groups:
+        raise ContractError(
+            "the door duplicate report names no group of sources sharing one digest, so the "
+            "submission cannot be refused by the ordinals that share it"
+        )
+    ordinals_by_group = []
+    for group in groups:
+        sources = group.get("sources") if isinstance(group, dict) else None
+        if not isinstance(sources, list) or not sources:
+            raise ContractError("the door duplicate report has a group naming no sources")
+        rendered = []
+        for source in sources:
+            ordinals = source.get("ordinals") if isinstance(source, dict) else None
+            if (
+                not isinstance(ordinals, list)
+                or not ordinals
+                or not all(
+                    isinstance(ordinal, int) and not isinstance(ordinal, bool)
+                    for ordinal in ordinals
+                )
+            ):
+                raise ContractError(
+                    "the door duplicate report names a duplicate source with no integer ordinals"
+                )
+            rendered.append(", ".join(str(ordinal) for ordinal in ordinals))
+        ordinals_by_group.append(" and ".join(rendered))
+    named = "; ".join(ordinals_by_group)
+    raise ContractError(
+        "this submission derives one page identity from more than one submitted file: "
+        f"submitted ordinal(s) {named} carry identical bytes. Byte-identical sources "
+        "derive one page_id, so the Exemplar would seal one page citing every one of "
+        "them while every stage behind it still works one page per submitted row, and "
+        "the run would read one page where two files were submitted. Nothing is "
+        "excluded here and nothing is dropped: the submission is refused whole, and "
+        f"the sealed duplicate report at {duplicate_report} names each "
+        "filename. Re-submit with a --submission-manifest naming each distinct scan "
+        "once, or ask Tyrel if a repeated scan is genuinely two pages"
+    )
+
+
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure (harvest #3).
 
@@ -1820,12 +1916,18 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
 
 
 def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
-    """The one shared close for both entry points: reports, then the loud check."""
+    """The one shared close for both entry points: reports, then the loud checks.
+
+    Order is load-bearing. Every report is sealed and announced first, so a run
+    refused below still leaves the operator the whole evidence in the tree; then
+    the two refusals fire, before `seal_boundary` writes anything else.
+    """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
     publish_cluster_report(context)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
+    require_no_duplicate_sources(tree, duplicate_report)
     require_some_admitted(admitted, tree, refusal_report)
     context.seal_boundary()
     context.finish(DOOR)
@@ -1849,6 +1951,7 @@ def fixture_submission(args, registry) -> int:
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
@@ -2049,6 +2152,7 @@ def real_submission(args, registry) -> int:
         data_handling_config_sha256=data_policy_binding.config_sha256,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
+        designator_grouping_config_sha256=_grouping_config_digest(args.designator_grouping_config),
         alignment_config_path=args.alignment_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
@@ -2163,7 +2267,7 @@ def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
 
 
 def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> None:
-    """Name duplicate sources in the operator summary without printing filenames."""
+    """Count duplicate sources in the operator summary without printing filenames."""
     if duplicate_report is None:
         return
     record = tree.read_artifact(
@@ -2181,8 +2285,12 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
         or isinstance(ordinals, bool)
     ):
         raise ContractError("the door duplicate report has no integer source and ordinal counts")
+    # "detected", not "admitted". Each source was admitted per ordinal and the
+    # report says so, but `require_no_duplicate_sources` refuses the whole
+    # submission two calls later, and two lines that an operator reads in
+    # sequence may not disagree about whether their subject was let in.
     print(
-        f"{sources} duplicate source(s) admitted across {ordinals} page ordinal(s); "
+        f"{sources} duplicate source(s) detected across {ordinals} page ordinal(s); "
         f"private duplicate report: {duplicate_report}",
         file=sys.stderr,
     )
@@ -2222,6 +2330,28 @@ def _geometry_config_digest(path: str) -> str:
         ) from error
 
 
+def _grouping_config_digest(path: str) -> str:
+    """The Designator grouping/reconciliation thresholds' digest, sealed at the door.
+
+    Load-bearing on the same terms as geometry — `pipeline/2_designator/run.py`
+    re-reading these thresholds at point of use and proving it read what was bound
+    via `context.require_sealed_config("designator-grouping", ...)`, so a real run
+    whose door never sealed this name would refuse at the Designator
+    unconditionally, the defect F-S5 named for padding.
+
+    Hashed here and parsed there, never both: the schema lives in
+    `pipeline/2_designator/grouping_config.py`, and a stage may not import another
+    stage's module (`pipeline/test_stage_import_boundaries.py`). The bytes this
+    digest names are the bytes that loader is held to.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Designator grouping configuration binding at {path} could not be read"
+        ) from error
+
+
 def _real_bindings(
     models,
     ledger,
@@ -2236,6 +2366,7 @@ def _real_bindings(
     data_handling_config_sha256: str,
     designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
+    designator_grouping_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
@@ -2368,6 +2499,7 @@ def _real_bindings(
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
+                "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Unit 5's decisions are geometry that shaped these pixels, so
@@ -2421,6 +2553,7 @@ def _real_bindings(
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
+            "designator-grouping": designator_grouping_config_sha256,
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "decoding": decoding_config_sha256,
