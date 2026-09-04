@@ -48,9 +48,12 @@ QUARANTINE_RIPE_DAYS = 7
 SUSPENSIONS = "SUSPENSIONS.md"
 
 # active/ is meant to be readable in one sitting. Past this, something finished
-# and nobody filed it. The number is a smell test, not a rule.
-ACTIVE_FILE_BUDGET = 6
-ACTIVE_BYTE_BUDGET = 120_000
+# and nobody filed it. The number is a smell test, not a rule. Raised from 6 files
+# / 120 KB once four pipeline sections ran in flight at once, each with its own
+# spec and its review dispositions: a drawer that is over budget every session
+# reports nothing.
+ACTIVE_FILE_BUDGET = 16
+ACTIVE_BYTE_BUDGET = 400_000
 
 # raw/ is measured but never budgeted like active/. A transcript is not a note
 # and nobody reads one in a sitting; the mark below only asks whether closed
