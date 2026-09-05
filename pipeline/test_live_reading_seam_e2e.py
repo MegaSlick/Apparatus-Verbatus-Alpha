@@ -22,18 +22,23 @@ live, through all three witness scopes and adapters (`chandra.v1` page,
 stops being able to go live, this module is where that shows up as a named
 refusal rather than as a quietly shortened roster.
 
-**What a live run produces today is a held export, and that is measured here
-rather than worked around.** Every act is read, every reading names the bytes
-its engine sent, and the run seals a terminal export — held for review, not
-delivered, because two witnesses of a floor of three count: Chandra parses the
-closed contract its own prompt asks for and anchors the live alignment, DAI
-reads its act crops, and Churro's page text aligns to that anchor but Churro
-publishes no native layout, so on the live path it never attaches to an act
-by geometry (a fixture run attaches it only through a declared
-`[[native_observation]]` row a live pass does not read). That one remaining
-limit is named in `pipeline/3_attestatores/HANDOFF.md`; this module is where
-it stops being a description and becomes a measurement, and where closing it
-will show up.
+**What this scripted run produces is a delivered export, and that is measured
+here rather than asserted around.** Every act is read, every reading names the
+bytes its engine sent, and the run seals a terminal export. Until Unit 12 it was
+held twice over: two witnesses of a floor of three counted, because Churro
+published no native layout and so never attached to an act by geometry; and,
+unasserted, testimony content coverage held every page, because an unattached
+witness's whole page text is uncovered. Churro is now asked for block geometry
+and answers with it, so it attaches by its own boxes, three of three count, and
+this fixture's page text — which is exactly its two acts — is fully covered by
+those acts' aligned spans. Both causes are asserted separately below, by name,
+so that either returning says which.
+
+**A delivered offline e2e is not a proven pipeline** (GOVERNANCE 10, hard rule
+1). One scripted run over a synthetic fixture reaches `delivered`; nothing
+follows about a real page. A real register carries headers, folio numbers and
+marginalia no proposal covers, Churro will transcribe them, and that page will
+hold on content coverage — the rule working, not a regression.
 
 The last test is the counterweight: the identical driver, in fixture mode,
 against the tree `pipeline/orchestrator/run.py` produces for itself. They must
@@ -124,7 +129,9 @@ TAIL_FROM_RECENSOR = (
 # `box_1000` geometry that converts, on this fixture's 200x260 pages, to
 # exactly the sealed proposal rectangles of `a1`, `a2` and a2's page-2
 # continuation; Churro speaks its `<output>` envelope once per page; DAI is
-# act-scoped and answers plain text once per act.
+# act-scoped and answers plain text once per act. Churro answers its own closed
+# contract on page 1 and its trained `<output>` envelope on page 2, so both of
+# its legal shapes cross this seam.
 CHANDRA_PAGE_ONE = (
     '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
     '{"box_1000": [100, 77, 900, 385], "text": "SYNTHETIC ACT ONE alpha beta gamma"}, '
@@ -148,9 +155,28 @@ CHANDRA_PAGE_TWO = (
     '{"schema": "verbatus-chandra-page-response.v1", '
     '"text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}'
 )
+# Churro answers page 1 in the closed shape ITS own prompt asks for
+# (`feeding.churro_layout_prompt`, parsed by `common/churro_response.py`). The
+# boxes are derived for this fixture rather than copied from `CHANDRA_PAGE_ONE`:
+# Churro's blocks are Churro's own testimony, and two chairs reporting identical
+# rectangles would make one page's geometry read as one reading counted twice.
+# On these 200x260 pages they convert to {22,22 156x76} and {22,122 156x96},
+# each inside the sealed proposal of the act it transcribes (a1 at 20,20 160x80;
+# a2 at 20,120 160x100) with positive area -- so each block overlaps exactly the
+# act it read, and nothing selects among witnesses (GOVERNANCE 3).
 CHURRO_PAGE_ONE = (
-    "<output>SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+    '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
+    '{"box_1000": [110, 85, 890, 375], "text": "SYNTHETIC ACT ONE alpha beta gamma"}, '
+    '{"box_1000": [110, 470, 890, 835], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
 )
+# Page 2 stays in the TRAINED envelope, deliberately, and it is the shape a
+# model that ignores the layout clause would answer with everywhere -- so this
+# module covers both of Churro's legal shapes across its two pages, exactly as
+# it already does for Chandra's two forms. It is also the more conservative
+# choice on a continuation page; the wire body there is pinned at the stage
+# boundary instead
+# (`pipeline/3_attestatores/test_attestatores_live_pass.py::test_a_churro_continuation_page_wire_body_attaches_and_carries_no_act_anchor`),
+# where the same question is already pinned for Chandra.
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
@@ -861,6 +887,16 @@ def test_the_receipts_on_provenance_are_the_receipts_the_chairs_really_published
         assert not receipt["endpoint"].startswith("fixture://")
 
 
+def _reviews(live_seam) -> list[dict[str, Any]]:
+    """Every Recensor review this run sealed, read straight off disk."""
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(
+            (live_seam.run_root / RUN_ID / "5_recensor" / "artifacts" / "review").glob("*.json")
+        )
+    ]
+
+
 def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(live_seam):
     """The stages after the seam have never met a live tree before this one.
 
@@ -869,69 +905,90 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     fixture record has. Running them here is what says a live run reaches an
     export at all, rather than reaching the Perlector and stopping.
 
-    It reaches one, and the export is **held for review, not delivered** — the
-    honest measurement of what a live run produces today. Both acts were read;
-    what holds them is witness coverage, named on the bundle's own face: two of
-    a floor of three witnesses count. Chandra reads under its own contract and
-    is attached and aligned; DAI reads its crops; Churro's page text aligns to
-    the anchor derived from Chandra's response but Churro publishes no native
-    layout, so it never attaches to an act by geometry on the live path
-    (recorded in `pipeline/3_attestatores/HANDOFF.md`). Asserting `delivered`
-    here would need either a Churro layout channel nobody has built or a
-    lowered floor, and the second is the kind of quiet accommodation
-    GOVERNANCE 2 refuses. The day that gap closes, this assertion is what says
-    so.
+    Since Unit 12 it reaches a **delivered** one. Churro is asked for block
+    geometry (`feeding.churro_layout_prompt`), answers in the shape
+    `common/churro_response.py` declares, and attaches to each act by its own
+    boxes against that act's own sealed proposal — so three of a floor of three
+    count and no act is under-witnessed. Two independent things had to be true
+    for `reasons == []`, and the assertion is written so that either failing
+    says which: the witness floor, and testimony content coverage, which holds a
+    page whenever a witness transcribed non-whitespace text no aligned act
+    attachment covers. That second hold fired on every live export before this
+    unit — Churro was unattached, so its whole page text was uncovered — and
+    nothing asserted it, which is why it is now asserted BY NAME below rather
+    than left to `reasons == []` to imply.
+
+    **A delivered offline e2e is not a proven pipeline** (GOVERNANCE 10, hard
+    rule 1). The claim is that one scripted run over a fixture whose page text
+    is exactly its two acts reaches `delivered`, and nothing more. A real
+    register page carries headers, folio numbers and marginalia the Designator
+    did not propose; Churro will transcribe them; that page will hold on content
+    coverage, and that is the rule working (GOALS 1), not a regression.
     """
     assert live_seam.tail == {
-        "pipeline/5_recensor/run.py": EXIT_HELD,
+        "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
-        "pipeline/7_armarium/run.py": EXIT_HELD,
+        "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(live_seam.run_root, RUN_ID))
-    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
     aggregate = export["payload"]["aggregate"]
-    assert aggregate["status"] == "partial"
-    assert sorted(aggregate["reasons"]) == [
-        "act a1 is held-for-review",
-        "act a1 is under-witnessed (2 of a floor of 3)",
-        "act a2 is held-for-review",
-        "act a2 is under-witnessed (2 of a floor of 3)",
-    ]
-    # Every act was nonetheless read: the hold is a coverage fact about the
-    # witnesses, not a failure of the reading seam this module is about.
+    # The two halves, each named, before the aggregate that depends on both. A
+    # bare `reasons == []` would fail identically whichever one broke.
+    for review in _reviews(live_seam):
+        coverage = review["payload"]["coverage"]
+        assert coverage["under_witnessed"] is False, coverage
+        content = review["payload"]["testimony_content_coverage"]
+        assert content["shortfall"] is False, content
+        for chair, measured in content["by_chair"].items():
+            assert measured["uncovered_non_whitespace"]["count"] == 0, (chair, measured)
+    assert sorted(aggregate["reasons"]) == []
+    assert export["outcome"] == ArmariumCategory.DELIVERED.value
+    assert aggregate["status"] == "complete"
     assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
 
 
-def test_the_witness_coverage_a_live_run_falls_short_of_is_named_chair_by_chair(live_seam):
-    """Which chair cannot count live today, and exactly why — no silent roster.
+def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):
+    """Which chair counts live, and exactly on what evidence — no silent roster.
 
-    The whole roster is served and every chair reads, so the shortfall is
-    measured rather than avoided. Chandra's page response parses under the
-    contract its prompt asks for, its own block geometry overlaps the acts, and
-    the live alignment anchor is derived from that same response, so it is
-    attached, aligned and comparable. Churro's page text aligns to that anchor
-    too, but Churro publishes no native layout: its only geometry is the
-    presented echo, which routing excludes, so it stays unattached — the one
-    `unaligned` shortfall — and two of a floor of three count, which is the
-    hold above. The fixture posture attaches Churro only through a declared
-    `[[native_observation]]` row, and a live pass reads none.
+    The whole roster is served and every chair reads. Chandra's page response
+    parses under the contract its prompt asks for, its own block geometry
+    overlaps the acts, and the live alignment anchor is derived from that same
+    response. DAI is shown one act crop, so its basis is `presented-region`.
+    Churro answers the closed shape its own prompt asks for and overlaps the
+    same acts with ITS OWN boxes — two chairs independently reporting geometry
+    over one rectangle, not one chair's geometry attributed to another and not
+    anything selecting among them (GOVERNANCE 3, hard rule 8). The boxes are
+    asserted to differ for exactly that reason.
+
+    **What `comparable` costs, said here because the floor now depends on it.**
+    `comparable` needs `attached` and `alignment.status == "aligned"`, and both
+    page witnesses' alignment is computed against the anchor derived from
+    Chandra's response. So the third witness counts toward the floor only
+    because the first located its text. The geometry is Churro's own and the
+    anchor is a text-locating instrument, not a preference — but "three
+    independent witnesses" now means two independent readings and one dependent
+    comparability, and any later claim about witness independence has to say so.
     """
     tree = RunTree(live_seam.run_root, RUN_ID)
     records = act_records(tree)
     for (act_id, chair), record in records.items():
         assert record["outcome"] == "read", (act_id, chair)
-    chandra_page_text = (
-        "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
-    )
+    page_text = "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
     # `act_records` keys by the sealed act identity, not the fixture's key; both
     # acts are primary on page 1, so both act views carry that page's reading.
-    chandra_views = [
-        record["payload"] for (_act, chair), record in records.items() if chair == "attestator_1"
+    # Both page witnesses join their blocks to the same page text and report two
+    # `native` boxes; neither restates the other's rectangles.
+    views_by_chair = {}
+    for chair in ("attestator_1", "attestator_3"):
+        views = [record["payload"] for (_act, seat), record in records.items() if seat == chair]
+        assert len(views) == 2, chair
+        for view in views:
+            assert view["payload"] == page_text, chair
+            assert [box["bounds_source"] for box in view["observed"]] == ["native", "native"], chair
+        views_by_chair[chair] = views[0]
+    assert [box["bounds"] for box in views_by_chair["attestator_1"]["observed"]] != [
+        box["bounds"] for box in views_by_chair["attestator_3"]["observed"]
     ]
-    assert len(chandra_views) == 2
-    for view in chandra_views:
-        assert view["payload"] == chandra_page_text
-        assert [box["bounds_source"] for box in view["observed"]] == ["native", "native"]
 
     attachments = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
@@ -946,9 +1003,11 @@ def test_the_witness_coverage_a_live_run_falls_short_of_is_named_chair_by_chair(
             }
             for item in record["payload"]["attachments"]:
                 if item["page_ordinal"] == 2:
-                    # a2's continuation page: answered in the page-text form
-                    # (see `CHANDRA_PAGE_TWO`), so no geometry attaches there
-                    # and the entry is the one the Perlector reads.
+                    # a2's continuation page. Chandra answers it in the
+                    # page-text form and Churro in its trained `<output>`
+                    # envelope, so neither reports geometry there and neither
+                    # attaches; a continuation page carries no act anchor
+                    # either way.
                     assert item["attached"] is False
                     assert item["alignment"] == {
                         "status": "unaligned",
@@ -962,24 +1021,23 @@ def test_the_witness_coverage_a_live_run_falls_short_of_is_named_chair_by_chair(
         assert chandra["alignment"]["anchor_basis"] == "act-anchor"
         assert chandra["alignment"]["anchor_chair"] == "attestator_1"
         assert dai["attached"] and dai["comparable"], act_id
-        # Aligned in text, unattached in geometry, and the record says both.
+        assert dai["attachment_basis"] == "presented-region", act_id
+        # Attached on its OWN geometry, aligned against Chandra's anchor, and
+        # the record says which is which.
+        assert churro["attached"] and churro["comparable"], act_id
+        assert churro["attachment_basis"] == "geometric-overlap", act_id
         assert churro["alignment"]["status"] == "aligned", act_id
-        assert not churro["attached"] and not churro["comparable"], act_id
-        assert churro["attachment_basis"] == "unattached"
+        assert churro["alignment"]["anchor_chair"] == "attestator_1", act_id
 
-    reviews = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(
-            (live_seam.run_root / RUN_ID / "5_recensor" / "artifacts" / "review").glob("*.json")
-        )
-    ]
+    reviews = _reviews(live_seam)
     assert reviews
     for review in reviews:
         coverage = review["payload"]["coverage"]
-        assert review["outcome"] == "held-for-review"
+        assert review["outcome"] == "accepted"
         assert coverage["configured"] == 3
+        assert coverage["floor"] == 3
         assert coverage["by_outcome"] == {"read": 3}
-        assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
+        assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
 
 
 def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held(

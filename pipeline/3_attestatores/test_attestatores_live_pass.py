@@ -1880,12 +1880,14 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     Each act's anchor line is the reported block whose geometry overlaps the
     act's sealed proposal, and both page witnesses align their page text
     against that anchor. Chandra itself is attached (its own blocks overlap
-    the acts) and aligned, so it is comparable. Churro's text aligns to the
-    same anchor, but Churro publishes no native layout -- its only geometry is
-    the presented echo, excluded from routing -- so on the live path it stays
-    geometrically unattached with its alignment retained beside it, and no
-    span: a fixture run attaches it only through a declared
-    `[[native_observation]]` row a live pass does not read.
+    the acts) and aligned, so it is comparable. Churro answers in its trained
+    `<output>` envelope here, which carries no geometry, so its only observation
+    is the presented echo routing excludes: its text aligns to the same anchor
+    while it stays geometrically unattached, with no span. Since Unit 12 that is
+    a fact about this SCRIPTED BODY, not about the chair -- the wire-contract
+    body attaches by its own boxes two tests above -- and it is scripted here
+    deliberately, because a model that ignores the layout clause is the likely
+    first real outcome and this is what the record then says.
     """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)

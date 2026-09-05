@@ -27,11 +27,15 @@ proposed ones, and the fixture path's declared-act machinery is not consulted
 anywhere in between.
 
 **The export is held for review, and the reason is not the structure chair.**
-Every act is minted, witnessed and read; Churro publishes no native layout, so
-it never attaches to an act by geometry on a live path, and two witnesses of a
-floor of three count. That limit belongs to `pipeline/3_attestatores/HANDOFF.md`
-and is measured identically by the live-seam suite over declared acts. The
-structure chair changes which acts exist, not how many witnesses reach them.
+Every act is minted, witnessed and read; the Churro chair here answers in its
+trained `<output>` envelope, which carries no geometry, so it never attaches to
+an act and two witnesses of a floor of three count. Since Unit 12 that is a
+property of the SCRIPTED BODY rather than of the chair: asked for block geometry
+this chair can now answer with it and attach by its own boxes, which is what
+`pipeline/test_live_reading_seam_e2e.py` measures over declared acts. The
+envelope is kept here on purpose — this module is about which acts exist, not
+about how many witnesses reach them, and pinning the witness floor to a shape
+this suite does not vary keeps the two questions apart.
 """
 
 from __future__ import annotations
