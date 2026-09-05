@@ -2864,6 +2864,16 @@ def publish_attempt(
         else None
     )
     is_chandra = isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1"
+    # One presentation names one sealed page, and that page's size is a fact
+    # about the page, not about this view of it. Bound once here: both
+    # derivations below need it, and `_sealed_source_page` reads the whole
+    # page blob and re-digests it on every call, so asking twice per act view
+    # doubled the I/O and the hashing for one unchanging number (CodeRabbit
+    # round 1, T8). Read only where it is actually needed -- a Chandra act
+    # view with a presentation -- exactly as before.
+    sealed_page_size = (
+        _sealed_source_page(context, presented)[2] if presented and is_chandra else None
+    )
     if not presented:
         observed: list[dict[str, Any]] = []
     elif fixture_observed is not None:
@@ -2877,7 +2887,7 @@ def publish_attempt(
             attempt.observation_payload
             if attempt.observation_payload is not None
             else attempt.native_payload,
-            page_size=_sealed_source_page(context, presented)[2],
+            page_size=sealed_page_size,
         )
     elif adapter is not None:
         observed = adapter.observe(
@@ -2891,9 +2901,7 @@ def publish_attempt(
     if presented and is_chandra:
         # The act view cannot retain partition findings, but it must exclude an
         # overshoot so one bad block does not prevent the page record retaining it.
-        observed, _ = split_page_edge_overshoots(
-            observed, page_size=_sealed_source_page(context, presented)[2]
-        )
+        observed, _ = split_page_edge_overshoots(observed, page_size=sealed_page_size)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
