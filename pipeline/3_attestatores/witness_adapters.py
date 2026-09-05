@@ -105,6 +105,7 @@ def _retain_churro_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
     """Retain one Churro view without letting its registry identity be relabeled."""
 
@@ -115,6 +116,7 @@ def _retain_churro_model_view(
         raw_response=raw_response,
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        served=served,
     )
 
 
@@ -125,6 +127,7 @@ def _retain_dai_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
     """Retain one DAI view without letting its registry identity be relabeled."""
 
@@ -135,6 +138,7 @@ def _retain_dai_model_view(
         raw_response=raw_response,
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        served=served,
     )
 
 

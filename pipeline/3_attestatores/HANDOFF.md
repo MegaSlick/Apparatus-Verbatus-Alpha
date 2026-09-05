@@ -183,11 +183,20 @@ whole, with nothing repaired (GOVERNANCE 7) and its bytes already retained.
 `chandra.parse` dispatches on the declared schema: the wire contract to that
 module, the committed fixture's `fixture-chandra-response.v1` placeholder to
 the validation it always had, and anything else to `unverified-response-schema`.
-The placeholder stays accepted on the live path too, because one parser
-derives the retained model view in both postures and the fixture's pinned
-bytes depend on it; a served chair answering in that shape is answering a
-question its prompt never asked, and `test_live_witness.py` pins that reach
-deliberately rather than inheriting it silently.
+**The placeholder is offline only.** One parser derives the retained model
+view in both postures, and it used to have no way to tell them apart, so a
+served chair answering in the fixture's stand-in shape was read as a page of
+text -- a reading whose wire shape nothing in this repository had verified,
+published as though it had been (GOVERNANCE 10). `retain_model_view` now takes
+a `served` flag, both live call sites in `live_witness.py` set it, and it
+reaches exactly one parser: under it, `chandra.parse` refuses the placeholder
+as `unverified-response-schema` like any other undeclared shape. The bytes are
+retained before the parser runs, so the refusal names a surprise rather than
+losing one. The fixture posture passes nothing and keeps the acceptance its
+pinned bytes depend on. Both halves are pinned --
+`test_live_witness.py::test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_served_chair`
+for the live refusal and the flag at both call sites, `test_chandra_adapter.py`
+and `test_attestatores_retention.py` for the offline acceptance.
 
 **The prompt is split by posture.** `chandra.prompt()` asks the served chair
 for the contract shape, in the repository's own words, stating no preference

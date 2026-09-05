@@ -110,13 +110,25 @@ def _decode(raw_response: Any) -> tuple[Any | None, str | None]:
         return None, "invalid-json"
 
 
-def parse(raw_response: bytes) -> Any:
+def parse(raw_response: bytes, *, served: bool = False) -> Any:
     """Return validated page text, or a named shape outcome that preserves custody.
 
     Dispatches on the declared `schema`: the wire contract goes to
     `chandra_response.parse` (which re-decodes under its own stricter
     duplicate-member guard), the fixture placeholder is validated here exactly
     as it always was, and any other shape is named.
+
+    ``served`` says these bytes came off a chair that actually answered, and it
+    changes exactly one thing: the fixture placeholder schema is then refused
+    as `unverified-response-schema` like any other undeclared shape (CodeRabbit
+    round 1, T7). `FIXTURE_RESPONSE_SCHEMA` is the committed fixture's own
+    stand-in, declared by `proof/skeleton_fixture.toml` and never asked for by
+    `prompt()`; a served chair answering in it is answering a question nobody
+    put to it, and reading that as a page of text would publish a reading whose
+    shape this repository never verified against anything (GOVERNANCE 10). The
+    bytes are already retained before this runs, so the refusal loses nothing:
+    it names a surprise instead of dressing it as a reading. The fixture
+    posture passes nothing and keeps the acceptance its pinned bytes depend on.
     """
     decoded, problem = _decode(raw_response)
     if problem is not None:
@@ -128,7 +140,7 @@ def parse(raw_response: bytes) -> Any:
         if chandra_response.is_refusal(parsed):
             return parsed
         return parsed["page_text"]
-    if decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
+    if served or decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
         return {"parse_outcome": "unverified-response-schema"}
     if "markdown" in decoded and "text" in decoded and decoded["markdown"] != decoded["text"]:
         return {"parse_outcome": "conflicting-text-fields"}
@@ -154,6 +166,7 @@ def retain(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
     """Retain Chandra's response under its own registry identity only.
 
@@ -175,6 +188,7 @@ def retain(
         raw_response=raw_response,
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        served=served,
     )
 
 

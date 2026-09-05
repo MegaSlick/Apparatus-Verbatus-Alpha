@@ -388,8 +388,18 @@ def retain_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
-    """Retain a reproducible view and raw response, including parser failure bytes."""
+    """Retain a reproducible view and raw response, including parser failure bytes.
+
+    ``served`` says the bytes came off a chair that actually answered rather
+    than out of the committed fixture. It reaches exactly one parser --
+    Chandra's, which accepts the fixture's own placeholder schema on the
+    offline posture and must not on the live one (CodeRabbit round 1, T7) --
+    and changes nothing else here. Retention itself is posture-blind, and
+    stays so: the bytes are published to the tree before any parser runs, so a
+    refusal names a surprise without losing it.
+    """
     if not isinstance(adapter, str) or not adapter:
         raise SchemaRefusal("model-view adapter is blank")
     if not isinstance(raw_response, bytes):
@@ -435,7 +445,7 @@ def retain_model_view(
         # (the wire contract in `chandra_response`, and the fixture placeholder).
         from chandra import parse as parse_chandra
 
-        parsed = parse_chandra(raw_response)
+        parsed = parse_chandra(raw_response, served=served)
         if isinstance(parsed, dict) and set(parsed) == {"parse_outcome"}:
             record["parse"] = {
                 "state": "unrecognized-shape",

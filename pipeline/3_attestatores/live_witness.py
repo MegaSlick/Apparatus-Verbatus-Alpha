@@ -550,6 +550,12 @@ def live_attempt_from_response(
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        # These bytes came off a chair that answered. The flag reaches exactly
+        # one parser: Chandra's, which accepts the committed fixture's own
+        # placeholder schema offline and refuses it here, because a served
+        # chair answering in a shape `chandra.prompt()` never asked for is a
+        # named surprise rather than a reading (CodeRabbit round 1, T7).
+        served=True,
     )
     parsed = capture["parse"]
     if parsed["state"] == "parsed" and (completed is True or parsed["text"] != ""):
@@ -662,6 +668,12 @@ def captured_page_attempt(
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        # These bytes came off a chair that answered. The flag reaches exactly
+        # one parser: Chandra's, which accepts the committed fixture's own
+        # placeholder schema offline and refuses it here, because a served
+        # chair answering in a shape `chandra.prompt()` never asked for is a
+        # named surprise rather than a reading (CodeRabbit round 1, T7).
+        served=True,
     )
     parsed = capture["parse"]
     if parsed["state"] == "parsed" and (completed is True or parsed["text"] != ""):
