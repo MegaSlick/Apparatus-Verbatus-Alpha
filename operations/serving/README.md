@@ -383,18 +383,23 @@ catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
 first — if all of them are fixture rows, the chair is fixture regardless of
 tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
 the profile at that exact tier decides, with an `UnsupportedProfile` refusing
-by its own recorded reason and a fixture row at that tier refused when the
-same chair is live at another tier — a catalogue may not be half live for one
-chair. A tier with no configured row at all for this chair is also this
-function's own vocabulary: `config.ServingRecipes.for_identity`'s zero-match
+by its own recorded reason and a fixture row at that tier refused when any
+other tier for the same chair is not a fixture row — a catalogue may not be
+half fixture for one chair — and that refusal names whichever posture the
+other tiers actually hold (live, unsupported, or both) rather than asserting
+they are live. A tier with no configured row at all for
+this chair is also this function's own vocabulary:
+`config.ServingRecipes.for_identity`'s zero-match
 `ServingConfigurationError` is caught and re-raised as
 `ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
 this function's refusals to report a placement-tier problem never sees a
 bare configuration error instead.
 
 `fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
-`FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`) is a
-shared fake endpoint for stage tests built against `ChairClient` — mirrors of
+`FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and
+the structure-chair builders `structure_box_1000`, `structure_answer_body`,
+`scripted_structure_answer`, `scripted_structure_refusal`,
+`scripted_structure_cut_off`) is a shared fake endpoint for stage tests built against `ChairClient` — mirrors of
 this package's own `test_manager.py` fakes, not moved from there, so that
 suite stays untouched. `ScriptedAnswer.finish_reason` takes an explicit
 `ABSENT` sentinel distinct from `None`: `None` scripts a JSON `null`, `ABSENT`
@@ -417,7 +422,23 @@ source. The strongest proof of that ordering, though, lives in
 raise, and shows the raw bytes were already retained before that call ever
 ran — the one case a passing-response check like this fake's cannot reach,
 because retain-after-parse and retain-before-parse look identical whenever
-parsing succeeds. `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
+parsing succeeds.
+
+The structure-chair builders take rectangles in the sealed page's own pixels
+and return the wire JSON whose normalized boxes convert back to exactly those
+rectangles, found by search over the 0-1000 grid and checked through
+`common.structure_answer.to_page_bounds` itself rather than by a second
+closed-form formula — a builder that re-derived the arithmetic could agree with
+a converter that had changed underneath it. Each builder then parses the body
+it built through the contract that will parse it live, so a drifted builder
+fails in the builder rather than as an unexplained hold three stages
+downstream. `scripted_structure_refusal` is keyed by the `PARSE_OUTCOMES` code
+and verifies the body reaches that outcome and no other;
+`scripted_structure_cut_off` truncates a real answer mid-object and sets the
+`length` stop word, which is what a page whose transcription overran
+`max_model_len` actually looks like.
+
+`FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
 `test_manager.py`'s own fake: it keeps the loopback health endpoint answering
 after its bound process is told to exit, the exact ambiguity
 `ServingManager._assert_endpoint_absent` exists to catch, for a test that
@@ -425,8 +446,8 @@ needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
 
 ## End to end
 
-`pipeline/test_live_reading_seam_e2e.py` is the only place the whole seam runs
-as one run: the real stage programs carry a tree to the Designator, the
+`pipeline/test_live_reading_seam_e2e.py` is where the whole seam runs as one
+run: the real stage programs carry a tree to the Designator, the
 Attestatores reads it through three live witness chairs, the Perlector reads it
 through a live chair, and the Recensor, Archetypus and Armarium then consume
 what those two wrote. Every chair answers through `fakes.py`; nothing starts a
@@ -438,9 +459,12 @@ test-only switch.
 Two facts that suite establishes and no single-stage suite can. First, a live
 run reaches a **sealed terminal export that is held for review, not delivered**:
 both acts are read and every reading names the exact bytes its engine sent, but
-only one witness of a floor of three counts, because `chandra.v1` has no
-verifiable wire schema and a live page witness's act attachment is unaligned
-until R4 owns live alignment. Second, two independent drivers reach the same
+two witnesses of a floor of three count. Chandra now reads under its own
+response contract and its act attachment aligns live; what is still missing is
+Churro, which publishes no native layout and so never attaches to an act by
+geometry on a live path — a Churro layout channel is Unit 12's obligation, and
+the export stays held until it lands (`pipeline/3_attestatores/HANDOFF.md`).
+Second, two independent drivers reach the same
 fixture tree byte for byte: the orchestrator's own subprocess chain on one
 side, and — on the other — the identical driver this module uses for the live
 seam, pointed at the committed fixture catalogue, with `--placement-tier`
@@ -449,3 +473,13 @@ That equality says this seam's own driving code takes the fixture path
 unchanged; whether the fixture tree itself has moved relative to history is
 `pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST`
 pin to say, not this suite.
+
+`pipeline/test_structure_chair_e2e.py` runs the same shape of run one stage
+earlier: the Designator's own live pass against a scripted
+`designator_structure` chair, so the acts the roster then witnesses, reads,
+reviews and exports are the ones a *model* drew rather than the ones a fixture
+declared. It imports the live-seam suite's driver rather than copying it, so
+the two suites' claims stay comparable; the one difference is the catalogue,
+which marks `designator_structure` live as well. Its export is held for the
+same Churro-shaped reason, which is how it says that replacing declared acts
+with proposed ones moved the denominator and not the coverage.

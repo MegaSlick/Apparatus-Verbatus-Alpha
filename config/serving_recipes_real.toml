@@ -6,16 +6,15 @@
 # It deliberately leaves the default fixture catalogue unchanged.  Every vLLM
 # row is a complete, locked launch shape but `preflight_state = "unproven"`:
 # these are planning inputs, not a claim that any listed model has started,
-# fitted, or answered on real silicon.  The YOLO secondary proposer instead has
-# an explicit `unsupported` row at every tier: its upstream contract is native
-# Ultralytics object detection, not a vLLM completion endpoint, and no native
-# serving implementation exists here yet.  A serving manager refuses both
-# shapes before it opens a process.
+# fitted, or answered on real silicon.  A serving manager refuses an unproven
+# row before it opens a process.
 #
 # Rows cover every configured chair in models-real.toml at every tier in
-# pod_placement.toml.  The common stage parser seals the selected catalogue's
-# exact bytes, so using this catalogue cannot silently share a run authority
-# with the fixture-only catalogue.
+# pod_placement.toml.  The secondary proposer has no row because it is absent
+# there by Tyrel's ruling of 2026-08-12, and an absent chair needs no coverage.
+# The common stage parser seals the selected catalogue's exact bytes, so using
+# this catalogue cannot silently share a run authority with the fixture-only
+# catalogue.
 #
 # `request_timeout_seconds` bounds one non-streaming reading request, which
 # returns nothing until generation completes.  Witness rows carry 600s,
@@ -375,32 +374,6 @@ startup_timeout_seconds = 300
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
-
-# The secondary proposer is a separately configured chair, even though its
-# model serves the Designator's proposal work. Its pinned repository provides
-# an Ultralytics YOLO checkpoint, not a transformers generation model. Naming
-# the missing native serving path is honest coverage; a vLLM chat-completions
-# profile would be a launch recipe this model cannot satisfy.
-[[profiles]]
-kind = "unsupported"
-recipe = "unproven-real-secondary-proposer"
-chair = "secondary_proposer"
-tier = "generic-24gb"
-reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
-
-[[profiles]]
-kind = "unsupported"
-recipe = "unproven-real-secondary-proposer"
-chair = "secondary_proposer"
-tier = "generic-48gb"
-reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
-
-[[profiles]]
-kind = "unsupported"
-recipe = "unproven-real-secondary-proposer"
-chair = "secondary_proposer"
-tier = "generic-80gb-plus"
-reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
 
 [[profiles]]
 kind = "vllm"

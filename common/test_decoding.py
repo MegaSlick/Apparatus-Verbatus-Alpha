@@ -21,7 +21,14 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
         "seed": 20260820,
         "passes": 2,
     }
+    # The structure pass's own section (Tyrel, 2026-09-02). Shipped at 0 because
+    # the live reading seam executes 0 only; the loader itself admits any
+    # finite, non-negative value so the sealed file can vary when the seam can.
+    assert policy["structure"] == {"temperature": 0}
     assert len(digest) == 64
+
+
+_STRUCTURE = "[structure]\ntemperature = 0\n"
 
 
 @pytest.mark.parametrize(
@@ -29,18 +36,60 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
     [
         (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 1\n'
-            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n',
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n' + _STRUCTURE,
             "temperature 0",
         ),
         (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = false\n'
-            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n',
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n' + _STRUCTURE,
             "temperature 0",
         ),
         (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
-            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 1\n',
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 1\n' + _STRUCTURE,
             "at least 2",
+        ),
+        # A file with no structure section is not the closed schema: the
+        # structural seal names the `structure` posture over these bytes, and
+        # bytes with no such section cannot carry that name honestly.
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n',
+            "wrong closed schema",
+        ),
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = -1\n",
+            "structure must declare",
+        ),
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = true\n",
+            "structure must declare",
+        ),
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = 0\nseed = 4\n",
+            "structure must declare",
+        ),
+        # TOML spells both of these as ordinary floats, and neither is caught by
+        # the non-negative test: `nan < 0` and `inf < 0` are both False. Only
+        # the loader's `math.isfinite` clause refuses them, so these two rows
+        # are what makes removing that clause fail a test rather than pass one.
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = nan\n",
+            "structure must declare",
+        ),
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = inf\n",
+            "structure must declare",
         ),
     ],
 )

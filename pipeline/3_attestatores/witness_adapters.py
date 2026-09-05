@@ -11,7 +11,11 @@ remain stage-local and obey these constraints:
 * ``present(context, presentation)`` validates the closed ``presented`` block
   with run-tree access for an adapter-owned crop, while
   ``observe(presentation, native_payload)`` derives the closed ``observed``
-  entries from that exact image/response pair. Presentation kinds remain
+  entries from that exact image/response pair. Chandra's ``observe`` also
+  takes a keyword ``page_size``: its wire contract reports normalized boxes,
+  and a page witness's act view presents one crop while restating page-level
+  geometry, so the sealed page's own size is the denominator, not the
+  presentation's. Presentation kinds remain
   ``page``, ``region``, and ``adapter-crop``: an adapter crop is an
   adapter-owned derivative and not a third witness scope; DAI is act-scoped and
   publishes one from its assigned proposal crop;
@@ -101,6 +105,7 @@ def _retain_churro_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
     """Retain one Churro view without letting its registry identity be relabeled."""
 
@@ -111,6 +116,7 @@ def _retain_churro_model_view(
         raw_response=raw_response,
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        served=served,
     )
 
 
@@ -121,6 +127,7 @@ def _retain_dai_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
     """Retain one DAI view without letting its registry identity be relabeled."""
 
@@ -131,6 +138,7 @@ def _retain_dai_model_view(
         raw_response=raw_response,
         transport_stop_reason=transport_stop_reason,
         parser=parser,
+        served=served,
     )
 
 

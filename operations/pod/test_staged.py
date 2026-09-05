@@ -649,8 +649,11 @@ def test_the_printed_schedule_names_every_chair_the_real_roster_configures() -> 
     is invisible in the direction that matters: a chair added to a stage the
     schedule calls podless is a boot nobody was asked to authorize. The real
     roster is the one a pod ever serves -- the fixture roster resolves to local
-    snapshots -- and `secondary_proposer` is configured there and absent here,
-    which is how this list was wrong when it was written.
+    snapshots. `secondary_proposer` is `absent` in the real roster itself
+    (Tyrel's ruling of 2026-08-12), so it belongs to neither `configured` nor
+    the schedule; every chair the roster does configure is served by the pod of
+    the stage that reads it, and the drift this test exists to catch is one of
+    them the schedule omits.
     """
 
     root = Path(__file__).resolve().parents[2]

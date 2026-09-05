@@ -71,6 +71,7 @@ import geometry_layer  # noqa: E402
 import grouping  # noqa: E402
 import grouping_config  # noqa: E402
 import structure  # noqa: E402
+import structure_pass  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -80,6 +81,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, RECENSOR  # noqa: E402
+from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
@@ -95,6 +97,7 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     SECONDARY_PROPOSER_CHAIR,
+    STRUCTURE_ANSWER_KIND,
     StageContext,
     continuation_for,
     current_recovery_request,
@@ -191,7 +194,33 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # cut into a predetermined grid instead. In the second case `detected_bounds` is
 # `null` and the two counts are zero -- recording a computed band there, with
 # zero members, would be a claim about something nothing measured (GOVERNANCE 10).
-ACT_GROUP_EVIDENCE = frozenset({"detected", "fallback-tiles"})
+#
+# Three more values exist only on the live path, where the structure chair is
+# the proposer and the ink scan is corroboration rather than ground truth
+# (`structure_pass.model_evidence_blocks`). `shared-detection` carries a real
+# detected region and its counts, like `detected`, but says the same region
+# covers another proposed act too -- the merged-boundary case the fixture path
+# refuses at `_claim_structural_group`, recorded here as *not* independent
+# corroboration. `split-detection` is its mirror and carries null bounds and
+# zero counts: two or more scanned regions each cover half of one rectangle, so
+# the chair drew one act where the scan found several and no single region is
+# the corroborating one. `model-only` is a rectangle no scanned region covers
+# half of: null bounds and zero counts, like `fallback-tiles`, because nothing
+# measured corroborates it. The last two are distinct facts -- too many regions
+# and none -- and collapsing them would report a scan that found nothing where
+# it found too much (GOVERNANCE 10). The fixture path never emits any of the
+# three, so its records are unchanged.
+ACT_GROUP_EVIDENCE = frozenset(
+    {
+        "detected",
+        "fallback-tiles",
+        structure_pass.EVIDENCE_SHARED_DETECTION,
+        structure_pass.EVIDENCE_SPLIT_DETECTION,
+        structure_pass.EVIDENCE_MODEL_ONLY,
+    }
+)
+# Which of the five carry a measured rectangle, and which say nothing measured.
+_EVIDENCE_WITH_DETECTED_BOUNDS = frozenset({"detected", structure_pass.EVIDENCE_SHARED_DETECTION})
 
 # The rationale a fallback-tiled page's act-group carries. One string, defined
 # once, because it is a statement about the mechanism and must read identically
@@ -215,15 +244,15 @@ def _require_evidence_block(block: dict, what: str) -> None:
             f"not one of {sorted(ACT_GROUP_EVIDENCE)}"
         )
     detected = block["detected_bounds"]
-    if evidence == "detected":
+    if evidence in _EVIDENCE_WITH_DETECTED_BOUNDS:
         if not isinstance(detected, dict) or set(detected) != {"x", "y", "w", "h"}:
             raise ContractError(f"a Designator act-group {what} has invalid detected_bounds")
         return
     if detected is not None or block["body_member_count"] or block["anchor_count"]:
         raise ContractError(
-            f"a Designator act-group {what} claims fallback-tile evidence but carries detected "
-            "bounds or members; a predetermined grid detected nothing and may not report a "
-            "region or a member count as if it had"
+            f"a Designator act-group {what} claims {evidence} evidence but carries detected "
+            "bounds or members; a predetermined grid or an uncorroborated rectangle detected "
+            "nothing and may not report a region or a member count as if it had"
         )
 
 
@@ -259,6 +288,108 @@ def _validate_act_group_payload(payload: object) -> None:
             )
         _require_evidence_block(continuation, "continuation")
     _refuse_text_fields(payload)
+
+
+# The `structure-answer` record's own closed field set, the live path's
+# counterpart to `_validate_act_group_payload` above. `_refuse_text_fields`
+# refuses a *known* content field by name and can do nothing about a field
+# nobody has thought of yet -- which is exactly how `label` shipped a chair's
+# reading in clear until this branch's reviewer found it. A closed set inverts
+# that: a field added to the record without being declared here refuses at
+# publication, naming itself, on the run that adds it rather than on the review
+# that eventually notices. The three nested shapes are closed for the same
+# reason, since a payload is only as closed as its deepest object.
+_STRUCTURE_ANSWER_FIELDS = frozenset(
+    {
+        "schema",
+        "page_id",
+        "page_ordinal",
+        "page_w",
+        "page_h",
+        "prompt_version",
+        "prompt_sha256",
+        "answer_schema",
+        "call_record_ref",
+        "raw_response_ref",
+        "custody_ref",
+        "custody_problem",
+        "receipt_ref",
+        "request_sha256",
+        "finish_reason",
+        "served_model_id",
+        "call_problem",
+        "parse_state",
+        "parse_outcome",
+        "disposition",
+        "reason_code",
+        "act_count",
+        "acts",
+        "findings",
+        "quantization",
+        "page_text_rule",
+        "decoding",
+        "provenance",
+    }
+)
+# Geometry, and both of the chair's free strings only as a digest and a length.
+# `label` and `text` are absent from this set on purpose: the day either name
+# reappears in the record, this refuses.
+_STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
+    {
+        "ordinal",
+        "box_1000",
+        "raw_bounds",
+        "text_digest",
+        "text_length",
+        "label_digest",
+        "label_length",
+    }
+)
+_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
+# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
+# declared here or it does not publish.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+
+
+def _closed_object(value: object, fields: frozenset, what: str) -> dict:
+    """Exactly these field names, no more and no fewer -- and the extras named."""
+    if not isinstance(value, dict):
+        raise ContractError(f"a Designator {what} is not an object")
+    unexpected = sorted(set(value) - fields)
+    missing = sorted(fields - set(value))
+    if unexpected or missing:
+        raise ContractError(
+            f"a Designator {what} is outside its closed contract: unexpected "
+            f"{unexpected}, missing {missing}"
+        )
+    return value
+
+
+def _validate_structure_answer_payload(payload: object) -> None:
+    """Validate the closed `structure-answer` contract before publication."""
+    record = _closed_object(payload, _STRUCTURE_ANSWER_FIELDS, "structure-answer payload")
+    _closed_object(
+        record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
+    )
+    acts = record["acts"]
+    if not isinstance(acts, list):
+        raise ContractError("a Designator structure-answer payload carries no act list")
+    for act in acts:
+        _closed_object(act, _STRUCTURE_ANSWER_ACT_FIELDS, "structure-answer act")
+    findings = record["findings"]
+    if not isinstance(findings, list):
+        raise ContractError("a Designator structure-answer payload carries no finding list")
+    for finding in findings:
+        kind = finding.get("kind") if isinstance(finding, dict) else None
+        fields = _STRUCTURE_ANSWER_FINDING_FIELDS.get(kind)
+        if fields is None:
+            raise ContractError(
+                f"a Designator structure-answer finding of kind {kind!r} is not a declared "
+                f"finding kind; declared kinds are "
+                f"{sorted(_STRUCTURE_ANSWER_FINDING_FIELDS)}"
+            )
+        _closed_object(finding, fields, f"structure-answer {kind} finding")
+    _refuse_text_fields(record)
 
 
 def _configured_chair_record(context, resolved: ChairIdentity) -> dict:
@@ -361,10 +492,15 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     exactly that: the same lossless fast path for our own pages, then one
     shared Pillow fallback under the same pixel bound `dimensions` already
     falls back through — a third hand-rolled decode-and-fallback pair is what
-    that module exists to prevent. Real ingress is still stopped earlier
-    (`main`'s real-input refusal, before any page is decoded), so this changes
-    nothing a run does today; what it changes is that the decode is no longer
-    what would stop it.
+    that module exists to prevent.
+
+    A real submission reaches this function on this branch. `main` refuses a
+    real submission only under the *fixture* structure chair (SPEC_D §5); under
+    a catalogue whose `designator_structure` row is served, the live pass runs
+    over the sealed pages a real ingress produced, and their bytes are decoded
+    here. That is the whole point of the change: a sealed photograph now
+    decodes through the reader `common/imaging.py` built for it instead of
+    raising a bare `ValueError` about a PNG colour type from inside a stage.
     """
     page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = grayscale_rows(page_bytes)
@@ -863,8 +999,27 @@ def structure_failures(context, pages: dict[int, dict]) -> dict[int, str]:
     return failures
 
 
-def publish_structure_status(context, records, pages, provenance, failures, analyses) -> dict:
+def publish_structure_status(
+    context,
+    records,
+    pages,
+    provenance,
+    failures,
+    analyses,
+    *,
+    answers: dict[int, tuple[str | None, dict[str, str]]] | None = None,
+) -> dict:
     """One visible per-page outcome for the structure pass: scanned or held.
+
+    `answers` is the live path's addition and is `None` on the fixture path,
+    where this payload is byte-for-byte what it was: per page ordinal, the
+    structural evidence the chair's answer established (`detected` or
+    `fallback-tiles`, SPEC_D §1.4) and the digest-checked reference to the
+    published `structure-answer` record, carried as the one live-only optional
+    field `structure_answer_ref`. On that path `structure_evidence` is the
+    answer's fact, not the ink scan's: the scan still ran and its background
+    and thresholds are recorded beside it, but which crops this page got is
+    decided by what the chair returned, and the field says so.
 
     Published for every sealed page, not only the failing ones, so "the
     structure pass ran on this page and succeeded" is a record rather than the
@@ -922,6 +1077,13 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
     for ordinal in sorted(pages):
         reason_code = failures.get(ordinal)
         analysis = analyses.get(ordinal)
+        answer = answers.get(ordinal) if answers is not None else None
+        live_fields: dict[str, object] = {}
+        if answer is not None:
+            evidence, answer_ref = answer
+            live_fields = {"structure_answer_ref": answer_ref}
+        else:
+            evidence = analysis["structure_evidence"] if analysis else None
         result = context.publish(
             kind="structure-status",
             # The sealed page record's own subject, not a second derivation of
@@ -939,7 +1101,7 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
                 "state": "held" if reason_code else "scanned",
                 "reason_code": reason_code,
                 "background_source": analysis["background_source"] if analysis else None,
-                "structure_evidence": analysis["structure_evidence"] if analysis else None,
+                "structure_evidence": evidence,
                 # Null on a page held before the structure pass analysed it,
                 # for the same reason the two fields above are: this record
                 # answers for the structure pass, that pass resolved and ran
@@ -954,6 +1116,7 @@ def publish_structure_status(context, records, pages, provenance, failures, anal
                     dataclasses.asdict(analysis["thresholds"]) if analysis else None
                 ),
                 "provenance": provenance,
+                **live_fields,
             },
         )
         published[ordinal] = context.input_ref(result.relative_path)
@@ -1060,6 +1223,12 @@ def _analyze_page(
             "groups": groups,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,
+            # The raw scanned components, kept beside the groups for the live
+            # path's ink tripwire (`structure_pass.touches_ink`): a chair
+            # rectangle is tested against the ink the scan actually counted,
+            # not against the grouped bands. In-process only; nothing publishes
+            # it, so no fixture record changes.
+            "components": components,
         }
     return cache[ordinal]
 
@@ -1735,6 +1904,21 @@ def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[di
     )
 
 
+_FALLBACK_REASON_FIXTURE = (
+    "the structure pass found no ink to group on this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; blankness is proved by the witnesses and the Perlector, which "
+    "only get a say if the crops reach them"
+)
+
+_FALLBACK_REASON_LIVE = (
+    "the structure chair returned no act for this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; this page's own ink scan is recorded separately on its "
+    "conservation record"
+)
+
+
 def _publish_page_fallback(
     context,
     ordinal: int,
@@ -1743,6 +1927,8 @@ def _publish_page_fallback(
     status_ref: dict[str, str],
     claimed: list[dict],
     provenance: dict,
+    *,
+    reason: str = _FALLBACK_REASON_FIXTURE,
 ) -> dict | None:
     """Cut the predetermined crops over a page the structure pass found nothing on.
 
@@ -1804,12 +1990,7 @@ def _publish_page_fallback(
         "tiles": [
             {"bounds": dict(tile["bounds"]), "rationale": tile["rationale"]} for tile in tiles
         ],
-        "reason": (
-            "the structure pass found no ink to group on this page, so the page is cut into "
-            "predetermined overlapping crops and sent downstream to be read rather than being "
-            "called blank here; blankness is proved by the witnesses and the Perlector, which "
-            "only get a say if the crops reach them"
-        ),
+        "reason": reason,
         "provenance": provenance,
     }
     _refuse_text_fields(fallback_payload)
@@ -2278,6 +2459,8 @@ def _account_for_declared_act(
         # exists on a real page; this row is the one every consumer joins the
         # others against, so it is the last place two spellings of one identity
         # should have been left standing.
+        # `test_structure_pass.py` pins that equality for every sealed
+        # fixture page.
         "page_id": (
             pages[page_ordinal]["subject_id"]
             if page_ordinal in pages
@@ -2425,6 +2608,282 @@ def initial_pass(context) -> bool:
     # pulled out, every act on it was still cut, and its predetermined crops still
     # go downstream to be read, which is what Tyrel's 2026-08-11 ruling requires.
     # What is withheld is the run's claim to have completed, not the page.
+    return _initial_pass_has_holds(
+        expected,
+        failures,
+        secondary_held=secondary_held,
+        unmeasured=unmeasured,
+    )
+
+
+def _live_secondary_provenance(context) -> dict:
+    """The secondary proposer on the live path: recorded absent, or refused.
+
+    Resolved every run for the reason `secondary_provenance` gives -- an
+    absence is a decision only if something asks the registry and writes it
+    down. What differs is the configured case. The fixture path writes a
+    `fixture://` receipt for a configured secondary chair; the live path
+    called a real chair and may not write a declared serving moment for one it
+    did not (GOVERNANCE 6). Nothing here serves a secondary chair either: the
+    role is absent by ruling (Tyrel, 2026-08-12, "keep the optional YOLO
+    secondary proposer absent initially"), and a configured row on a live run
+    is refused by name rather than run through a pass that does not exist.
+    """
+    resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
+    if isinstance(resolved, AbsentChair):
+        return {
+            "chair": resolved.role,
+            "chair_state": "absent",
+            "absence": resolved.to_record(),
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            "adapter_revision": context.adapter_revision,
+        }
+    raise ContractError(
+        f"the secondary proposer chair {SECONDARY_PROPOSER_CHAIR!r} is configured, but the "
+        "live structure pass serves no secondary chair and writes no fixture receipt for one; "
+        "the role is absent by ruling (2026-08-12), so a live run must configure it absent"
+    )
+
+
+def _publish_live_act_groups(
+    context, page_record: dict, analysis: dict, minted: list[tuple[str, str, dict]]
+) -> None:
+    """One text-free `act-group` per chair rectangle on one page, evidence from the scan.
+
+    `declared_bounds` here means declared by the structure chair: the same
+    closed field set as a fixture act's record, with the chair as the declarer.
+    The evidence block is `structure_pass.model_evidence_blocks`, computed for
+    the whole page at once so a merged ink group is recorded on both acts it
+    covers. No continuation: a per-page call has no cross-page knowledge, and
+    the relation is the Recensor's (see "Continuation ownership" in HANDOFF.md).
+    """
+    blocks = structure_pass.model_evidence_blocks(
+        analysis, [(act_key, bounds) for _act_id, act_key, bounds in minted]
+    )
+    image_ref = context.input_ref(page_record["payload"]["image_path"])
+    for (act_id, act_key, bounds), block in zip(minted, blocks, strict=True):
+        payload = {
+            "act_key": act_key,
+            "declared_bounds": dict(bounds),
+            "continuation": None,
+            **block,
+        }
+        _validate_act_group_payload(payload)
+        context.publish(
+            kind="act-group",
+            subject_id=act_id,
+            outcome="proposed",
+            inputs=[image_ref],
+            payload=payload,
+        )
+
+
+def live_initial_pass(context, serving_factory, tier: str) -> bool:
+    """Mark out every sealed page through the served structure chair. True when held.
+
+    The live counterpart of `initial_pass`, sharing every piece that is not the
+    proposer itself: the Exemplar boundary, the sealed padding, geometry and
+    grouping policies, the per-page ink analysis, `cut_minted_region`,
+    `publish_structure_status`, the page-fallback tiling, conservation, the
+    residual holds, the once-only seal and the exit rule. What replaces the
+    fixture's declared acts is one call per sealed page through the client
+    (`structure_pass.ask_page`), and what replaces `structure_provenance` is
+    the chair's real receipt with the sealed decoding posture beside it
+    (`structure_pass.live_chair_record`). No `fixture://` receipt is written
+    on this path, and `context.fixture` is never read.
+
+    Order of publication per page: the answer record first, then the status
+    that names it, then the crops -- so a status that says `scanned` always
+    points at an answer that already exists, and `common/stage.py::
+    _verify_proposal_act_row` can follow the reference on every row. A page
+    the chair could not mark out is held with its code in `failures`, exactly
+    where a fixture-declared failure would be, so everything downstream of the
+    hold -- no crop cut, ink reconciled as residual, `EXIT_HELD` -- is the
+    code path the fixture path already proves.
+    """
+    records = page_records(context)
+    pages = sealed_pages(records)
+    if not pages:
+        raise ContractError("the Designator found no sealed page to mark out")
+
+    padding = geometry.load_padding_config(context.args.designator_padding_config)
+    context.require_sealed_config("designator-padding", padding["config_sha256"])
+    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
+    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
+    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    # The structure pass's own posture, from the bytes this run sealed and
+    # rechecked at this point of use (Tyrel, 2026-09-02: `[structure]`, never
+    # `reading_of_record`). Refused by name before any chair starts when the
+    # sealed value is one the live seam cannot execute.
+    decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
+    temperature = structure_pass.executable_temperature(decoding_policy)
+    identity = structure_pass.resolved_structure_chair(context)
+    secondary = _live_secondary_provenance(context)
+    context.publish(
+        kind="secondary-provenance",
+        subject_id="secondary-provenance",
+        outcome="proposed",
+        inputs=[],
+        payload=secondary,
+    )
+
+    page_cache: dict[int, dict] = {}
+    for ordinal, page_record in pages.items():
+        _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
+
+    answers: dict[int, structure_pass.PageAnswer] = {}
+    client = serving_factory(context, identity, tier)
+    with client:
+        engine_call = structure_pass.structure_engine_call(decoding_sha256)
+        provenance = structure_pass.live_chair_record(
+            context, identity, client.handle.receipt_reference, engine_call
+        )
+        for ordinal, page_record in pages.items():
+            answers[ordinal] = structure_pass.ask_page(
+                context,
+                client,
+                page_record,
+                ordinal,
+                _read_checked_page_bytes(context, page_record),
+                page_cache[ordinal],
+                temperature=temperature,
+                decoding_config_sha256=decoding_sha256,
+                provenance=provenance,
+            )
+
+    failures: dict[int, str] = {}
+    status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
+    for ordinal, answer in answers.items():
+        _validate_structure_answer_payload(answer.record)
+        published = context.publish(
+            kind=STRUCTURE_ANSWER_KIND,
+            subject_id=answer.page_id,
+            outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
+            inputs=[context.input_ref(pages[ordinal]["payload"]["image_path"])],
+            payload=answer.record,
+        )
+        answer_ref = context.input_ref(published.relative_path)
+        if answer.disposition == structure_pass.DISPOSITION_HELD:
+            # A held page's status carries its reason code and null evidence
+            # (`structure_evidence` names what corroborates a scanned page's
+            # crops, and a held page has none), but still names the answer:
+            # the retained bytes and the parse outcome are the hold's evidence.
+            failures[ordinal] = answer.reason_code
+            status_answers[ordinal] = (None, answer_ref)
+        else:
+            status_answers[ordinal] = (answer.disposition, answer_ref)
+    status_refs = publish_structure_status(
+        context, records, pages, provenance, failures, page_cache, answers=status_answers
+    )
+
+    expected = []
+    seal_inputs = []
+    for ordinal, answer in answers.items():
+        if answer.disposition != structure_pass.DISPOSITION_DETECTED:
+            continue
+        page_record = pages[ordinal]
+        analysis = page_cache[ordinal]
+        minted: list[tuple[str, str, dict]] = []
+        for act in answer.mint:
+            bounds = structure_pass.validated_rectangle(act, analysis["width"], analysis["height"])
+            act_id = derive_minted_act_id(page_record["subject_id"], "proposal", bounds)
+            act_key = structure_pass.proposal_act_key(ordinal, act["ordinal"])
+            region = cut_minted_region(
+                context,
+                act_id,
+                act_key,
+                page_record,
+                bounds,
+                1,
+                ordinal,
+                "proposal",
+                padding=padding,
+                provenance=provenance,
+            )
+            evidence = [context.input_ref(region.relative_path)]
+            expected.append(
+                {
+                    "act_id": act_id,
+                    "act_key": act_key,
+                    "page_id": page_record["subject_id"],
+                    "page_ordinal": ordinal,
+                    "has_continuation": False,
+                    "outcome": "proposed",
+                    "evidence": evidence,
+                }
+            )
+            seal_inputs.extend(evidence)
+            minted.append((act_id, act_key, bounds))
+        _publish_live_act_groups(context, page_record, analysis, minted)
+
+    # A page the chair answered with no act at all is cut into its predetermined
+    # crops (Tyrel, 2026-08-11), over the grid computed from the page's own
+    # dimensions -- never over the scan's groups, which on this path are
+    # corroboration and not what decides which crops a page gets.
+    claimed_by_page = _claimed_regions_by_page(context)
+    for ordinal, answer in answers.items():
+        if answer.disposition != structure_pass.DISPOSITION_FALLBACK_TILES:
+            continue
+        analysis = page_cache[ordinal]
+        tiled = {
+            **analysis,
+            "structure_evidence": "fallback-tiles",
+            # The page's own resolved sealed grouping policy, exactly as the
+            # fixture path passes it (`_analyze_page`): the live path decides
+            # *when* a page is tiled from the chair's answer, never under what
+            # thresholds, and a grid cut under numbers nobody sealed for this
+            # run would be a crop policy the run authority does not cover.
+            "groups": grouping.fallback_tiles(
+                analysis["width"],
+                analysis["height"],
+                bands=analysis["thresholds"].fallback_bands,
+                overlap_px=analysis["thresholds"].fallback_overlap_px,
+            ),
+        }
+        row = _publish_page_fallback(
+            context,
+            ordinal,
+            pages[ordinal],
+            tiled,
+            status_refs[ordinal],
+            claimed_by_page.get(ordinal, []),
+            provenance,
+            reason=_FALLBACK_REASON_LIVE,
+        )
+        if row is not None:
+            expected.append(row)
+            seal_inputs.extend(row["evidence"])
+    if not expected and not failures:
+        raise ContractError("no structural proposal or page fallback was marked out on any page")
+
+    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, secondary, grouping_policy
+    )
+    expected.extend(residual_rows)
+    seal_inputs.extend(reference for row in residual_rows for reference in row["evidence"])
+    if not expected:
+        raise ContractError(
+            "every page was held and none carried ink to account for; the run has no act "
+            "denominator to seal"
+        )
+
+    payload = {
+        "expected_acts": expected,
+        "count": len(expected),
+        "provenance": provenance,
+    }
+    payload["self_hash"] = self_hash(payload)
+    context.publish(
+        kind="proposal-seal",
+        subject_id="proposal-seal",
+        outcome="proposed",
+        inputs=seal_inputs,
+        payload=payload,
+    )
     return _initial_pass_has_holds(
         expected,
         failures,
@@ -2628,29 +3087,39 @@ def _open(args, registry_factory) -> tuple[StageContext, bool]:
     The shared constructor decides the route from the run authority it read
     once; the flag is read back off that same `context.run`, never from a second
     read of `run.json`, so the route `main` acts on is the route the context was
-    built for. Real ingress must still verify the immediate Ink Map boundary and
-    the underlying Exemplar ledger before refusing the unimplemented
-    structural-proposal work. It must not fabricate fixture acts, successful
-    no-op work, or a synthetic hold that could make an unproposed corpus look
-    exported.
+    built for. Which *pass* then runs is not decided here and not by the route:
+    `main` asks the sealed serving catalogue (`structure_pass.
+    structure_serving_mode`), and the one thing the route decides is that a
+    real submission may not be marked out by the fixture chair.
     """
     context = open_stage_context(args, DESIGNATOR, registry_factory=registry_factory)
     return context, parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied structure-chair implementation."""
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
+    """Run through the explicitly supplied structure-chair implementation.
+
+    `serving_factory(context, identity, tier) -> ChairClient` is the live
+    reading seam, injected the way the Attestatores and the Perlector inject
+    theirs: a stage test passes `operations.serving.fakes`' factory, production
+    passes nothing and gets `structure_pass.default_serving_factory`. It is
+    reached only once the sealed catalogue has said `live` for the structure
+    chair; it never decides which pass runs.
+    """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context, real_input = _open(args, registry_factory)
 
-    if real_input:
-        page_records(context)
+    if args.operation == "recover" and real_input:
+        # `recovery_pass` reads a recrop's geometry from `context.fixture["act"]`
+        # (the fixture's own declared rectangle) because that is the only
+        # geometry the recovery contract carries today; a real submission has
+        # no fixture and this stage has no other source for a recrop's bounds.
+        # Refuse by name here rather than let the generic fixture accessor's
+        # message stand in for it.
         raise ContractError(
-            "the Designator proved its Ink Map boundary and reconciled the Exemplar "
-            "filename ledger, but real structural proposal/model work is outside System "
-            "03; no proposals or holds were fabricated"
+            "bounded recovery from a real submission is not built; a recovery still reads "
+            "the fixture's declared rectangle, which a real submission does not carry"
         )
-
     if args.operation == "recover":
         if not args.act:
             raise ContractError("a recovery operation must name the act it is recovering")
@@ -2661,7 +3130,32 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         recovery_pass(context, args.act, args.recovery_request)
         held = False
     elif args.operation == "initial":
-        held = initial_pass(context)
+        # The selector is the sealed serving-recipe row kind for the structure
+        # chair, never a flag and never the ingress route (SPEC_D §5): the
+        # offline end-to-end run drives the live pass over fixture pages, and
+        # a real submission under the fixture catalogue is refused by name
+        # rather than marked out by an ink scan standing in for a model.
+        mode, _identity = structure_pass.structure_serving_mode(context, args)
+        if mode == "fixture":
+            if real_input:
+                page_records(context)
+                raise ContractError(
+                    "a real submission may not be marked out by the fixture structure chair; "
+                    "select a live catalogue. The Designator proved its Ink Map boundary and "
+                    "reconciled the Exemplar filename ledger, and no proposals or holds were "
+                    "fabricated"
+                )
+            held = initial_pass(context)
+        elif mode == "live":
+            held = live_initial_pass(
+                context,
+                structure_pass.default_serving_factory
+                if serving_factory is None
+                else serving_factory,
+                args.placement_tier,
+            )
+        else:  # pragma: no cover - serving_mode_for closes the vocabulary
+            raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
     else:
         # A closed set, checked rather than assumed: `--operation` has no
         # `choices=` at the shared `stage_parser` level (other stages read it

@@ -991,3 +991,36 @@ def test_serving_mode_mixed_kinds_for_one_chair_refuse(tmp_path: Path) -> None:
     with pytest.raises(ServingModeRefusal):
         serving_mode_for(recipes, chair, "tier-b")
     assert serving_mode_for(recipes, chair, "tier-a") == "live"
+
+
+def test_serving_mode_mixed_kinds_name_the_posture_the_other_tiers_actually_hold() -> None:
+    """The refusal reports what is at the other tiers, never a guess of "live".
+
+    A chair can be fixture at one tier and *unsupported* at another without a
+    live row anywhere: an operator told "another tier is live" would go looking
+    for a launch shape that does not exist. The message names the kind it can
+    see, and says so in the plural when the other tiers disagree among
+    themselves.
+    """
+
+    chair = _identity()
+    fixture_row = _fixture_row(recipe=chair.serving_recipe, chair=chair.role, tier="tier-a")
+    unsupported_row = _unsupported_row(
+        recipe=chair.serving_recipe,
+        chair=chair.role,
+        tier="tier-b",
+        reason="no native engine implements this",
+    )
+    with pytest.raises(ServingModeRefusal) as excinfo:
+        serving_mode_for(_recipes(fixture_row, unsupported_row), chair, "tier-a")
+    assert "another tier is unsupported" in excinfo.value.detail
+
+    live_row = _seal(
+        _vllm_row(
+            recipe=chair.serving_recipe, chair=chair.role, served_model_id="x", tier="tier-c"
+        ),
+        chair,
+    )
+    with pytest.raises(ServingModeRefusal) as excinfo:
+        serving_mode_for(_recipes(fixture_row, unsupported_row, live_row), chair, "tier-a")
+    assert "other tiers are ['live', 'unsupported']" in excinfo.value.detail

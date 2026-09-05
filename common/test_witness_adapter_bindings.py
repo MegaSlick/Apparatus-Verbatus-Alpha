@@ -128,7 +128,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "dai.v1", "unbound.fixture.v1"}),
+        witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES | {"unbound.fixture.v1"},
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -425,7 +425,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "dai.v1", "other.fixture.v1"}),
+        witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES | {"other.fixture.v1"},
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]
