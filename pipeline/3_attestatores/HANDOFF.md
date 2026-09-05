@@ -531,6 +531,101 @@ nothing written, no "sealed no digest"), the fixture-catalogue refusal, and the
 shipped real catalogue's posture at every tier. A real Designator is still
 roadmap work; what this stage is ready for is its seal.
 
+## Real ingress
+
+`main` opens through `common.stage.open_stage_context`, which reads the run
+authority once and decides the route from its ingress record. On a real
+submission the context carries the registry, the sealed digest map this stage
+requires (`alignment`, `decoding`, and the real-only names the Door seals),
+the parsed serving inputs, `fixture=None` behind an accessor that refuses by
+stage name, and `REAL_SCENARIO` -- never `--scenario`, which the real route
+does not read. `run.py::real_ingress(context)` is this stage's one reading of
+the route, off `context.run`; nothing here branches on `context.scenario` or on
+the shape of a fixture.
+
+**The only real posture is every witness served.** Tyrel's ruling
+(2026-09-02): every witness runs its own full pass, with no capture and no
+slicing, and a roster where every configured witness row is served is the only
+real posture. `require_every_witness_served` refuses, by chair name and before
+any act is read, a real run whose sealed catalogue gives a configured witness a
+fixture row, and a real run in which no witness serves at all; there is no
+fixture to answer for a chair on a real submission, so a fixture row there is
+not a second posture but a chair nothing can ask. The mixed-posture refusal in
+`witness_serving_modes` stays as a guard for the fixture-live seam; it does not
+fire on the shipped `config/serving_recipes_real.toml`, whose witness rows are
+live at every tier in `config/pod_placement.toml`, and
+`test_attestatores_real_ingress.py` holds that.
+
+**`page_identity` is the Exemplar page index on both routes.** Every "which
+page is ordinal N" -- the whole-page presentation, the page Testimonium's
+subject, the live schedule's page unit -- goes through `page_subject`, which is
+`common.stage.exemplar_page_ids` over the Exemplar's own `page` artifacts. On a
+fixture run the index agrees with the old fixture-declared identity for every
+sealed page, because a sealed page's identity is its admitted bytes' digest and
+"sealed" means those bytes matched the declaration; a refused page is indexed
+under the Door's `source-N` admission subject, and this stage only asks a
+page-scoped chair about pages that carry proposed acts -- on every shipped
+fixture family those are sealed pages, so no fixture byte moves -- but `by_page`
+is built from a real run's own seal rows, not from this invariant, so
+`presentation_for_page` checks the Exemplar page's `outcome` itself and refuses
+by name rather than reading a refused page's absent `image_path`. The index is
+built once per pass (`publish_page_testimonia_and_attachments` and
+`live_attempt_pass` each call `exemplar_page_ids` once and thread the result
+into every `page_subject` / `presentation_for_page` call as `page_ids`) rather
+than walked again at every lookup: the Exemplar layer is sealed before this
+stage opens, so the walk answers the same every time for the life of the
+process, and a cache scoped to one pass cannot outlive the tree it described.
+Review found this stage paying roughly seven such walks per page rather than
+the three this note used to claim; a page-level bound on a large corpus is
+still roadmap work.
+
+**The declared witness tables have no real-mode counterpart.** `witness_failure`,
+`witness_not_run`, `witness_malformed`, `witness_empty`, `native_observation`,
+`chandra_anchor` and `churro_page_response` are the offline posture's stand-ins
+for a model; the response boundary on a real run is the live pass above (Section
+A), and what a chair returned is what the transport actually returned. On a real
+run the pass's declaration set is `real_declarations` -- empty in every family,
+in the exact shape `declarations_for` builds, and a test holds the two shapes
+equal -- and the preflight's validation of declared Churro page responses is
+skipped by `main`'s `fixture_declared=False`, because there is no fixture and
+nothing to validate. The three-source order for native geometry (declared
+observation, adapter observation, presented bounds) loses its first source on a
+real run: geometry is the adapter's `observe` over the real payload or the
+presentation, never a declaration. `refuse_unread_fixture_declarations` prints
+nothing on a real run: there is no row to pass over. The readers that stay
+fixture-only (`testimony_for`, `declared_response`, `churro_page_capture`,
+`captured_churro_page_attempt`, `_fixture_native_observations`, the declared
+anchor read) are not reached on a real run, because the served posture makes
+every real pass a live pass; if one ever is, the accessor refuses by name rather
+than handing back an empty table. `validate_declared_churro_page_responses`
+keeps reading the fixture's own page ordinals for the fixture route, since it
+runs only there.
+
+**The continuation refusal.** `page_denominator` names an act's far page from
+its verified regions; with no verified region and a recorded crop refusal it
+used to fall back to the fixture's `[[continuation]]` declaration. On a real
+run there is none, and the refusal says so and says what clears it: *act X's
+proposal seal claims a continuation and real ingress carries no continuation
+declaration; its far-page evidence cannot be addressed. The Designator must
+publish the continuation region that names the far page.* This branch is
+reached only past `expected_acts`, which on a real run already verified that
+the far-page region exists and recomputes the act against it -- so what it
+means is that the region existed and was refused at the crop boundary, and the
+one thing that addresses the far page is the Designator's own region record for
+it.
+
+**What is proven offline.** `test_attestatores_real_ingress.py` carries a real submission
+of the synthetic fixture's own two pages through the Door, the Exemplar and the
+Ink Map as programs, hand-builds the Designator's regions and seal in the shape
+`cut_minted_region` publishes them (because no real Designator exists), and
+runs this stage's `main` with three served fake chairs: every act and page
+record publishes, the page records name the Exemplar's own page subjects, no
+declaration is read or reported, and the fixture accessor is never touched. The
+same file holds the seal refusal over an unsealed Designator (context opened,
+nothing written, no "sealed no digest"), the fixture-catalogue refusal, and the
+shipped real catalogue's posture at every tier. A real Designator is still
+roadmap work; what this stage is ready for is its seal.
+
 ## Testimonium schema
 
 Every record payload has these fields:
