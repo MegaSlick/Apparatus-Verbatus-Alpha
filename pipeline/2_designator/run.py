@@ -492,10 +492,15 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     exactly that: the same lossless fast path for our own pages, then one
     shared Pillow fallback under the same pixel bound `dimensions` already
     falls back through — a third hand-rolled decode-and-fallback pair is what
-    that module exists to prevent. Real ingress is still stopped earlier
-    (`main`'s real-input refusal, before any page is decoded), so this changes
-    nothing a run does today; what it changes is that the decode is no longer
-    what would stop it.
+    that module exists to prevent.
+
+    A real submission reaches this function on this branch. `main` refuses a
+    real submission only under the *fixture* structure chair (SPEC_D §5); under
+    a catalogue whose `designator_structure` row is served, the live pass runs
+    over the sealed pages a real ingress produced, and their bytes are decoded
+    here. That is the whole point of the change: a sealed photograph now
+    decodes through the reader `common/imaging.py` built for it instead of
+    raising a bare `ValueError` about a PNG colour type from inside a stage.
     """
     page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = grayscale_rows(page_bytes)

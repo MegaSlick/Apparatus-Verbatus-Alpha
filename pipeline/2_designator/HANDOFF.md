@@ -649,7 +649,9 @@ call record before custody was reached, so what a refusal costs is the binding
 that proves which call they came from — and a rectangle minted without it would
 be attributed to a call nothing ties it to (GOVERNANCE 6). The record still
 publishes what the body said, with `custody_problem` naming the refusal and
-both custody references null. The no-ink-overlap row is the coordinate-space tripwire
+both custody references null.
+
+The no-ink-overlap row is the coordinate-space tripwire
 for a chair whose geometry is in a space this stage never sees: it is a pixel
 test against the components the page's own scan counted, not a threshold, and
 it fires only when the scan itself found ink and nothing the chair drew touches
@@ -672,7 +674,8 @@ below.
 validated against its own closed field set before publication and then swept
 for content fields (`_validate_structure_answer_payload`, which closes the
 payload, each act entry, the decoding block and each finding, and calls
-`_refuse_text_fields` last). Both of the chair's free strings are reduced the same way: `text_digest`/`text_length` and
+`_refuse_text_fields` last). Both of the chair's free strings are reduced the
+same way: `text_digest`/`text_length` and
 `label_digest`/`label_length` are what let a later reader prove it derived the
 same strings from the same retained bytes, and a `label` — the chair's word for
 a rectangle, which in these books can be a whole act — is published no more
@@ -697,7 +700,11 @@ provenance (the served chair, its real receipt, and `engine_call`)
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
-(`custody_ref`), the read half of which is the Attestatores' intake. The text
+(`custody_ref`), which pairs those bytes with the chair's own serving receipt.
+Nothing on the served path reads that second blob back today — the capture
+intake that would have was removed when Attestator 1 went back to its own
+Chandra pass (Tyrel, 2026-09-02) — and that is a named follow-up, not a
+silence. The text
 itself lives only in that blob. `common/stage.py::_verify_proposal_act_row`
 holds every structural row of a served seal to this record: the page's status
 must say `scanned` and name it, it must have parsed under the same

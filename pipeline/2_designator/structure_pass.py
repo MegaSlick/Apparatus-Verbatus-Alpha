@@ -523,7 +523,8 @@ def ask_page(
     In the order the contract fixes: the request is built and sent through the
     client (which retains the raw bytes and the call record before parsing);
     the response is bound under custody to the chair's receipt
-    (`common/chandra_custody.py`'s one-receipt binding); then the answer is
+    (`common/chandra_custody.py`'s one-receipt binding, published on the record
+    as `custody_ref`); then the answer is
     parsed with the closed contract and dispatched through SPEC_D §1.4's table.
 
     Two refusals with two different scopes. A serving or transport refusal

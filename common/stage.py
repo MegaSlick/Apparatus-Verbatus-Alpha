@@ -3059,14 +3059,26 @@ def _verify_proposal_act_row(
     author, and one more thing becomes checkable: the answer that chair returned
     was retained, parsed and published per page (`structure-answer`, SPEC_D
     §1.3), so a rectangle no answer names is a crop this run cannot attribute to
-    the model it says marked it out. Without this hop a Designator — or a tree
-    edited after the fact — could mint a perfectly self-consistent act over any
-    rectangle at all: identity recomputes, the act key agrees with the region
-    that carries it, and every downstream stage reads, witnesses and establishes
-    text over ink no model ever proposed. GOVERNANCE 10 is the rule that
-    forbids it (the claim is "the structure chair marked this out"), and
-    GOVERNANCE 6 is the rule it would break next, since the reading would carry
-    the chair's provenance for a rectangle the chair never returned.
+    the model it says marked it out. Without this hop a Designator could mint a
+    perfectly self-consistent act over any rectangle at all: identity
+    recomputes, the act key agrees with the region that carries it, and every
+    downstream stage reads, witnesses and establishes text over ink no model
+    ever proposed. GOVERNANCE 10 is the rule that forbids it (the claim is "the
+    structure chair marked this out"), and GOVERNANCE 6 is the rule it would
+    break next, since the reading would carry the chair's provenance for a
+    rectangle the chair never returned.
+
+    **What this hop does not prove.** The rectangle is checked against
+    `payload["acts"]` — the Designator's own published record of what the chair
+    answered — reached on a digest-checked reference, so the record cannot have
+    changed since the status cited it. It is not checked against the retained
+    response bytes, which this function never reads or re-parses. A producer
+    that published a doctored act list beside its own status therefore passes
+    here; what it cannot do is publish one rectangle and mint a different one.
+    Re-deriving the acts from the retained blob would close that gap and is a
+    design change, not a correction: it would make `common/stage.py` a second
+    parser of the chair's wire contract, which today has exactly one
+    (`common/structure_answer.py`).
 
     Three claims, and each is refused separately so the refusal says which one
     failed. The **page** must have been scanned: the page's own

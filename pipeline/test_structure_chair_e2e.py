@@ -830,8 +830,9 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, 
     reach them here. `excessive-json-nesting` and `too-many-acts` are
     constructible over this real chain but have no scripted body yet; all of
     them, and the full 11, are exercised at the parser level in
-    `common/test_structure_answer.py`, guarded against silent drift by its own
-    outcome-coverage test.
+    `common/test_structure_answer.py`, whose
+    `test_no_outcome_can_be_added_to_the_contract_without_a_test_above` pins
+    the declared set so a new code cannot be added there in silence.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(

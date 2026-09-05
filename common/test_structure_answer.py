@@ -214,9 +214,16 @@ def test_malformed_act_text_is_refused_by_name():
     assert result == {"parse_outcome": "malformed-act-text"}
 
 
-def test_every_declared_outcome_is_exercised_above():
-    """The guard on the guard: a code added to `PARSE_OUTCOMES` without a test
-    above would pass silently otherwise."""
+def test_no_outcome_can_be_added_to_the_contract_without_a_test_above():
+    """The guard on the guard, and it is a *list*, not a coverage measurement.
+
+    Nothing here runs the tests above or observes which outcomes they reached.
+    It pins the declared set against a second copy written out by hand, so
+    adding a code to `PARSE_OUTCOMES` fails this until someone edits this list
+    too -- and the edit is where they notice the code has no test. Its
+    weakness is the same as its strength: a line added to both places without
+    a test passes, so the list is a prompt to the next author, not proof.
+    """
     exercised = {
         "raw-response-not-bytes",
         "response-too-large",

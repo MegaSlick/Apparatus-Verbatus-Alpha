@@ -1,4 +1,4 @@
-"""The Chandra page witness's closed response contract (spec-06 unit 11).
+"""The Chandra page witness's closed response contract (unit 11).
 
 The vendor publishes no response specimen, so this is not a parser for
 Chandra's native output mode -- writing one blind would be invention, and a
