@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
@@ -186,68 +186,6 @@ def test_the_ink_map_refuses_a_run_it_was_handed_no_sealed_page_of():
         INK_MAP_RUN.sealed_pages(context)
 
 
-def test_real_ingress_keeps_every_direct_stage_entry_guard(monkeypatch):
-    """The real shortcut may omit fixture loading, not run-integrity checks.
-
-    ``open_context`` applies all four checks on fixture ingress. Real ingress
-    needs a separate opener because it has no fixture, so this pins the guards
-    that shortcut must retain: live-register drift, the immutable snapshot, the
-    Exemplar seal, and the run-level hard-failure cap.
-    """
-    run = {
-        "ingress": {"mode": "real"},
-        "adapter_recipes": {INK_MAP: "deterministic-residual-ink-v1"},
-    }
-
-    class _RealTree:
-        def read_run(self):
-            return run
-
-    tree = _RealTree()
-    calls = []
-    monkeypatch.setattr(INK_MAP_RUN, "RunTree", lambda *_args: tree)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "verify_snapshot_is_current",
-        lambda observed, path: calls.append(("live-register", observed, path)),
-    )
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "read_snapshot",
-        lambda observed_tree, observed_run: calls.append(
-            ("sealed-snapshot", observed_tree, observed_run)
-        ),
-    )
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "verify_predecessor_seal",
-        lambda observed_tree, stage: calls.append(("predecessor", observed_tree, stage)),
-    )
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "_refuse_halted_run",
-        lambda observed_tree, stage, path: calls.append(
-            ("hard-failure", observed_tree, stage, path)
-        ),
-    )
-    args = SimpleNamespace(
-        run_root="unused",
-        run_id="r",
-        corpus_register="register.json",
-        hard_failure_config="hard-failure.toml",
-    )
-
-    context = INK_MAP_RUN._open(args, registry_factory=None)
-
-    assert context.tree is tree
-    assert calls == [
-        ("live-register", run, "register.json"),
-        ("sealed-snapshot", tree, run),
-        ("predecessor", tree, INK_MAP),
-        ("hard-failure", tree, INK_MAP, "hard-failure.toml"),
-    ]
-
-
 def test_the_ink_map_measures_only_pixels_it_digested_itself():
     """The bytes measured are the bytes proved, not a second unchecked read.
 
@@ -311,8 +249,9 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
 # nobody updates keeps testing the old `publish`/`seal_boundary` contract
 # while still passing.
 class _PublishingContext:
-    def __init__(self):
+    def __init__(self, run=None):
         self.tree = object()
+        self.run = run if run is not None else {"ingress": {"mode": "synthetic-fixture"}}
         self.published = []
         self.sealed = False
         self.finished = False
@@ -330,6 +269,78 @@ class _PublishingContext:
         self.finished = True
 
 
+def test_the_ink_map_opens_both_ingress_routes_through_the_shared_constructor(monkeypatch):
+    """The stage has no opener of its own any more, on either route.
+
+    It used to hand-build its real-ingress context here and re-list the
+    direct-entry guards itself -- register drift, the sealed snapshot, the
+    Exemplar seal, the run-level cap -- so a guard added to the shared
+    constructor would have missed this stage silently, and the three stages
+    that copied that shape already disagreed with each other. What is pinned
+    now is narrower and stronger: `main` hands the parsed argv, its own stage
+    name and the registry factory it was given to `common.stage.open_stage_context`,
+    which decides the route from one read of the run authority and applies the
+    same guards on both.
+    """
+    blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
+    page = _sealed_page(1)
+    context = _PublishingContext()
+    args = SimpleNamespace(run_root="unused", run_id="r")
+    opened = []
+
+    def registry_factory(_path):
+        raise AssertionError("the stage must pass the factory through, not resolve it")
+
+    def open_stage_context(observed_args, stage, *, registry_factory):
+        opened.append((observed_args, stage, registry_factory))
+        return context
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return args
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", open_stage_context)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "sealed_pages",
+        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
+    )
+    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
+
+    assert INK_MAP_RUN.main(registry_factory=registry_factory) == INK_MAP_RUN.EXIT_COMPLETE
+    assert opened == [(args, INK_MAP, registry_factory)]
+    assert not hasattr(INK_MAP_RUN, "_open"), "a stage-private opener is the drift this closes"
+
+
+def test_the_ink_map_refuses_a_run_whose_ingress_evidence_names_no_route(monkeypatch):
+    """An absent `ingress` key must still stop this stage, as it did before the
+    shared constructor.
+
+    `open_stage_context`'s own route test, `is_real_ingress`, treats a missing
+    `ingress` key as synthetic by design -- it has to, to decide which route to
+    build -- and does not raise. This stage never branches on the route, so
+    nothing else in `main` re-parses the record; before both routes shared one
+    constructor, this stage's own opener re-parsed it unconditionally and
+    refused exactly this run. That refusal is re-created here, deliberately,
+    rather than dropped as a side effect of sharing the constructor.
+    """
+    context = _PublishingContext(run={})
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
+
+    with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
+        INK_MAP_RUN.main(registry_factory=None)
+    assert context.published == [], "no record may be published before the route is proved"
+
+
 def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     page = _sealed_page(1)
@@ -342,7 +353,7 @@ def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
             return SimpleNamespace()
 
     monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         INK_MAP_RUN,
         "sealed_pages",
@@ -378,7 +389,7 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
             return SimpleNamespace()
 
     monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         INK_MAP_RUN,
         "sealed_pages",
@@ -416,7 +427,7 @@ def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypat
             return SimpleNamespace()
 
     monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         INK_MAP_RUN,
         "sealed_pages",

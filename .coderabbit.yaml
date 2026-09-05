@@ -12,7 +12,7 @@ reviews:
   profile: assertive
 
   # `request_changes_workflow: false` — CodeRabbit must never be able to block a merge.
-  # Tyrel decides what merges (CLAUDE.md hard rule 1).
+  # A merge is decided by CLAUDE.md hard rule 14's three conditions, or by Tyrel; never here.
   request_changes_workflow: false
 
   high_level_summary: true

@@ -11,12 +11,15 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
+from . import notify_hooks
 from .arming import ControllerArmer
+from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .models import PodCreateRequest, require_utc
 from .notify_bridge import Notifier, shell_notifier, silent
@@ -48,9 +51,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--notify",
         action="store_true",
         help=(
-            "send notification-only spend warnings through operations/notify/notify.sh; "
-            "off by default so nothing pages a phone unasked, and delivery never changes "
-            "a launch decision either way"
+            "send notification-only spend warnings, and a launch/close line, through "
+            "operations/notify/notify.sh; off by default so nothing pages a phone "
+            "unasked, and delivery never changes a launch or close decision either way"
+        ),
+    )
+    parser.add_argument(
+        "--record-fixture",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "append every provider exchange this launch sees -- method, path, request "
+            "body, status, response body -- to PATH as JSON lines, credential-shaped "
+            "fields and credential-shaped values scrubbed, so a drill boot leaves a "
+            "replayable fixture behind. The "
+            "provider must be able to record its own exchanges; the fake cannot"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -66,66 +82,160 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    provider = _provider(args.provider_factory)
-    runtime = PodRuntime(
-        provider,
-        provider_name=args.provider_name,
-        spend_policy=load_spend_policy(args.spend),
-        lease_root=args.leases,
-        controller_armer=_controller_armer(args.controller_armer_factory),
-        notifier=_notifier(args.notify),
-    )
-    request = _request(args.request)
-    if args.command == "create":
-        preview = runtime.preview_create(request)
-    else:
-        preview = runtime.preview_adopt(args.pod_id, expected=request)
-    # The order is the gate: nobody can type the phrase without having been
-    # shown the price and ceilings it names.
-    print(json.dumps(_record(_confirmable_only(preview)), sort_keys=True, indent=2), flush=True)
-    if (
-        preview.state is not LaunchState.PREVIEW
-        or preview.preview is None
-        or not preview.preview.assessment.allowed
-    ):
-        # The same exit-status rule as the post-confirmation exit below: a
-        # preview refusal that observed a real pod (an adopt inspection) must
-        # not read as "nothing exists".
-        return 3 if _observed_something(preview) else 2
-    confirmation = _typed_confirmation(preview.preview.confirmation_phrase)
+    recorder: FixtureRecorder | None = None
     try:
-        if args.command == "create":
-            result = runtime.create(request, confirmation=confirmation)
-        else:
-            result = runtime.adopt(args.pod_id, expected=request, confirmation=confirmation)
-    except KeyboardInterrupt:
-        # An interrupt mid-action may have left a pod and a pending lease.
-        # Say so before dying: an exit that looks like a plain abort is how a
-        # billing pod goes unwatched.
+        provider = _provider(args.provider_factory)
+        if args.record_fixture is not None:
+            recorder = _record_fixture(provider, args.record_fixture)
+    except (TypeError, ValueError) as error:
+        # The named refusal this command promises instead of a traceback:
+        # `operations/pod/README.md` says a provider that cannot record its own
+        # exchanges "refuses the flag by name before any preview", and an
+        # unusable factory reference is the same shape of mistake. Exit 2 is
+        # this command's "refused, nothing paid" status.
         print(
             json.dumps(
-                {
-                    "state": "interrupted",
-                    "detail": (
-                        "interrupted during the paid action; a pod and a pending lease "
-                        "may exist -- inspect the leases directory and the provider "
-                        "console now"
-                    ),
-                    "leases_root": str(args.leases),
-                },
+                {"state": "refused", "green": False, "detail": str(error)},
                 sort_keys=True,
                 indent=2,
             ),
             flush=True,
         )
-        raise
-    print(json.dumps(_record(result), sort_keys=True, indent=2))
-    # Exit status alone must never read as "nothing happened": 0 is guarded
-    # success, 2 is a refusal that made no paid action, 3 means a pod or lease
-    # exists (or existed and a close was attempted) -- go and look.
+        return 2
+    # Wired before the preview, because the preview itself observes a balance:
+    # a launch run with --notify should page the phone for the reading its own
+    # spend gate made, not only for later ones.
+    balance_wiring = _wire_balance_notify(provider, enabled=args.notify)
+    try:
+        runtime = PodRuntime(
+            provider,
+            provider_name=args.provider_name,
+            spend_policy=load_spend_policy(args.spend),
+            lease_root=args.leases,
+            controller_armer=_controller_armer(args.controller_armer_factory),
+            notifier=_notifier(args.notify),
+        )
+        request = _request(args.request)
+        if args.command == "create":
+            preview = runtime.preview_create(request)
+        else:
+            preview = runtime.preview_adopt(args.pod_id, expected=request)
+        # The order is the gate: nobody can type the phrase without having been
+        # shown the price and ceilings it names.
+        previewed = _record(_confirmable_only(preview))
+        if args.notify:
+            # The preview already observed a balance, so this is the record
+            # that says whether that reading reached a phone -- and it is the
+            # last record printed on every path that refuses here.
+            previewed["balance_notification"] = balance_wiring.to_record()
+        print(json.dumps(previewed, sort_keys=True, indent=2), flush=True)
+        if (
+            preview.state is not LaunchState.PREVIEW
+            or preview.preview is None
+            or not preview.preview.assessment.allowed
+        ):
+            # The same exit-status rule as the post-confirmation exit below: a
+            # preview refusal that observed a real pod (an adopt inspection) must
+            # not read as "nothing exists".
+            return 3 if _observed_something(preview) else 2
+        confirmation = _typed_confirmation(preview.preview.confirmation_phrase)
+        try:
+            if args.command == "create":
+                result = runtime.create(request, confirmation=confirmation)
+            else:
+                result = runtime.adopt(args.pod_id, expected=request, confirmation=confirmation)
+        except KeyboardInterrupt:
+            # An interrupt mid-action may have left a pod and a pending lease.
+            # Say so before dying: an exit that looks like a plain abort is how a
+            # billing pod goes unwatched.
+            print(
+                json.dumps(
+                    {
+                        "state": "interrupted",
+                        "detail": (
+                            "interrupted during the paid action; a pod and a pending lease "
+                            "may exist -- inspect the leases directory and the provider "
+                            "console now"
+                        ),
+                        "leases_root": str(args.leases),
+                    },
+                    sort_keys=True,
+                    indent=2,
+                ),
+                flush=True,
+            )
+            raise
+        record = _record(result)
+        if args.record_fixture is not None:
+            record["record_fixture"] = str(args.record_fixture)
+        if args.notify:
+            record["balance_notification"] = balance_wiring.to_record()
+            try:
+                _notify_launch_and_close(record, result, request, runtime.spend_policy)
+            except Exception as error:  # noqa: BLE001 -- contained so the record below still prints (rule 7)
+                # `notify_hooks` promises never to raise; contained here anyway so a
+                # future bug in that promise cannot take this printed record with it --
+                # the record naming the pod and lease is the one artifact rule 7 exists
+                # to protect, and it must still print even when notification breaks.
+                detail = f"notification raised and was contained: {error!r}"
+                if len(detail) > 160:
+                    detail = f"{detail[:160]} (reason truncated at 160 characters)"
+                record["notification_error"] = detail
+        print(json.dumps(record, sort_keys=True, indent=2))
+        # Exit status alone must never read as "nothing happened": 0 is guarded
+        # success, 2 is a refusal that made no paid action, 3 means a pod or lease
+        # exists (or existed and a close was attempted) -- go and look.
+        if result.green:
+            return 0
+        return 3 if _observed_something(result) else 2
+    finally:
+        if recorder is not None:
+            # The append-mode handle the drill's evidence is written through.
+            # Every line was already flushed and fsynced under the recorder's
+            # own lock, so this loses nothing -- it closes the descriptor on
+            # the way out rather than leaving it to interpreter exit.
+            recorder.close()
+
+
+def _notify_launch_and_close(
+    record: dict[str, object],
+    result: LaunchResult,
+    request: PodCreateRequest,
+    spend_policy: object,
+) -> None:
+    """Gated behind ``--notify``, exactly like the existing spend-alert bridge.
+
+    Best-effort in both directions: a failed ping is recorded in the printed
+    record's own notification fields (GOVERNANCE 2 -- nothing lost silently)
+    and never raised, so a broken phone can never turn a green launch or an
+    already-decided close into something this command reports differently.
+    """
+
+    lease_id = result.lease_path.stem if result.lease_path else "unknown-lease"
     if result.green:
-        return 0
-    return 3 if _observed_something(result) else 2
+        outcome = notify_hooks.notify_launch(
+            lease_id=lease_id,
+            card=request.gpu_type or "unknown",
+            max_hourly_usd=getattr(spend_policy, "max_hourly_usd", None),
+        )
+        record["launch_notification"] = outcome.line()
+    close = result.close_report
+    if close is not None:
+        # What this number is, exactly: pod creation to the *billing cutoff*
+        # the close verified against -- not the moment the pod stopped, which
+        # nothing here measured. `CloseReport` carries no observed stop time,
+        # and the cutoff can sit up to `billing_cutoff_margin_seconds` past
+        # the absence observation, so calling this "ran Ns" reported a figure
+        # no instrument took (GOVERNANCE 10). It is named for what it is.
+        billed_seconds: object = "unknown"
+        if result.record is not None:
+            billed_seconds = (close.cutoff_at - result.record.created_at).total_seconds()
+        outcome = notify_hooks.notify_close(
+            lease_id=lease_id,
+            verified_state=close.state.value,
+            billed_seconds=billed_seconds,
+        )
+        record["close_notification"] = outcome.line()
 
 
 def _confirmable_only(result: LaunchResult) -> LaunchResult:
@@ -164,6 +274,26 @@ def _provider(reference: str) -> PodProvider:
     if not isinstance(provider, PodProvider):
         raise TypeError("provider factory did not return the seven-verb PodProvider seam")
     return provider
+
+
+def _record_fixture(provider: PodProvider, path: Path) -> FixtureRecorder:
+    """Attach the recorder before the preview, or refuse before anything is paid.
+
+    Duck-typed on ``record_exchanges`` so this surface names no vendor: an
+    adapter that owns an HTTP transport routes it through the recorder; a
+    provider with no such method -- the fake -- cannot honour the flag, and
+    saying so here is better than a launch that silently records nothing.
+    """
+
+    attach = getattr(provider, "record_exchanges", None)
+    if not callable(attach):
+        raise ValueError(
+            f"--record-fixture needs a provider that can record its exchanges; "
+            f"{type(provider).__name__} cannot"
+        )
+    recorder = FixtureRecorder(path)
+    attach(recorder)
+    return recorder
 
 
 def _controller_armer(reference: str) -> ControllerArmer:
@@ -231,6 +361,73 @@ def _timestamp(value: object) -> datetime:
         return require_utc(parsed, "hard_deadline")
     except ValueError as error:
         raise ValueError("hard_deadline must be UTC") from error
+
+
+@dataclass
+class _BalanceWiring:
+    """Whether balance notifications are wired, and what every ping did.
+
+    Both halves are printed in the launch record. GOVERNANCE 2: a phone that
+    was asked for and could not be wired, and a ping that was refused on sight
+    or never delivered, are facts about this launch and are written down beside
+    the pod and the lease rather than left in a return value nobody reads.
+    """
+
+    detail: str
+    lines: list[str] = field(default_factory=list)
+
+    def to_record(self) -> dict[str, object]:
+        return {"wiring": self.detail, "sent": list(self.lines)}
+
+
+def _wire_balance_notify(provider: PodProvider, *, enabled: bool) -> _BalanceWiring:
+    """Put the phone hook on the provider's balance source, behind ``--notify``.
+
+    Duck-typed on ``set_balance_notify`` for the same reason ``--record-fixture``
+    is duck-typed on ``record_exchanges``: the provider comes from an untracked
+    ``--provider-factory`` that this repository never constructs, so the only
+    place the host CLI can reach a vendor adapter is a named method on the
+    object the factory returned. This is what makes ``--notify`` the single
+    gate for all three notification moments -- launch, close, and every
+    account-balance observation -- rather than two of them.
+
+    A provider that cannot take the hook is *recorded*, never refused: ruling
+    (b) makes this seam tracking plus notifications only, and a launch that
+    failed because a phone could not be reached would be exactly the new
+    enforcement that ruling forbids.
+    """
+
+    if not enabled:
+        return _BalanceWiring("not requested: --notify was not passed")
+    attach = getattr(provider, "set_balance_notify", None)
+    if not callable(attach):
+        return _BalanceWiring(
+            f"--notify was passed, but {type(provider).__name__} has no balance-notification "
+            "seam; launch and close still page the phone, balance observations do not"
+        )
+    wiring = _BalanceWiring("pending")
+
+    def notify(balance: Decimal, spend_rate: Decimal | None) -> notify_hooks.NotifyOutcome:
+        # Read off the module at call time, so a test that replaces
+        # `notify_hooks.notify_balance` replaces what the provider calls.
+        try:
+            outcome = notify_hooks.notify_balance(
+                balance_usd=balance, spend_rate_usd_per_hr=spend_rate
+            )
+        except Exception as error:  # noqa: BLE001 -- "never raised" is the promise; contain it here too
+            detail = f"the balance notification raised and was contained: {error!r}"
+            if len(detail) > 160:
+                detail = f"{detail[:160]} (reason truncated at 160 characters)"
+            outcome = notify_hooks.NotifyOutcome(True, False, detail)
+        wiring.lines.append(outcome.line())
+        return outcome
+
+    try:
+        attach(notify)
+    except (TypeError, ValueError) as error:
+        return _BalanceWiring(f"--notify could not wire balance notifications: {error}")
+    wiring.detail = "wired: every account-balance observation this launch makes pages the phone"
+    return wiring
 
 
 def _notifier(enabled: bool) -> Notifier:

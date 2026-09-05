@@ -8,9 +8,10 @@ padding change and quietly hold two geometries under one name. The stage's own
 `config/README.md` said so plainly; this file is the check that it no longer can.
 
 The lane-B build of this stage reached the same conclusion about its own
-Designator configuration and sealed it the same way. What is bound here is the
-padding policy specifically, because that is the file this build's crops
-actually depend on.
+Designator configuration and sealed it the same way. What is bound here is
+the padding policy and, since the Designator's structure pass gained its own
+reader, the grouping policy — the two files this build's crops and act
+boundaries actually depend on.
 """
 
 import subprocess
@@ -166,6 +167,65 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
     )
     padding_path.write_text(
         shipped.replace("bottom_bp = 1800", "bottom_bp = 9000"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="changed between this run's binding check"):
+        designator.initial_pass(context)  # the use
+
+
+SHIPPED_GROUPING = ROOT / "config" / "designator_grouping.toml"
+
+
+def test_grouping_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_path):
+    """The grouping policy's own point of use closes the same TOCTOU window.
+
+    Mirrors `test_padding_rewritten_between_the_binding_check_and_its_use_is_refused`
+    above: `open_context` reads the grouping policy to check this run's binding,
+    and `initial_pass` reads it again, under `context.args.designator_grouping_config`,
+    to get the thresholds it groups with
+    (`pipeline/2_designator/run.py::initial_pass`). A rewrite landing between
+    those two reads would have passed the binding check on the old bytes and
+    grouped every page under thresholds `run.json` never sealed. The file under
+    test is always a `tmp_path` copy of the shipped policy, never the shipped
+    file itself -- rewriting `config/designator_grouping.toml` in place would
+    change `config_digest` on every other run and move the acceptance pins.
+    """
+    import shutil
+
+    from common.stage import open_context, stage_parser
+
+    root = tmp_path / "runs"
+    grouping_path = tmp_path / "designator_grouping.toml"
+    shutil.copyfile(SHIPPED_GROUPING, grouping_path)
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
+        result = _invoke(program, root, "--designator-grouping-config", str(grouping_path))
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = load_designator("designator_grouping_toctou_under_test")
+
+    args = stage_parser("grouping TOCTOU test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--designator-grouping-config",
+            str(grouping_path),
+        ]
+    )
+    context = open_context(args, designator.DESIGNATOR)  # the check
+    shipped = SHIPPED_GROUPING.read_text(encoding="utf-8")
+    assert "chain_gap_bp = 231" in shipped, (
+        "the shipped grouping config no longer declares chain_gap_bp = 231"
+    )
+    grouping_path.write_text(
+        shipped.replace("chain_gap_bp = 231", "chain_gap_bp = 999"),
         encoding="utf-8",
     )
     with pytest.raises(ContractError, match="changed between this run's binding check"):

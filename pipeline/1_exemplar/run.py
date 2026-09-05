@@ -49,7 +49,6 @@ from common.contracts.envelope import validate_envelope, verify_input_bytes  # n
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
-from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     is_triage_derivative_contract,
     verify_triage_derivative,
@@ -57,10 +56,8 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
-    StageContext,
     adapter_recipe_for,
-    open_context,
-    refuse_halted_run,
+    open_stage_context,
     run_stage,
     stage_parser,
 )
@@ -71,7 +68,11 @@ SEAL_SUBJECT = "corpus-seal"
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = _open(args, registry_factory)
+    # One constructor for both ingress routes. The real route used to build its
+    # context here by hand and never asked for the Door's completion seal, so a
+    # hand-driven Exemplar after a refusing Door still sealed pages; the shared
+    # constructor asks on both routes, in the same order, before anything writes.
+    context = open_stage_context(args, EXEMPLAR, registry_factory=registry_factory)
     tree = context.tree
     _verify_existing_corpus_seal(tree)
 
@@ -295,37 +296,6 @@ def _census_row(
     if source.get("container_page_index") is not None:
         row["container_page_index"] = source["container_page_index"]
     return row
-
-
-def _open(args, registry_factory) -> StageContext:
-    """Open the run, keeping the fixture-binding guard for the runs it applies to.
-
-    A synthetic-fixture run is bound to a fixture and a scenario, and `open_context`
-    refuses to run a direct stage against an unsealed configuration — spec 01's
-    guard, and it stays. A real submission has no fixture at all: its
-    `config_digest` binds the submission and door execution recipe instead, so
-    that comparison has nothing to compare and the run authority is read directly.
-    The ingress record in `run.json` is what decides which of the two this is, and
-    it is inside the authority's self-hash, so it cannot be quietly switched.
-    """
-    tree = RunTree(Path(args.run_root), args.run_id)
-    run = tree.read_run()
-    verify_snapshot_is_current(run, args.corpus_register)
-    read_snapshot(tree, run)
-    mode = parse_ingress_record(run.get("ingress"))
-    if mode != REAL_INGRESS:
-        return open_context(args, EXEMPLAR, registry_factory=registry_factory)
-    refuse_halted_run(tree, EXEMPLAR, args.hard_failure_config)
-    return StageContext(
-        tree=tree,
-        run=run,
-        fixture={},
-        scenario=args.scenario,
-        stage=EXEMPLAR,
-        adapter_revision=adapter_recipe_for(run, EXEMPLAR),
-        args=args,
-        registry=None,
-    )
 
 
 def _submitted_sources(run: dict[str, Any]) -> dict[int, dict[str, Any]]:

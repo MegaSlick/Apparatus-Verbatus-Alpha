@@ -253,7 +253,7 @@ def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
     accepted_review = {"artifact_id": "art_accepted", "outcome": "accepted"}
 
     monkeypatch.setattr(archetypus, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(archetypus, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(archetypus, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(archetypus, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(archetypus, "final_review", lambda _context, _act_id: accepted_review)
     # These seams make the counterfactual complete if the guard is removed: the
@@ -295,7 +295,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
     monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
@@ -338,7 +338,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
@@ -407,7 +407,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
@@ -470,7 +470,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}

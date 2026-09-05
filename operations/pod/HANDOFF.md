@@ -132,10 +132,10 @@ In order, because each depends on the one before it existing to observe against:
    restart, the pod-side timer's real acknowledgement write, the timer-startup
    backstop, real preflight, and verified shutdown against provider state and
    billing — with the poll bound tuned from what Boot A measured.
-3. **Neither boot can happen at all** until a GraphQL account-balance observer
-   exists — `RunPodProvider.balance_observer` has no default and
-   `observe_account_balance` raises without one. This is engineering work, not a
-   decision reserved for Tyrel, but it blocks both boots equally.
+3. **Both boots now have a balance source.** U-C below built the GraphQL observer
+   as `RunPodProvider`'s default over a live transport; what Boot A must observe
+   about it is the figure it reads against the console's, and whether the pod-scoped
+   key is accepted by the GraphQL endpoint at all.
 
 ## The `supervise` drills, by name
 
@@ -221,18 +221,372 @@ regressions in. If the host wants the full `operations/pod` suite run anyway as 
 sanity check on the branch as a whole (not on this unit's own diff), that is a
 separate ask.
 
+## U-C — the money path to Boot A (on `work/pod-money-path`)
+
+The consult of 2026-09-02 (`workbench/active/CONSULT_FIRST_REAL_RUN_2026-09-02.md`
+§5 U-C) named this unit: build the balance observer the two blockers above turn on,
+record the v2 migration before writing v2 code, add `--record-fixture`, and render
+the Boot A request for Tyrel. Every line was proven offline; RunPod was never called
+and no pod exists. RunPod's public documentation was read online, and every fact taken
+from it is cited with its page and its date in the file that relies on it.
+
+**What landed.**
+
+- `provider_runpod.py` — `GraphQLBalanceObserver`, the default `balance_observer`
+  whenever the provider is built over a live `UrllibRunPodTransport`. The transport
+  gained a `credential_placement` of `"header"` (REST, unchanged) or `"query"`
+  (GraphQL's documented `?api_key=`), a `sibling()` that derives the GraphQL transport
+  so the provider never touches the key, and error messages that carry `reason` rather
+  than a URL. The observer refuses by name every doubt the README lists, including any
+  credential-shaped key anywhere in the answer. `record_exchanges` routes both its
+  transports through a fixture recorder.
+- `fixture.py` (new, vendor-neutral) — `FixtureRecorder` (append-only JSON lines, 0600,
+  fsynced per line, money as numbers via `Decimal`), `RecordingTransport`, and
+  `read_fixture`. Verbatim bodies unless a credential-shaped key forces a scrub, and
+  then the record says so and names the paths.
+- `cli.py --record-fixture PATH` — duck-typed on `record_exchanges`; refuses a provider
+  without it before any preview; names the path in the result record.
+- `boot_a_request.py` (new) — renders the drill request from the sealed policy and the
+  reviewed card table; refuses on `unconfigured`; `python -m` entrypoint exits 2 on a
+  refusal.
+- `V2_MIGRATION.md` (new) — every v1 call mapped to v2 with a citation each; what v2
+  adds; what has no counterpart; the plan the next unit executes. Admitted to the
+  document allowlist by exact path (`.githooks/doc-allowlist.sh`), the same way the
+  autoclave brief is.
+- `README.md` — the v1/v2 and balance paragraphs rewritten to the code as it now
+  stands; the `--record-fixture` and Boot A paragraphs; the balance checklist row made
+  runnable; deferral rows 04-4, 04-6, 04-7 and 04-9 updated to what the migration
+  record actually established.
+
+**What this unit found that it did not fix, and why.**
+
+- ~~The nested bootstrap `--report-path` is never token-bound.~~ Closed by the pod
+  runtime integration unit: `_bind_report_path_to_launch` now folds the sealed
+  `VERBATUS_LAUNCH_TOKEN` into the nested bootstrap argv's own `--report-path` as well
+  as the timer's, so a real `bootstrap_main --hold-only` reaches its hold instead of
+  refusing at plan time. Proven through the real plan/argv path in
+  `test_bootstrap_main.py`.
+- **v2 has no `interruptible` and no `dockerStartCmd`** (`V2_MIGRATION.md` §2.2, §4).
+  The next unit either finds a v2 page stating the rental type and a start-command
+  field (the template page was not read in this pass), or puts the conflict to Tyrel
+  under rule 9: the ruling says v2, the goal says on-demand only with the timer as the
+  primary process, and the documentation read cannot yet satisfy both.
+- **GraphQL retires in early 2027** (`sdks/graphql/configurations`), and neither v2
+  billing endpoint reports a balance. The observer is built on the only documented
+  source and carries its own sunset.
+- **`supervise.py` would close a v2 pod that is still `PROVISIONING`/`STARTING`**
+  (`V2_MIGRATION.md` §2.5). Not a v1 problem; recorded so the migration plans for it.
+
+**Rule-13 decisions this unit made.**
+
+- The key goes in the GraphQL query string because that is the only placement the
+  GraphQL documentation publishes. Sending an undocumented `Authorization` header, or
+  trying one and falling back on 401, would make a credential-placement guess on a
+  money path and mask a revoked key; the documented form, with the query scrubbed from
+  every error string and fixture record and the redirect refusal measured on loopback
+  in that placement, is the honest choice. If the first live run shows the header is
+  accepted, switching is one constant.
+- The recorder scrubs `VERBATUS_LAUNCH_TOKEN` with no exemption, unlike
+  `PodCreateRequest`'s metadata scan. One predicate with no carve-outs is checkable by
+  reading the predicate; replay of the recovery path re-substitutes the token from the
+  lease, which the record's `scrubbed` list makes possible.
+- The recorder is its own small module rather than living in `cli.py` or `models.py`:
+  two modules that must not import each other (`cli.py`, `provider_runpod.py`) need the
+  same seam.
+- A scrubbed body is re-serialized with `Decimal` written back as the same digits (a NUL
+  marker that no JSON body can contain), so a fixture never turns money into a float or
+  a string. An unscrubbed body is stored verbatim.
+- A negative `clientBalance` is refused by name rather than clamped or read as zero:
+  `AccountBalanceObservation` cannot carry one, and the refusal denies paid actions,
+  which is the safe direction.
+- `boot_a_request.py` bounds the drill at `min(900, policy.hard_lifetime_seconds)`,
+  takes the cheapest card by reviewed `hourly_usd`, and renders the coming preview
+  refusals (card above `max_hourly_usd`, cost above the metered ceiling) as a section
+  rather than hiding them or refusing to render.
+- `V2_MIGRATION.md` is admitted to the allowlist by exact path, with its deletion
+  condition written beside the admission, rather than widened to a glob.
+
+**Verification run.** `ruff format` and `ruff check` on every `.py` touched, clean.
+Tests through the shared test lock only, as the brief required. The three owned
+files (`test_provider_runpod.py`, `test_pod_runtime.py`, `test_boot_a_request.py`)
+passed through the lock: `PYTEST_EXIT=0`, 2026-09-02. The full `operations/pod` run
+is still pending — the brief allows it once, and it was not spent verifying this
+review pass.
+
 ## Blockers before either boot
 
-1. The GraphQL account-balance observer does not exist. No paid action can run
-   without it, drill included.
+1. ~~The GraphQL account-balance observer does not exist.~~ Built by U-C; it is the
+   adapter's default over a live transport. What remains is the live observation the
+   README's balance checklist row now describes.
 2. Tyrel has not been asked for `config/spend.toml` values, the GPU class, the S3
    keys, or in-session permission for either boot. All are named explicitly in the
-   README's boot-plan section.
-3. The v1/v2 posture is unresolved in code — Boot A and Boot B can run against
-   either v1 (as the code stands) or v2 (per the ruling), but building the balance
-   observer against v1's adapter now and migrating later means building it twice.
-   Whether to build the observer before or after the v2 migration is next-section
-   engineering, not named here as a decision for Tyrel.
+   README's boot-plan section, and `boot_a_request.py` renders the request the moment
+   the policy is configured. The VRAM fact that bears on the card: a bf16 27B
+   Perlector fits only the 96 GB tier (`config/pod_placement.toml`, RTX PRO 6000
+   Blackwell at $1.99/h); Boot A itself needs only the cheapest card.
+3. The v1/v2 posture is now recorded, not resolved: `V2_MIGRATION.md` is the plan,
+   and its §4 names two facts (`interruptible`, the start command) the v2 pages read
+   do not supply. The observer was built against the seam, not against v1's REST
+   route, so the migration does not rebuild it.
+4. ~~The nested bootstrap report path (above) must be token-bound before Boot B.~~
+   Closed; see the finding above.
+
+## U-A — the pod run seam (on `work/pod-run-seam`, over this branch)
+
+Built from the Fable consult's finding that nothing could serve on a pod and nothing ran
+the pipeline on one. What landed, and what the code as it stands made impossible:
+
+**`PREFLIGHT` is wired, not stubbed.** `bootstrap_main.py` replaces
+`_UnimplementedChairCacheVerifier`/`_UnimplementedSmokeReader` with
+`RegistryChairCacheVerifier` (`ChairRegistry.ensure` per chair) and the serving package's
+own `assemble_serving_smoke_reader` around `ServingManager`, fed
+`operations/serving/smoke.py::VisionSmokeCall`. The pod is its own fixture author:
+`fresh_page_witness` (CSPRNG) and `render_golden_page` put the witness into pixels under
+`<volume>/preflight/<report stem>/` right before the read; `NvidiaSmiUtilization` is the
+sampler; `PodPreflightReceiptPublisher` writes the receipt, launch audit and evidence
+manifest content-addressed in that directory because no run tree exists at bootstrap.
+`PreflightSeams` is the injection point every effect has, and `test_bootstrap_main.py`
+proves green through the real registry over the committed model fixtures and the serving
+fakes, and red by chair name for an unproven row. The measured dtype is `bfloat16` now —
+every vLLM row is bfloat16 and the reader refuses a dtype mismatch, so the old `float16`
+made every real smoke red before it launched. `main` is split into `prepare` /
+`run_bootstrap` / `hold` with behaviour unchanged, so `pod_run` composes it.
+
+**`pod_run.py` runs the pipeline on the pod.** Bootstrap through `bootstrap_main`'s own
+steps, then the orchestrator as a subprocess of the pod's interpreter over the volume,
+a `pod-run-report.v1` before/during/after, exit codes that never read complete for a
+partial run, and the hold to the deadline unchanged. `test_pod_run.py` covers the green
+run, held/halted/failed, a red bootstrap, every refusal by name, and the data gate asked
+before any spend.
+
+**`fetch-run` brings the tree home.** `S3VolumeObjectReader` (list + streamed
+`GetObject`, fail-closed) beside the existing reads in `volume_s3.py`;
+`surface.fetch_run` does the run-tree reconciliation (blob and receipt names, artifact
+digests against manifests, `run.json` self-hash, manifests rebuilt and compared) and
+never overwrites a differing local file; `verbatus fetch-run` and its interactive prompt.
+
+**`run` accepts the roster pair.** `--models-config` and `--serving-recipes-config`,
+forwarded together to the orchestrator (and to the crash drill's Door, which seals them);
+one without the other is refused.
+
+**What was not built, and why — rule-13 decisions and one finding:**
+
+- **No `pod` dependency group, and `bootstrap.py`'s sync is unchanged.** `uv lock`
+  refuses the recipe's pins beside the project's `huggingface_hub==1.26.0` (the README's
+  "The serving stack cannot be locked yet" quotes it). Locking with `transformers` left
+  free pairs `vllm 0.10.1` with `transformers 5.16.1`, which would install gigabytes on a
+  billing card and then refuse at the manager's pin check. Overriding the constraint would
+  be a lie on a money path. The honest deliverable is the finding, deferral 04-10, and a
+  strict expected failure in `test_pod_run.py` that goes live when the group lands. The
+  re-pin is a reviewed edit to `config/serving_recipes_real.toml`, outside this unit.
+  **Superseded by U-B below**, which did that re-pin: the group exists, the lock resolves,
+  and deferral 04-10 is closed.
+- **No `--placement-tier` anywhere.** The consult named it; the orchestrator and the
+  stage parser accept no such flag and no stage reads a tier. `pod_run` records the tier
+  the green `PREFLIGHT` receipt measured and refuses a receipt without one; the console's
+  `run` verb takes the two flags that exist.
+- **The run tree is bound by run id, not by launch token.** The consult said "under the
+  launch-bound name"; the run *report* is launch-bound (a second launch on a retained
+  volume must not overwrite the first's evidence), but the tree itself is `runs/<run_id>`
+  because the orchestrator's resume is by run id and the tree already refuses different
+  bytes at the same identity. A token in the tree's path would make every resume across
+  pods a fresh run.
+- **The roster pair comes from the bootstrap plan.** `pod_run` takes `--models-config`
+  and `--serving-recipes-config` from the bootstrap argv rather than accepting them
+  again: `PREFLIGHT` measured that roster against that catalogue.
+- **The data gate is asked before the bootstrap.** At the time U-A built this, the
+  shipped policy named no volume root; refusing before a model is fetched saved the
+  fetch. The pod runtime integration unit closed that: the shipped policy now names
+  `operations/pod/boot_a_request.py`'s sealed `volume_mount_path` beside `private/`
+  (Tyrel's ruling, `workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md`), and
+  `pod_run.py`'s own module docstring was corrected to match --
+  `require_approved_submission_folder`'s refusal wording was already generic and needed
+  no change. `pod_run` still refuses a submission outside every listed root, now against
+  the real one.
+- **`ErrorCode.FETCH_RUN_FAILED` was added to `errors.py`**, which the unit did not own:
+  the table is closed and `test_errors.py` requires every code to be raised somewhere,
+  so a new verb cannot register its failure state anywhere else.
+- **The hold after a complete run stays.** `pod_timer` treats any early exit as
+  `completed-early` with a non-green report; closing early on a complete run is a timer
+  contract change, named in the README rather than made.
+- **Unproven rows still refuse.** Every real row is `unproven`, and the manager refuses
+  unproven rows before launch, so the first real `PREFLIGHT` is red by construction until
+  a reviewer stamps rows proven — a circle the serving README describes and this unit
+  names rather than cuts.
+
+**Verification.** `ruff format` and `ruff check` on every touched `.py`;
+`sh .githooks/check-documents.sh` for the `.md` files; the named test files through the
+serialized test lock, then `operations/pod operations/operator` once. No acceptance pin was
+run: nothing here touches a fixture path. `uv lock --check` is clean because the lock is
+untouched.
+
+## Pod runtime integration — closing three U-C/U-A seams (on `work/pod-runtime-2`)
+
+Four deliverables over U-C and U-A as they stood: the storage-root gap the account
+balance and Boot A work left open, a vendor-neutral phone-notification seam, the nested
+report-path token binding U-C's own docstring flagged and left for a later unit, and
+this record.
+
+- **`config/data_handling_policy.json` names the pod volume.** `storage_roots` gains
+  `/workspace/private` — `operations/pod/boot_a_request.py`'s `BOOT_A_VOLUME_MOUNT_PATH`,
+  the one concrete `volume_mount_path` a real launch request in this tree seals — beside
+  the existing `private/`. `storage_roots_note` states the export flow: the volume is a
+  storage root for a run's duration (Tyrel's ruling (a)), `verbatus fetch-run` brings the
+  tree home, and the volume itself is destroyed only per `retention_and_deletion`, never
+  as a side effect of export. `pod_run.py`'s own docstring, which said the shipped policy
+  named no volume root, is corrected to match; `pod_run` still refuses a submission
+  outside every listed root (unchanged behavior, now against the real one) —
+  `test_pod_run.py`'s own policy fixture already substitutes its own `storage_roots`
+  list per test, so nothing there needed to change.
+
+  **Rule-13 decision, corrected by review.** The first cut of this unit left
+  `operations/submit/gate.py`'s `approved_storage_roots` untouched and all-or-nothing:
+  it resolved *every* listed root before returning any of them, so the unmodified
+  two-root shipped policy refused outright on any machine without the pod volume
+  mounted — every host laptop, CI, this test machine included — breaking the
+  previously-working `private/` root along with it. A lock run proved the blast
+  radius directly: 23 failures in `operations/corpus/test_submission.py`, all through
+  the same "does not exist" refusal, plus every default-policy real-submission path
+  (`operations/submit/submit.py`, `pipeline/1_exemplar/door.py`,
+  `operations/operator/ingest_worker.py`, `operations/corpus/submission.py`). That is
+  not an acceptable cost for naming a volume path in a file most callers never touch
+  a pod through, so `approved_storage_roots` now resolves each listed root
+  independently and refuses only when *none* of them resolve — an absent root is
+  skipped, never silently dropped. A later review round found the other half of that
+  promise unkept: the skipped list was discarded whenever at least one root resolved,
+  so on the success path — which is every ordinary run — the narrowing was invisible.
+  `gate.resolve_storage_roots` now returns the resolved roots and the skipped ones
+  together, `approved_storage_roots` is the thin wrapper over it for callers with
+  nowhere to record the rest, and `pod_run` writes both lists into its run report
+  (`approved_storage_roots`, `skipped_storage_roots`) on every run. A host with no pod
+  mounted gets exactly the local `private/` root back from the unmodified shipped
+  policy; a pod with the volume mounted gets both. `operations/submit/test_gate.py`
+  covers both new shapes (one absent root beside one present one; every root absent)
+  and the two-root shipped-policy case now proves the local-root result instead of
+  pinning the refusal. `pod_run` still refuses a submission outside every listed
+  root — unchanged behavior — and `test_pod_run.py`'s own policy fixture still
+  substitutes its own `storage_roots` list per test, so nothing there needed to
+  change. Every host-side real-submission path (`submit.py`, `door.py`,
+  `ingest_worker.py`, `corpus/submission.py`) now resolves the shipped policy exactly
+  as it did before this policy file named a pod volume at all.
+
+- **`operations/pod/notify_hooks.py`.** Covered in the module list above. `cli.py` wires
+  all three moments behind the existing `--notify` flag (a green create/adopt prints
+  `launch_notification`; any result carrying a `close_report` prints
+  `close_notification`, green or not; and `balance_notification` says whether the
+  balance hook was wired and carries one line per ping). The balance half was the one
+  a review round found unwired: the code claimed `cli.py` installed it and no tracked
+  path did, because the provider comes from an untracked `--provider-factory` this
+  repository never constructs. It is wired now through `set_balance_notify`, duck-typed
+  exactly as `--record-fixture` reaches `record_exchanges` — a named method on the
+  object the factory returned is the only place the host CLI can reach a vendor
+  adapter. `RunPodProvider` still takes an explicit `balance_notify` constructor
+  parameter, defaulted to `None`, and both routes are opt-in, so a bare live-transport
+  construction — including the one the pod's own `timer_context_from_environment`
+  performs, which has no way to receive `--notify` at all — carries no hook, a plain
+  `verbatus pod create` with no `--notify` can never page a phone from a balance
+  observation, and `--notify` stays the single gate for every phone notification a
+  launch can send. A provider with no seam is recorded, not refused (ruling (b) makes
+  this tracking-only; a launch must not fail because a phone was unreachable), and a
+  ping that did not land is folded into the observation's own `source` rather than
+  swallowed. `test_pod_runtime.py` drives the balance half end to end through
+  `cli.main` against `FakeProvider`, which now carries the same seam. Both hook points
+  are the minimal wiring, not a rebuild of either file: `notify_bridge.py`'s existing
+  spend-floor-warning seam is untouched.
+
+- **The nested bootstrap report-path token binding, closed.**
+  `launch._bind_report_path_to_launch` bound the launch token into the timer's own
+  `--report-path` only; the same token now also folds into the `--report-path` inside
+  `--bootstrap-command-json` when that nested argv carries one, so a real
+  `bootstrap_main --hold-only` (rendered by `boot_a_request.pod_request`) reaches its
+  hold instead of refusing at plan time for a missing token. Proven through the real
+  plan/argv path in `test_bootstrap_main.py`'s
+  `test_hold_only_reaches_the_hold_through_the_real_launch_binding` — it drives
+  `boot_a_request.pod_request` and `launch._bind_report_path_to_launch` themselves, not a
+  hand-written argv standing in for them, and asserts `bootstrap_main.main` reaches
+  `hold-only` and holds to the deadline. `boot_a_request.py`'s own docstring (which named
+  this as unbound) and `README.md`/`HANDOFF.md`'s U-C blocker list are updated to match.
+  Review found the binding itself best-effort by design, with nothing re-validating its
+  result: a nested `--report-path` shape the binder cannot handle (or one carried over
+  unbound from a stale template) reached `PodCreateRequest` unbound and would have
+  refused only at pod-side plan time, after billing had started. `models._required_
+  timer_arguments` — the same money-path gate that already required the outer
+  `--report-path` to carry the launch token and stay inside the volume — now requires
+  the same of a nested one, in either argparse spelling, when one is present; a nested
+  argv naming none is left alone, as before.
+  A later audit found the binder itself only recognized the separate-value spelling, so
+  an `--report-path=value` nested flag reached this validator unbound and was refused
+  by name for a launch token an operator cannot pre-write (it is minted inside
+  `create`) — that request shape was permanently unlaunchable. `_bind_nested_report_path`
+  now shares its argv-reading with the validator through `models.rebind_nested_flag`, so
+  the binder covers both spellings and the validator remains the belt to its braces
+  rather than the only net for one of them.
+
+**Verification.** `ruff format` and `ruff check` clean on every `.py` touched. Tests
+through the shared test lock only, iterated per this unit's own budget; the full
+`operations/pod operations/operator/test_surface.py common/test_data_gate.py` sweep (or
+wherever the data-gate tests actually live, since no `common/test_data_gate.py` exists —
+`operations/submit/test_gate.py`) run once at the end. `sh .githooks/check-documents.sh`
+on every `.md` touched.
+
+## U-B — the serving-stack re-pin (on `work/pod-run-seam`, over U-A)
+
+**What it closes.** Deferral 04-10. U-A found that no `pod` dependency group could be
+locked and left the re-pin to a reviewed config edit; this is that edit, plus the group,
+the lock, the sync flag and the test that binds them.
+
+**The research, in one paragraph.** Read on 2026-09-02 from the pages cited in the pod
+README's "The serving stack, re-planned and locked". The four ruled chairs declare two
+architectures between them: Chandra-2 and the Perlector (`Qwen/Qwen3.8-27B`) are both
+`Qwen3_5ForConditionalGeneration` / `qwen3_5` — the multimodal Qwen3.5 architecture, not
+the text-only one — while the DAI fine-tune and Churro-3B are both
+`Qwen2_5_VLForConditionalGeneration` / `qwen2_5_vl`. vLLM v0.27.1's model registry lists
+all of those in `_MULTIMODAL_MODELS`, and vLLM's own recipe page for `Qwen/Qwen3.8-27B`
+asks for vLLM 0.17.0+ and transformers >= 5.8.0. **One release serves all four; no chair
+had to be split off onto transformers-direct serving.**
+
+**Rule-13 decisions, each with its reason:**
+
+- **`vllm 0.27.1`, not 0.28.0.** 0.28.0 declares `huggingface_hub>=1.27.0` in its own
+  metadata and so cannot lock beside the project's `huggingface_hub==1.26.0`; 0.27.1
+  declares no hub requirement at all and inherits only `>=1.5.0,<2.0` from
+  `transformers`. Nothing any chair needs is 0.28.0-only. The project's hub pin was not
+  touched — moving it to suit a serving pin would have been the money path bending the
+  laptop's.
+- **`transformers 5.14.1`.** The version the vLLM 0.27 line's own requirements were
+  bumped to, above vLLM's `>= 5.5.3` floor and above the Perlector's stated `>= 5.8.0`,
+  and its metadata accepts `huggingface-hub 1.26.0`.
+- **`flash-attn` dropped, not re-pinned.** vLLM imports no external `flash_attn` in its
+  Qwen vision path — it selects through its own `AttentionBackendEnum` and ships its own
+  FlashAttention — and the package publishes no wheel, so the pin would have bought an
+  hours-long nvcc build against `torch 2.13.0` on a rented card for something the server
+  never loads.
+- **The tripwire became a live test rather than being deleted.** `test_pod_run.py` now
+  holds the `pod` group and every catalogue row to the same bytes, both directions, and
+  still requires the Linux/x86_64 marker on each requirement — that marker is what keeps
+  a laptop `uv sync` from resolving torch.
+- **Two files outside the named ownership were corrected, not left lying.**
+  `operations/serving/test_manager.py` asserted `vllm == "0.10.1"` against the real
+  catalogue, and `bootstrap_main.py`'s module docstring stated that no `uv sync` could
+  put vLLM on a pod. Both became false the moment the pins moved; leaving either would
+  have been a false statement on a money path.
+
+**Verification.** `uv lock` resolves (173 packages added — `vllm 0.27.1`,
+`transformers 5.14.1`, `torch 2.13.0` among them — with **no** previously locked version
+changed and nothing removed); `uv lock --check` clean; `uv sync --frozen --python 3.12
+--group test --group audit` succeeds on macOS and resolves none of the pod group;
+`ruff format` and `ruff check` on every touched `.py`; `sh .githooks/check-documents.sh`
+for the `.md` files; the named test files through the serialized test lock, then
+`operations/pod operations/serving` once.
+
+**The one thing only a boot proves.** That the wheels install on the pod image and that
+the four sets of weights actually load and answer under `vllm 0.27.1`. Vendor metadata
+says the architectures are registered; it does not say these checkpoints run. Every row
+stays `preflight_state = "unproven"` and the manager still refuses each by name.
+Confidence, named honestly: high that the group installs, moderate that all four chairs
+load unmodified on the first attempt — Chandra-2 and the Perlector are the risk, because
+vLLM's supported-models row for their architecture names Qwen's own `Qwen3.5-*` repos,
+not a fine-tune and not a `Qwen3.8` checkpoint.
 
 ## Provenance correction
 

@@ -26,6 +26,8 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.runtree.store import RunTree
 
+from ._run_tree_paths import is_publication_temporary as _is_publication_temporary
+
 SCHEMA = "mac-run-backup.v2"
 CHUNK_BYTES = 1024 * 1024
 MAX_BACKUP_FILES = 1_000_000
@@ -584,20 +586,6 @@ def _record_mac_spelling(relative: str, spellings: dict[str, str]) -> None:
             raise BackupRefusal(
                 f"run tree paths {previous!r} and {spelling!r} collide on default APFS"
             )
-
-
-def _is_publication_temporary(relative: str, managed_paths: tuple[str, ...]) -> bool:
-    path = PurePosixPath(relative)
-    if not path.name.startswith("."):
-        return False
-    target_name, separator, unique = path.name[1:].partition(".tmp-")
-    if not separator or not target_name or not unique:
-        return False
-    target = path.with_name(target_name).as_posix()
-    return any(
-        target.startswith(scope) if scope.endswith("/") else target == scope
-        for scope in managed_paths
-    )
 
 
 def _open_regular_descriptor(name: str, parent_descriptor: int, *, what: str) -> int:

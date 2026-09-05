@@ -83,7 +83,7 @@ from common.stage import (  # noqa: E402
     WITNESS_READING_OUTCOMES,
     expected_acts,
     latest_attempt,
-    open_context,
+    open_stage_context,
     reading_basis_regions,
     recovery_region_count,
     require_current_witness_basis,
@@ -1831,7 +1831,11 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ARCHETYPUS, registry_factory=registry_factory)
+    # Either ingress route, decided from one read of the run authority. This
+    # stage reads no fixture declaration at all: its one denominator is
+    # `expected_acts`, which on a real run recomputes every row from the
+    # Designator's own sealed evidence rather than from a declared floor.
+    context = open_stage_context(args, ARCHETYPUS, registry_factory=registry_factory)
 
     unresolved_acts: list[str] = []
     for act in expected_acts(context):

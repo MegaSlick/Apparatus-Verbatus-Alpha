@@ -32,10 +32,349 @@ Exemplar crop lineage verify. Each attempted Testimonium names precisely the
 original proposal regions and their pixel blobs. A later recovery crop is not
 silently substituted for what a chair saw.
 
-The current writer is the declared synthetic skeleton. Its `fixture://` serving
-facts are fixture declarations, not measurements of a live model. Spec 04 has not
-landed a serving response/body contract, and Spec 06's capture-as-Testimonium
-intake is not present in this tree; no fake capture intake is claimed here.
+This stage now has two writers, and which one runs is decided by the sealed
+serving-recipe row for each configured witness chair — never by a new
+configuration key, and never by a fallback in either direction. Under the
+committed fixture catalogue every chair is `kind = "fixture"` and the writer is
+the declared synthetic skeleton described here: its `fixture://` serving facts
+are fixture declarations, not measurements of a live model, and its bytes are
+the pinned acceptance path. Under a catalogue whose rows for those chairs are
+`kind = "vllm"`, the live boundary below runs instead: the serving response and
+body contract Spec 04 was waiting for is `common/contracts/serving.py`'s
+`chair-call-record.v1` plus `operations/serving/http.py::parse_openai_reading`,
+and the capture-as-Testimonium intake is `common/native_witness.py`'s retained
+model view, which the live pass records on every act attempt whose bytes reached
+an adapter parser.
+
+## Live response boundary
+
+**Selection.** `main` resolves one mode per configured witness chair through
+`operations.serving.client.serving_mode_for` — a three-name lookup (recipe,
+chair, measured placement tier) in the catalogue the run sealed, re-read and
+digest-checked against `config_digest` at the moment it is used. A roster that
+mixes postures is refused by name: one run reads its witnesses one way, or every
+consumer comparing witnesses across an act is comparing two kinds of evidence
+without being told. An absent chair names no mode and stays `dead`.
+`--placement-tier` is required to resolve a live row and is deliberately not
+sealed: it is a measured fact of the card, and the receipt records the caps that
+actually bound the serving moment.
+
+**Pass structure.** The live pass is chair-outer and publishes per response.
+Preflight stays a no-write preflight and consults no chair: its resolver returns
+a pending sentinel for every unsealed pair, and the pass fills each one in as its
+own response arrives. Serving runs through `feeding.stage_major_schedule` and
+`feeding.execute_stage_major_schedule` under a `SingleChairResidency`, one
+schedule per chair concatenated, so one chair is resident at a time, no unit is
+served twice, and a schedule that returned to an unloaded chair is refused. A
+chair's unit of work is its own sealed scope: an act-scoped chair is asked once
+per act, a page-scoped chair once per *page*, and that page response derives both
+the page Testimonium and the act-scoped compatibility records of every act whose
+primary page it is. A continuation page's response feeds no act record; the act's
+own view belongs to its primary page.
+
+**Resume.** A pair already sealed at this ordinal is reused from its retained
+Testimonium and never asked again — a live chair cannot reproduce immutable
+bytes. A page response is likewise never re-requested while a sealed record
+describes it: the page Testimonium if the interrupted pass reached it, otherwise
+the act-scoped record of an act whose primary page it is, which carries the same
+capture. A page nothing sealed depends on — a continuation page after an
+interruption — is asked for again, because no sealed record contradicts a new
+answer. A record whose receipt says `fixture://`, or an *attempted* act record
+naming no serving call, is refused rather than resumed over: a live pass cannot
+continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
+— it names no serving call because no chair was ever shown pixels for it, which
+is an independent fact from a fixture-posture response, so it is skipped rather
+than raised on.
+
+**Closed asymmetry: cut-off composition is shared.** A parse failure landing on
+a response the provider itself cut off at its bound now reads as an exhausted
+bound, not plain bad ink, on both paths alike. `_failed_parse_composition`
+holds the one composition — the `cut_note`-prefixed `reason` suffix and the
+`transport_stop_reason`-bearing `_unrecordable_health` basis — and both
+`captured_page_attempt` and `live_attempt_from_response` call it on their
+parse-failure branch, so the two cannot drift apart again. An act-scoped chair
+is evidence of the same kind as a page-scoped one; a truncation fact the
+provider actually reported has no reason to survive on one path's summary and
+vanish from the other's; Recensor coverage reading a provider-truncated act as
+plain "failed" with no truncation flag was the silent loss GOVERNANCE 2 rules out.
+Regression coverage lives beside the page-path original:
+`test_live_attempt_from_response_cut_off_and_parser_failure_names_both` and
+`test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason`
+in `test_live_witness.py`.
+
+Recovering a page's response is not the same as finishing every act view it
+owes: an interruption between two of a *single* page's own act publications
+(the happy fixture's `a1`/`a2`, both primary on page 1) used to leave the later
+one sealed nowhere and unreachable, because the resumed pass rebuilt the page's
+capture from the earlier act alone and never revisited the rest. `run.py`
+factors the per-act publish loop into `publish_page_act_views`, shared by
+`_serve_page_unit` (a response this pass just received) and `live_attempt_pass`
+(a response `resumed_page_captures` recovered), and calls it for every recovered
+page capture before the schedule is built — publishing exactly the pairs still
+pending on that page, from the very response the interrupted pass already
+retained, never asking the chair again. When more than one sealed act record
+could supply a page's resumed capture, every one of them is checked to agree
+(`raw_response_ref`, `native_capture`, `outcome`) rather than taking whichever
+sorts first; a disagreement is a named refusal, not a silent choice.
+
+**What a live record gains.** `native_capture` (the adapter's retained model
+view), `serving_call_ref` (the `chair-call-record.v1` blob for the one request)
+and `raw_response_kind` (which sort of bytes `raw_response_ref` names) are
+admitted on an act Testimonium and written only in live mode, so a fixture
+record is byte-for-byte what it was. `provenance.receipt_ref` names the receipt
+the chair's own client re-read at start, never a declared `fixture://`
+stand-in. `content_health.truncated` comes from the engine's stop word:
+`"stop"` → `false`, `"length"` → `true`, and an unreported word → `null` with
+`truncation_basis = "not-recorded"`, on the act record and the page record
+alike. Both retained blobs are re-read and digest-checked by the attempt tally
+rather than carried as envelope inputs, because the tally re-derives an act
+record's inputs from its regions and presentation alone.
+
+**Chandra is live in transport only.** Its request is built, sent, retained and
+recorded like any other, and `chandra.parse` recognizes only
+`fixture-chandra-response.v1`, so a real Chandra body lands as `failed` with
+`unverified-response-schema` and its bytes retained. That is honest and visible,
+and it stays that way until a real Chandra wire schema is evidence rather than
+invention. Its retained model view rides on the record beside those bytes: the
+parser ran and could place no shape it knows, which is the `unrecognized-shape`
+state the shared capture contract now admits, naming the shape in `outcome`.
+
+**Fixture declarations a live pass does not read.** A live pass reads the
+fixture's pages, acts, continuations and proposals — that is the corpus — and
+reads none of its declared witness responses (`testimony`, `witness_failure`,
+`witness_empty`, `witness_not_run`, `churro_page_response`) or declared
+`native_observation` geometry, which are the offline posture's stand-in for a
+model. The pass names on stderr how many such rows it passed over, so an
+operator cannot mistake one posture's record for the other's. Fixture-declared
+Chandra anchors are not read either, so a live page witness's act attachment
+comes back `unaligned: missing-chandra-page-anchor` until R4 owns live
+alignment: aligning real witness text against declared act spans would place a
+reading on geometry nobody measured. `chandra_anchor` rows are counted on that
+same stderr line, separately from the chair-keyed families above: an anchor
+keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
+live_chairs` filter the others share, and every anchor the scenario declares is
+one the live pass discards regardless of which chair would have used it.
+
+**No live reread.** `--operation reread` is refused by name under a live roster.
+A reread asks one chair for one act again at a new ordinal; it needs its own
+residency, its own per-response publication, and its own answer to what an
+act-scoped reread of a page witness means. Run the whole pass at the next
+ordinal, or reread under the fixture catalogue.
+
+### The cross-file seams that let a live pass carry every chair
+
+Four gaps once stood between the live boundary and the committed roster, each
+of them a named refusal rather than a silent default, and each in a file the
+unit that found it did not own. All four are closed, and how they were closed
+is part of the record because each turned on a choice about what a record may
+say.
+
+1. **A vendor's float decoding value is recorded as the exact decimal the wire
+   carried.** `feeding.dai_generation()` carries floats — DAI's shipped
+   `repetition_penalty` 1.05 and `top_p` 0.001 — and the shared canonical
+   writer refuses floats outright, so a live `dai.v1` request could not be
+   recorded and was therefore never made. The canonical refusal stands: a
+   float's JSON form is not stable enough to hash against. What the call record
+   holds instead is the decimal *text* the request body itself contains, tagged
+   `wire-decimal.v1` so it cannot be confused with a string the vendor really
+   declared, and `ChairClient.read` proves on every call that the recorded view
+   re-encodes to exactly the JSON that went on the wire before it writes the
+   record. Nothing is rounded, and a value that could not be transcribed —
+   `NaN`, `Infinity`, or a vendor value shaped like the tagged form itself — is
+   a named refusal before the request is built, not a discovery afterwards.
+2. **The DAI identity transform is a claim about bytes, not about paths.** When
+   an act crop needs no resize — which is every act crop in the reference
+   fixture — the model must be shown exactly the source image, and
+   `feeding.dai_model_view` now requires the two references to name the same
+   SHA-256 rather than to be the same reference dict. They legitimately differ:
+   the source is the Designator's proposal crop under `2_designator/`, and every
+   image a witness is shown is inventoried under `3_attestatores/`. Both are
+   `crop_png` of the same sealed page at the same bounds, and
+   `verify_exemplar_crop_lineage` already proves the first of them is, so equal
+   digests are equal pixels. Held to the whole dict, the rule refused a genuine
+   DAI act *after* its response had already come back.
+3. **The truncation the page contract re-derives has three states.** A Churro
+   page record's health is re-derived from its capture, and the question asked
+   was two-valued — "is this a cut-off word" — so an engine that reported
+   nothing answered "no" and the record published `truncated: false` over a
+   boundary nobody observed. `common/native_witness.py` measures the third
+   state: unknown, with `truncation_basis = "not-recorded"`, the same shape the
+   live boundary already derived. The two measured states reconcile exactly as
+   before. An empty reading is a confirmed blank only when the boundary
+   positively said the model finished, so "cut off" and "never said" both owe
+   the record a failed-attempt reason.
+4. **A parser may say it read the whole body and could place no shape it
+   knows.** `unrecognized-shape` is a distinct state from a parse failure — the
+   parser ran and refused nothing — and `chandra.py` has produced it since it
+   was written, because the vendor publishes no response specimen. The shared
+   capture contract admits it now, naming the shape in `outcome`, so a live
+   Chandra record carries the adapter's own account of its bytes beside the
+   bytes themselves instead of dropping the view for want of a state name.
+
+Two further seams closed with them:
+
+**A live record says which kind of bytes it retained.** `raw_response_ref` means
+the adapter's own output on every branch where a parser ran, and the whole
+transport body on the one branch where none could; those are different evidence,
+and until `raw_response_kind` was added to the act Testimonium the record said
+neither and a reader had to infer it from which other optional field happened to
+be present. The field is written only in live mode, its vocabulary is closed
+(`common/contracts/serving.py`), a retained model view must agree it describes
+model output, and the attempt tally still re-reads and digest-checks the blob it
+names.
+
+**The client normalizes the receipt reference, and both stage-side converters
+are gone.** `ServiceHandle.receipt_reference` is a read-only mapping proxy and
+`RunTree.read_run_receipt` requires its own reference type or a plain `dict`;
+both boundaries are right and neither is loosened, so `ChairClient.__enter__`
+copies on the way in (`operations/serving/client.py`, asserted by
+`operations/serving/test_client.py::test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter`,
+whose stand-in reader refuses exactly what the real one refuses). Each stage's
+own converter was a `dict()` over an already-plain `dict` from that moment on,
+and both are now removed: this stage passes `read_receipt=context.tree.read_run_receipt`
+at its construction site, and `pipeline/4_perlector/run.py::_read_receipt_through`
+is deleted along with the one line in `pipeline/4_perlector/test_live_perlector.py`
+that named it. The client's `__enter__` is the sole caller of `read_receipt`, so
+both removals are behaviour-identical, and the stale claim that the bare wiring
+"refuses every live start" went with the comments that carried it. One converter
+of the same shape survives in this stage's own `test_attestatores_live_pass.py`,
+where it is a local test fixture rather than a stage seam; it is equally
+redundant and equally harmless, and whoever next edits that file may drop it.
+
+One smaller note still open for whoever comes next: a page Testimonium cannot
+name its `serving_call_ref` (the shared page contract's optional fields do not
+admit it), so a continuation-page response's call record is an inventoried blob
+no record links.
+
+**A duplicate-inputs fix on this side is not yet mirrored on the Perlector's.**
+`run.py::_named_once` de-duplicates a page act record's published `inputs` by
+`relative_path` before the envelope writer runs, because a live Chandra page
+whose `native_capture.raw_response_ref` names the same blob the page already
+lists under `raw_response_refs` would otherwise be refused outright by
+`common/contracts/envelope.validate_input_refs`, which refuses any repeated
+path. That is genuinely required here. But
+`pipeline/4_perlector/run.py::validate_page_testimonium_record` reconstructs
+the same record's *expected* `inputs` by concatenating `raw_response_refs` and
+the capture's `raw_response_ref` with no de-duplication, then compares the two
+lists for exact equality — so the one record `_named_once` makes publishable at
+this stage is refused one stage downstream, on the very live-Chandra-page case
+the de-duplication exists for. The fix belongs on the Perlector's side (outside
+this stage's ownership): build its `expected_inputs` keeping one entry per
+`relative_path`, the same rule `validate_input_refs` enforces, before the sorted
+comparison. Measured since: that refusal does not fire end to end today,
+because a live Chandra page never parses into an observation payload, so
+`page_response_refs` stays empty and the page record names its capture once.
+The day a Chandra wire schema lands, the page partition starts naming the very
+blob the capture names and the mismatch becomes reachable — so the fix is owed
+before that, not after.
+
+**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
+stage's live pass as one link in a whole run: the real stage programs to the
+Designator, this stage's three live witness chairs, a live Perlector, and then
+the Recensor, Archetypus and Armarium over what both wrote — the first time any
+stage after the Perlector has read a live tree. They read it: the run seals a
+terminal export. It is **held for review, not delivered**, and the reason is
+this stage's own two named limits rather than anything downstream. Each act
+counts one witness of a floor of three, because `chandra.v1` lands `failed` with
+`unverified-response-schema` and both page-scoped chairs' act attachments come
+back unaligned while a live pass reads no declared Chandra anchor. That is the
+honest current measurement of a live roster, and closing either limit is what
+will move it.
+
+## Real ingress
+
+`main` opens through `common.stage.open_stage_context`, which reads the run
+authority once and decides the route from its ingress record. On a real
+submission the context carries the registry, the sealed digest map this stage
+requires (`alignment`, `decoding`, and the real-only names the Door seals),
+the parsed serving inputs, `fixture=None` behind an accessor that refuses by
+stage name, and `REAL_SCENARIO` -- never `--scenario`, which the real route
+does not read. `run.py::real_ingress(context)` is this stage's one reading of
+the route, off `context.run`; nothing here branches on `context.scenario` or on
+the shape of a fixture.
+
+**The only real posture is every witness served.** Tyrel's ruling
+(2026-09-02): every witness runs its own full pass, with no capture and no
+slicing, and a roster where every configured witness row is served is the only
+real posture. `require_every_witness_served` refuses, by chair name and before
+any act is read, a real run whose sealed catalogue gives a configured witness a
+fixture row, and a real run in which no witness serves at all; there is no
+fixture to answer for a chair on a real submission, so a fixture row there is
+not a second posture but a chair nothing can ask. The mixed-posture refusal in
+`witness_serving_modes` stays as a guard for the fixture-live seam; it does not
+fire on the shipped `config/serving_recipes_real.toml`, whose witness rows are
+live at every tier in `config/pod_placement.toml`, and
+`test_attestatores_real_ingress.py` holds that.
+
+**`page_identity` is the Exemplar page index on both routes.** Every "which
+page is ordinal N" -- the whole-page presentation, the page Testimonium's
+subject, the live schedule's page unit -- goes through `page_subject`, which is
+`common.stage.exemplar_page_ids` over the Exemplar's own `page` artifacts. On a
+fixture run the index agrees with the old fixture-declared identity for every
+sealed page, because a sealed page's identity is its admitted bytes' digest and
+"sealed" means those bytes matched the declaration; a refused page is indexed
+under the Door's `source-N` admission subject, and this stage only asks a
+page-scoped chair about pages that carry proposed acts -- on every shipped
+fixture family those are sealed pages, so no fixture byte moves -- but `by_page`
+is built from a real run's own seal rows, not from this invariant, so
+`presentation_for_page` checks the Exemplar page's `outcome` itself and refuses
+by name rather than reading a refused page's absent `image_path`. The index is
+built once per pass (`publish_page_testimonia_and_attachments` and
+`live_attempt_pass` each call `exemplar_page_ids` once and thread the result
+into every `page_subject` / `presentation_for_page` call as `page_ids`) rather
+than walked again at every lookup: the Exemplar layer is sealed before this
+stage opens, so the walk answers the same every time for the life of the
+process, and a cache scoped to one pass cannot outlive the tree it described.
+Review found this stage paying roughly seven such walks per page rather than
+the three this note used to claim; a page-level bound on a large corpus is
+still roadmap work.
+
+**The declared witness tables have no real-mode counterpart.** `witness_failure`,
+`witness_not_run`, `witness_malformed`, `witness_empty`, `native_observation`,
+`chandra_anchor` and `churro_page_response` are the offline posture's stand-ins
+for a model; the response boundary on a real run is the live pass above (Section
+A), and what a chair returned is what the transport actually returned. On a real
+run the pass's declaration set is `real_declarations` -- empty in every family,
+in the exact shape `declarations_for` builds, and a test holds the two shapes
+equal -- and the preflight's validation of declared Churro page responses is
+skipped by `main`'s `fixture_declared=False`, because there is no fixture and
+nothing to validate. The three-source order for native geometry (declared
+observation, adapter observation, presented bounds) loses its first source on a
+real run: geometry is the adapter's `observe` over the real payload or the
+presentation, never a declaration. `refuse_unread_fixture_declarations` prints
+nothing on a real run: there is no row to pass over. The readers that stay
+fixture-only (`testimony_for`, `declared_response`, `churro_page_capture`,
+`captured_churro_page_attempt`, `_fixture_native_observations`, the declared
+anchor read) are not reached on a real run, because the served posture makes
+every real pass a live pass; if one ever is, the accessor refuses by name rather
+than handing back an empty table. `validate_declared_churro_page_responses`
+keeps reading the fixture's own page ordinals for the fixture route, since it
+runs only there.
+
+**The continuation refusal.** `page_denominator` names an act's far page from
+its verified regions; with no verified region and a recorded crop refusal it
+used to fall back to the fixture's `[[continuation]]` declaration. On a real
+run there is none, and the refusal says so and says what clears it: *act X's
+proposal seal claims a continuation and real ingress carries no continuation
+declaration; its far-page evidence cannot be addressed. The Designator must
+publish the continuation region that names the far page.* This branch is
+reached only past `expected_acts`, which on a real run already verified that
+the far-page region exists and recomputes the act against it -- so what it
+means is that the region existed and was refused at the crop boundary, and the
+one thing that addresses the far page is the Designator's own region record for
+it.
+
+**What is proven offline.** `test_attestatores_real_ingress.py` carries a real submission
+of the synthetic fixture's own two pages through the Door, the Exemplar and the
+Ink Map as programs, hand-builds the Designator's regions and seal in the shape
+`cut_minted_region` publishes them (because no real Designator exists), and
+runs this stage's `main` with three served fake chairs: every act and page
+record publishes, the page records name the Exemplar's own page subjects, no
+declaration is read or reported, and the fixture accessor is never touched. The
+same file holds the seal refusal over an unsealed Designator (context opened,
+nothing written, no "sealed no digest"), the fixture-catalogue refusal, and the
+shipped real catalogue's posture at every tier. A real Designator is still
+roadmap work; what this stage is ready for is its seal.
 
 ## Testimonium schema
 
@@ -686,3 +1025,31 @@ attempts it describes are still on disk*. Over a folder whose attempts are gone,
 re-deriving the manifest discards the last record that they existed, and the
 pass that follows restarts the history at ordinal 1. That is a decision someone
 may legitimately take; it is not one to take without reading the manifest first.
+
+## Who wrote what
+
+The live reading seam this stage sits in was built by several seats across eight
+units. The record of which seat wrote which unit is the dispatch record — the
+workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
+`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`), which name the model each
+seat was dispatched as. **The commit trailers on this branch are self-reported
+and several are wrong**: some Opus and Sonnet seats copied the host's own
+`Co-Authored-By` line. Where a trailer and this table disagree, this table is
+the record. The Fable seat was the host orchestrator and wrote no unit code.
+
+| unit | built by | verified by | fixed by |
+|---|---|---|---|
+| U1 contract and parser | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U2 client and fakes | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U3 Perlector live reader | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U5 Attestatores live boundary | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U7p placement-tier plumbing | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U4 Perlector wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U6 Attestatores wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U8 cross-file seams | Opus 5 | Opus 5 | Sonnet 5 |
+| U7-e2e end to end | Opus 5 | Opus 5 | Sonnet 5 (host committed) |
+
+This stage's own live boundary is U5, its wiring into the stage is U6, and the
+cross-file seams described under "The cross-file seams that let a live pass carry
+every chair" are U8. U7-e2e is the whole-run proof recorded at the end of that
+section.

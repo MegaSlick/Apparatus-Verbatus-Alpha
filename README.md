@@ -15,7 +15,8 @@ automated checks must pass before it can be merged, `main` cannot be force-pushe
 deleted, and these apply to the owner as well. Everything else in this repository is a
 local convention that a determined tool can step around. Note that no *approval* is
 required, so anything holding the owner's credentials — including an agent — can merge a
-passing pull request; "Tyrel merges" is a rule people follow, not one GitHub imposes.
+passing pull request; the three merge conditions in CLAUDE.md hard rule 14 are a rule the
+session follows, not one GitHub imposes.
 This line is the only place status lives.
 
 ## Where to look

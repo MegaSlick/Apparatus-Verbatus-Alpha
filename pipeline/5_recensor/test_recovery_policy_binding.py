@@ -109,8 +109,8 @@ def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_revi
 ):
     """The audit's own demonstration, made durable.
 
-    The swap lands exactly where it landed then: after `open_context` has checked
-    this run's binding and before the Recensor publishes anything. The stage now
+    The swap lands exactly where it landed then: after `open_stage_context` has
+    checked this run's binding and before the Recensor publishes anything. The stage now
     has nothing left to re-read, so every review and every recovery-request it
     writes carries the allowance the run sealed — and the act the scenario asks
     recovery for still gets its request, rather than being held under a budget of
@@ -126,14 +126,14 @@ def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_revi
 
     recensor = _load("recensor_recovery_binding_under_test", "pipeline/5_recensor/run.py")
     original = recovery_path.read_text(encoding="utf-8")
-    bind = recensor.open_context
+    bind = recensor.open_stage_context
 
-    def swapping_open_context(args, stage, **kwargs):
+    def swapping_open_stage_context(args, stage, **kwargs):
         context = bind(args, stage, **kwargs)
         recovery_path.write_text(_spent_policy(original), encoding="utf-8")
         return context
 
-    monkeypatch.setattr(recensor, "open_context", swapping_open_context)
+    monkeypatch.setattr(recensor, "open_stage_context", swapping_open_stage_context)
     monkeypatch.setattr(
         sys,
         "argv",

@@ -78,6 +78,7 @@ _PROFILE_FIELDS = {
     "generation_config",
     "startup_timeout_seconds",
     "poll_interval_seconds",
+    "request_timeout_seconds",
     "readiness_probe",
     "preflight_state",
 }
@@ -180,6 +181,7 @@ class ServingProfile:
     generation_config: str
     startup_timeout_seconds: int
     poll_interval_seconds: int
+    request_timeout_seconds: int
     readiness_probe: ProbeSpec
     preflight_state: str
     preflight_digest: str | None
@@ -521,6 +523,7 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         raise ServingConfigurationError(
             "poll_interval_seconds cannot exceed startup_timeout_seconds"
         )
+    request_timeout = _positive_int(raw["request_timeout_seconds"], "request_timeout_seconds")
     return ServingProfile(
         recipe=recipe,
         chair=chair,
@@ -545,6 +548,7 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         generation_config=generation_config,
         startup_timeout_seconds=timeout,
         poll_interval_seconds=poll,
+        request_timeout_seconds=request_timeout,
         readiness_probe=_probe(raw["readiness_probe"]),
         preflight_state=preflight_state,
         preflight_digest=preflight_digest,

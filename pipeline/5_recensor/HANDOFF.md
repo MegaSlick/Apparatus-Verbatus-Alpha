@@ -168,10 +168,52 @@ only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.
 
 `review_route_from_findings`'s `unreconciled` cause is fed today only by a
-scenario's declared `hold_acts` (`pipeline/5_recensor/run.py:2983`), not by any
-measurement this stage takes; the only cross-act date/numbering/order anomaly
-computation in the tree is Pass C's flag pass (`pipeline/4_perlector`), and its
+scenario's declared `hold_acts` (`pipeline/5_recensor/run.py::declared_unreconciled`),
+not by any measurement this stage takes; the only cross-act date/numbering/order
+anomaly computation in the tree is Pass C's flag pass (`pipeline/4_perlector`), and its
 verdict reaches this record through `audit_unresolved`, not `unreconciled`.
+
+**On a real submission `unreconciled` has no producer at all.** A real run carries no
+fixture and declares no scenario, so `declared_unreconciled` is handed `None` and
+answers `False` for every act. That `False` says nothing fed the cause; it does not say
+the act was measured as reconciled. The consequence, stated plainly so nobody reads the
+route as a measurement: on a real run this stage's review routing is silent about
+cross-act reconciliation, and the only cross-act anomaly computation that reaches the
+review record is the Perlector's Pass C verdict, through `audit_unresolved`. This is a
+disclosure (GOVERNANCE 2 and 10), not a defect this stage repairs: a reconciliation
+measure of its own would be a new instrument, and nothing here invents one.
+
+## Real ingress
+
+The stage opens through `common.stage.open_stage_context`, which decides the route
+from one read of the run authority and, on a real submission, carries the registry,
+the sealed digest map and the parsed recovery policy this stage requires before its
+first line of work (`context.recovery_policy`, `require_sealed_config("recovery", …)`).
+The context's fixture slot is `None` behind a refusing accessor; this stage never
+touches it on the real route. The route is read off `context.run` (`real_ingress`), the
+same reading `common.stage` makes for `expected_acts` -- an absent ingress record is
+the synthetic walking skeleton, a present one must parse -- so the two cannot disagree
+about which route a run is on. `open_context` stays importable from this module because
+this stage's own tests open fixture trees through it directly; `main` does not call it.
+
+The declared-crop half of `wants_recovery` reads the same way: `declared_scenario`
+returns `None` on a real submission, and `declared_recovery(None, act_key)` answers
+`False` for every act, the same "nothing fed it" reading `declared_unreconciled` gives
+`hold_acts`. **On a real submission the declared-crop origin has no producer at all.**
+`recovery_request_origin` and `recovery_request_reason` still receive `declared=False`
+on every call, so the sole real-mode funder of a recovery request is measured ink
+outside the live crop union (`COVERAGE_OBSERVATION_ORIGIN`, via
+`unclaimed_ink_observations`) -- exactly the account the "Cross-page ink" section above
+already describes.
+
+The nine `expected_acts` readers in this file are unchanged: on a real run the shared
+reader skips the fixture floor by name and recomputes every row from the Designator's
+own sealed evidence, and nothing in this stage believes a count it has not recomputed
+from sealed records. What the real route buys today is bounded and said so: no real
+Perlector seal exists, so a real run refuses at `predecessor perlector has no
+stage-seal` with its context already opened -- no "sealed no digest", no fixture
+accessor, no traceback, nothing written. `test_recensor_real_ingress.py` pins that for this
+stage, the Perlector and the Archetypus.
 
 ## Cross-capture visibility: `payload["cross_capture_coverage"]`
 

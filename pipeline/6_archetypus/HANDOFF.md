@@ -59,6 +59,21 @@ accepted later review.
   per-entry custody check). This custody check does not substitute for the
   priming discriminator.
 
+### Real ingress
+
+The stage opens through `common.stage.open_stage_context`, which decides the route from
+one read of the run authority and, on a real submission, carries the registry and the
+sealed digest map into the context. This stage reads no fixture declaration of its own on
+either route: its one denominator is `expected_acts`, and on a real run that reader
+skips the fixture floor by name and recomputes every row from the Designator's own
+sealed evidence. The context's fixture slot is `None` behind a refusing accessor and is
+never touched here. Nothing else changes with the route -- the constructor path, the
+closed record schema and the index reconciliation are the same on both. No real
+Recensor seal exists yet, so a real run refuses at `predecessor recensor has no
+stage-seal` with its context already opened, writing nothing;
+`pipeline/5_recensor/test_recensor_real_ingress.py` pins that for this stage beside the
+Recensor and the Perlector.
+
 ## `kind="archetypus"`
 
 The artifact subject is the stable act identity. Its payload is separately self-hashed,
