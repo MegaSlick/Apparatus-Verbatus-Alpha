@@ -139,23 +139,20 @@ class ScheduledStage:
 # The chairs named per stage are the real roster's, not the fixture roster's:
 # the fixture roster resolves to local snapshots and boots nothing, so a
 # schedule measured against it would under-report every real boot.
-# `secondary_proposer` is the case that proves the point -- absent in the
-# fixture roster, configured in the real one, and served by the Designator's
-# own pod after the structure chair (`pipeline/2_designator/run.py:258`, `:282`).
+#
+# `secondary_proposer` is absent from this schedule because it is absent from
+# the real roster itself (`config/models-real.toml`, Tyrel's ruling of
+# 2026-08-12): a role this schedule would need to name, if it were configured,
+# is not a boot to describe until it is.  Every other configured chair boots on
+# the pod of the stage that reads it, `attestator_1` included: Chandra is served
+# and read again here, in the Attestatores' own call (Tyrel's ruling of
+# 2026-09-02), never handed down from the Designator's reading.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
         "designator",
         True,
-        (
-            ScheduledChair("designator_structure", "Chandra, structure and crop authority"),
-            ScheduledChair(
-                "secondary_proposer",
-                "NOT YET SERVABLE: every real recipe tier marks this chair unsupported "
-                "(Ultralytics YOLO detector; this package serves only vLLM completion) — "
-                "a confirmed boot will not serve it",
-            ),
-        ),
+        (ScheduledChair("designator_structure", "Chandra, structure and crop authority"),),
     ),
     ScheduledStage(
         "attestatores",

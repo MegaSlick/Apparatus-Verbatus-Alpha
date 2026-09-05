@@ -2402,3 +2402,76 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
         for row in page_attachments
     )
     assert all(row["span"] is None for row in page_attachments)
+
+
+def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
+    """One sealed-page read per act view's own derivations (CodeRabbit round 1, T8).
+
+    `publish_attempt` needs the sealed page's size twice for a Chandra act
+    view: once to convert the wire contract's normalized boxes
+    (`chandra.observe`), and once for the page-edge overshoot split. It called
+    `_sealed_source_page` at both, and that function reads the whole page blob
+    and re-digests it every time -- two full reads and two SHA-256 passes per
+    act view, for one number that cannot change between them. The size is now
+    bound once.
+
+    `validate_testimonium_presentation`'s own read is deliberately excluded
+    from the count, not folded in. It exists to re-derive the sealed page and
+    its bytes from the tree as a check on the payload just built; handing it a
+    value computed by the code it is checking would make it validate its own
+    input, and it is also called from two read-back sites that have no earlier
+    read to share. Counted rather than asserted structurally, so that a later
+    edit adding a third derivation that needs the size reintroduces a read this
+    test can see.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_sealed_source_page = attestatores._sealed_source_page
+    real_publish_attempt = attestatores.publish_attempt
+    real_validate = attestatores.validate_testimonium_presentation
+    validating: list[bool] = []
+    reads: list[str] = []
+    reads_per_view: list[int] = []
+
+    def counting_sealed_source_page(context, presented):
+        if not validating:
+            reads.append(presented["source_page_id"])
+        return real_sealed_source_page(context, presented)
+
+    def watched_validate(context, record):
+        validating.append(True)
+        try:
+            return real_validate(context, record)
+        finally:
+            validating.pop()
+
+    def counting_publish_attempt(context, **fields):
+        before = len(reads)
+        result = real_publish_attempt(context, **fields)
+        reads_per_view.append(len(reads) - before)
+        return result
+
+    monkeypatch.setattr(attestatores, "_sealed_source_page", counting_sealed_source_page)
+    monkeypatch.setattr(attestatores, "validate_testimonium_presentation", watched_validate)
+    monkeypatch.setattr(attestatores, "publish_attempt", counting_publish_attempt)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    # Six act views: two acts times three chairs. `attestator_1` is the
+    # fixture's Chandra chair, so exactly its two views need the sealed size at
+    # all, and each needs it once. A ceiling alone would pass vacuously if no
+    # view had reached the derivation.
+    assert sorted(reads_per_view) == [0, 0, 0, 0, 1, 1]

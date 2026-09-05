@@ -701,15 +701,43 @@ byte-for-byte what they were, which is what leaves the acceptance pin where it i
 `response_sha256` disagreeing with `raw_response_ref["sha256"]` — rather than raising a
 bare `KeyError` or publishing two digests for one response.
 
-**`_distinct_inputs` is scoped to the re-proof, never the whole input list.** The
-envelope refuses a repeated path outright, even at an identical digest
+**`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
+may claim.** The envelope refuses a repeated path outright, even at an identical digest
 (`validate_input_refs`) — that is the double-count guard GOVERNANCE 5's "one text" rests
-on. The one place a duplicate can be legitimate is a live re-proof answering with the
-same bytes as the establishing call, which content-addresses to the same path twice; the
-Pass-C publication path therefore dedups only `reproof_inputs`, and only against
-`row["inputs"]` (the image, testimonia, attachment and prior references, which can never
-legitimately repeat) — a duplicate inside `row["inputs"]` itself still reaches the
-envelope's own refusal unchanged.
+on, and nothing here touches it: a duplicate inside a published `inputs` list still
+reaches that refusal unchanged. It is used at exactly two seams, both of them places
+where one content-addressed blob is honestly reachable by two names.
+
+- *The Pass-C publication path* dedups only `reproof_inputs`, and only against
+  `row["inputs"]` (the image, testimonia, attachment and prior references, which can
+  never legitimately repeat). A live re-proof answering with the same bytes as the
+  establishing call content-addresses to the same path twice.
+- *`validate_page_testimonium_record`* dedups the expectation it builds from a page
+  record's `raw_response_refs` and its `native_capture`. A page whose partition was
+  derived from the very bytes its own capture describes reaches one blob through both
+  fields, and a page-edge overshoot finding is *required* to be traceable through
+  `raw_response_refs` while the capture still names it (`common/native_witness.py`). The
+  producer names it once (`pipeline/3_attestatores/run.py::_named_once`), so
+  concatenating the two fields here built an expectation no publishable record could
+  meet — a correct record, correctly published, refused one stage later. Unreachable
+  while no page witness parsed live; reachable the moment one did.
+
+**A page witness on a continuation page is judged on its alignment, not on `attached`.**
+`act_attachment_view` derives `attached` from geometry alone — the chair's reported
+observations against the act's sealed regions on that page — and refuses an entry that
+disagrees with that derivation, on every contributing page. It used *also* to refuse any
+continuation-page entry that was attached, and the two rules contradicted each other for
+a served page witness whose block really does cover an act's continuation half:
+`false` was refused as not derived from geometry, `true` as claiming an anchor, and no
+honest record existed in either state. The second rule is gone. What a continuation page
+genuinely lacks is an *anchor* — it is derived from the act's own primary page, so there
+is no comparison view to compute here even when the geometry attaches — and the
+surviving rule says exactly that, refusing any alignment other than
+`{"status": "unaligned", "reason": "continuation-page-no-act-anchor"}`. An
+attached-but-unaligned entry is a shape the branches below already admit: a
+`geometric-overlap` basis, a null span, an explicit unaligned reason. The contradiction
+was unreachable while the fixture declared no geometry on a continuation page
+(`pipeline/3_attestatores/HANDOFF.md`).
 
 **The receipt is the live one.** `provenance_for(..., receipt_ref=…)` takes the receipt
 the serving manager published and `ChairClient.__enter__` re-read through the tree and

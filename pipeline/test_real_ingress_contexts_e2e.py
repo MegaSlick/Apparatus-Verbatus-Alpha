@@ -10,11 +10,13 @@ Attestatores roster and a served Perlector, and then carried into the Recensor,
 Archetypus and Armarium, which no real run had ever reached.
 
 **The Designator's layer is hand-built, and that is the honest part of this
-module.** `pipeline/2_designator/run.py` refuses on real ingress by design --
-"real structural proposal/model work is outside System 03" -- and the first
-test below drives its program to exactly that refusal rather than describing
-it. A real structural pass does not exist, so the records this module puts in
-its place are built by
+module.** `pipeline/2_designator/run.py` does have a live structural pass now
+(`structure_pass.py`), but it runs only under a served structure chair, and the
+catalogue this module writes keeps `designator_structure` on its fixture rows --
+so the stage refuses this run by name, "a real submission may not be marked out
+by the fixture structure chair", and the first test below drives its program to
+exactly that refusal rather than describing it. No structural pass runs here, so
+the records this module puts in its place are built by
 `pipeline/3_attestatores/test_attestatores_real_ingress.py`'s own
 `_RealDesignator`, reused rather than copied: crops really cut from the sealed
 pages, `region_id` binding each act to its transform, and `raw_bounds` equal to
@@ -297,9 +299,13 @@ def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_
     """Why the Designator layer above is hand-built, driven rather than asserted.
 
     The stage that would produce a real structural denominator refuses to
-    invent one, so this module supplies the layer by hand and says so. The
-    refusal is honest in both directions: it names what it will not do, and the
-    tree it leaves is byte for byte what the Ink Map sealed.
+    invent one under this catalogue, so this module supplies the layer by hand
+    and says so. A live structure chair would mark the submission out
+    (`pipeline/test_structure_chair_e2e.py`); the catalogue here keeps
+    `designator_structure` fixture, and marking a real page out with an ink scan
+    standing in for a model is exactly what the refusal forbids. It is honest in
+    both directions: it names what it will not do, and the tree it leaves is byte
+    for byte what the Ink Map sealed.
     """
     registry = ChairRegistry.from_toml(str(MODELS_CONFIG))
     catalogue = write_live_catalogue(tmp_path / "serving_recipes_live.toml", registry)
@@ -311,7 +317,7 @@ def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_
     result = invoke_stage(DESIGNATOR_CLI, run_root, catalogue)
 
     assert result.returncode == EXIT_FATAL, result.stderr
-    assert "real structural proposal/model work is outside System 03" in result.stderr
+    assert "a real submission may not be marked out by the fixture structure chair" in result.stderr
     assert "no proposals or holds were fabricated" in result.stderr
     assert snapshot(run_root) == before, "a refused structural pass writes nothing"
 

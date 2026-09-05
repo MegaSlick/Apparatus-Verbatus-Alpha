@@ -1,13 +1,25 @@
-"""One-receipt Chandra custody, shared by its two stage-side halves.
+"""One-receipt Chandra custody: the binding a retained response is written under.
 
-R2's Designator geometry adapter writes the raw Chandra response once
-(text-free geometry beside a retained blob), and R3's Attestatores capture
-intake reads that blob back under the same serving receipt. The write and the
-read are one custody rule with two stage-side callers, so the rule lives in
-`common/` rather than in either stage — a stage may not import another stage's
-uniquely named module (`pipeline/test_stage_import_boundaries.py`), and
-duplicating the check would let the two halves drift (the R0 freeze-note
-derived-record pattern).
+**Who calls this today.** The write half runs in the Designator's live
+structure pass (`pipeline/2_designator/structure_pass.py::ask_page`), which
+retains every structure chair response under this binding and publishes the
+resulting `custody_ref` on the page's `structure-answer` record. The read half,
+`read_retained_chandra_response`, has no caller on the served path: it was
+written for the Attestatores' capture intake, and that intake was removed as
+unreachable when Tyrel ruled (2026-09-02) that Attestator 1 runs its own
+Chandra pass rather than reading the Designator's call. It is kept, and
+exercised by `pipeline/2_designator/test_geometry_layer.py`, because it is the
+half that says what the binding *means*: a response is admissible only paired
+with the receipt it was retained under, and a writer whose record no reader
+could accept is not custody. Whatever eventually reads a retained response back
+— an intake, an audit, a replay — reads it through this function or it is
+reading bytes nothing binds. That the second blob is written and not yet read
+back is recorded as a follow-up, not hidden here.
+
+The rule lives in `common/` rather than in a stage because both halves are one
+rule and a stage may not import another stage's uniquely named module
+(`pipeline/test_stage_import_boundaries.py`); duplicating the check would let
+the two halves drift (the R0 freeze-note derived-record pattern).
 
 A serving receipt carries no reference back to any response (`common/chairs/
 receipts.py`'s schema has no such field), so two independently-supplied,
@@ -20,8 +32,8 @@ response paired with any receipt other than the one recorded here.
 **Both ends run the same receipt check, from one function.** The reader refuses a
 receipt issued for any chair but the Designator's; the writer has to refuse the
 same receipt for the same reason, or the write half would happily seal a binding
-the read half can never accept -- evidence written into the tree that no stage
-can consume, discovered a stage later than the mis-serving that caused it. The
+no reader could ever accept -- evidence written into the tree that nothing can
+consume, discovered long after the mis-serving that caused it. The
 check therefore lives in `_validated_designator_receipt` and is called by both,
 which also means the two ends cannot drift apart on what "the Chandra receipt"
 is. Its ordering consequence for the eventual wiring is deliberate: the serving
@@ -226,9 +238,12 @@ def _is_custody_binding(data: bytes) -> bool:
 def _validated_designator_receipt(tree: Any, receipt: dict[str, str]) -> dict[str, Any]:
     """Read the receipt through the run tree and require the Designator's chair.
 
-    The one Chandra inference is served in `designator_structure` and reused by
-    the Attestatores (the design's one-call/two-chairs custody), so a receipt
-    naming any other chair is a different call however honestly it verifies.
+    This custody covers the Chandra call the Designator serves in
+    `designator_structure` and nothing else: a receipt naming any other chair is
+    a different call however honestly it verifies. The Attestatores' own Chandra
+    witness is a separate reading under its own receipt (Tyrel, 2026-09-02:
+    every witness runs its own full pass and nothing is captured from one call
+    into another), and its responses are not retained through here.
     `common.stage` is imported inside the function, as the read half already did:
     it is the whole stage-program harness, and a small custody rule two stages
     share should not drag that in at import time. There is no import cycle --

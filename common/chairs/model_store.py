@@ -124,15 +124,12 @@ REQUIRED_ARTIFACTS = (
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
         "other: qwen-research",
     ),
-    RequiredArtifact(
-        "secondary_proposer",
-        "yolo26-detection",
-        "huggingface",
-        "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
-        "0c57f057391113579e7af170b864542f049e67aa",
-        # Declared in the model card; the pinned revision ships no licence file.
-        "agpl-3.0",
-    ),
+    # No `secondary_proposer` row: the chair is absent from the real roster by
+    # Tyrel's ruling of 2026-08-12, so no chair this repository configures ever
+    # serves Teklia's AGPL YOLO detector.  Requiring its bytes here would make a
+    # store fetched for the real roster permanently incomplete against this
+    # list, which is a refusal nobody could clear.  A roster that configures the
+    # chair again adds the row back with it.
     RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
@@ -168,7 +165,7 @@ DAI_PROMPT_CITATION = (
     "system.txt and query.txt"
 )
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
-# The record has six unique roster artifacts and no payload bytes.  One MiB is
+# The record has five unique roster artifacts and no payload bytes.  One MiB is
 # deliberately generous while keeping a forged control document memory-bounded.
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Shard indexes name payloads but never contain them.  Real indexes remain well

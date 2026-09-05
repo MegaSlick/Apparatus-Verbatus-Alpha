@@ -6,6 +6,15 @@ moved from there, so that 4,500-line manager-lifecycle suite stays untouched.
 Attestatores and Perlector stage tests both need one scripted endpoint that
 speaks the reading contract; deduplicating the two families of fakes is a
 named follow-on, not a job this module does.
+
+Beside the reading answers, the builders under "the structure chair's answers"
+script what the Designator's `designator_structure` chair returns: a page's
+acts given in page pixels, a body the closed contract refuses by a named
+outcome, or a real answer the engine cut off mid-object. They live here rather
+than in a suite because knowing which normalized box lands on a given page
+rectangle means inverting `common.structure_answer.to_page_bounds`, and a
+second copy of that inversion could agree with a converter that had changed
+underneath it.
 """
 
 from __future__ import annotations
@@ -14,8 +23,9 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
+from common import structure_answer
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
@@ -272,6 +282,180 @@ def _peeked_model(body: bytes) -> str | None:
         return None
     model = payload.get("model")
     return model if isinstance(model, str) else None
+
+
+# --------------------------- the structure chair's answers ---------------------------
+#
+# SPEC_D §5. A test that hand-writes the structure chair's wire JSON has to
+# spell the normalized geometry itself, and the only way to know which box
+# lands on a given page rectangle is to invert `structure_answer.to_page_bounds`
+# — so every suite that scripts the chair would carry its own copy of that
+# inversion, and each copy could drift from the converter it is inverting. The
+# builders below do it once, and prove it each time by running the answer they
+# built back through the contract that will parse it.
+
+
+def structure_box_1000(bounds: Mapping[str, int], page_w: int, page_h: int) -> list[int]:
+    """The normalized `box_1000` whose page-pixel conversion is exactly ``bounds``.
+
+    Found by search over the 0–1000 grid and checked through
+    :func:`common.structure_answer.to_page_bounds` itself, never by a second
+    closed-form formula: a builder that re-derived the arithmetic could agree
+    with a converter that had changed underneath it, which is precisely the
+    coordinate-space confusion the normalized contract exists to prevent.
+
+    Refuses by name when no box converts to the rectangle asked for — the
+    quantized grid is coarser than the page for small pages, and a silently
+    approximated rectangle would make a test's minted `raw_bounds` a near miss
+    nobody declared.
+    """
+
+    def _low(page: int, target: int) -> int:
+        for value in range(1001):
+            if value * page // 1000 == target:
+                return value
+        raise ValueError(f"no normalized low edge converts to {target} on a page of {page}")
+
+    def _far(page: int, target: int) -> int:
+        for value in range(1001):
+            if min(page - 1, (value * page + 999) // 1000 - 1) == target:
+                return value
+        raise ValueError(f"no normalized far edge converts to {target} on a page of {page}")
+
+    box = [
+        _low(page_w, bounds["x"]),
+        _low(page_h, bounds["y"]),
+        _far(page_w, bounds["x"] + bounds["w"] - 1),
+        _far(page_h, bounds["y"] + bounds["h"] - 1),
+    ]
+    converted = structure_answer.to_page_bounds(box, page_w, page_h)
+    if converted != dict(bounds):
+        raise ValueError(f"box {box} converts to {converted}, not to {dict(bounds)}")
+    return box
+
+
+def structure_answer_body(
+    acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
+    page_w: int,
+    page_h: int,
+) -> str:
+    """The structure chair's wire JSON for rectangles given in page pixels.
+
+    Each act is ``(bounds, text)``, or ``(bounds, text, label)`` to exercise the
+    optional label the contract retains and uses for nothing. An empty sequence
+    is the chair's "I see no text" answer, which is a legitimate body and not a
+    refusal — the page-fallback row of SPEC_D §1.4.
+    """
+    written: list[dict[str, Any]] = []
+    for act in acts:
+        entry: dict[str, Any] = {
+            "box_1000": structure_box_1000(act[0], page_w, page_h),
+            "text": act[1],
+        }
+        if len(act) > 2:
+            entry["label"] = act[2]
+        written.append(entry)
+    return json.dumps({"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": written})
+
+
+def scripted_structure_answer(
+    acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
+    page_w: int,
+    page_h: int,
+    *,
+    finish_reason: Any = "stop",
+    **fields: Any,
+) -> ScriptedAnswer:
+    """One page's scripted structure answer, verified against the parser.
+
+    The body is parsed here, before any test sees it, so a builder that drifted
+    from `common/structure_answer.py` fails in the builder rather than as an
+    unexplained hold three stages downstream. ``finish_reason="length"`` scripts
+    the cut-off row of SPEC_D §1.4 over a body that nonetheless parses.
+    """
+    content = structure_answer_body(acts, page_w, page_h)
+    parsed = structure_answer.parse(content.encode(), page_w=page_w, page_h=page_h)
+    if "parse_outcome" in parsed:
+        raise ValueError(f"the scripted answer does not parse: {parsed['parse_outcome']}")
+    if [act["raw_bounds"] for act in parsed["acts"]] != [dict(act[0]) for act in acts]:
+        raise ValueError("the scripted answer's rectangles do not survive the round trip")
+    return ScriptedAnswer(content=content, finish_reason=finish_reason, **fields)
+
+
+# One body per named refusal, each the smallest answer that reaches that
+# outcome and nothing else. Keyed by the `PARSE_OUTCOMES` code so a test names
+# the outcome it is scripting rather than a body it has to be read to decode.
+_STRUCTURE_REFUSALS: Mapping[str, str] = {
+    "invalid-json": "# Page one\n\nMarkdown the chair wrote instead of the answer it was asked for.",
+    "top-level-not-object": '["an array of something"]',
+    "unverified-response-schema": json.dumps(
+        {"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": [], "note": "extra"}
+    ),
+    "missing-act-list": json.dumps({"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA}),
+    "malformed-act": json.dumps(
+        {"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": ["not an object"]}
+    ),
+    "malformed-act-geometry": json.dumps(
+        {
+            "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+            "acts": [{"box_1000": [500, 500, 100, 100], "text": "inverted"}],
+        }
+    ),
+    "malformed-act-text": json.dumps(
+        {
+            "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+            "acts": [{"box_1000": [10, 10, 900, 900], "text": 7}],
+        }
+    ),
+}
+
+
+def scripted_structure_refusal(
+    outcome: str, *, finish_reason: Any = "stop", **fields: Any
+) -> ScriptedAnswer:
+    """An answer the closed contract refuses, by the exact outcome named.
+
+    Verified through `structure_answer.parse` on a square page, which every one
+    of these bodies refuses before or independently of geometry conversion, so
+    the outcome is a property of the body and not of a page size the caller
+    happens to be using.
+    """
+    if outcome not in _STRUCTURE_REFUSALS:
+        raise ValueError(
+            f"no scripted body refuses as {outcome!r}; "
+            f"the ones built here are {sorted(_STRUCTURE_REFUSALS)}"
+        )
+    content = _STRUCTURE_REFUSALS[outcome]
+    parsed = structure_answer.parse(content.encode(), page_w=1000, page_h=1000)
+    if parsed.get("parse_outcome") != outcome:
+        raise ValueError(
+            f"the scripted body refuses as {parsed.get('parse_outcome')!r}, not {outcome!r}"
+        )
+    return ScriptedAnswer(content=content, finish_reason=finish_reason, **fields)
+
+
+def scripted_structure_cut_off(
+    acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
+    page_w: int,
+    page_h: int,
+    **fields: Any,
+) -> ScriptedAnswer:
+    """A whole-page answer the engine stopped mid-object, as a real overrun looks.
+
+    The body is the complete answer truncated inside its first act, and the
+    stop word is `"length"` — the two halves of the failure SPEC_D §7 names as
+    the likely first real one (`max_model_len` too small for a page). Both
+    matter: the cut-off row of §1.4 holds "parsed or not", so a truncated body
+    must be held as cut off rather than blamed on the chair's JSON.
+    """
+    whole = structure_answer_body(acts, page_w, page_h)
+    cut = whole[: whole.index('"box_1000"') + len('"box_1000"')]
+    if (
+        structure_answer.parse(cut.encode(), page_w=page_w, page_h=page_h).get("parse_outcome")
+        != "invalid-json"
+    ):
+        raise ValueError("the truncated body still parses; it cannot script a cut-off answer")
+    return ScriptedAnswer(content=cut, finish_reason="length", **fields)
 
 
 class FakeLauncher:

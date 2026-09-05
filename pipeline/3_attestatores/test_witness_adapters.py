@@ -55,6 +55,12 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     assert spec.retain is adapters._retain_churro_model_view
     chandra = adapters.resolve_runnable_adapter("chandra.v1")
     assert set(chandra.prompt()) == {"instruction"}
+    # Both declared shapes parse to text: the wire contract the prompt asks for
+    # and the committed fixture's placeholder.
+    assert (
+        chandra.parse(b'{"schema":"verbatus-chandra-page-response.v1","text":"wire text"}')
+        == "wire text"
+    )
     assert (
         chandra.parse(b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}')
         == "text"
