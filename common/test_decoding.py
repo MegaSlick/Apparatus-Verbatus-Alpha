@@ -75,6 +75,22 @@ _STRUCTURE = "[structure]\ntemperature = 0\n"
             "[structure]\ntemperature = 0\nseed = 4\n",
             "structure must declare",
         ),
+        # TOML spells both of these as ordinary floats, and neither is caught by
+        # the non-negative test: `nan < 0` and `inf < 0` are both False. Only
+        # the loader's `math.isfinite` clause refuses them, so these two rows
+        # are what makes removing that clause fail a test rather than pass one.
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = nan\n",
+            "structure must declare",
+        ),
+        (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+            "[structure]\ntemperature = inf\n",
+            "structure must declare",
+        ),
     ],
 )
 def test_decoding_policy_refuses_a_non_record_posture_or_retry_shaped_experiment(

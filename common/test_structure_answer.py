@@ -341,6 +341,22 @@ def test_text_digest_lets_a_reader_prove_the_same_derivation():
     assert text_digest("hello") != text_digest("hellO")
 
 
+def test_text_digest_is_sha256_over_the_utf8_bytes_and_nothing_else():
+    """Two pinned vectors, computed once with `hashlib` and written here as
+    literals. Determinism alone would survive a change of algorithm or of
+    encoding -- both halves stay self-consistent -- and a reader who has the
+    retained bytes must be able to re-derive this digest with a stock SHA-256
+    over UTF-8 and no other knowledge of this repository. The second vector is
+    non-ASCII on purpose: it is the half that fails if the encoding moves off
+    UTF-8, which an ASCII-only vector cannot see."""
+    assert (
+        text_digest("hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    )
+    assert (
+        text_digest("Élise") == "62875e5633fe8a4fe8bfd9070fe90c87fb9e1b7b4861abfe64acef5b4f891ad2"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Page-pixel conversion equality against geometry_layer lives in the
 # designator-side test (SPEC_D §1.2: geometry_layer lives in
