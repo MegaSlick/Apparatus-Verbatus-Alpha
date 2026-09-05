@@ -13,7 +13,7 @@ without being told which policy moved.
 
 from __future__ import annotations
 
-import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +23,7 @@ import pytest
 from common.contracts.canonical import digest_bytes
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.runtree.store import RunTree
+from conftest import tree_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "proof"
@@ -46,22 +47,6 @@ def invoke_stage(run_root: Path, program: str, **extra) -> subprocess.CompletedP
     for key, value in extra.items():
         command.extend((f"--{key.replace('_', '-')}", str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
-def _tree_snapshot(run_root: Path) -> dict[str, str]:
-    """Every byte under the run root, so a refusal's own claim can be checked.
-
-    Both refusals below tell the operator that nothing was written. That is a
-    statement about this directory, and until it is compared against the
-    directory it is a statement the suite takes on trust -- exactly the shape
-    GOVERNANCE 10 refuses, since a stage that half-wrote and then refused would
-    still print it.
-    """
-    return {
-        str(path.relative_to(run_root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(run_root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def _through_designator(tmp_path: Path) -> tuple[Path, RunTree]:
@@ -126,12 +111,18 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     # different operator problems, and the message has to say which one it is.
     assert what in refused.stderr, refused.stderr
     assert "No run or stage artifact was written" in refused.stderr, refused.stderr
-    # Nothing at all, not merely no artifacts: the run root is the thing the
-    # message disowns, and an empty directory tree left behind would already be
-    # a run id claimed under a policy that was never accepted.
-    assert not run_root.exists() or _tree_snapshot(run_root) == {}, sorted(
-        str(path) for path in run_root.rglob("*")
-    )
+    # The run root must be *absent*, not merely empty. The earlier form of this
+    # assertion allowed either, and the permissive half made it unable to fail:
+    # `tree_snapshot` described what was under a root and nothing about the root
+    # itself, so a Door that created `runs/` and then refused produced the same
+    # empty mapping as a Door that created nothing -- and the assertion passed on
+    # the state it was written to catch. An existing run root is a run id claimed
+    # under a policy this build already rejected, and the retry the message
+    # invites then collides with it.
+    # `Path.exists()` follows symlinks, so a dangling `runs` link would pass it
+    # while the refusal had still left an artefact; `os.path.lexists` sees the
+    # link itself (CodeRabbit round 3 on PR #91).
+    assert not os.path.lexists(run_root), tree_snapshot(run_root)
 
 
 @pytest.mark.parametrize(
@@ -175,7 +166,7 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     substitute.write_text(body, encoding="utf-8")
     assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1], what
 
-    before = _tree_snapshot(run_root)
+    before = tree_snapshot(run_root)
     refused = invoke_stage(run_root, program, decoding_config=substitute)
 
     assert refused.returncode != 0
@@ -184,7 +175,7 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     assert "Resume with the original sealed inputs" in refused.stderr, refused.stderr
     # The sentence above is a claim about the run tree, so it is compared with
     # the run tree rather than believed.
-    assert _tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
+    assert tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
 
 
 @pytest.mark.parametrize("program", CONSUMING_STAGES)
