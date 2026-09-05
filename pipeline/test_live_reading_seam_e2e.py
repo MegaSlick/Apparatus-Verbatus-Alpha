@@ -131,16 +131,19 @@ CHANDRA_PAGE_ONE = (
     '{"box_1000": [100, 462, 900, 846], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
 )
 # Page 2 carries only a2's continuation, and it is answered in the contract's
-# page-text form -- a legitimate answer, and the only one the Perlector reads
-# today. `pipeline/4_perlector/run.py::act_attachment_view` requires a page
-# witness's `attached` to equal its geometric overlap with the act's sealed
-# regions on that page AND refuses any continuation-page entry that is
-# attached, so a page witness reporting block geometry over a continuation
-# region cannot pass it in either state. That contradiction was unreachable
-# before a served Chandra parsed; it is named in
-# `pipeline/3_attestatores/HANDOFF.md` and its fix is the Perlector's.
-# `pipeline/3_attestatores/test_attestatores_live_pass.py` pins the geometry
-# form on a continuation page at this stage's own boundary.
+# page-text form. That is one legitimate answer of the two, exercised
+# deliberately so this seam covers both across its two pages -- not the only
+# one the Perlector will read. The geometry form on a continuation page is
+# accepted now: `pipeline/4_perlector/run.py::act_attachment_view` still
+# requires a page witness's `attached` to equal its geometric overlap with the
+# act's sealed regions on that page, but no longer separately refuses an
+# attached continuation entry (run.py ~1239-1259), because between the two
+# rules such an entry had no legal spelling at all. What a continuation page
+# genuinely lacks is an ANCHOR, and that is what the surviving rule says.
+# `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
+# pins the geometry form here, and
+# `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
+# Attestatores' own boundary.
 CHANDRA_PAGE_TWO = (
     '{"schema": "verbatus-chandra-page-response.v1", '
     '"text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}'
