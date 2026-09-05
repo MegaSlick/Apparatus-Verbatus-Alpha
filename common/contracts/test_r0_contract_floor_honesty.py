@@ -168,8 +168,12 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
     still reads three `read` chairs in every case.
     """
     aligned = _coverage()
+    # `comparable` is left True on purpose: the fixture isolates absence of
+    # attachment from span non-comparability, so a `witness_coverage` that
+    # regressed to reading only `comparable` fails here (CodeRabbit round 2 on
+    # PR #92).
     unattached = _coverage(
-        chair_3=_fact(attached=False, comparable=False, attachment_basis="unattached")
+        chair_3=_fact(attached=False, comparable=True, attachment_basis="unattached")
     )
     uncovered_span = _coverage(chair_2=_fact(comparable=False))
 
@@ -231,7 +235,7 @@ def test_an_unattached_chair_does_not_satisfy_the_act_level_floor():
     """
     attached = _coverage()
     unattached = _coverage(
-        chair_3=_fact(attached=False, comparable=False, attachment_basis="unattached")
+        chair_3=_fact(attached=False, comparable=True, attachment_basis="unattached")
     )
 
     assert attached["under_witnessed"] is False
