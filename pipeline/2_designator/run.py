@@ -284,6 +284,107 @@ def _validate_act_group_payload(payload: object) -> None:
     _refuse_text_fields(payload)
 
 
+# The `structure-answer` record's own closed field set, the live path's
+# counterpart to `_validate_act_group_payload` above. `_refuse_text_fields`
+# refuses a *known* content field by name and can do nothing about a field
+# nobody has thought of yet -- which is exactly how `label` shipped a chair's
+# reading in clear until this branch's reviewer found it. A closed set inverts
+# that: a field added to the record without being declared here refuses at
+# publication, naming itself, on the run that adds it rather than on the review
+# that eventually notices. The three nested shapes are closed for the same
+# reason, since a payload is only as closed as its deepest object.
+_STRUCTURE_ANSWER_FIELDS = frozenset(
+    {
+        "schema",
+        "page_id",
+        "page_ordinal",
+        "page_w",
+        "page_h",
+        "prompt_version",
+        "prompt_sha256",
+        "answer_schema",
+        "call_record_ref",
+        "raw_response_ref",
+        "custody_ref",
+        "receipt_ref",
+        "request_sha256",
+        "finish_reason",
+        "served_model_id",
+        "call_problem",
+        "parse_state",
+        "parse_outcome",
+        "disposition",
+        "reason_code",
+        "act_count",
+        "acts",
+        "findings",
+        "quantization",
+        "page_text_rule",
+        "decoding",
+        "provenance",
+    }
+)
+# Geometry, and both of the chair's free strings only as a digest and a length.
+# `label` and `text` are absent from this set on purpose: the day either name
+# reappears in the record, this refuses.
+_STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
+    {
+        "ordinal",
+        "box_1000",
+        "raw_bounds",
+        "text_digest",
+        "text_length",
+        "label_digest",
+        "label_length",
+    }
+)
+_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
+# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
+# declared here or it does not publish.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+
+
+def _closed_object(value: object, fields: frozenset, what: str) -> dict:
+    """Exactly these field names, no more and no fewer -- and the extras named."""
+    if not isinstance(value, dict):
+        raise ContractError(f"a Designator {what} is not an object")
+    unexpected = sorted(set(value) - fields)
+    missing = sorted(fields - set(value))
+    if unexpected or missing:
+        raise ContractError(
+            f"a Designator {what} is outside its closed contract: unexpected "
+            f"{unexpected}, missing {missing}"
+        )
+    return value
+
+
+def _validate_structure_answer_payload(payload: object) -> None:
+    """Validate the closed `structure-answer` contract before publication."""
+    record = _closed_object(payload, _STRUCTURE_ANSWER_FIELDS, "structure-answer payload")
+    _closed_object(
+        record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
+    )
+    acts = record["acts"]
+    if not isinstance(acts, list):
+        raise ContractError("a Designator structure-answer payload carries no act list")
+    for act in acts:
+        _closed_object(act, _STRUCTURE_ANSWER_ACT_FIELDS, "structure-answer act")
+    findings = record["findings"]
+    if not isinstance(findings, list):
+        raise ContractError("a Designator structure-answer payload carries no finding list")
+    for finding in findings:
+        kind = finding.get("kind") if isinstance(finding, dict) else None
+        fields = _STRUCTURE_ANSWER_FINDING_FIELDS.get(kind)
+        if fields is None:
+            raise ContractError(
+                f"a Designator structure-answer finding of kind {kind!r} is not a declared "
+                f"finding kind; declared kinds are "
+                f"{sorted(_STRUCTURE_ANSWER_FINDING_FIELDS)}"
+            )
+        _closed_object(finding, fields, f"structure-answer {kind} finding")
+    _refuse_text_fields(record)
+
+
 def _configured_chair_record(context, resolved: ChairIdentity) -> dict:
     """The provenance block a resolved chair contributes to every artifact."""
     return {
@@ -2645,7 +2746,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
     for ordinal, answer in answers.items():
-        _refuse_text_fields(answer.record)
+        _validate_structure_answer_payload(answer.record)
         published = context.publish(
             kind=STRUCTURE_ANSWER_KIND,
             subject_id=answer.page_id,

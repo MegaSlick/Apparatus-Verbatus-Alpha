@@ -654,8 +654,10 @@ live pass**; the unproposed cross-page half act stays the named evidence defect
 below.
 
 **`kind="structure-answer"`**, one per sealed page, subject the page identity,
-text-free (`_refuse_text_fields` runs over it). Both of the
-chair's free strings are reduced the same way: `text_digest`/`text_length` and
+validated against its own closed field set before publication and then swept
+for content fields (`_validate_structure_answer_payload`, which closes the
+payload, each act entry, the decoding block and each finding, and calls
+`_refuse_text_fields` last). Both of the chair's free strings are reduced the same way: `text_digest`/`text_length` and
 `label_digest`/`label_length` are what let a later reader prove it derived the
 same strings from the same retained bytes, and a `label` — the chair's word for
 a rectangle, which in these books can be a whole act — is published no more

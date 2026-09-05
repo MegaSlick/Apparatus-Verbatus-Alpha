@@ -1159,3 +1159,72 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     receipts = _receipts(root)
     assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
     assert receipts[0]["endpoint"].startswith("fixture://")
+
+
+# --- the record's own closed field set -----------------------------------------
+
+
+def _minimal_answer_record() -> dict[str, Any]:
+    """A record with exactly the declared field names and nothing checked but names.
+
+    Built from the constant itself rather than written out again: the point of
+    this test is that a field *outside* the set refuses, and a hand-copied
+    second list of the set would drift from the one the validator uses and
+    start proving something else.
+    """
+    record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_FIELDS)
+    record["acts"] = []
+    record["findings"] = []
+    record["decoding"] = dict.fromkeys(designator._STRUCTURE_ANSWER_DECODING_FIELDS)
+    return record
+
+
+def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
+    """A field nobody declared refuses at publication, naming itself.
+
+    `_refuse_text_fields` can only refuse the content names it already knows,
+    and `page_text` is not one of them -- the parser computes a whole page's
+    joined transcription under exactly that name, and a record that grew a
+    field for it would publish the page's reading past every text fence in this
+    stage. The closed set is what makes that a refusal on the run that adds the
+    field rather than a finding at some later review.
+    """
+    designator._validate_structure_answer_payload(_minimal_answer_record())
+
+    record = _minimal_answer_record()
+    record["page_text"] = "SYNTHETIC ACT ONE alpha beta gamma"
+    with pytest.raises(ContractError, match=r"unexpected \['page_text'\]"):
+        designator._validate_structure_answer_payload(record)
+
+    record = _minimal_answer_record()
+    del record["provenance"]
+    with pytest.raises(ContractError, match=r"missing \['provenance'\]"):
+        designator._validate_structure_answer_payload(record)
+
+
+def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
+    live_run, tmp_path, monkeypatch
+):
+    """The regression the closed set exists for, over the real chain.
+
+    `label` was published in clear until this branch's review; the act entry's
+    field set is what makes putting it back a refusal rather than a quiet
+    return. Nothing is published for the run: the refusal is raised before the
+    first answer record reaches the tree.
+    """
+    root, catalogue = live_run
+    original = structure_pass._act_record
+    monkeypatch.setattr(
+        structure_pass,
+        "_act_record",
+        lambda act: {**original(act), "label": act["label"]},
+    )
+    with pytest.raises(ContractError, match=r"structure-answer act .*unexpected \['label'\]"):
+        _run_designator(
+            root,
+            catalogue,
+            tmp_path,
+            monkeypatch,
+            [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)],
+        )
+    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
