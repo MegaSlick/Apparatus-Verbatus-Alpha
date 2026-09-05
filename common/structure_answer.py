@@ -13,7 +13,7 @@ conversion has to live where neither owns it.
 
 **What is accepted, and only this:**
 `{"schema": "verbatus-structure-answer.v1", "acts": [{"box_1000": [x0,y0,x1,y1],
-"text": "...", "label": "..."}]}` -- `label` optional and bounded by `MAX_LABEL_CHARS`, `acts` may be
+"text": "...", "label": "..."}]}` -- `label` optional, `acts` may be
 empty (the "sees no text" case). Any other key, at the top level or inside an act, is
 `unverified-response-schema`: the wire shape is unverified (`chandra.py`'s own
 docstring says why -- the vendor publishes no response specimen), so nothing
@@ -34,6 +34,18 @@ test in `pipeline/2_designator/test_structure_prompt.py` asserts equality
 against that function's own `aabb` over a grid of boxes, edges 0 and 1000
 included, because `geometry_layer` lives in `pipeline/2_designator/` and this
 module may not import it).
+
+**Label, and where it may go.** `label` is the chair's own word for what it
+thinks a rectangle is, and this module returns it verbatim: a caller that has
+the retained bytes must be able to see what they say. It is still the chair's
+*reading* of the ink, though -- a marginal name or an index row is a whole act
+in a page of this kind (GLOSSARY, "act"), and a short string is enough to hold
+one -- so it is bounded by nothing here and published by no one: the
+Designator's record carries `label_digest` and `label_length` and no label,
+exactly as it does for `text` (`pipeline/2_designator/structure_pass.py`).
+The Designator never establishes the authoritative transcription
+(ARCHITECTURE), and a rule enforced only by a length ceiling would be a rule
+about how much of the reading may escape rather than whether any of it may.
 
 **Nesting.** JSON decoding is the one place actual recursion could reach this
 module, and it is the stdlib's, not this file's: `json.loads` raises
@@ -73,19 +85,6 @@ MAX_RESPONSE_BYTES: Final = 16 * 1024 * 1024
 # chandra.py's own MAX_LAYOUT_BLOCKS, same reason: a chosen operational
 # ceiling, not a claim about the structure chair's behaviour.
 MAX_ACTS: Final = 10_000
-# A structural label is a word or a short phrase -- `structure_prompt.py` asks
-# for "a short structural label" -- and it is the only free string this contract
-# keeps verbatim in a Designator artifact. The rest of the answer's text is
-# reduced to a digest and a length on purpose (SPEC_D §1.3: the record is
-# text-free, and the retained custody blob is the one permitted home for what
-# the chair read). Without a ceiling that promise is enforced by field *name*
-# only: a chair that answered with the act's whole transcription in `label`
-# would put the reading itself into an artifact the Designator publishes. The
-# ceiling is generous for any real label and is a refusal, never a truncation
-# (GOVERNANCE 7) -- the bytes stay retained and the page is held under
-# `structure-answer-oversized-act-label`.
-MAX_LABEL_CHARS: Final = 120
-
 PARSE_OUTCOMES: Final = frozenset(
     {
         "raw-response-not-bytes",
@@ -99,7 +98,6 @@ PARSE_OUTCOMES: Final = frozenset(
         "malformed-act",
         "malformed-act-geometry",
         "malformed-act-text",
-        "oversized-act-label",
     }
 )
 
@@ -258,8 +256,6 @@ def _parse_act(value: Any, ordinal: int, page_w: int, page_h: int) -> ParsedAct 
     # other non-string label.
     if "label" in value and not isinstance(label, str):
         return "malformed-act"
-    if isinstance(label, str) and len(label) > MAX_LABEL_CHARS:
-        return "oversized-act-label"
     box = _validate_geometry(value["box_1000"])
     if box is None:
         return "malformed-act-geometry"

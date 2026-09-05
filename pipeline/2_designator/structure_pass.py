@@ -466,6 +466,33 @@ def _finish_reason_disposition(finish_reason: str | None) -> str | None:
     )
 
 
+def _act_record(act: structure_answer.ParsedAct) -> dict[str, Any]:
+    """One act as the published record carries it: geometry, and text only by digest.
+
+    Both free strings the chair returned are reduced the same way. `text` is
+    the page's transcription and was never published. `label` is the chair's
+    own word for the rectangle, and it is the chair's reading too: a marginal
+    name or an index row is a whole act in these books (GLOSSARY, "act"), so a
+    label is not a shorter kind of thing than a transcription -- it is the same
+    kind of thing, shorter. A Designator artifact publishes neither, because
+    the Designator never establishes the authoritative transcription
+    (ARCHITECTURE) and `run.py::_refuse_text_fields` can only match field
+    *names*. The digest and the length are what let a reader prove what the
+    retained blob says without the record saying it, and `null` on both stays
+    the honest spelling of "the chair offered no label".
+    """
+    label = act["label"]
+    return {
+        "ordinal": act["ordinal"],
+        "box_1000": list(act["box_1000"]),
+        "raw_bounds": dict(act["raw_bounds"]),
+        "text_digest": structure_answer.text_digest(act["text"]),
+        "text_length": len(act["text"]),
+        "label_digest": None if label is None else structure_answer.text_digest(label),
+        "label_length": None if label is None else len(label),
+    }
+
+
 def ask_page(
     context: Any,
     client: ChairClient,
@@ -555,17 +582,7 @@ def ask_page(
             "structure hold code"
         )
 
-    acts_record = [
-        {
-            "ordinal": act["ordinal"],
-            "box_1000": list(act["box_1000"]),
-            "raw_bounds": dict(act["raw_bounds"]),
-            "text_digest": structure_answer.text_digest(act["text"]),
-            "text_length": len(act["text"]),
-            "label": act["label"],
-        }
-        for act in (parsed["acts"] if parsed is not None else [])
-    ]
+    acts_record = [_act_record(act) for act in (parsed["acts"] if parsed is not None else [])]
     record = {
         "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,

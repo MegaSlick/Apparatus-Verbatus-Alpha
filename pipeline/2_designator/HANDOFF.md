@@ -654,9 +654,12 @@ live pass**; the unproposed cross-page half act stays the named evidence defect
 below.
 
 **`kind="structure-answer"`**, one per sealed page, subject the page identity,
-text-free (`_refuse_text_fields` runs over it; `text_digest` and `text_length`
-are what let a later reader prove it derived the same text from the same
-retained bytes):
+text-free (`_refuse_text_fields` runs over it). Both of the
+chair's free strings are reduced the same way: `text_digest`/`text_length` and
+`label_digest`/`label_length` are what let a later reader prove it derived the
+same strings from the same retained bytes, and a `label` — the chair's word for
+a rectangle, which in these books can be a whole act — is published no more
+than a transcription is:
 
 ```text
 schema = "designator-structure-answer.v1"
@@ -666,7 +669,8 @@ call_record_ref, raw_response_ref, custody_ref, receipt_ref, request_sha256
 finish_reason (verbatim | null), served_model_id, call_problem | null
 parse_state ("parsed" | "refused"), parse_outcome | null
 disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
-act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length, label}]
+act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
+                    label_digest | null, label_length | null}]
 findings = [{kind, ...}]
 quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}

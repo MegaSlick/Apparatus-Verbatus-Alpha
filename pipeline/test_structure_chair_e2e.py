@@ -146,6 +146,19 @@ PAGE_TWO_ACTS = (({"x": 20, "y": 20, "w": 160, "h": 60}, "SYNTHETIC ACT THREE th
 ACTS_BY_PAGE = {1: PAGE_ONE_ACTS, 2: PAGE_TWO_ACTS}
 ACT_KEYS = ("proposal:1:0", "proposal:1:1", "proposal:2:0")
 SCRIPTED_TEXTS = tuple(text for page in ACTS_BY_PAGE.values() for _bounds, text in page)
+# The chair's own word for each rectangle. Scripted on every act of the happy
+# answer so the no-text sweep below covers labels as well as transcriptions:
+# `label` is the chair's reading too (a marginal name is a whole act), and the
+# record publishes only its digest and length, so a label in clear anywhere in
+# a Designator artifact is the same defect as a transcription in clear.
+SCRIPTED_LABELS = ("acte de bapteme", "acte de mariage", "acte de sepulture")
+
+
+def labelled(page_acts, labels):
+    """The same rectangles and texts, each carrying one scripted label."""
+    return tuple(
+        (bounds, text, label) for (bounds, text), label in zip(page_acts, labels, strict=True)
+    )
 
 
 # ------------------------------ the tmp catalogue -----------------------------
@@ -245,9 +258,14 @@ class _TreeBlobs:
 
 
 def happy_structure_answers() -> list[ScriptedAnswer]:
+    """Both pages, every act labelled — the rectangles are unchanged by that."""
     return [
-        scripted_structure_answer(PAGE_ONE_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
-        scripted_structure_answer(PAGE_TWO_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+        scripted_structure_answer(
+            labelled(PAGE_ONE_ACTS, SCRIPTED_LABELS[:2]), PAGE_WIDTH, PAGE_HEIGHT
+        ),
+        scripted_structure_answer(
+            labelled(PAGE_TWO_ACTS, SCRIPTED_LABELS[2:]), PAGE_WIDTH, PAGE_HEIGHT
+        ),
     ]
 
 
@@ -555,10 +573,16 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
     is not a witness. If any of that text reached an artifact, the Perlector's
     no-picker fences would be guarding a door the text had already walked
     through.
+
+    Labels are swept with the transcriptions, not beside them. A `label` is the
+    chair's own reading of what a rectangle is, and in these books a marginal
+    name or an index row is a whole act (GLOSSARY) — so a label in clear in a
+    Designator artifact is the same escape as a transcription in clear, and the
+    happy answer labels every act precisely so this sweep would see one.
     """
     root = marked_out.run_root
     body = designator_artifact_text(root)
-    for text in SCRIPTED_TEXTS:
+    for text in (*SCRIPTED_TEXTS, *SCRIPTED_LABELS):
         assert text not in body
     tree = RunTree(root, RUN_ID)
     retained = tree.read_bytes(
@@ -567,6 +591,7 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
         ]["relative_path"]
     ).decode()
     assert all(text in retained for text in SCRIPTED_TEXTS[:2])
+    assert all(label in retained for label in SCRIPTED_LABELS[:2])
 
 
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
@@ -798,16 +823,15 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, 
     never re-asked, and never quietly tiled as though the chair had answered
     (GOVERNANCE 7).
 
-    This covers 7 of `structure_answer.PARSE_OUTCOMES`' 12 codes — every one
+    This covers 7 of `structure_answer.PARSE_OUTCOMES`' 11 codes — every one
     `operations/serving/fakes.py::_STRUCTURE_REFUSALS` builds a scripted body
     for. `raw-response-not-bytes` and `response-too-large` describe the wire
     itself, not a body the fake endpoint hands back, so no scripted answer can
-    reach them here. `excessive-json-nesting`, `too-many-acts` and
-    `oversized-act-label` are constructible over this real chain but have no
-    scripted body yet; all of them, and the full 12, are exercised at the
-    parser level in
+    reach them here. `excessive-json-nesting` and `too-many-acts` are
+    constructible over this real chain but have no scripted body yet; all of
+    them, and the full 11, are exercised at the parser level in
     `common/test_structure_answer.py`, guarded against silent drift by its own
-    `test_every_declared_outcome_is_exercised_above`.
+    outcome-coverage test.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(
@@ -918,36 +942,52 @@ def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_wha
     assert digests[0] != digests[1]
 
 
-def test_a_structural_label_travels_verbatim_and_its_absence_is_null(designated, tmp_path):
-    """The one field the contract retains and uses for nothing, end to end.
+def test_a_structural_label_is_published_as_a_digest_and_its_absence_is_null(designated, tmp_path):
+    """The label reaches the record the way the transcription does, end to end.
 
-    `label` is the chair's own word for what it thinks a rectangle is. It is
-    kept verbatim beside the rectangle and consulted by nothing — no branch, no
-    ordering, no threshold reads it — which is what keeps it a record of what
-    the chair said rather than an instruction to this pipeline. Asserted here
-    because a field nothing reads is exactly the field that quietly stops being
-    written; the absent case is asserted beside it so `null` stays the honest
-    spelling of "the chair offered none" rather than an empty string invented
-    for the shape.
+    `label` is the chair's own word for what it thinks a rectangle is — and
+    that is a reading, not a coordinate: a marginal name or an index row is
+    itself an act in these books, so a label in clear is a Designator
+    publishing a transcription. The record therefore carries `label_digest`
+    and `label_length`, exactly as it carries `text_digest` and `text_length`,
+    and the label itself stays in the retained blob. Asserted end to end
+    because the reduction is done by the producer, not the parser: the parser
+    still hands the label back verbatim, and this is the run that proves the
+    Designator does not then write it down.
+
+    The absent case is asserted beside it so `null` on both fields stays the
+    honest spelling of "the chair offered none" rather than a digest of the
+    empty string, which would be indistinguishable from a chair that answered
+    with one.
     """
     run_root = fresh_tree(designated, tmp_path)
-    labelled = (
-        (PAGE_ONE_ACTS[0][0], PAGE_ONE_ACTS[0][1], "acte de baptême"),
-        PAGE_ONE_ACTS[1],
-    )
+    # ASCII on purpose: both the artifacts and the retained blob are JSON, and
+    # `json.dumps` escapes a non-ASCII character in each, so a literal search
+    # for an accented label would compare against a spelling neither file uses.
+    label = "acte de bapteme, fils de"
+    one_labelled = ((PAGE_ONE_ACTS[0][0], PAGE_ONE_ACTS[0][1], label), PAGE_ONE_ACTS[1])
     _world, exit_code = mark_out(
         designated,
         run_root,
         tmp_path / "world",
         [
-            scripted_structure_answer(labelled, PAGE_WIDTH, PAGE_HEIGHT),
+            scripted_structure_answer(one_labelled, PAGE_WIDTH, PAGE_HEIGHT),
             scripted_structure_answer(PAGE_TWO_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
         ],
     )
     assert exit_code == EXIT_COMPLETE
     answers = by_page_ordinal(artifacts(run_root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
-    assert [act["label"] for act in answers[1]["payload"]["acts"]] == ["acte de baptême", None]
-    assert [act["label"] for act in answers[2]["payload"]["acts"]] == [None]
+    page_one = answers[1]["payload"]["acts"]
+    assert [act["label_digest"] for act in page_one] == [digest_bytes(label.encode()), None]
+    assert [act["label_length"] for act in page_one] == [len(label), None]
+    assert [act["label_digest"] for act in answers[2]["payload"]["acts"]] == [None]
+    assert [act["label_length"] for act in answers[2]["payload"]["acts"]] == [None]
+    assert not any("label" in act for act in page_one)
+    # The word itself is in the retained bytes and in no artifact.
+    assert label not in designator_artifact_text(run_root)
+    tree = RunTree(run_root, RUN_ID)
+    retained = tree.read_bytes(answers[1]["payload"]["raw_response_ref"]["relative_path"]).decode()
+    assert label in retained
     # A label is not text: it changes no rectangle, and the acts minted from
     # this answer are the same acts the unlabelled answer mints.
     regions = {

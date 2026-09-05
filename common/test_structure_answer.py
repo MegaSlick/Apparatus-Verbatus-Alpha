@@ -17,7 +17,6 @@ import pytest
 
 from common import structure_answer
 from common.structure_answer import (
-    MAX_LABEL_CHARS,
     PARSE_OUTCOMES,
     STRUCTURE_ANSWER_SCHEMA,
     parse,
@@ -215,33 +214,6 @@ def test_malformed_act_text_is_refused_by_name():
     assert result == {"parse_outcome": "malformed-act-text"}
 
 
-def test_a_label_longer_than_the_ceiling_is_refused_not_kept():
-    """The only verbatim free string a Designator artifact keeps has a bound.
-
-    `text` never reaches an artifact -- the record carries its digest and length
-    -- so `label` is the one field through which a chair could put a page's
-    reading into a Designator payload. A label at the ceiling is accepted and a
-    label one character past it refuses the answer whole, so the page is held
-    with its bytes retained rather than the label truncated (GOVERNANCE 7).
-    """
-    at_ceiling = "L" * MAX_LABEL_CHARS
-    body = json.dumps(
-        {
-            "schema": STRUCTURE_ANSWER_SCHEMA,
-            "acts": [{"box_1000": [0, 0, 500, 500], "text": "a", "label": at_ceiling}],
-        }
-    ).encode("utf-8")
-    assert parse(body, page_w=100, page_h=100)["acts"][0]["label"] == at_ceiling
-
-    over = json.dumps(
-        {
-            "schema": STRUCTURE_ANSWER_SCHEMA,
-            "acts": [{"box_1000": [0, 0, 500, 500], "text": "a", "label": at_ceiling + "L"}],
-        }
-    ).encode("utf-8")
-    assert parse(over, page_w=100, page_h=100) == {"parse_outcome": "oversized-act-label"}
-
-
 def test_every_declared_outcome_is_exercised_above():
     """The guard on the guard: a code added to `PARSE_OUTCOMES` without a test
     above would pass silently otherwise."""
@@ -257,7 +229,6 @@ def test_every_declared_outcome_is_exercised_above():
         "malformed-act",
         "malformed-act-geometry",
         "malformed-act-text",
-        "oversized-act-label",
     }
     assert exercised == PARSE_OUTCOMES
 
@@ -418,10 +389,24 @@ def test_ordinal_is_response_order_and_nothing_reorders_it():
     assert [act["text"] for act in result["acts"]] == ["second-drawn", "first-drawn"]
 
 
-def test_label_is_retained_verbatim_when_present_and_none_when_absent():
+def test_label_is_returned_verbatim_to_the_caller_and_none_when_absent():
+    """Verbatim *here*, and no length bound here either.
+
+    The caller is what decides where a label may go: this module hands back
+    what the chair said, and `pipeline/2_designator/structure_pass.py` reduces
+    it to a digest and a length before anything is published. A label of any
+    length is therefore an ordinary answer to this parser -- the long one below
+    parses like the short one -- because no ceiling this module could set would
+    be the thing that keeps the chair's reading out of a Designator artifact.
+    """
     body = _answer([_act(text="x", label="marginal note")])
     result = parse(body, page_w=1000, page_h=1000)
     assert result["acts"][0]["label"] == "marginal note"
+
+    whole_act = "Jean Baptiste, fils de Pierre et de Marie, ne le douzieme jour " * 10
+    body = _answer([_act(text="x", label=whole_act)])
+    result = parse(body, page_w=1000, page_h=1000)
+    assert result["acts"][0]["label"] == whole_act
 
     body = _answer([_act(text="x")])
     result = parse(body, page_w=1000, page_h=1000)
