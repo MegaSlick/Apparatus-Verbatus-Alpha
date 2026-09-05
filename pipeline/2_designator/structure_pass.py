@@ -59,7 +59,7 @@ from common import structure_answer
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.contracts.stages import DESIGNATOR
 from common.decoding import load_decoding_policy
@@ -93,8 +93,15 @@ STRUCTURE_ANSWER_REFUSED: Final = "refused"
 HELD_CUT_OFF: Final = "structure-answer-cut-off"
 HELD_CALL_UNUSABLE: Final = "structure-call-unusable"
 HELD_NO_INK_OVERLAP: Final = "structure-answer-no-ink-overlap"
+# The response arrived and the client retained it, but custody could not bind
+# those bytes to the chair's own serving receipt
+# (`common/chandra_custody.py`). Nothing is minted from an answer whose bytes
+# no binding proves came from this call: `_verify_proposal_act_row` and every
+# later reader are entitled to that binding, and a page minted without it would
+# be a rectangle attributed to a call nothing ties it to (GOVERNANCE 6).
+HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
 STRUCTURE_HELD_CODES: Final = frozenset(
-    {HELD_CUT_OFF, HELD_CALL_UNUSABLE, HELD_NO_INK_OVERLAP}
+    {HELD_CUT_OFF, HELD_CALL_UNUSABLE, HELD_NO_INK_OVERLAP, HELD_RESPONSE_NOT_RETAINED}
     | {f"structure-answer-{outcome}" for outcome in structure_answer.PARSE_OUTCOMES}
 )
 
@@ -516,11 +523,17 @@ def ask_page(
     In the order the contract fixes: the request is built and sent through the
     client (which retains the raw bytes and the call record before parsing);
     the response is bound under custody to the chair's receipt
-    (`common/chandra_custody.py`, the one-receipt binding the Attestatores'
-    intake reads back); then the answer is parsed with the closed contract and
-    dispatched through SPEC_D §1.4's table. A serving or transport refusal
-    propagates as this stage's own fatal refusal with nothing published for
-    the page.
+    (`common/chandra_custody.py`'s one-receipt binding); then the answer is
+    parsed with the closed contract and dispatched through SPEC_D §1.4's table.
+
+    Two refusals with two different scopes. A serving or transport refusal
+    propagates as this stage's own fatal refusal with nothing published for the
+    page: no answer arrived, so there is nothing to publish. A **custody**
+    refusal is one page's outcome, not the run's: the bytes arrived and were
+    retained, and what could not be established is the binding that proves
+    which call they came from, so the page is held under
+    `HELD_RESPONSE_NOT_RETAINED` with its record published, and every other
+    page keeps its answer.
     """
     page_id = page_record["subject_id"]
     payload = page_record["payload"]
@@ -533,13 +546,25 @@ def ask_page(
             f"the structure chair could not be asked about page {ordinal}: {error}; nothing was "
             "published for the page"
         ) from error
-    custody = retain_chandra_response(
-        context.tree,
-        response.raw_response,
-        dict(client.handle.receipt_reference),
-        page_id=page_id,
-        page_ordinal=ordinal,
-    )
+    # A custody refusal holds this page; it does not abort the run. The bytes
+    # are not lost either way -- the client retained them and the call record
+    # before this line was reached (GOVERNANCE 2, ARCHITECTURE invariant 4) --
+    # so what a refusal here costs is the binding that proves *which call* they
+    # came from, and that costs exactly this page. Aborting instead would
+    # discard every other page's answer over one page's receipt, which is the
+    # "lost act" GOALS 1 puts above everything.
+    custody: dict[str, Any] | None = None
+    custody_problem: str | None = None
+    try:
+        custody = retain_chandra_response(
+            context.tree,
+            response.raw_response,
+            dict(client.handle.receipt_reference),
+            page_id=page_id,
+            page_ordinal=ordinal,
+        )
+    except SchemaRefusal as error:
+        custody_problem = str(error)
 
     parsed: structure_answer.ParsedAnswer | None = None
     parse_outcome: str | None = None
@@ -553,7 +578,11 @@ def ask_page(
 
     mint: list[structure_answer.ParsedAct] = []
     findings: list[dict[str, Any]] = []
-    if response.parse_problem is not None:
+    if custody_problem is not None:
+        # Checked before the body: an answer this run cannot bind to the call
+        # that produced it proposes nothing, whatever it happens to say.
+        disposition, reason_code = DISPOSITION_HELD, HELD_RESPONSE_NOT_RETAINED
+    elif response.parse_problem is not None:
         disposition, reason_code = DISPOSITION_HELD, HELD_CALL_UNUSABLE
     else:
         # The engine's stop word is checked before the parse outcome: a
@@ -599,8 +628,9 @@ def ask_page(
         "prompt_sha256": structure_prompt.prompt_sha256(),
         "answer_schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
         "call_record_ref": dict(response.call_record_ref),
-        "raw_response_ref": dict(custody["response_ref"]),
-        "custody_ref": dict(custody["custody_ref"]),
+        "raw_response_ref": None if custody is None else dict(custody["response_ref"]),
+        "custody_ref": None if custody is None else dict(custody["custody_ref"]),
+        "custody_problem": custody_problem,
         "receipt_ref": dict(response.receipt_ref),
         "request_sha256": response.request_sha256,
         "finish_reason": response.finish_reason,

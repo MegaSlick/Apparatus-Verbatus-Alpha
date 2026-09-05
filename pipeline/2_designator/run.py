@@ -312,6 +312,7 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "call_record_ref",
         "raw_response_ref",
         "custody_ref",
+        "custody_problem",
         "receipt_ref",
         "request_sha256",
         "finish_reason",

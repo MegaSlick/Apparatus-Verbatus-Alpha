@@ -32,7 +32,7 @@ from _test_support import load_designator
 from common import structure_answer
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import act_bindings
 from common.contracts.identities import verify as verify_identity
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
@@ -1310,3 +1310,64 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
         "shared-detection",
     ]
     assert all(block["detected_bounds"] == band for block in blocks)
+
+
+# --- a custody refusal is one page's outcome ------------------------------------
+
+
+def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
+    live_run, tmp_path, monkeypatch
+):
+    """`retain_chandra_response` refuses; the page is held and the run goes on.
+
+    Custody binds the response bytes to the chair's own serving receipt, and it
+    refuses by name for reasons that are reachable on a live path — a receipt
+    issued for another chair, a blob whose file is gone, a response that is
+    itself a binding record. Uncaught, that `SchemaRefusal` came out of
+    `ask_page` as the whole stage's crash: one page's receipt would have
+    discarded every other page's answer, which is the lost act GOALS 1 puts
+    above everything.
+
+    Held, not repaired and not silently minted. The bytes themselves are not
+    lost — the client retained them and the call record before custody was
+    reached — so what the refusal costs is the binding that proves which call
+    they came from, and a rectangle minted without it would be attributed to a
+    call nothing ties it to (GOVERNANCE 6). The record still publishes what the
+    body said, with `custody_problem` naming the refusal and both custody
+    references null, so nothing about the failure is inferred from an absence.
+    """
+    root, catalogue = live_run
+    original = structure_pass.retain_chandra_response
+    calls: list[int] = []
+
+    def refusing(tree, response, receipt_ref, *, page_id, page_ordinal):
+        calls.append(page_ordinal)
+        if page_ordinal == 2:
+            raise SchemaRefusal("Chandra custody receipt was not issued for chair 'x'")
+        return original(tree, response, receipt_ref, page_id=page_id, page_ordinal=page_ordinal)
+
+    monkeypatch.setattr(structure_pass, "retain_chandra_response", refusing)
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)],
+    )
+    assert exit_code == EXIT_HELD
+    assert calls == [1, 2], "both pages were asked; the refusal did not stop the run"
+    _assert_page_two_held(root, "structure-response-not-retained")
+    payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
+    # The body is recorded as what it was — a good answer — and held anyway.
+    assert payload["parse_state"] == "parsed"
+    assert payload["act_count"] == len(PAGE_TWO_ACTS)
+    assert payload["custody_problem"] == "Chandra custody receipt was not issued for chair 'x'"
+    assert payload["raw_response_ref"] is None
+    assert payload["custody_ref"] is None
+    # Page one is untouched: its acts are minted and its own custody is intact.
+    first = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]["payload"]
+    assert first["custody_problem"] is None
+    assert first["disposition"] == "detected"
+    rows = {row["act_key"] for row in _seal(root)["payload"]["expected_acts"]}
+    assert "proposal:1:0" in rows
+    assert any(key.startswith("residual:2:") for key in rows)

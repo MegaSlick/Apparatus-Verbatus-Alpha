@@ -637,12 +637,19 @@ this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
 | `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | none; ink → residual holds |
 | parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
 | the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
+| custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
 | parsed, the scan found ink, and no rectangle touches any ink pixel | `held`, `structure-answer-no-ink-overlap` | as above |
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
 
 A cut-off answer is held even though it parsed: a truncated act list is a
-missed act (GOALS 1). The no-ink-overlap row is the coordinate-space tripwire
+missed act (GOALS 1). The custody row is held before the body is looked at and
+is *one page's* outcome, not the run's: the client retained the bytes and the
+call record before custody was reached, so what a refusal costs is the binding
+that proves which call they came from — and a rectangle minted without it would
+be attributed to a call nothing ties it to (GOVERNANCE 6). The record still
+publishes what the body said, with `custody_problem` naming the refusal and
+both custody references null. The no-ink-overlap row is the coordinate-space tripwire
 for a chair whose geometry is in a space this stage never sees: it is a pixel
 test against the components the page's own scan counted, not a threshold, and
 it fires only when the scan itself found ink and nothing the chair drew touches
@@ -675,7 +682,8 @@ than a transcription is:
 schema = "designator-structure-answer.v1"
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "verbatus-structure-answer.v1"
-call_record_ref, raw_response_ref, custody_ref, receipt_ref, request_sha256
+call_record_ref, raw_response_ref | null, custody_ref | null,
+custody_problem | null, receipt_ref, request_sha256
 finish_reason (verbatim | null), served_model_id, call_problem | null
 parse_state ("parsed" | "refused"), parse_outcome | null
 disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
