@@ -63,6 +63,7 @@ from operations.serving.fakes import (
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
+    structure_answer_body,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
@@ -355,39 +356,19 @@ def _run_designator(
     return endpoint, designator.main(serving_factory=factory)
 
 
-def _box(bounds: dict[str, int], page_w: int, page_h: int) -> list[int]:
-    """The normalized box whose page-pixel conversion is exactly `bounds`.
-
-    The inverse of `structure_answer.to_page_bounds`, found by search rather
-    than by a second formula so the test cannot agree with the converter by
-    sharing its arithmetic: every candidate is checked through the converter
-    itself.
-    """
-    for x0 in range(1001):
-        if x0 * page_w // 1000 == bounds["x"]:
-            break
-    for y0 in range(1001):
-        if y0 * page_h // 1000 == bounds["y"]:
-            break
-    right, bottom = bounds["x"] + bounds["w"] - 1, bounds["y"] + bounds["h"] - 1
-    for x1 in range(1001):
-        if min(page_w - 1, (x1 * page_w + 999) // 1000 - 1) == right:
-            break
-    for y1 in range(1001):
-        if min(page_h - 1, (y1 * page_h + 999) // 1000 - 1) == bottom:
-            break
-    box = [x0, y0, x1, y1]
-    assert structure_answer.to_page_bounds(box, page_w, page_h) == bounds
-    return box
-
-
 def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> ScriptedAnswer:
-    body = {
-        "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
-        "acts": [{"box_1000": _box(bounds, page_w, page_h), "text": text} for bounds, text in acts],
-    }
+    """One scripted structure answer, built by the shared fake's own builder.
+
+    The normalized boxes come from `operations/serving/fakes.py`'s
+    `structure_box_1000`, which searches the 0-1000 grid and checks every
+    candidate through `common.structure_answer.to_page_bounds` itself. This
+    file used to carry a second private copy of that search
+    (`_box`), which is exactly the drift the one shared builder exists to
+    prevent -- two inverses of one converter, either free to stop agreeing
+    with it (CodeRabbit round 1, T4).
+    """
     fields.setdefault("finish_reason", "stop")
-    return ScriptedAnswer(content=json.dumps(body), **fields)
+    return ScriptedAnswer(content=structure_answer_body(acts, page_w, page_h), **fields)
 
 
 def _happy_answers() -> list[ScriptedAnswer]:

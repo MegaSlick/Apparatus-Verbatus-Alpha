@@ -73,13 +73,27 @@ def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
     assert not hits, f"the rendered prompt text contains forbidden word(s): {hits}"
 
 
-def test_prompt_asks_for_the_exact_json_shape_and_nothing_else():
-    """Compared against the imported constant, not a second hard-coded literal
-    -- a schema bump that forgot the prompt text must fail here, not stay
-    invisible because two files each spelled the string independently."""
+def test_prompt_asks_for_exactly_the_declared_json_shape_and_nothing_outside_it():
+    """The shape line is compared whole, not by substring (CodeRabbit round 1,
+    T5). Three `in` checks could not fail on a template that had grown a field,
+    lost `label`, or reordered its members, which is precisely what the
+    prompt's own "exactly this JSON shape and nothing else" sentence promises
+    the chair. The schema name inside the expected line comes from the imported
+    constant rather than a second hard-coded literal, so a schema bump that
+    forgot the prompt text still fails here.
+
+    Its scope is the shape template only. An added *instruction* elsewhere in
+    the prompt is caught by `test_prompt_digest_is_the_pinned_seal`, which pins
+    the whole rendered text by digest; this test pins the one line a served
+    chair is told to answer in.
+    """
+    shape = (
+        f'{{"schema": "{STRUCTURE_ANSWER_SCHEMA}", "acts": '
+        '[{"box_1000": [x0, y0, x1, y1], "text": "...", "label": "..."}]}'
+    )
     rendered = "\n".join(message["content"] for message in messages())
-    assert f'"schema": "{STRUCTURE_ANSWER_SCHEMA}"' in rendered
-    assert "box_1000" in rendered
+    assert [line for line in rendered.splitlines() if line.startswith('{"schema"')] == [shape]
+    assert "and nothing else" in rendered
     assert "reading order" in rendered
 
 
