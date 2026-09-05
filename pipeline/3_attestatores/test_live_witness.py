@@ -30,6 +30,7 @@ STAGE = Path(__file__).resolve().parent
 if str(STAGE) not in sys.path:
     sys.path.insert(0, str(STAGE))
 
+import chandra  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
@@ -333,16 +334,23 @@ def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | Non
     def prompt_fn() -> dict[str, Any]:
         return dict(prompt) if prompt is not None else {"instruction": "read"}
 
-    def retain_fn(tree, *, view, raw_response, transport_stop_reason, parser=None):
+    def retain_fn(tree, *, view, raw_response, transport_stop_reason, parser=None, served=False):
+        # `served` is the retention seam's posture flag: every real adapter
+        # wrapper takes it and forwards it, and both live call sites pass it,
+        # so a stub standing in for one takes it too. It reaches only Chandra's
+        # parser (CodeRabbit round 1, T7) and these stubs run no parser at all,
+        # which is why they record it and derive nothing from it.
         del tree, view, parser
         digest = hashlib.sha256(raw_response).hexdigest()
+        retained.append(served)
         return {
             **retain_result,
             "transport_stop_reason": transport_stop_reason,
             "raw_response_ref": {"relative_path": f"blobs/sha256/{digest}", "sha256": digest},
         }
 
-    return SimpleNamespace(prompt=prompt_fn, retain=retain_fn)
+    retained: list[bool] = []
+    return SimpleNamespace(prompt=prompt_fn, retain=retain_fn, retained_served=retained)
 
 
 def _dai_presentation(*, width: int = 3_000, height: int = 1_001) -> dict[str, Any]:
@@ -922,6 +930,37 @@ def test_captured_page_attempt_read_on_a_complete_stop(tmp_path: Path):
     assert blob_store.has(response.response_sha256)
 
 
+def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Path):
+    """The flag is only worth having if the live seam actually sets it.
+
+    `feeding.retain_model_view` defaults `served` to False, which is what the
+    fixture posture wants and what every offline call site relies on -- so a
+    live call site that forgot to pass it would restore exactly the acceptance
+    T7 closed, silently and with every other test still green. Both live sites
+    are pinned here, page-scoped and act-scoped (CodeRabbit round 1, T7).
+    """
+    response, _, _ = _read_one(
+        tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")
+    )
+    page_adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
+    live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", page_adapter, response
+    )
+    assert page_adapter.retained_served == [True]
+
+    act_adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
+    live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        act_adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+    assert act_adapter.retained_served == [True]
+
+
 def test_captured_page_attempt_cut_off_empty_is_failed_not_confirmed_blank(tmp_path: Path):
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="", finish_reason="length"))
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
@@ -1029,13 +1068,47 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     assert blob_store.has(response.response_sha256)
 
 
-def test_captured_page_attempt_real_chandra_adapter_is_honest_about_the_unverified_wire_shape(
+def test_captured_page_attempt_real_chandra_adapter_reads_the_wire_contract(tmp_path: Path):
+    """Chandra live: a body in the shape its own prompt asks for is a reading.
+
+    The page text is the block texts joined, and the bytes ride along as
+    `observation_payload` so `run.py` can derive the page's block geometry
+    from the very response the text came from.
+    """
+    body = (
+        '{"schema":"verbatus-chandra-page-response.v1","blocks":['
+        '{"box_1000":[100,77,900,385],"text":"SYNTHETIC ACT ONE"},'
+        '{"box_1000":[100,462,900,846],"text":"SYNTHETIC ACT TWO"}]}'
+    )
+    response, _, blob_store = _read_one(
+        tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop")
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "chandra.v1", adapter, response
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO"
+    assert attempt.native_capture["parse"] == {
+        "state": "parsed",
+        "parser": "json",
+        "text": "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO",
+    }
+    assert attempt.native_capture["view"] == {"prompt": adapter.prompt()}
+    assert attempt.observation_payload == body.encode("utf-8")
+    assert attempt.health["truncated"] is False
+    assert attempt.raw_response_kind == "model-output"
+    assert blob_store.has(response.response_sha256)
+
+
+def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecognized_shape(
     tmp_path: Path,
 ):
-    """Chandra live: transported and retained, `chandra.parse` recognizes only
-    the fixture schema, so a real model's markdown/JSON output that is not
-    that exact placeholder lands as a named, honest parse failure -- never a
-    fabricated reading."""
+    """Chandra live: a body in neither declared shape -- a real model's own
+    markdown/JSON output, say -- lands as a named, honest failure with its bytes
+    retained, never a fabricated reading."""
     response, _, blob_store = _read_one(
         tmp_path,
         script=ScriptedAnswer(
@@ -1070,27 +1143,54 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_the_unverifi
     assert attempt.raw_response_kind == "model-output"
 
 
-def test_captured_page_attempt_real_chandra_adapter_reads_the_fixture_placeholder_schema(
+def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_served_chair(
     tmp_path: Path,
 ):
-    """The one shape `chandra.parse` accepts is the fixture's own stand-in
-    schema string, not a real vendor wire shape (its companion test above pins
-    that a genuine vendor schema is honestly refused). This module is the
-    first thing to route *live* bytes into `chandra.parse`, so this pins the
-    placeholder's reach into live mode -- not a design this module chose. U6
-    owes a HANDOFF.md line naming that Unit 11 must remove the placeholder
-    acceptance once the real wire schema lands, rather than inheriting it
-    silently."""
+    """A served chair's answer in the fixture's stand-in schema is a named
+    surprise, not a reading (CodeRabbit round 1, T7).
+
+    `fixture-chandra-response.v1` is the committed fixture's own placeholder,
+    declared in `proof/skeleton_fixture.toml` and asked for by nothing:
+    `chandra.prompt()` asks a served chair for
+    `verbatus-chandra-page-response.v1` and only that. One parser derives the
+    retained model view in both postures, and until this fix it had no posture
+    to tell them apart, so a live body in the placeholder shape was read as a
+    page of text -- a reading whose wire shape this repository never verified
+    against anything, published as though it had been (GOVERNANCE 10).
+
+    The bytes are retained before the parser runs, so nothing is lost by the
+    refusal: the attempt fails with `unverified-response-schema` beside the
+    blob that carries it, which is exactly what the closed outcome set is for.
+    The offline posture passes no flag and keeps the acceptance the fixture's
+    pinned bytes depend on -- `test_chandra_adapter.py` and
+    `test_attestatores_retention.py` are that half.
+    """
     body = f'{{"schema":"{CHANDRA_FIXTURE_SCHEMA}","markdown":"chandra text","blocks":[]}}'
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop"))
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
 
+    tree = _FakeTree()
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_3", "chandra.v1", adapter, response
+        SimpleNamespace(tree=tree), 1, "attestator_3", "chandra.v1", adapter, response
     )
 
-    assert attempt.outcome == "read"
-    assert attempt.native_payload == "chandra text"
-    # `run.py` prefers `observation_payload` over `native_payload` to feed
-    # `adapter.observe` for Chandra page geometry (run.py:2408-2409).
-    assert attempt.observation_payload == body.encode("utf-8")
+    assert attempt.outcome == "failed"
+    assert attempt.native_capture["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "json",
+        "outcome": "unverified-response-schema",
+    }
+    # The bytes stay beside the record that could not read them: read the
+    # referenced blob back rather than trusting that a reference exists
+    # (CodeRabbit round 2), so a retention that returns a plausible reference
+    # without storing the body fails here.
+    assert attempt.raw_response_ref
+    assert tree.read_bytes(attempt.raw_response_ref["relative_path"]) == body.encode("utf-8")
+    assert attempt.raw_response_ref["sha256"] == digest_bytes(body.encode("utf-8"))
+    assert attempt.raw_response_kind == "model-output"
+    # The same body still parses on the offline posture, where the fixture's
+    # pinned bytes depend on it: one flag, one difference.
+    assert chandra.parse(body.encode("utf-8")) == "chandra text"
+    assert chandra.parse(body.encode("utf-8"), served=True) == {
+        "parse_outcome": "unverified-response-schema"
+    }

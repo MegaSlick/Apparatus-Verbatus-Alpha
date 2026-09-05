@@ -9,3 +9,14 @@ temperature = 0
 label = "variance.v1"
 seed = 20260820
 passes = 2
+
+[structure]
+# The Designator's structure pass runs under this section, never under
+# reading_of_record (Tyrel, 2026-09-02: the Attestatores read at the fixed
+# posture above; the structure pass may vary, sealed and recorded per run, so
+# its re-run variance is a clue beside the witnesses). The value is recorded on
+# every page's structure-answer record. The live reading seam
+# (operations/serving/client.py) records and sends temperature 0 only, so the
+# pass refuses by name to run under any other value until that seam carries it;
+# a non-zero number here is a posture the run would report without executing.
+temperature = 0

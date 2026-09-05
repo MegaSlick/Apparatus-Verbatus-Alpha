@@ -97,7 +97,8 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
         pytest.param("temperature = ", "is not valid TOML", id="not-toml"),
         pytest.param(
             'schema = "decoding.v1"\n\n[reading_of_record]\ntemperature = 0.7\n\n'
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n',
+            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
+            "[structure]\ntemperature = 0\n",
             "decoding reading_of_record must declare temperature 0",
             id="nonzero-temperature",
         ),
@@ -139,13 +140,15 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
         pytest.param(
             '# a differently worded comment\nschema = "decoding.v1"\n\n'
             "[reading_of_record]\ntemperature = 0\n\n"
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n',
+            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
+            "[structure]\ntemperature = 0\n",
             "comment-only",
             id="comment-only",
         ),
         pytest.param(
             'schema = "decoding.v1"\n\n[reading_of_record]\ntemperature = 0\n\n'
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260821\npasses = 2\n',
+            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260821\npasses = 2\n'
+            "[structure]\ntemperature = 0\n",
             "a moved variance seed",
             id="moved-seed",
         ),

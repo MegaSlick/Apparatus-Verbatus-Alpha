@@ -13,14 +13,16 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Final, TypedDict
 
-# One-receipt Chandra custody lives in common/chandra_custody.py: the write half
-# is R2's and the read half is R3's Attestatores intake, and a stage may not
-# import another stage's uniquely named module. Both halves are re-exported here
-# so this module keeps naming them. The signatures did NOT survive the move
-# unchanged -- both now require the page identity, the write returns a
-# `{"response_ref", "custody_ref"}` pair, and the read takes that custody
-# reference -- so a caller written against the pre-move names has to be updated,
-# not merely re-pointed. There are no such callers yet; see common/chandra_custody.py.
+# One-receipt Chandra custody lives in common/chandra_custody.py, because both
+# halves are one rule and a stage may not import another stage's uniquely named
+# module. The write half is this stage's -- the live structure pass retains
+# every response under it -- and the read half has no served caller since the
+# Attestatores' capture intake was removed (Tyrel, 2026-09-02). Both are
+# re-exported here so this module keeps naming them. The signatures did NOT
+# survive the move unchanged -- both now require the page identity, the write
+# returns a `{"response_ref", "custody_ref"}` pair, and the read takes that
+# custody reference -- so a caller written against the pre-move names has to be
+# updated, not merely re-pointed. See common/chandra_custody.py.
 from common.chandra_custody import (  # noqa: F401  (re-export)
     RESPONSE_BLOB_PREFIX,
     read_retained_chandra_response,

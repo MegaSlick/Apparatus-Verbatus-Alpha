@@ -66,15 +66,15 @@ license_note = "Weights: Qwen research licence (research only); code incl. promp
 witness_adapter = "churro.v1"
 witness_scope = "page"
 
+# Absent by Tyrel's ruling of 2026-08-12: the optional YOLO secondary proposer
+# stays absent initially, and the Designator's structure chair proposes alone.
+# The drafted identity it would take (Teklia's YOLOv26 record detector,
+# AGPL-3.0) is still recorded in the commented real roster in
+# config/models.toml; configuring it here again is a roster change for Tyrel,
+# not a config edit.
 [chairs.secondary_proposer]
-state = "configured"
-source = "huggingface"
-repo = "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection"
-revision = "0c57f057391113579e7af170b864542f049e67aa"
-digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
-manifest = "manifests/yolo26-detection.json"
-serving_recipe = "unproven-real-secondary-proposer"
-license_note = "AGPL-3.0. Accepted under the research track (Tyrel, 2026-08-20)"
+state = "absent"
+reason = "kept absent by Tyrel's ruling of 2026-08-12: the optional YOLO secondary proposer is not part of the first real roster"
 
 [chairs.perlector]
 state = "configured"
