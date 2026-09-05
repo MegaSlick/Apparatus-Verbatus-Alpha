@@ -1185,7 +1185,8 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     # (CodeRabbit round 2), so a retention that returns a plausible reference
     # without storing the body fails here.
     assert attempt.raw_response_ref
-    assert tree.read_bytes(attempt.raw_response_ref) == body.encode("utf-8")
+    assert tree.read_bytes(attempt.raw_response_ref["relative_path"]) == body.encode("utf-8")
+    assert attempt.raw_response_ref["sha256"] == digest_bytes(body.encode("utf-8"))
     assert attempt.raw_response_kind == "model-output"
     # The same body still parses on the offline posture, where the fixture's
     # pinned bytes depend on it: one flag, one difference.
