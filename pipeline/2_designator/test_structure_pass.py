@@ -1228,3 +1228,85 @@ def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
             [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)],
         )
     assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+
+
+# --- two scanned regions over one rectangle -------------------------------------
+
+
+def _group(bounds: dict[str, int], rationale: str) -> dict[str, Any]:
+    """One scanned group in `grouping.group_page`'s own returned shape."""
+    return {
+        "bounds": dict(bounds),
+        "body_members": [{"bounds": dict(bounds), "pixel_count": bounds["w"] * bounds["h"]}],
+        "anchors": [],
+        "rationale": rationale,
+    }
+
+
+def test_two_regions_each_covering_half_one_rectangle_are_split_detection_not_model_only():
+    """The tie is its own fact: too many regions, not none.
+
+    `model_evidence_blocks` takes the single group covering at least half of a
+    rectangle, and two of them is a tie it must not resolve — naming one would
+    be a picker (GOVERNANCE 3). It used to record the tie as `model-only`,
+    whose rationale says "no region the ink scan found covers half of this
+    rectangle", which is the opposite of what happened: a reader of that record
+    would conclude the scan found nothing there. `split-detection` says what is
+    true, and carries the same null bounds and zero counts, because no single
+    measured region stands behind the rectangle either way.
+
+    The groups are built here rather than scanned because the arithmetic is
+    what is under test and the fixture page has no such page. The case it
+    stands for is ordinary: a group's bounds are the union of its body run and
+    its anchors, so a small isolated region can sit inside a larger group's
+    bounds, and a rectangle the chair drew around the small one is then covered
+    by both.
+    """
+    inner = {"x": 40, "y": 60, "w": 40, "h": 20}
+    analysis = {
+        "structure_evidence": "detected",
+        "groups": [
+            _group(
+                {"x": 20, "y": 20, "w": 160, "h": 100}, "single margin anchor seeds one body run"
+            ),
+            _group(inner, "isolated marginal note: no adjacent body run"),
+        ],
+    }
+    blocks = structure_pass.model_evidence_blocks(analysis, [("proposal:1:0", dict(inner))])
+    assert blocks == [
+        {
+            "structure_evidence": "split-detection",
+            "detected_bounds": None,
+            "body_member_count": 0,
+            "anchor_count": 0,
+            "rationale": structure_pass._SPLIT_DETECTION_RATIONALE,
+        }
+    ]
+    assert "no region the ink scan found" not in blocks[0]["rationale"]
+    # And the published act-group contract accepts it as a value that measured
+    # nothing, which is what `_require_evidence_block` refuses to combine with
+    # a region or a member count.
+    designator._require_evidence_block(
+        {**blocks[0], "declared_bounds": dict(inner)}, "payload under test"
+    )
+
+
+def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
+    """The mirror case, unchanged: one region where the chair drew two acts.
+
+    Asserted beside the split so the two ends of the same ambiguity cannot
+    drift into one value: `shared-detection` keeps the region it measured,
+    `split-detection` has no single region to keep.
+    """
+    band = {"x": 20, "y": 20, "w": 160, "h": 100}
+    analysis = {"structure_evidence": "detected", "groups": [_group(band, "one run")]}
+    upper = {"x": 20, "y": 20, "w": 160, "h": 50}
+    lower = {"x": 20, "y": 70, "w": 160, "h": 50}
+    blocks = structure_pass.model_evidence_blocks(
+        analysis, [("proposal:1:0", upper), ("proposal:1:1", lower)]
+    )
+    assert [block["structure_evidence"] for block in blocks] == [
+        "shared-detection",
+        "shared-detection",
+    ]
+    assert all(block["detected_bounds"] == band for block in blocks)

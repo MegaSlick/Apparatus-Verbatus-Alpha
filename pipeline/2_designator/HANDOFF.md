@@ -133,7 +133,8 @@ unknown field rather than passing because a denylist did not predict its name.
 
 ```text
 act_key, declared_bounds
-structure_evidence ("detected" | "fallback-tiles" | "shared-detection" | "model-only")
+structure_evidence ("detected" | "fallback-tiles" | "shared-detection" |
+                   "split-detection" | "model-only")
 detected_bounds | null, body_member_count, anchor_count, rationale
 continuation = {declared_bounds, structure_evidence, detected_bounds | null,
                 body_member_count, anchor_count, rationale,
@@ -142,16 +143,23 @@ continuation = {declared_bounds, structure_evidence, detected_bounds | null,
 
 On the live path `declared_bounds` means declared by the structure chair, the
 field set does not change, and `continuation` is always `null` (a per-page call
-has no cross-page knowledge; the relation is the Recensor's). The two extra
+has no cross-page knowledge; the relation is the Recensor's). The three extra
 evidence values exist only there (`structure_pass.model_evidence_blocks`, which
 never raises): `shared-detection` carries a real scanned region and its counts,
 like `detected`, but says the same region covers at least half of another
 proposed act too — the merged-boundary case the fixture path *refuses* at
 `_claim_structural_group` because there the declared rectangles are ground
 truth, recorded here on both acts as *not* independent corroboration
-(GOVERNANCE 10). `model-only` is a rectangle no scanned region covers half of:
-null bounds, zero counts, the rectangle resting on the chair's proposal alone.
-Neither gates anything; the fixture path never emits either.
+(GOVERNANCE 10). `split-detection` is its mirror: two or more scanned regions
+each cover at least half of one rectangle, so the chair drew one act where the
+scan found several. It carries null bounds and zero counts, because naming one
+of the two would be a choice between them (GOVERNANCE 3) and a union of them
+would be a region nothing measured. `model-only` is a rectangle no scanned
+region covers half of: null bounds, zero counts, the rectangle resting on the
+chair's proposal alone — a different fact from `split-detection`, and recorded
+as a different one, because "nothing covers this" and "too much covers this"
+are not the same measurement. None of the three gates anything; the fixture
+path never emits any of them.
 
 `rationale` is one of a small set of code-generated strings naming which
 grouping rule fired (a single anchor, a brace linking two acts, an isolated

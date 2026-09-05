@@ -111,6 +111,7 @@ DISPOSITION_HELD: Final = "held"
 # so the same fact is recorded rather than refused -- and recorded as *not*
 # independent corroboration (GOVERNANCE 10), never as `detected`.
 EVIDENCE_SHARED_DETECTION: Final = "shared-detection"
+EVIDENCE_SPLIT_DETECTION: Final = "split-detection"
 EVIDENCE_MODEL_ONLY: Final = "model-only"
 
 # One card, one resident chair, one lease file for the whole run tree: the
@@ -123,6 +124,11 @@ _SHARED_DETECTION_RATIONALE: Final = (
     "the ink scan found one region covering at least half of this rectangle, but the "
     "same region also covers another act the structure chair proposed; the scan did not "
     "detect a boundary between them, so it corroborates neither independently"
+)
+_SPLIT_DETECTION_RATIONALE: Final = (
+    "two or more regions the ink scan found each cover at least half of this rectangle; the "
+    "chair drew one act where the scan found several, and no single region corroborates the "
+    "rectangle rather than one of its parts"
 )
 _MODEL_ONLY_RATIONALE: Final = (
     "no region the ink scan found covers half of this rectangle; the rectangle rests on "
@@ -662,29 +668,48 @@ def model_evidence_blocks(
     found nothing (predetermined grid as its groups) corroborates nothing, so
     every rectangle on it is `model-only` rather than matched against bands
     that would cover anything.
+
+    `split-detection` is the mirror of `shared-detection` and the reason the
+    two ends of the tie are not one value: two or more scanned regions each
+    cover at least half of *one* rectangle, so the chair drew one act where the
+    scan found several. It carries null bounds and zero counts like
+    `model-only`, because no single region is the corroborating one and picking
+    the largest would be a picker (GOVERNANCE 3), but it is a different fact
+    from "nothing covers this" and reading it as `model-only` would report a
+    scan that found nothing where the scan in fact found too much
+    (GOVERNANCE 10).
     """
     if analysis["structure_evidence"] != DISPOSITION_DETECTED:
         return [_model_only_block() for _ in proposals]
     groups = analysis["groups"]
-    covering: list[dict[str, Any] | None] = []
+    covering: list[dict[str, Any] | str | None] = []
     for _act_key, bounds in proposals:
         area = bounds["w"] * bounds["h"]
         # The one group covering at least half of this rectangle, if any: a
         # correspondence test between a proposal and the scan, the same
         # majority-overlap rule `run.py::_match_structural_group` applies to a
-        # declared act, and not a ranking of anything -- two groups each
-        # covering half is a tie the fixture path refuses and this path records
-        # as no single corroborating region.
+        # declared act, and not a ranking of anything. Two or more groups each
+        # covering half is a tie the fixture path refuses; here it is recorded
+        # as `split-detection`, its own fact, and never resolved in favour of
+        # one of them.
         halves = [group for group in groups if _overlap_area(group["bounds"], bounds) * 2 >= area]
-        covering.append(halves[0] if len(halves) == 1 else None)
+        if len(halves) == 1:
+            covering.append(halves[0])
+        else:
+            covering.append(EVIDENCE_SPLIT_DETECTION if halves else None)
     claimants: dict[str, list[str]] = {}
     for (act_key, _bounds), group in zip(proposals, covering, strict=True):
-        if group is not None:
+        if isinstance(group, dict):
             claimants.setdefault(digest_of(group), []).append(act_key)
     blocks = []
     for group in covering:
         if group is None:
             blocks.append(_model_only_block())
+            continue
+        if group == EVIDENCE_SPLIT_DETECTION:
+            blocks.append(
+                _uncorroborated_block(EVIDENCE_SPLIT_DETECTION, _SPLIT_DETECTION_RATIONALE)
+            )
             continue
         shared = len(claimants[digest_of(group)]) > 1
         blocks.append(
@@ -699,11 +724,22 @@ def model_evidence_blocks(
     return blocks
 
 
-def _model_only_block() -> dict[str, Any]:
+def _uncorroborated_block(evidence: str, rationale: str) -> dict[str, Any]:
+    """No single scanned region stands behind this rectangle, for one named reason.
+
+    Null bounds and zero counts, because reporting a region here -- either of
+    the two in a split, or a computed union of them -- would be a claim about
+    something nothing measured (GOVERNANCE 10) and, in the split case, a choice
+    between them (GOVERNANCE 3).
+    """
     return {
-        "structure_evidence": EVIDENCE_MODEL_ONLY,
+        "structure_evidence": evidence,
         "detected_bounds": None,
         "body_member_count": 0,
         "anchor_count": 0,
-        "rationale": _MODEL_ONLY_RATIONALE,
+        "rationale": rationale,
     }
+
+
+def _model_only_block() -> dict[str, Any]:
+    return _uncorroborated_block(EVIDENCE_MODEL_ONLY, _MODEL_ONLY_RATIONALE)

@@ -195,25 +195,31 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # `null` and the two counts are zero -- recording a computed band there, with
 # zero members, would be a claim about something nothing measured (GOVERNANCE 10).
 #
-# Two more values exist only on the live path, where the structure chair is the
-# proposer and the ink scan is corroboration rather than ground truth
+# Three more values exist only on the live path, where the structure chair is
+# the proposer and the ink scan is corroboration rather than ground truth
 # (`structure_pass.model_evidence_blocks`). `shared-detection` carries a real
 # detected region and its counts, like `detected`, but says the same region
 # covers another proposed act too -- the merged-boundary case the fixture path
 # refuses at `_claim_structural_group`, recorded here as *not* independent
-# corroboration. `model-only` is a rectangle no scanned region covers half of:
-# null bounds and zero counts, like `fallback-tiles`, because nothing measured
-# corroborates it. The fixture path never emits either, so its records are
-# unchanged.
+# corroboration. `split-detection` is its mirror and carries null bounds and
+# zero counts: two or more scanned regions each cover half of one rectangle, so
+# the chair drew one act where the scan found several and no single region is
+# the corroborating one. `model-only` is a rectangle no scanned region covers
+# half of: null bounds and zero counts, like `fallback-tiles`, because nothing
+# measured corroborates it. The last two are distinct facts -- too many regions
+# and none -- and collapsing them would report a scan that found nothing where
+# it found too much (GOVERNANCE 10). The fixture path never emits any of the
+# three, so its records are unchanged.
 ACT_GROUP_EVIDENCE = frozenset(
     {
         "detected",
         "fallback-tiles",
         structure_pass.EVIDENCE_SHARED_DETECTION,
+        structure_pass.EVIDENCE_SPLIT_DETECTION,
         structure_pass.EVIDENCE_MODEL_ONLY,
     }
 )
-# Which of the four carry a measured rectangle, and which say nothing measured.
+# Which of the five carry a measured rectangle, and which say nothing measured.
 _EVIDENCE_WITH_DETECTED_BOUNDS = frozenset({"detected", structure_pass.EVIDENCE_SHARED_DETECTION})
 
 # The rationale a fallback-tiled page's act-group carries. One string, defined
