@@ -67,11 +67,20 @@ def tree_snapshot(root: Path) -> dict[str, str]:
     snapshot: dict[str, str] = {".": _describe(root)}
     if root.is_symlink():
         return snapshot
-    for parent, directory_names, file_names in os.walk(root):
+    # A descendant the walk cannot read is not an absent descendant: `os.walk`'s
+    # default `onerror=None` drops the subtree in silence, and a refusal probe
+    # would then report "no tree change" over entries it never examined. The
+    # snapshot fails loudly instead (CodeRabbit round 3 on PR #91).
+    for parent, directory_names, file_names in os.walk(root, onerror=_raise_walk_error):
         for name in (*directory_names, *file_names):
             path = Path(parent) / name
             snapshot[str(path.relative_to(root))] = _describe(path)
     return dict(sorted(snapshot.items()))
+
+
+def _raise_walk_error(error: OSError) -> None:
+    """`os.walk` swallows scan errors by default; a snapshot may not."""
+    raise error
 
 
 def _describe(path: Path) -> str:

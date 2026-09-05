@@ -13,6 +13,7 @@ without being told which policy moved.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -118,7 +119,10 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     # the state it was written to catch. An existing run root is a run id claimed
     # under a policy this build already rejected, and the retry the message
     # invites then collides with it.
-    assert not run_root.exists(), tree_snapshot(run_root)
+    # `Path.exists()` follows symlinks, so a dangling `runs` link would pass it
+    # while the refusal had still left an artefact; `os.path.lexists` sees the
+    # link itself (CodeRabbit round 3 on PR #91).
+    assert not os.path.lexists(run_root), tree_snapshot(run_root)
 
 
 @pytest.mark.parametrize(

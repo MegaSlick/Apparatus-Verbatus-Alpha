@@ -2315,3 +2315,22 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
 
     with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         tree.build_manifest(DESIGNATOR)
+
+
+def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_path):
+    """A subtree the walk cannot open is reported, never silently omitted.
+
+    `os.walk`'s default drops an unreadable descendant and moves on, so a
+    refusal probe comparing two snapshots would see "no change" over entries
+    it never examined (CodeRabbit round 3 on PR #91).
+    """
+    root = tmp_path / "root"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    (locked / "inside").write_bytes(b"x")
+    locked.chmod(0)
+    try:
+        with pytest.raises(OSError):
+            tree_snapshot(root)
+    finally:
+        locked.chmod(0o700)
