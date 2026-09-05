@@ -579,6 +579,50 @@ denominator, an unaccounted Designator record, a duplicate, a claimed
 continuation with no supporting proposal, or a mismatch between the row and its
 evidence.
 
+## Real ingress: what the real structural pass must publish
+
+On a real submission this stage refuses: it proves its Ink Map boundary,
+reconciles the Exemplar filename ledger, and then says that real structural
+proposal/model work is outside System 03 rather than fabricating proposals or
+holds. Everything below is the contract the pass that replaces that refusal has
+to meet, because it is what consumers already recompute rather than believe.
+
+**Publish `raw_bounds` equal to the rectangle the act identity was minted
+from.** On the fixture route the proposal seal is checked against an
+independent sealed declaration, which is the stronger check; a real run has no
+declaration, so the producer's own crop rectangle is the only independent thing
+left to recompute against. `common.stage.expected_acts` therefore takes each
+structural row's proposal-origin `region` on that row's own page and requires
+`act_bindings(page_id, "proposal", region["payload"]["raw_bounds"])` to
+reproduce the row's `act_id`. `cut_minted_region` already publishes exactly
+that rectangle, so no change is needed today — but a pass that padded, rounded
+or renormalised `raw_bounds` on the way out would break the real denominator
+while leaving the fixture route green, which is why it is written down here.
+
+Three more fields on that same row are recomputed beside the identity, and each
+is a refusal by name when it disagrees with the region's own evidence:
+`act_key`, `page_ordinal` (both published beside every region, as `act_key` and
+`transform.source_page_ordinal`), and `has_continuation` — which is checked in
+both directions, so a claimed continuation with no far-page proposal region and
+a denied one with such a region are equally refused. A row's class is decided by
+which evidence record exists for it, never by trying identities until one
+verifies; two minted-class records on one row refuse as ambiguous.
+
+**Publish the conservation denominator too, per sealed page.** This is the
+first thing a real run cannot get past today, and it is measured rather than
+predicted: `pipeline/test_real_ingress_contexts_e2e.py` carries a real
+submission through the Door, the Exemplar, the Ink Map, a full served
+Attestatores roster and a served Perlector, and the Recensor then stops the run
+with *"Designator conservation pages 1, 2 carry non-held expected acts but have
+no conservation records"*. `geometry_coverage_inputs` requires one
+`kind="conservation"` record for every sealed page carrying a non-held expected
+act, and independently reconciles its residual components against the held
+residual acts in the seal. Those are measurements of the real page — total ink,
+claimed ink, the unclaimed remainder and its components — so nothing but this
+stage's own pass can supply them, and no test may compose them on its behalf
+(GOVERNANCE 10). Until the real pass exists, that refusal is the honest end of
+a real run, and the e2e pins it there.
+
 ## Exit code
 
 `EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, no

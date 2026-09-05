@@ -60,6 +60,7 @@ class _Context:
 
     def __init__(self, tree: RunTree):
         self.tree = tree
+        self.run = tree.read_run()
         self.fixture = load_fixture(str(ROOT / "proof"))
 
     def input_ref(self, relative_path: str) -> dict[str, str]:

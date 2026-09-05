@@ -82,9 +82,11 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATIONS,
     WITNESS_READING_OUTCOMES,
     expected_acts,
+    is_real_ingress,
     latest_attempt,
     latest_per_chair,
-    open_context,
+    open_context,  # noqa: F401  (re-export: this stage's tests open fixture trees through it)
+    open_stage_context,
     page_residual_act_key,
     reading_basis_regions,
     recovery_region_count,
@@ -3009,10 +3011,65 @@ def write_partition_receipt(context, budget: dict) -> None:
     context.tree.write_recensor_partition_receipt(receipt)
 
 
+def real_ingress(context) -> bool:
+    """Whether this context's run authority names the real route.
+
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use, so the two cannot disagree about
+    which route a run is on.
+    """
+    return is_real_ingress(context.run)
+
+
+def declared_scenario(context) -> dict | None:
+    """The declared scenario on the fixture route; `None` on a real submission.
+
+    A real submission carries no fixture to declare one, and its refusing
+    accessor is never touched here -- `real_ingress` alone decides the branch,
+    read once off `context.run`. Extracted so the branch is one named function
+    a unit test can call directly, rather than a bare conditional only visible
+    inside `main`.
+    """
+    return None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
+
+
+def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario holds this act as unreconciled.
+
+    `review_route_from_findings`'s `unreconciled` cause has exactly one feeder
+    in the tree: a synthetic scenario's declared `hold_acts`. It is not a
+    measurement this stage takes. On a real submission there is no scenario
+    (`scenario is None`) and therefore no producer of the cause at all, so this
+    is `False` there -- which says that nothing fed it, not that the act was
+    measured as reconciled. The only cross-act anomaly computation in the tree
+    is Pass C's flag pass at the Perlector, and its verdict reaches the review
+    through `audit_unresolved`. The HANDOFF says the same under `kind="review"`.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["hold_acts"]
+
+
+def declared_recovery(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario asks a recrop for this act.
+
+    `False` with no scenario, because nothing fed it -- not because the act
+    was measured as needing none. On a real submission the only producer of
+    a recovery request is ink measured outside the live crop union, which
+    reaches `recovery_request_origin` as COVERAGE_OBSERVATION_ORIGIN.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["recover_acts"]
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, RECENSOR, registry_factory=registry_factory)
+    # Either ingress route, decided from one read of the run authority; the
+    # real route carries the registry, the sealed digests and the parsed
+    # recovery policy the lines below require.
+    context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
     # The run's own sealed policy, parsed once when the run's binding was checked,
     # never reopened here. `config/recovery.toml` used to be read a second time at
     # this line: a rewrite landing between `open_context` and it published reviews
@@ -3026,7 +3083,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
 
-    scenario = scenario_for(context.fixture, context.scenario)
+    # The declared scenario on the fixture route; nothing on a real submission.
+    # `hold_acts` and `recover_acts` are the two things read from it, below.
+    scenario = declared_scenario(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -3163,7 +3222,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             testimony_shortfall=content_coverage["shortfall"],
             audit_unresolved=audit_unresolved,
             under_witnessed=coverage["under_witnessed"],
-            unreconciled=act_key in scenario["hold_acts"],
+            unreconciled=declared_unreconciled(scenario, act_key),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3198,7 +3257,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cut_regions,
         )
         wants_recovery = (
-            act_key in scenario["recover_acts"]
+            declared_recovery(scenario, act_key)
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
@@ -3232,7 +3291,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # because a request the orchestrator can only refuse turns a graceful
             # hold into a hard failure for no gain.
             request_origin = recovery_request_origin(
-                declared=act_key in scenario["recover_acts"],
+                declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
             )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
@@ -3303,7 +3362,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # the two coincide.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
-                    declared_crop=act_key in scenario["recover_acts"],
+                    declared_crop=declared_recovery(scenario, act_key),
                     unclaimed_observation=len(outside_ink_requests) > 0,
                 ),
                 "budget_allowed": budget["allowed"],

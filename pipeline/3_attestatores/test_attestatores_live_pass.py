@@ -431,7 +431,7 @@ def open_live_context(live_run: SimpleNamespace, run_root: Path):
             TIER,
         ]
     )
-    return attestatores.open_context(args, ATTESTATORES)
+    return attestatores.open_stage_context(args, ATTESTATORES)
 
 
 def fresh_tree(live_run: SimpleNamespace, tmp_path: Path) -> Path:

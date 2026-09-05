@@ -39,29 +39,71 @@ and `require_some_admitted` raise — so the evidence is on disk and no `stage-s
 is, and the Exemplar's "predecessor door has no stage-seal" names a refused
 submission rather than a missing file.
 
-**A real submission takes a different branch through `_open`, and that branch now
-proves the same boundary by hand.** `run.py::_open` takes the real-ingress branch,
-which builds a `StageContext` directly instead of going through
-`common.stage.open_context` — the fixture/scenario binding `open_context` checks
-has nothing to compare on a real run, so this branch cannot simply call it. What
-it does instead is call `refuse_halted_run` and `verify_predecessor_seal` itself
-— the same two calls `open_context` makes (in the other order: `open_context`
-proves the predecessor seal before it checks the run-level cap, and this
-branch's own halted-run guard already ran first, so `verify_predecessor_seal`
-is appended after it rather than the two being reordered) — before it builds
-its own `StageContext`, so a real submission gets the identical
-predecessor-seal proof a fixture run gets, just assembled by hand instead of
-through the shared function. A Door that refused publishes no `stage-seal`,
-so `verify_predecessor_seal` refuses the Exemplar before it opens, whether
-the programs are driven one at a time or through
-`pipeline/orchestrator/run.py::invoke`. See
-`pipeline/1_exemplar/test_exemplar_seal.py`'s
+**That sentence now holds on a real submission too, and it was a gap before it
+did.** Until the shared constructor landed, `run.py` built its real-ingress
+`StageContext` by hand instead of going through `common.stage.open_context` —
+the fixture/scenario binding it exists to check has nothing to compare on a real
+run — and `verify_predecessor_seal` was called from `open_context` alone, so a
+real run whose Door refused still sealed its Exemplar pages when the programs
+were driven one at a time; only `pipeline/orchestrator/run.py::invoke`, which
+refuses any stage exit outside complete/held/halted, stood between a refused
+Door and a sealed corpus. The gap is closed here: the Exemplar, the Ink Map and
+the Designator all open through `common.stage.open_stage_context`, which decides
+the route from one read of the run authority and asks for the predecessor's
+completion seal on both routes, in the same order, before anything writes. A
+hand-driven Exemplar over a Door that never sealed its boundary now refuses with
+"predecessor door has no stage-seal" and leaves the tree byte-identical
+(`test_exemplar_seal.py`'s
 `test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page` and
-`test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar`, and
-`test_door.py`'s
-`test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`:
-a real-ingress run whose Door left no stage-seal refuses before publishing
-anything, and a successful Door still lets the Exemplar open.
+`test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar` pin both,
+and `test_door.py`'s
+`test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`
+drives the refusing Door that leaves that state). Two consequences ride the same
+change: the real Exemplar's `scenario` is `REAL_SCENARIO`, never the unchecked
+argv value it used to store, and its context carries the roster and the sealed
+digest map like every later stage's, checked name by name against the run before
+the seal check.
+
+**A second, unpinned ordering moved with the same commit.** The deleted real-route
+`_open` verified the corpus register and read the sealed snapshot before doing
+anything else — ahead of the fixture/scenario/registry/binding work `open_context`
+does first on the fixture route. `open_context` runs those two checks last, so
+opening through the shared constructor moved that ordering onto the real route too:
+a run with both register drift and an unloadable fixture now names the fixture
+first. Nothing pinned depends on the old order — the drift test's fixture is sound —
+so this is recorded rather than reverted.
+
+**The Door seals three names on a real run alone, and they are what stands in
+for the whole-digest check downstream.** `_real_bindings` adds `models`,
+`armarium-formats` and `run-policy` to `sealed_config_digests` on the real path
+only — never into `config_digest`, so the real digest does not move and no run
+in flight is invalidated by their arrival. They exist because a real run's
+`config_digest` cannot be recomputed by any later stage: it binds the submission
+ledger's file list and self-hash, the data-handling policy that gated admission,
+the triage documents, and `_door_execution_recipe`, which is the PDFium and
+Pillow build of the machine that ran the Door. Recomputing that downstream would
+refuse a sound run after a library upgrade, so `open_context`'s whole-digest
+comparison has no counterpart on the real route and the name-by-name recheck of
+the sealed map takes its place. Without these three names that recheck would
+cover neither the model roster (only inside `config_digest`, via
+`models.to_record()`), nor the Armarium's format projection, nor the run-level
+reading knobs — the witness-context regime and its declaration, the Lectio nuda
+rate and approval reference, the Perlector instrument rate and approval
+reference, and `draft_fed`, which `real_run_policy_digest` closes under one
+name. A real run resumed with a different `--models-config` would otherwise
+publish stage-3 testimony naming one model and stage-4 dossiers naming another,
+every check green, which is GOVERNANCE 6 broken silently on the one path that
+will ever carry real material.
+
+**A real run created before these three names cannot be resumed under this
+build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
+moved one — "run 'r1' sealed no digest for the … configuration, so a stage
+cannot prove which bytes it is bound to" — because the two need different
+operator actions: restore the file, versus start the run again on a build that
+seals the name. That is correct and cheap today, and only today: nothing real
+has ever gone past the Designator, so no corpus is stranded. It stops being
+cheap the moment a real corpus is in flight, which is why this landed before the
+first live pod rather than after it.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the

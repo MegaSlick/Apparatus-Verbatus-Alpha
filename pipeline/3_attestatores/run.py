@@ -48,7 +48,6 @@ from common.contracts.serving import (  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
-from common.fixture_identity import page_identity  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
@@ -71,10 +70,12 @@ from common.stage import (  # noqa: E402
     EXIT_HELD,
     WITNESS_READING_OUTCOMES,
     continuation_for,
+    exemplar_page_ids,
     expected_acts,
     fixture_serving_details,
+    is_real_ingress,
     latest_attempt,
-    open_context,
+    open_stage_context,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -104,6 +105,48 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_uncertainty": False,
     "can_express_layout": False,
 }
+
+
+def real_ingress(context) -> bool:
+    """Whether this context opened a real submission, read off its run authority.
+
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use -- as the Perlector's and Recensor's
+    own `real_ingress` already do -- so no stage can disagree with the
+    constructor about which route a run is on. The reading is taken from the
+    one authority the context carries and never from `context.scenario`: the
+    ingress record is inside `run.json`'s own self-hash, so the route a run was
+    created under cannot be switched by argv or by a fixture declaring a
+    scenario of the same name.
+    """
+    return is_real_ingress(context.run)
+
+
+def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
+    """The Exemplar page one submitted ordinal names, on either ingress route.
+
+    `exemplar_page_ids` is the one index of "which page is ordinal N" for both
+    routes. This stage used to derive it from the fixture's declared page sha
+    (`common.fixture_identity.page_identity`), which a real submission does not
+    have; on a fixture run the two agree for every sealed page, because a
+    sealed page's identity is the admitted bytes' digest and "sealed" means
+    those bytes matched the declaration.
+
+    The Exemplar layer is sealed before this stage opens, so the walk answers
+    the same every time for the life of this process; a caller that visits many
+    pages in one pass builds the index once with `exemplar_page_ids(context)`
+    and threads it in as `page_ids`, rather than paying an inventory walk (one
+    validated read per Exemplar page) at every lookup. A caller asking about a
+    single page may omit it and pay that one walk directly.
+    """
+    pages = page_ids if page_ids is not None else exemplar_page_ids(context)
+    if page_ordinal not in pages:
+        raise FatalAccounting(
+            f"page ordinal {page_ordinal} names no Exemplar page in this run (accounted "
+            f"for, sealed or refused: {sorted(pages)}); no witness can be shown, and no "
+            "record published for, a page the Exemplar never accounted for"
+        )
+    return pages[page_ordinal]
 
 
 def _confidence_problem(value: Any, path: str = "witness_reported") -> str | None:
@@ -292,10 +335,17 @@ def page_witness_attempted(
     )
 
 
-def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
+def presentation_for_page(
+    context, page_ordinal: int, *, page_ids: dict[int, str] | None = None
+) -> dict[str, Any]:
     """Bind a page witness to the sealed whole-page pixels it was shown."""
-    page_id = page_identity(context.fixture, page_ordinal)
+    page_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    if page.get("outcome") != "sealed":
+        raise FatalAccounting(
+            f"page ordinal {page_ordinal} was refused at the Door and carries no sealed "
+            "pixels; no witness can be shown a page that was never admitted"
+        )
     image_path = page["payload"]["image_path"]
     page_bytes = _verified_page_bytes(context, page)
     width, height = dimensions(page_bytes)
@@ -1594,6 +1644,7 @@ def preflight_appendable_ordinals(
     *,
     resume_incomplete_pass: bool,
     resolve=None,
+    fixture_declared: bool = True,
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
     dict[tuple[str, str], "Attempt"],
@@ -1642,10 +1693,19 @@ def preflight_appendable_ordinals(
     `resume_incomplete_pass=True` unconditionally: a pair already sealed at this
     ordinal is reused from its retained Testimonium and never asked again,
     because a live chair cannot reproduce immutable bytes (GOVERNANCE 4).
+
+    **`fixture_declared` is `main`'s statement, from the run authority, that a
+    sealed fixture stands behind this run.** A fixture run -- live or offline --
+    validates its declared Churro page responses here, before any write, as a
+    fact about the sealed inputs; a real submission has no fixture and nothing
+    to validate, and the reader would refuse by name at its first touch of
+    `context.fixture`. The flag is decided by `real_ingress(context)` in `main`
+    and nowhere else; it is not a way for a caller to skip a fixture check.
     """
     resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
-    validate_declared_churro_page_responses(context, declared_page_witness_chairs(context))
+    if fixture_declared:
+        validate_declared_churro_page_responses(context, declared_page_witness_chairs(context))
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
     sealed_pairs: set[tuple[str, str]] = set()
@@ -2412,6 +2472,26 @@ def declarations_for(context, ordinal: int) -> dict[str, Any]:
     return declarations
 
 
+def real_declarations(ordinal: int) -> dict[str, Any]:
+    """The declaration set of a real submission: nothing, by name.
+
+    `witness_failure`, `witness_not_run`, `witness_malformed` and `witness_empty`
+    are the offline posture's stand-ins for what a transport returned. A real
+    failure is what the transport actually returned, and the live resolver
+    reads none of these tables; so the set is empty in every family, in the
+    exact shape `declarations_for` builds, and it is built here rather than by
+    that reader because that reader's whole body is the fixture and a real run
+    has none to read.
+    """
+    return {
+        "ordinal": ordinal,
+        "failures": set(),
+        "empty": set(),
+        "not_run": set(),
+        "malformed": {},
+    }
+
+
 def resolve_attempt(
     context,
     act: dict[str, Any],
@@ -3142,6 +3222,18 @@ def page_denominator(
                     )
                 contributing_pages = [act["page_ordinal"]]
                 if act["has_continuation"]:
+                    if real_ingress(context):
+                        # A real run's seal row was already checked against the
+                        # far-page region the Designator cut (`expected_acts`);
+                        # reaching here means that region was refused at the
+                        # crop boundary, and there is no declaration to name
+                        # the far page in its place.
+                        raise FatalAccounting(
+                            f"act {act['act_id']}'s proposal seal claims a continuation and "
+                            "real ingress carries no continuation declaration; its far-page "
+                            "evidence cannot be addressed. The Designator must publish the "
+                            "continuation region that names the far page"
+                        )
                     continuation = continuation_for(context.fixture, act["act_key"])
                     if continuation is None:
                         raise FatalAccounting(
@@ -3199,9 +3291,14 @@ def publish_page_testimonia_and_attachments(
     page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     contributing_pages_by_act, by_page = page_denominator(context, acts, regions_by_act)
+    # Built once for this whole pass and threaded into every `page_subject` /
+    # `presentation_for_page` call below: each is otherwise a fresh Exemplar
+    # inventory walk (one validated read per page), paid again for every
+    # page-scoped chair on every page.
+    page_ids = exemplar_page_ids(context)
 
     for page_ordinal, page_acts in sorted(by_page.items()):
-        page_subject = page_identity(context.fixture, page_ordinal)
+        page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
         page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         for chair in sorted(page_chairs):
             resolved = context.registry.resolve(chair)
@@ -3268,7 +3365,11 @@ def publish_page_testimonia_and_attachments(
                 if captured is not None
                 else content_health(native_payload, completed=reading)
             )
-            presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
+            presented = (
+                presentation_for_page(context, page_ordinal, page_ids=page_ids)
+                if attempted_page
+                else {}
+            )
             adapter = (
                 witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
                 if attempted_page and isinstance(resolved, ChairIdentity)
@@ -3281,7 +3382,7 @@ def publish_page_testimonia_and_attachments(
                     resolved.witness_adapter, source_presentation, presented
                 )
             unpresented_regions = unpresented_region_ids(presented, page_proposal_regions)
-            page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
+            page_attempt = attempt_id(page_subject_id, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"
                 for act in page_acts
@@ -3373,7 +3474,7 @@ def publish_page_testimonia_and_attachments(
             # not choose an act for a marginal observation.
             page_proposals = page_proposal_regions
             page_artifact_id = artifact_id(
-                ATTESTATORES, "page-testimonium", page_subject, page_attempt
+                ATTESTATORES, "page-testimonium", page_subject_id, page_attempt
             )
             # A never-presented page has no witness geometry to partition, and a
             # retained snapshot naming zero proposals on a page the Designator
@@ -3437,7 +3538,7 @@ def publish_page_testimonia_and_attachments(
             validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
             context.publish(
                 kind="page-testimonium",
-                subject_id=page_subject,
+                subject_id=page_subject_id,
                 outcome=outcome,
                 attempt=page_attempt,
                 # Every retained response this record derived from is an input,
@@ -4003,6 +4104,34 @@ def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) ->
     return modes
 
 
+def require_every_witness_served(modes: dict[str, str]) -> None:
+    """On a real submission every configured witness chair serves, or nothing runs.
+
+    Tyrel's ruling (2026-09-02): every witness runs its own full pass -- no
+    capture, no slicing -- and a roster where every row is served is the only
+    real posture. A real run has no fixture to answer for a chair, so a fixture
+    row for a configured witness is not a second posture to mix with; it is a
+    chair nothing can ask, and a run with no served chair at all would publish
+    a whole pass in which no witness saw any ink. Both are refused by name
+    before any act is read. The mixed-posture refusal in `witness_serving_modes`
+    stays as a guard for the fixture-live seam; on the shipped real catalogue it
+    never fires, because every witness row there is live at every tier.
+    """
+    unserved = sorted(chair for chair, mode in modes.items() if mode != "live")
+    if unserved:
+        raise ContractError(
+            f"this run is a real submission and its sealed serving catalogue gives witness "
+            f"chair(s) {unserved} a fixture posture; a real submission has no fixture to "
+            "answer for a witness, so every configured witness chair must be served. Seal "
+            "the run under a catalogue whose row for every witness chair is live"
+        )
+    if not modes:
+        raise ContractError(
+            "this run is a real submission and no configured witness chair serves; a pass in "
+            "which no witness is shown any ink is not a real posture"
+        )
+
+
 def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
     """Build the client a live pass reads one chair through.
 
@@ -4267,6 +4396,8 @@ def live_attempt_pass(
     """
     page_chairs = declared_page_witness_chairs(context)
     _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
+    # Built once for this whole pass; see `publish_page_testimonia_and_attachments`.
+    page_ids = exemplar_page_ids(context)
     live_page_chairs = sorted(
         chair
         for chair in context.witness_chairs
@@ -4353,7 +4484,7 @@ def live_attempt_pass(
                 # The page's own sealed subject id, not a synthesized name: the
                 # schedule is a record of what was served, and a page unit is
                 # addressed by the page the Exemplar sealed.
-                unit_id = page_identity(context.fixture, page_ordinal)
+                unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
                 units[(chair, unit_id)] = page_ordinal
                 rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
         else:
@@ -4383,6 +4514,7 @@ def live_attempt_pass(
                 regions_by_act=regions_by_act,
                 attempts_by_pair=attempts_by_pair,
                 page_captures=page_captures,
+                page_ids=page_ids,
             )
         else:
             recorded += _serve_act_unit(
@@ -4584,9 +4716,10 @@ def _serve_page_unit(
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
+    page_ids: dict[int, str] | None = None,
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
-    presentation = presentation_for_page(context, page_ordinal)
+    presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
     request = live_witness.page_chair_request(
         context, adapter, resolved.witness_adapter, presentation
     )
@@ -4905,7 +5038,13 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
     writes names the receipt of the moment that produced it, so no reader can
     mistake one posture's record for the other's. What would be lost is an
     operator's ability to notice, which is what this line is for (GOVERNANCE 2).
+
+    A real submission declares nothing: there is no fixture, so there is no row
+    to pass over and nothing an operator could fail to notice. Nothing is
+    printed, and the fixture accessor is never touched.
     """
+    if real_ingress(context):
+        return
     families = ("testimony", "witness_failure", "witness_empty", "witness_not_run")
     counted = {
         family: sum(
@@ -4965,7 +5104,12 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             f"{sorted(OPERATIONS)}. A mistyped reread would otherwise run a whole pass, "
             "ignore the act and chair it was given, and report success"
         )
-    context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    # Either ingress route: the constructor reads the run authority once and
+    # opens the synthetic or the real context accordingly. A real context
+    # carries the registry and the sealed digests this stage requires below,
+    # `fixture=None` behind a refusing accessor, and `REAL_SCENARIO`.
+    context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
+    real = real_ingress(context)
     # A witness reading is a model decode too.  The adapter currently exposes no
     # generation knobs in the fixture seam, but this check keeps a future real
     # adapter from treating the record posture as an unbound side setting.
@@ -4974,8 +5118,11 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     # The serving posture of this run's witnesses, read from the sealed
     # serving-recipe rows and nothing else (SPEC_A section 2.1). Resolved before
-    # any act is read, because it decides which pass structure runs.
+    # any act is read, because it decides which pass structure runs. On a real
+    # submission the only posture is every witness served.
     modes = witness_serving_modes(context, bound_serving_recipes(context), args.placement_tier)
+    if real:
+        require_every_witness_served(modes)
     live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")
     acts = expected_acts(context)
     try:
@@ -5053,11 +5200,14 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             )
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
-            # Read in both postures: `declarations_for` refuses a fixture that
-            # contradicts itself at this ordinal, which is a fact about the
-            # sealed inputs rather than about who answers. The live resolver
-            # below then reads none of it.
-            declarations = declarations_for(context, ordinal)
+            # Read in both fixture postures: `declarations_for` refuses a
+            # fixture that contradicts itself at this ordinal, which is a fact
+            # about the sealed inputs rather than about who answers. The live
+            # resolver below then reads none of it. A real submission has no
+            # fixture, so its declaration set is empty by name.
+            declarations = (
+                real_declarations(ordinal) if real else declarations_for(context, ordinal)
+            )
             regions_by_act, attempts_by_pair, sealed_pairs = preflight_appendable_ordinals(
                 context,
                 acts,
@@ -5069,6 +5219,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 # asking again could only produce a collision (GOVERNANCE 4).
                 resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
                 resolve=pending_live_attempt if live_chairs else None,
+                fixture_declared=not real,
             )
         except ContractError as error:
             # An ordinary preflight refusal holds this pass before it writes any
