@@ -30,18 +30,58 @@ nothing. That is the half worth automating.
 """
 
 import ast
+import importlib.util
+import re
+import sys
 from pathlib import Path
 
 import pytest
 
-from common.contracts.errors import SchemaRefusal
+from common import cross_capture_autopsia, cross_capture_dissent, physical_act_partition
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.corpus_register import refuse_capture_preference
+from operations.operator import triage
+from operations.operator.triage import TriageRefusal
 
 ROOT = Path(__file__).resolve().parent.parent
 
 # Far past any interpreter's recursion allowance, so a screen that reaches the
 # bottom of this proves it is not spending the interpreter stack.
 PATHOLOGICAL_DEPTH = 1_000_000
+
+# The depth the whole family is driven at: 200 times the interpreter's
+# configured recursion limit, and 20 times the deepest C-encoder allowance this
+# repository has measured (`common/contracts/test_contracts_records.py` records
+# roughly 9,997 levels), so a screen that reached the bottom of this is not
+# spending the stack. A fifth of PATHOLOGICAL_DEPTH, because seven screens
+# driven twice each at a million levels is a minute of gate time to re-prove
+# what the first hundred thousand already proved; the reference screen keeps its
+# million-level case above.
+FAMILY_DEPTH = 200_000
+
+
+def _dossier():
+    """The Perlector's dossier module, loaded from its unpackaged stage directory.
+
+    `pipeline/4_perlector` is a stage directory rather than a package, and
+    `dossier.py` imports its sibling `regime`, so the directory goes on the path
+    the way `run.py` puts it there. Loaded once, on first use, so a file whose
+    other tests are pure AST reads does not pay for PIL at import time.
+    """
+    if _dossier.module is None:
+        stage = ROOT / "pipeline" / "4_perlector"
+        if str(stage) not in sys.path:
+            sys.path.insert(0, str(stage))
+        spec = importlib.util.spec_from_file_location(
+            "perlector_dossier_under_family_guard", stage / "dossier.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _dossier.module = module
+    return _dossier.module
+
+
+_dossier.module = None
 
 # Every runtime screen standing over GOVERNANCE 3, as (file, function). Each
 # walks a payload it does not control -- caller JSON, witness output, or a
@@ -129,3 +169,129 @@ def test_the_reference_screen_walks_a_pathological_payload_to_the_bottom():
         buried = {"nested": [buried]}
     with pytest.raises(SchemaRefusal, match="may not express capture preference"):
         refuse_capture_preference(buried)
+
+
+# The family driven at depth, one entry per row of PREFERENCE_SCREENS: the
+# screen's supported entry point, a key it must refuse, and the refusal it must
+# raise. The static guard above proves no screen calls itself; only running one
+# proves it reaches the bottom of a payload and still names the field.
+DRIVEN_SCREENS = (
+    (
+        "refuse_capture_preference",
+        lambda value: refuse_capture_preference(value),
+        {"preferred": "one of them"},
+        SchemaRefusal,
+        "may not express capture preference",
+    ),
+    (
+        "physical_act_partition._refuse_preference",
+        physical_act_partition._refuse_preference,
+        {"preferred": "one of them"},
+        SchemaRefusal,
+        "physical-act partition may not express capture preference",
+    ),
+    (
+        "physical_act_partition._refuse_textual",
+        physical_act_partition._refuse_textual,
+        {"text": "L'an mil sept cent"},
+        SchemaRefusal,
+        "textual evidence cannot match physical acts",
+    ),
+    (
+        "cross_capture_autopsia._reject_preference",
+        cross_capture_autopsia._reject_preference,
+        {"witness_rank": 1},
+        SchemaRefusal,
+        "forbidden preference field",
+    ),
+    (
+        "cross_capture_dissent._refuse_scalar_claim_keys",
+        cross_capture_dissent._refuse_scalar_claim_keys,
+        {"confidence": 0.9},
+        SchemaRefusal,
+        "forbidden scalar-claim field",
+    ),
+    (
+        "triage._refuse_preference_named",
+        lambda value: triage._refuse_preference_named(value, "queue"),
+        {"preferred": "one of them"},
+        TriageRefusal,
+        "triage refusal queue-expresses-preference",
+    ),
+    (
+        "dossier.assert_no_order_bearing_field",
+        lambda value: _dossier().assert_no_order_bearing_field(value),
+        {"trust_score": 100},
+        ContractError,
+        "names a preference",
+    ),
+)
+
+
+def _deep(leaf: object, depth: int = FAMILY_DEPTH) -> object:
+    """`leaf` buried under `depth` alternating mappings and lists.
+
+    Both container types, because every screen in the family walks both and a
+    payload of only one would leave half of each walk unexercised.
+    """
+    value = leaf
+    for _ in range(depth):
+        value = {"nested": [value]}
+    return value
+
+
+@pytest.mark.parametrize(
+    ("label", "screen", "forbidden", "refusal", "match"),
+    DRIVEN_SCREENS,
+    ids=[row[0] for row in DRIVEN_SCREENS],
+)
+def test_every_preference_screen_walks_a_pathological_payload_to_the_bottom(
+    label, screen, forbidden, refusal, match
+):
+    """The static guard is a guard on shape; this is the behaviour it stands for.
+
+    A screen that walks the interpreter stack answers a deep payload with a
+    `RecursionError` -- a crash naming neither the record that carried the
+    forbidden field nor the field. Both halves are needed: reaching the bottom of
+    a clean payload proves the walk is not stopped by depth, and refusing a field
+    buried at the same depth proves it is still screening down there rather than
+    quietly giving up. Neither may raise `RecursionError`, which is why the clean
+    half is run bare -- a `RecursionError` there fails the test as itself.
+
+    Only the reference screen was exercised at depth before. The other six were
+    covered by the static guard alone, which cannot tell an explicit worklist
+    that walks everything from one that stops early.
+    """
+    clean = _deep({"leaf": 1})
+    screen(clean)
+    del clean
+
+    buried = _deep(forbidden)
+    with pytest.raises(refusal, match=re.escape(match)):
+        screen(buried)
+
+
+def test_a_dossier_that_contains_itself_is_named_rather_than_swept_forever():
+    """The cycle half, for the one screen whose structure allows a cycle.
+
+    `assert_no_order_bearing_field` sweeps a dossier assembled in memory, so a
+    value that is its own ancestor can reach it, and an explicit worklist has no
+    stack to exhaust: it must name the cycle or hang, and a hang reports less
+    than the `RecursionError` it replaced. It names it.
+
+    The other six screens are *not* given a cycle case, and that is a statement
+    about them rather than an omission. None of them tracks the containers it has
+    open, so a self-referential payload would hang instead of failing -- and a
+    test that hangs is worse than no test. What keeps that unreachable today is
+    the shape of their inputs, not a check inside them: each is fed values parsed
+    from JSON bytes or built by this repository, and neither can be cyclic.
+    Recorded here because it is a live property of the family, not a defect this
+    thread is closing: making them cycle-safe means giving five walks the
+    enter/exit bookkeeping the dossier sweep carries, which is a change to what
+    they refuse and belongs in its own work.
+    """
+    looped: dict = {"testimonia": []}
+    looped["testimonia"].append(looped)
+
+    with pytest.raises(ContractError, match="contains itself"):
+        _dossier().assert_no_order_bearing_field(looped)
