@@ -16,7 +16,13 @@ from pathlib import Path
 import pytest
 
 from common import structure_answer
-from common.structure_answer import PARSE_OUTCOMES, STRUCTURE_ANSWER_SCHEMA, parse, text_digest
+from common.structure_answer import (
+    MAX_LABEL_CHARS,
+    PARSE_OUTCOMES,
+    STRUCTURE_ANSWER_SCHEMA,
+    parse,
+    text_digest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "common" / "structure_answer.py"
@@ -209,6 +215,33 @@ def test_malformed_act_text_is_refused_by_name():
     assert result == {"parse_outcome": "malformed-act-text"}
 
 
+def test_a_label_longer_than_the_ceiling_is_refused_not_kept():
+    """The only verbatim free string a Designator artifact keeps has a bound.
+
+    `text` never reaches an artifact -- the record carries its digest and length
+    -- so `label` is the one field through which a chair could put a page's
+    reading into a Designator payload. A label at the ceiling is accepted and a
+    label one character past it refuses the answer whole, so the page is held
+    with its bytes retained rather than the label truncated (GOVERNANCE 7).
+    """
+    at_ceiling = "L" * MAX_LABEL_CHARS
+    body = json.dumps(
+        {
+            "schema": STRUCTURE_ANSWER_SCHEMA,
+            "acts": [{"box_1000": [0, 0, 500, 500], "text": "a", "label": at_ceiling}],
+        }
+    ).encode("utf-8")
+    assert parse(body, page_w=100, page_h=100)["acts"][0]["label"] == at_ceiling
+
+    over = json.dumps(
+        {
+            "schema": STRUCTURE_ANSWER_SCHEMA,
+            "acts": [{"box_1000": [0, 0, 500, 500], "text": "a", "label": at_ceiling + "L"}],
+        }
+    ).encode("utf-8")
+    assert parse(over, page_w=100, page_h=100) == {"parse_outcome": "oversized-act-label"}
+
+
 def test_every_declared_outcome_is_exercised_above():
     """The guard on the guard: a code added to `PARSE_OUTCOMES` without a test
     above would pass silently otherwise."""
@@ -224,6 +257,7 @@ def test_every_declared_outcome_is_exercised_above():
         "malformed-act",
         "malformed-act-geometry",
         "malformed-act-text",
+        "oversized-act-label",
     }
     assert exercised == PARSE_OUTCOMES
 

@@ -3531,13 +3531,16 @@ def publish_page_testimonia_and_attachments(
                     raw = page_attempt_result.observation_payload
                     if raw is not None:
                         # `False`: the capture already names these bytes on this
-                        # record (`native_capture.raw_response_ref`, bound as an
-                        # input below), and the partition list may not name them
-                        # a second time -- the Perlector reconstructs a page
-                        # record's expected inputs by concatenating the two
-                        # without de-duplication and refuses the record when
-                        # they disagree, so one response listed under both
-                        # fields is a live Chandra page no later stage can read.
+                        # record (`native_capture.raw_response_ref`), and
+                        # `raw_response_refs` is the list of the *partition's*
+                        # responses. A live page has one response, described
+                        # under the capture; naming it here as well would say
+                        # the same reading twice in one payload. The envelope
+                        # itself is safe either way -- `_named_once` below binds
+                        # each blob once, and the Perlector's reconstruction of
+                        # those inputs de-duplicates before it compares
+                        # (`4_perlector/run.py::_distinct_inputs`) -- so this is
+                        # a claim about what the payload says, not a workaround.
                         sources.append((raw, page_attempt_result.raw_response_ref, False))
                 else:
                     for act in page_acts:
@@ -3574,10 +3577,13 @@ def publish_page_testimonia_and_attachments(
                         and reference is not None
                         and reference not in page_response_refs
                     ):
-                        # A page-edge finding must be traceable to bytes the
-                        # record names in its partition list; that traceability
-                        # outranks the Perlector's over-strict input arithmetic
-                        # above. Unreachable for the wire contract -- its
+                        # A page-edge finding names a (response_sha256,
+                        # ordinal) pair, and its response must be reachable
+                        # through the partition list a reader of the finding
+                        # walks -- so this one blob is named there after all,
+                        # and the double-naming above is accepted because the
+                        # alternative is an untraceable finding. Unreachable for
+                        # the wire contract -- its
                         # page-pixel conversion clamps to the page -- so only a
                         # live body wearing the fixture placeholder's pixel
                         # boxes could take this branch.
