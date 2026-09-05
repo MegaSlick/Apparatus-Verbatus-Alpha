@@ -573,23 +573,90 @@ def build_reader_dossier(
     return dossier, delivered_pixels
 
 
+# One walk position, as a crumb and its parent. `None` is the root's parent.
+# Rendered by `_walk_position`, and only when a refusal has to name a place.
+_Trail = tuple[str, Any] | None
+
+# A refusal an operator cannot read has not named anything. The position of a
+# field buried a million levels down inside a Testimonium is its top, its
+# bottom, and how far apart they are, not a path of several million characters.
+# No dossier this build produces comes near this bound.
+_MAX_RENDERED_CRUMBS: Final = 32
+
+
+def _walk_position(trail: _Trail) -> str:
+    """Render a sweep position. Called on the refusal path, never on the clean one."""
+    crumbs: list[str] = []
+    while trail is not None:
+        crumb, trail = trail
+        crumbs.append(crumb)
+    crumbs.reverse()
+    if len(crumbs) > 2 * _MAX_RENDERED_CRUMBS:
+        head = "".join(crumbs[:_MAX_RENDERED_CRUMBS])
+        tail = "".join(crumbs[-_MAX_RENDERED_CRUMBS:])
+        return f"{head}...({len(crumbs) - 2 * _MAX_RENDERED_CRUMBS} more levels)...{tail}"
+    return "".join(crumbs)
+
+
 def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
     """A durable sweep: no key anywhere in a dossier may name a preference.
 
     Cheap enough to run on every dossier this build produces, so a future edit
     that reintroduces a trust/order/preferred field is caught immediately
     rather than argued about at review.
+
+    This is the last member of the no-picker family (GOVERNANCE 3) to stop
+    recursing. The family is enumerated and guarded in
+    `common/test_preference_screen_walks.py`; the round that converted it
+    reported four screens and complete coverage, and there were six -- this one
+    missed because it lives in dossier assembly and is not *called* a preference
+    screen, while doing the same forbidden-vocabulary walk over the same class
+    of witness-derived data. It is iterative now for the family's reason: a
+    dossier carries every Testimonium verbatim, model-authored JSON whose depth
+    this build does not choose, and a recursive walk over a deep one raised
+    `RecursionError` -- a crash naming nothing, from the guard standing over the
+    rule, on the production path, before the digest is taken.
+
+    The path is assembled only when a field is refused, so a deep dossier costs
+    this walk its own list rather than the square of its depth in string bytes.
+    A cycle is refused rather than looped on: the recursive form ended a cycle
+    by exhausting itself, and a walk with no stack to exhaust would hang.
     """
-    if isinstance(value, dict):
-        for key, item in value.items():
-            lowered = key.lower()
+    pending: list[tuple[str, Any, _Trail]] = [("value", value, (path, None))]
+    open_path: set[int] = set()
+    while pending:
+        kind, current, trail = pending.pop()
+        if kind == "exit":
+            open_path.discard(current)
+            continue
+        if kind == "key":
+            lowered = current.lower()
             if any(fragment in lowered for fragment in _FORBIDDEN_KEY_FRAGMENTS):
                 raise ContractError(
-                    f"{path}.{key} names a preference among witnesses. "
+                    f"{_walk_position(trail)}.{current} names a preference among witnesses. "
                     "An order-bearing or trust-bearing dossier field would make the reader a "
                     "picker. Remove the field and rebuild the dossier from unranked testimony."
                 )
-            assert_no_order_bearing_field(item, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            assert_no_order_bearing_field(item, f"{path}[{index}]")
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in open_path:
+                raise ContractError(
+                    f"{_walk_position(trail)} contains itself, so no sweep of this dossier "
+                    "can terminate and none of it can be sealed. Rebuild the dossier from "
+                    "values that are not their own ancestors."
+                )
+            open_path.add(marker)
+            pending.append(("exit", marker, None))
+        if isinstance(current, dict):
+            # A key is checked where the recursive sweep checked it: after the
+            # preceding sibling's whole subtree and before its own value's, so a
+            # dossier with two offenders is still named by the first one.
+            tasks: list[tuple[str, Any, _Trail]] = []
+            for key, item in current.items():
+                tasks.append(("key", key, trail))
+                tasks.append(("value", item, (f".{key}", trail)))
+            pending.extend(reversed(tasks))
+        elif isinstance(current, list):
+            for index in range(len(current) - 1, -1, -1):
+                pending.append(("value", current[index], (f"[{index}]", trail)))
