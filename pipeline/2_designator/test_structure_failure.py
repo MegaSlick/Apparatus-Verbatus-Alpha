@@ -63,6 +63,11 @@ def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(mo
     back off the very authority the context carries. A run authority with no
     closed ingress record refuses, as it did before, and nothing about the
     route is decided for it.
+
+    Each case is set up so the two disagree: argv names one route, the opened
+    context's own `run` names the other, and the assertion follows the context.
+    A regression that went back to reading argv would pass a test that handed
+    both the same record.
     """
     designator = _load_designator()
     handed = []
@@ -71,30 +76,44 @@ def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(mo
         def __init__(self, run):
             self.run = run
 
+    # Every case hands the constructor argv naming one route and gets back a
+    # context whose own authority names the other. A stage that read the route
+    # from `args` -- the second read this change removed -- therefore answers
+    # the opposite of what each assertion below expects, instead of agreeing
+    # with it by accident because the two records were the same object.
+    opened = []
+
     def open_stage_context(args, stage, *, registry_factory):
         handed.append((args, stage, registry_factory))
-        return _Opened(args["run"])
+        return _Opened(opened.pop(0))
 
     monkeypatch.setattr(designator, "open_stage_context", open_stage_context)
     factory = object()
 
-    real_args = {"run": {"ingress": real_ingress_record()}}
+    real_run = {"ingress": real_ingress_record()}
+    fixture_run = {"ingress": synthetic_fixture_ingress_record()}
+
+    real_args = {"run": dict(fixture_run)}
+    opened.append(real_run)
     context, real_input = designator._open(real_args, factory)
     assert real_input is True
-    assert context.run is real_args["run"]
+    assert context.run is real_run
 
-    fixture_args = {"run": {"ingress": synthetic_fixture_ingress_record()}}
+    fixture_args = {"run": dict(real_run)}
+    opened.append(fixture_run)
     context, real_input = designator._open(fixture_args, factory)
     assert real_input is False
-    assert context.run is fixture_args["run"]
+    assert context.run is fixture_run
 
+    unrecorded_args = {"run": dict(real_run)}
+    opened.append({})
     with pytest.raises(ApprovalRefusal, match="not a closed fixture-or-real record"):
-        designator._open({"run": {}}, factory)
+        designator._open(unrecorded_args, factory)
 
     assert handed == [
         (real_args, DESIGNATOR, factory),
         (fixture_args, DESIGNATOR, factory),
-        ({"run": {}}, DESIGNATOR, factory),
+        (unrecorded_args, DESIGNATOR, factory),
     ]
 
 

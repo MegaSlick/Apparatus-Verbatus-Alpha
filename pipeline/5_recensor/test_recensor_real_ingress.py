@@ -28,7 +28,6 @@ What is proven:
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import json
 import shutil
 import subprocess
@@ -207,29 +206,14 @@ def test_the_fixture_reader_is_refused_by_name_on_a_real_submission():
     assert "asked its context for fixture" not in message, "refused by name, not by accessor"
 
 
-def test_the_fixture_reader_refusal_is_resolved_before_the_partition_is_published():
-    """A real submission's non-live-chair refusal must leave the tree untouched.
-
-    `fixture_reader_for` can raise `ContractError` (the test above). If that
-    call happened after `build_run_partition` published the Perlector's
-    partition blob, the refusal would arrive after a write, breaking the
-    standard `perlector_serving_mode`'s own docstring states for this class of
-    check: refuse while the tree is still exactly as this invocation found it.
-    A cheap companion to the executable proof below, not the only proof.
-    """
-    source = inspect.getsource(PERLECTOR_RUN._read_the_acts)
-    reader_call = source.index("fixture_reader_for(")
-    partition_call = source.index("build_run_partition(")
-    assert reader_call < partition_call, (
-        "fixture_reader_for must be resolved before build_run_partition writes "
-        "the partition blob, or a real submission's refusal arrives after a write"
-    )
-
-
 def test_the_fixture_reader_refusal_actually_fires_before_any_write(real_root, monkeypatch):
-    """Drives `_read_the_acts` itself rather than comparing source positions,
-    so deleting the refusal (or introducing a write ahead of it under any
-    name) fails this test. `verify_predecessor_seal` is stubbed out because
+    """Drives `_read_the_acts` itself, so deleting the refusal -- or
+    introducing a write ahead of it under any name -- fails this test. It is
+    the whole proof that the refusal lands before the partition blob is
+    written: a companion test comparing the two calls' positions in the
+    function's source text asserted the same ordering far more weakly, and
+    would have gone on passing over any rewrite that kept the textual order
+    while changing what runs. `verify_predecessor_seal` is stubbed out because
     the real route that would reach this line refuses earlier still, at the
     predecessor seal (see the parametrized test above) -- there is no real
     Designator yet to build a submission past that point -- and the chair and

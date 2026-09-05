@@ -103,12 +103,16 @@ def _live_recovery_trigger(source: str | None = None):
     return compile(ast.Expression(expression), str(RECENSOR), "eval")
 
 
+_NO_SCENARIO = object()
+
+
 def _wants_recovery(
     outside_ink_requests: list,
     *,
     source: str | None = None,
     page_ordinal: int = 1,
     funded_pages: set[int] | None = None,
+    scenario: dict | None | object = _NO_SCENARIO,
 ) -> bool:
     return bool(
         eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
@@ -117,7 +121,7 @@ def _wants_recovery(
             {
                 "act_key": "a",
                 "act": {"page_ordinal": page_ordinal},
-                "scenario": {"recover_acts": []},
+                "scenario": {"recover_acts": []} if scenario is _NO_SCENARIO else scenario,
                 "outside_ink_requests": outside_ink_requests,
                 "funded_pages": set(funded_pages or ()),
                 "used_total": 0,
@@ -130,6 +134,24 @@ def test_wants_recovery_is_inert_without_an_ink_confirmed_observation():
     """The structural wiring: no ink-confirmed request, no recovery wanted."""
     assert _wants_recovery([]) is False
     assert _wants_recovery([{"page_ordinal": 1, "outside_ink_pixels": 40}]) is True
+
+
+def test_wants_recovery_reads_a_real_submissions_absent_scenario_through_the_reader():
+    """The same two cases with no declared scenario at all, which is the real route.
+
+    A real submission has no fixture to declare `recover_acts`, so `scenario`
+    is `None` and `declared_recovery` answers `False` because nothing fed it
+    (`run.py::declared_recovery`), never because the act was measured as
+    needing no recovery. Every case above passes a scenario dict, so the live
+    expression could be rewritten to subscript `scenario["recover_acts"]`
+    directly -- dropping the one reader that knows what an absent scenario
+    means -- and this file would still be green while every real run raised
+    `TypeError` at the trigger. These two cases fail on that rewrite: the
+    first with `TypeError`, and they pin that ink-confirmed recovery still
+    reaches a real run through the observation route.
+    """
+    assert _wants_recovery([], scenario=None) is False
+    assert _wants_recovery([{"page_ordinal": 1, "outside_ink_pixels": 40}], scenario=None) is True
 
 
 def test_a_bypass_of_ink_confirmation_is_caught_by_this_files_own_guard():

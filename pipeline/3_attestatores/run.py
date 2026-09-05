@@ -37,7 +37,6 @@ import witness_adapters  # noqa: E402
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
@@ -74,6 +73,7 @@ from common.stage import (  # noqa: E402
     exemplar_page_ids,
     expected_acts,
     fixture_serving_details,
+    is_real_ingress,
     latest_attempt,
     open_stage_context,
     run_stage,
@@ -110,16 +110,16 @@ DEFAULT_FORMAT_CAPABILITIES = {
 def real_ingress(context) -> bool:
     """Whether this context opened a real submission, read off its run authority.
 
-    The same reading `common.stage.open_stage_context` made to choose the route,
-    taken from the one authority the context carries and never from
-    `context.scenario` or from the shape of anything else: the ingress record is
-    inside `run.json`'s own self-hash, so the route a run was created under
-    cannot be switched by argv or by a fixture declaring a scenario of the same
-    name. An absent record is the synthetic walking skeleton, exactly as
-    `refuse_halted_run` reads it; a present one must parse or it refuses.
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use -- as the Perlector's and Recensor's
+    own `real_ingress` already do -- so no stage can disagree with the
+    constructor about which route a run is on. The reading is taken from the
+    one authority the context carries and never from `context.scenario`: the
+    ingress record is inside `run.json`'s own self-hash, so the route a run was
+    created under cannot be switched by argv or by a fixture declaring a
+    scenario of the same name.
     """
-    run = context.run
-    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+    return is_real_ingress(context.run)
 
 
 def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
