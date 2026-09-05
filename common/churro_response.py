@@ -1,8 +1,8 @@
 """The Churro page witness's closed response contract (unit 12).
 
-Churro's model card -- ``stanford-oval/churro-3B`` at revision
-``ca2150ea465d5a3d67818c50e234b9422619c75d``, named in
-``config/models-real.toml`` -- documents a 3B open-weight VLM for historical
+Churro's model card -- ``stanford-oval/churro-3B`` at the revision
+``config/models-real.toml`` pins, as ``pipeline/3_attestatores/churro.py``
+names it -- documents a 3B open-weight VLM for historical
 document transcription and **no output format at all**: no layout, no bounding
 boxes, no reading-order structure, no tag or JSON schema, no example response
 body. The one wire shape this repository can point at is the trained

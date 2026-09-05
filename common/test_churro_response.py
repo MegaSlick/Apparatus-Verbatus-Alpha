@@ -207,7 +207,15 @@ def test_every_outcome_this_module_can_produce_is_inside_its_declared_set():
         churro_response._refuse("a-name-nobody-declared")
 
 
-def test_the_declared_outcome_set_is_exactly_what_this_contract_can_reach():
+def test_the_declared_outcome_set_is_the_closed_vocabulary_this_module_publishes():
+    """Every name a reader may be handed, written out so adding one is a diff.
+
+    This pins the *declared* set and nothing else. It does not prove each name
+    is reachable -- the sibling tests above do that body by body, and `_refuse`
+    refuses any name outside this set -- and the old title claimed the stronger
+    thing while asserting the weaker one (GOVERNANCE 10 applies to a test's own
+    claim about itself as much as to a measurement).
+    """
     assert churro_response.PARSE_OUTCOMES == frozenset(
         {
             "raw-response-not-bytes",
