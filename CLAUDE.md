@@ -1,8 +1,12 @@
 # Working rules — Apparatus Verbatus
 
-Read [GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md),
-[ARCHITECTURE.md](ARCHITECTURE.md), and [GLOSSARY.md](GLOSSARY.md) before changing the
-project. They bind the work; this file only says how the work is done.
+Read [README.md](README.md) and this file at every session start. Read
+[GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
+and [GLOSSARY.md](GLOSSARY.md) before changing anything they bind — a stage, a contract, a
+witness, a word — and whenever a decision turns on them. They bind the work; this file only
+says how the work is done. The four are not skipped to save time: they are read the moment
+the task touches their subject, and the hard rules and the three that bind are already in
+the two always-read files.
 
 Use the procedure named here only when its trigger fires:
 
@@ -46,7 +50,8 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
 11. **Every enforcement can be removed by Tyrel.** Hooks and guards catch accidents;
     they do not outrank him.
 12. **Everything else is open.** Agents may build and review code, tests, CI, hooks, and
-    operations inside the chamber boundary. Agents never push or merge.
+    operations inside the seat boundary — a worktree under the guard, or a chamber.
+    Agents never push or merge.
 13. **The session decides ordinary engineering.** Unless rule 1 or GOVERNANCE.md reserves
     an action for Tyrel, choose the implementation, structure, names, thresholds, tests,
     configuration, and disposition of findings. Use the goals, governance, prior rulings,
@@ -98,22 +103,31 @@ Stage only files touched for the task; never `git add -A`.
 
 ## Agents
 
-Repository-writing agents work in chambers. The host session remains accountable for the
-goal, decisions, integrated diff, and verification. A chamber is pinned to a commit,
-cannot push, returns a branch, may not edit governed paths, and carries no window onto the
-old pipeline. Use agents for bounded work that benefits from independent context; do not
-create ceremony merely to satisfy a roster.
+Repository-writing agents work in a worktree seat by default and in a chamber when the
+work earns one. The host session remains accountable for the goal, decisions, integrated
+diff, and verification. Either seat is pinned to a commit, returns a branch, may not edit
+a governed path, and cannot push, open a pull request, or merge — the guard refuses those
+on the spawned-agent name (refusals 7 and 8), which is what makes hard rules 10 and 12
+mechanical rather than merely written. Use agents for bounded work that benefits from
+independent context; do not create ceremony merely to satisfy a roster.
 
-**A chamber builds from this repository and its design notes, not from the old system.**
+**Reach for a chamber for two reasons, and say which in the brief.** The work needs the
+window onto the old pipeline, or it installs a dependency this machine should not be
+asked to trust. A container bought its safety from having no route out; a worktree seat
+buys the same result from the guard, at a fraction of the setup. Isolation nobody is
+spending is not a control.
+
+**A seat builds from this repository and its design notes, not from the old system, and
+a chamber is the only seat that can be given anything else.**
 The notes reach it at `/specs`; the old code reaches it only if `AUTOCLAVE_WINDOW` is set
 on `new`, which is a deliberate act and needs a reason in the brief. A brief that tells a
 chamber to read the old pipeline without that is describing a mount that is not there, and
 the chamber will invent rather than report the gap.
 
-**A chamber builds and audits; the host integrates.** Charge the chamber with its own
+**A seat builds and audits; the host integrates.** Charge the seat with its own
 independent audit round, then spend the host's attention on the load-bearing claims, the
 check results, the review loops, the gate, and the push — not on reading every returned
-line a second time. A host that re-reads the whole diff has spent the context the chamber
+line a second time. A host that re-reads the whole diff has spent the context the seat
 existed to save. **Hard rule 6 is untouched by this.** What enters is still inspected, and
 the session that lands it must still be able to justify it; this says where the reading
 happens, not whether it happens.
@@ -160,8 +174,18 @@ status is its last command's, so `gate | tail && push` runs the push after a *fa
 — that is how a red candidate once reached an open pull request. Redirect the gate's output
 to a file, echo `$?`, read it, and push in a separate command.
 
-Review is proportional to risk. Before the first push, run the local gate and use fresh,
-independent review where a defect would be expensive or quiet. Consequential review targets
+Review is proportional to risk, and the risk is named by what the change touches:
+
+| Change touches | Review before the first push |
+|---|---|
+| pod, money, credentials, serving, governed documents, the guard, the hooks | independent panel of fresh readers, CodeRabbit, and the full gate |
+| a pipeline stage or a contract | one independent reader, CodeRabbit, and the full gate |
+| tests, documents, configuration pins, cleanup | CodeRabbit and the full gate |
+
+The full gate runs on the first candidate and on the head that merges; between review
+rounds, `check-fast.sh` plus the touched suites are the check, because a full gate per
+round measures the same tree three times. Use fresh, independent review where a defect
+would be expensive or quiet. Consequential review targets
 one clean candidate commit through `operations/review/README.md`, never a moving index. A
 fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
 candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`;

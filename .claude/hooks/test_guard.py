@@ -648,6 +648,167 @@ class TestAgentGovernance:
         assert "propose exact wording" in decision[1].lower()
 
 
+# --------------------------- 8. an agent pushing, opening a pull request, or merging
+
+
+class TestAgentPushingAndMerging:
+    """Hard rule 12 with something behind it.
+
+    Until worktree seats became ordinary, "an agent never pushes" held because a chamber
+    had no route out of its container. A seat in a host worktree has the session's
+    credentials and its allow list — `Bash(git push:*)` and `Bash(gh pr create:*)` are
+    both on it — so the rule was a sentence and nothing else. Every case here pairs the
+    agent with the session: the same command, refused for one and silent for the other.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "git push",
+            "git push origin work/topic",
+            "git push -u origin work/topic",
+            "git push --tags",
+            "git -C /some/worktree push origin work/topic",
+            "git --git-dir .git push origin work/topic",
+            "rtk proxy git push origin work/topic",
+            "(git push origin work/topic)",
+            "if true; then git push origin work/topic; fi",
+            "gh pr create --title x --body y",
+            "gh pr merge 85 --squash",
+            "gh pr ready 85",
+            "gh -R tyrel/verbatus_alpha pr merge 85",
+            "gh api -X POST repos/tyrel/verbatus_alpha/pulls -f title=x",
+            "gh api --method POST /repos/tyrel/verbatus_alpha/pulls",
+            "gh api -X PUT repos/tyrel/verbatus_alpha/pulls/85/merge",
+            "gh api --method=PUT repos/tyrel/verbatus_alpha/pulls/85/merge",
+            "gh api -f title=x repos/tyrel/verbatus_alpha/pulls",
+        ),
+    )
+    def test_an_agent_may_not_reach_main_through_any_of_these(self, command):
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "git push",
+            "git push origin work/topic",
+            "git push -u origin work/topic",
+            "git -C /some/worktree push origin work/topic",
+            "rtk proxy git push origin work/topic",
+            "gh pr create --title x --body y",
+            "gh pr merge 85 --squash",
+            "gh pr ready 85",
+            "gh api -X POST repos/tyrel/verbatus_alpha/pulls -f title=x",
+            "gh api -X PUT repos/tyrel/verbatus_alpha/pulls/85/merge",
+        ),
+    )
+    def test_the_session_does_every_one_of_them_in_silence(self, command):
+        # The asymmetry is the whole design. Hard rules 4 and 14 are the session's to
+        # exercise, and a prompt on each is what retired the last guard.
+        assert decide(command) is None, command
+
+    def test_a_force_push_is_still_refused_for_both_but_for_different_reasons(self):
+        # The one spelling that cannot be paired, because refusal 3 reaches it first for
+        # the session. Both audiences are stopped; only the agent is stopped by this
+        # check, and the reason strings are what tell them apart.
+        for command in ("git push --force origin work/topic", "git push --force-with-lease"):
+            session = decide(command)
+            assert denied(session), command
+            assert "subagent" not in session[1], command
+            assert denied(decide_as_agent("Bash", {"command": command})), command
+
+    def test_a_push_at_main_is_refused_for_an_agent_by_the_branch_rule_first(self):
+        # Ordering, stated rather than assumed: refusal 1 runs before this one, so an
+        # agent pushing at main is told about hard rule 3. Still refused either way.
+        assert denied(decide_as_agent("Bash", {"command": "git push origin main"}))
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "git bundle create /work/out.bundle work/topic",
+            "git bundle verify /work/out.bundle",
+            "git fetch origin",
+            "git fetch origin main",
+            "git commit -m 'work'",
+            "git log origin/main..HEAD",
+            "gh pr view 85",
+            "gh pr diff 85",
+            "gh pr checks 85",
+            "gh pr comment 85 --body 'fixed in ce6d8bd'",
+            "gh pr list --state open",
+            "gh api repos/tyrel/verbatus_alpha/pulls",
+            "gh api repos/tyrel/verbatus_alpha/pulls/85",
+            "gh api repos/tyrel/verbatus_alpha/pulls/85/comments",
+            "gh api -X GET repos/tyrel/verbatus_alpha/pulls/85/merge",
+            "gh api --method DELETE repos/tyrel/verbatus_alpha/issues/comments/1",
+        ),
+    )
+    def test_an_agent_keeps_every_way_of_working_and_reporting(self, command):
+        # A bundle is how a chamber hands work back, `git fetch` and the `gh` reads are
+        # how any seat sees the state it is working against, and `gh pr comment` is how
+        # it answers a review thread. Refusing these would be the noise that makes the
+        # real refusal invisible.
+        assert decide_as_agent("Bash", {"command": command}) is None, command
+
+    def test_a_graphql_mutation_is_refused_and_a_graphql_read_is_not(self):
+        merge = (
+            "gh api graphql -f query='mutation { mergePullRequest(input: "
+            '{pullRequestId: "PR_1"}) { pullRequest { merged } } }\''
+        )
+        create = (
+            "gh api graphql -f query='mutation { createPullRequest(input: "
+            '{title: "x"}) { pullRequest { number } } }\''
+        )
+        threads = (
+            'gh api graphql -f query=\'query { repository(owner: "tyrel", '
+            'name: "verbatus_alpha") { pullRequest(number: 85) { reviewThreads(first: 50) '
+            "{ nodes { isResolved } } } } }'"
+        )
+        assert denied(decide_as_agent("Bash", {"command": merge}))
+        assert denied(decide_as_agent("Bash", {"command": create}))
+        assert decide_as_agent("Bash", {"command": threads}) is None
+        assert decide(merge) is None
+        assert decide(threads) is None
+
+    def test_a_multiline_graphql_mutation_is_still_seen(self):
+        # `invocation`'s tail stops at the first newline, so the mutation name is read
+        # off the whole command rather than off the tail. A query written across lines
+        # is the ordinary way to write one.
+        command = (
+            "gh api graphql -f query='\n"
+            "mutation {\n"
+            '  mergePullRequest(input: {pullRequestId: "PR_1"}) { clientMutationId }\n'
+            "}\n'"
+        )
+        assert denied(decide_as_agent("Bash", {"command": command}))
+
+    def test_a_write_or_edit_is_not_touched_by_this_refusal(self):
+        # Refusal 8 judges shell commands only. An agent's ordinary file work answers to
+        # refusal 7 and to nothing here.
+        assert (
+            decide_as_agent("Write", {"file_path": str(WORKTREE / "operations" / "x.py")}) is None
+        )
+        assert (
+            decide_as_agent("Edit", {"file_path": str(WORKTREE / "pipeline" / "stage.py")}) is None
+        )
+        assert denied(decide_as_agent("Write", {"file_path": str(WORKTREE / "CLAUDE.md")}))
+
+    def test_prose_naming_a_push_is_not_a_push(self):
+        # Quoted text is data — the same rule that refusals 1 to 7 are read under, and
+        # the class of false alarm that retired the last guard.
+        for command in (
+            "git commit -m 'the host runs git push after the gate'",
+            "gh pr comment 85 --body 'ready for gh pr merge once CI is green'",
+            "echo 'do not run gh pr create'",
+        ):
+            assert decide_as_agent("Bash", {"command": command}) is None, command
+
+    def test_the_refusal_names_the_rule_and_who_does_it_instead(self):
+        decision = decide_as_agent("Bash", {"command": "git push origin work/topic"})
+        assert "hard rule 12" in decision[1].lower()
+        assert "main session" in decision[1].lower()
+
+
 # --------------------------------------------------- seeing through `rtk proxy`
 
 
@@ -862,11 +1023,14 @@ class TestShape:
         assert '"ask"' not in code and "'ask'" not in code
 
     def test_evaluate_runs_every_refusal(self):
-        # Seven, not the five Tyrel named. Six is the hook-bypass check, flagged as
-        # one past the spec in `switching_the_hooks_off`. Seven is the agent-only
-        # governed-path check, added when built-in agent types were allowed back in.
-        # An eighth arriving without that conversation fails here.
-        assert len(guard.CHECKS) == 7
+        # Eight, not the five Tyrel named. Six is the hook-bypass check, flagged as
+        # one past the spec in `switching_the_hooks_off`. Seven and eight are the
+        # agent-only checks: the governed-path one, added when built-in agent types
+        # were allowed back in, and the push/pull-request/merge one, added when host
+        # worktree seats became the ordinary build seat (R4, Tyrel's ruling 2026-09-05)
+        # and "a chamber cannot push" stopped being the thing that enforced hard rule
+        # 12. A ninth arriving without that conversation fails here.
+        assert len(guard.CHECKS) == 8
 
     def test_an_unreadable_payload_fails_closed(self):
         result = subprocess.run(
