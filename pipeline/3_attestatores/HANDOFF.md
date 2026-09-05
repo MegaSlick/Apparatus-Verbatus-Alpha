@@ -368,6 +368,29 @@ say.
    adapter's own account of its bytes beside the bytes themselves instead of
    dropping the view for want of a state name.
 
+**Churro's declared 24,000-token bound is a declaration, and only sometimes the
+request.** `common/native_witness.py::CHURRO_OUTPUT_TOKENS` is Churro's carried
+HuggingFace-generate `max_new_tokens`, and the live seam used to rename it
+straight onto the wire as vLLM's `max_tokens`. Every Churro row in
+`config/serving_recipes_real.toml` caps `max_model_len` at 2,048, 4,096 and
+8,192, and vLLM refuses a request whose prompt plus `max_tokens` exceeds the
+row's context — so the very first call on a real pod was a refusal, on a card
+billing by the hour, from the one chair in the pass that sent a bound at all.
+`live_witness.churro_generation_sent` now asks the sealed row the chair is
+actually running under (`ChairClient.handle.profile`): the declared bound goes
+on the wire only where `max_model_len` is strictly larger than it, and
+otherwise nothing is sent and the engine bounds generation by `max_model_len`
+itself — the same decision the Perlector and the Designator already record, and
+the only answer budget measured by the component that holds the tokenizer and
+the image. This seam estimates no prompt cost: a reservation nobody measured
+would be a number the record could not defend and could still be refused by the
+row. The declaration is untouched — `generation_declared` carries 24,000 on
+every request, the retained Churro model view still requires it, and a row that
+states no positive `max_model_len` is refused by name before the request is
+built. `test_live_witness.py` walks every Churro row in the shipped catalogue at
+every tier and asserts what this seam would send is a bound that row can take;
+its counterfactual holds the old flat 24,000 against the same three rows.
+
 Two further seams closed with them:
 
 **A live record says which kind of bytes it retained.** `raw_response_ref` means

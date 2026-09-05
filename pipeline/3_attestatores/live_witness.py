@@ -65,10 +65,28 @@ extra decoding parameters (``repetition_penalty``, ``top_k``, ``top_p``).
 ``generation_sent`` is built by *allow-listing* those three fields rather than
 a "minus" subtraction, so a future carried key nobody has named yet defaults
 to *not* being sent (GOVERNANCE 7: never send a vendor value silently) instead
-of leaking onto the wire by omission from a denylist. Churro's declared
-``max_new_tokens`` is HuggingFace-generate vocabulary; vLLM's OpenAI parameter
-for the same bound is ``max_tokens``, so the one declared key is renamed, not
-dropped, on the way to the wire.
+of leaking onto the wire by omission from a denylist.
+
+**Churro's token bound is declared at 24,000 and sent only where the sealed row
+can hold it.** ``common.native_witness.CHURRO_OUTPUT_TOKENS`` is Churro's
+carried HuggingFace-generate value, and ``generation_declared`` retains it on
+every request and in the retained model view exactly as before: it is the
+record of what Churro would have been asked for. What goes on the wire is a
+different question, and only the sealed serving row the chair actually runs
+under can answer it. Every Churro row in ``config/serving_recipes_real.toml``
+caps ``max_model_len`` at 2,048/4,096/8,192, and vLLM refuses a request whose
+prompt plus ``max_tokens`` exceeds that -- so sending 24,000 made the first
+real call a 400 on a card that bills by the hour. ``churro_generation_sent``
+therefore renames the declared key to vLLM's ``max_tokens`` only when the row's
+own ``max_model_len`` is strictly larger than it, and otherwise sends **no**
+bound at all: with no ``max_tokens`` the engine bounds generation by
+``max_model_len`` itself, which is the answer budget measured by the one
+component that holds the tokenizer and the image. Nothing here estimates the
+prompt's token cost -- no tokenizer runs at this seam, and a guessed reservation
+would be a number nobody measured (GOVERNANCE 10) that could still be refused by
+the row. A ``"length"`` stop under this rule honestly means the context was
+exhausted, exactly as it already does for the Perlector and the Designator,
+neither of which sends a bound either.
 
 **DAI's closed model view**: ``dai.v1`` is act-scoped and, unlike Churro or
 Chandra, ``feeding.retain_model_view`` closes its ``view`` to DAI's own schema
@@ -260,14 +278,65 @@ def act_chair_request(
     return ActChairRequest(request=request, presented=presented, prompt=prompt)
 
 
+def row_context_bound(profile: Any, adapter_name: str) -> int:
+    """The sealed serving row's own context length, or a refusal naming the row.
+
+    ``ChairClient.handle.profile`` is the
+    `operations/serving/config.py::ServingProfile` the chair actually runs
+    under, and its ``max_model_len`` is the only field in the serving contract
+    that says how long a request the engine will accept -- there is no separate
+    answer-budget field, and ``smoke.py`` sends no bound at all. A row that
+    cannot state it is refused here by name, before a request is built, rather
+    than discovered as a wire refusal after a pod is already billing.
+    """
+
+    max_model_len = getattr(profile, "max_model_len", None)
+    if not isinstance(max_model_len, int) or isinstance(max_model_len, bool) or max_model_len <= 0:
+        raise SchemaRefusal(
+            f"the sealed serving row for {adapter_name} (recipe="
+            f"{getattr(profile, 'recipe', None)!r}, chair={getattr(profile, 'chair', None)!r}, "
+            f"tier={getattr(profile, 'tier', None)!r}) states no positive max_model_len, so "
+            "nothing here can say what request length it accepts; a generation bound is never "
+            "sent on a guess"
+        )
+    return max_model_len
+
+
+def churro_generation_sent(profile: Any, generation_declared: Mapping[str, Any]) -> dict[str, Any]:
+    """Churro's declared token bound as the sealed row will actually take it.
+
+    Sent as vLLM's ``max_tokens`` only when the row's ``max_model_len`` is
+    strictly larger than the declared bound; otherwise nothing is sent and the
+    engine bounds generation by ``max_model_len`` itself. See the module
+    docstring's "Churro's token bound" paragraph for why no prompt reservation
+    is estimated here.
+    """
+
+    max_model_len = row_context_bound(profile, "churro.v1")
+    declared_bound = generation_declared["max_new_tokens"]
+    if declared_bound < max_model_len:
+        return {"max_tokens": declared_bound}
+    return {}
+
+
 def page_chair_request(
-    context: Any, adapter: Any, adapter_name: str, presentation: Mapping[str, Any]
+    context: Any,
+    adapter: Any,
+    adapter_name: str,
+    presentation: Mapping[str, Any],
+    *,
+    profile: Any,
 ) -> ChairRequest:
     """Build one page-scoped (Churro or Chandra) reading request from a whole page.
 
     ``presentation`` is exactly what `run.py::presentation_for_page` returns;
     both page-scoped adapters present the exact image they were given
     unchanged (`witness_adapters._present`, `chandra.present`).
+
+    ``profile`` is the sealed serving row this chair runs under
+    (``ChairClient.handle.profile``). Only Churro sends a generation bound at
+    all, and only that branch consults the row: Chandra sends none, so no row
+    field can make its request too long for the engine.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -306,7 +375,7 @@ def page_chair_request(
         )
     if adapter_name == "churro.v1":
         generation_declared: dict[str, Any] = dict(feeding.churro_generation())
-        generation_sent = {"max_tokens": generation_declared["max_new_tokens"]}
+        generation_sent = churro_generation_sent(profile, generation_declared)
     else:
         generation_declared = {}
         generation_sent = {}

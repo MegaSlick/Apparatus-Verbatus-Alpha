@@ -44,7 +44,9 @@ from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
+    ServingProfile,
     chair_preflight_identity_digest,
+    load_serving_recipes,
     parse_serving_recipes,
     profile_preflight_digest,
 )
@@ -65,6 +67,26 @@ REVISION = "a" * 40
 MANIFEST = "b" * 64
 DECODING_SHA = "c" * 64
 TIER = "generic-48gb"
+REPO_ROOT = STAGE.parents[1]
+REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
+CHURRO_SERVED_MODEL_ID = "attestator-3-churro"
+
+
+def _sealed_churro_rows() -> tuple[ServingProfile, ...]:
+    """Every Churro row in the shipped real catalogue, at every tier.
+
+    Read from the file the operator actually ships, not a hand-typed copy: the
+    defect this guards against was a sent bound that no shipped row could
+    accept, so the shipped bytes are the only ones worth asserting against.
+    """
+
+    rows = tuple(
+        profile
+        for profile in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(profile, ServingProfile) and profile.served_model_id == CHURRO_SERVED_MODEL_ID
+    )
+    assert rows, f"the shipped real catalogue names no {CHURRO_SERVED_MODEL_ID} serving row"
+    return rows
 
 
 # --- a fake run tree: image bytes by path, plus a content-addressed blob sink -----
@@ -171,21 +193,90 @@ def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own
         live_witness.act_chair_request(context, adapter, presentation)
 
 
-def test_page_chair_request_builds_churros_two_message_framing_and_renames_the_token_bound():
+def _churro_page_request(profile: Any):
     context = SimpleNamespace(tree=_FakeTree())
     image_bytes = b"whole-page-bytes"
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_prompt)
+    request = live_witness.page_chair_request(
+        context, adapter, "churro.v1", presentation, profile=profile
+    )
+    return request, digest_bytes(image_bytes)
 
-    request = live_witness.page_chair_request(context, adapter, "churro.v1", presentation)
 
-    assert request.image_sha256s == (digest_bytes(image_bytes),)
+def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_token_bound():
+    row = _sealed_churro_rows()[0]
+    request, image_sha256 = _churro_page_request(row)
+
+    assert request.image_sha256s == (image_sha256,)
     system, user = request.messages
     assert system == {"role": "system", "content": feeding.churro_prompt()["system"]}
     assert user["content"][0]["text"] == feeding.churro_prompt()["user"]
+    # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
-    assert dict(request.generation_sent) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    # The sealed row is shorter than the declared bound, so no bound is sent
+    # and the engine bounds generation by `max_model_len` itself.
+    assert CHURRO_OUTPUT_TOKENS >= row.max_model_len
+    assert dict(request.generation_sent) == {}
+
+
+def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends():
+    """The defect, asserted against the shipped catalogue rather than one row.
+
+    vLLM refuses a request whose prompt plus `max_tokens` exceeds the row's
+    `max_model_len`; a sent bound at or above `max_model_len` cannot be
+    accepted by that row whatever the prompt costs, which is the part this
+    seam can check without a tokenizer.
+    """
+
+    rows = _sealed_churro_rows()
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb", "generic-80gb-plus"}
+    for row in rows:
+        request, _ = _churro_page_request(row)
+        assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+        sent = dict(request.generation_sent)
+        assert set(sent) <= {"max_tokens"}
+        if "max_tokens" in sent:
+            assert sent["max_tokens"] < row.max_model_len, row.tier
+
+
+def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():
+    """The counterfactual: what this seam used to send, against the same rows."""
+
+    rows = _sealed_churro_rows()
+    over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
+    assert over == [row.tier for row in rows]
+    assert [row.max_model_len for row in rows] == [2048, 4096, 8192]
+
+
+def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it():
+    """A longer row is not refused: the declaration is sendable when it fits."""
+
+    long_row = SimpleNamespace(
+        max_model_len=CHURRO_OUTPUT_TOKENS + 1,
+        recipe="r",
+        chair="attestator_3",
+        tier="t",
+    )
+    assert live_witness.churro_generation_sent(long_row, feeding.churro_generation()) == {
+        "max_tokens": CHURRO_OUTPUT_TOKENS
+    }
+    exact_row = SimpleNamespace(
+        max_model_len=CHURRO_OUTPUT_TOKENS, recipe="r", chair="attestator_3", tier="t"
+    )
+    assert live_witness.churro_generation_sent(exact_row, feeding.churro_generation()) == {}
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, "2048", 2048.0])
+def test_page_chair_request_refuses_a_row_that_cannot_state_its_context_bound(value):
+    row = SimpleNamespace(
+        max_model_len=value, recipe="unproven-real-attestatores", chair="attestator_3", tier="t"
+    )
+    with pytest.raises(SchemaRefusal) as error:
+        _churro_page_request(row)
+    assert "max_model_len" in str(error.value)
+    assert "attestator_3" in str(error.value)
 
 
 def test_page_chair_request_builds_chandras_single_instruction_framing():
@@ -196,7 +287,9 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=chandra_module.prompt)
 
-    request = live_witness.page_chair_request(context, adapter, "chandra.v1", presentation)
+    request = live_witness.page_chair_request(
+        context, adapter, "chandra.v1", presentation, profile=_sealed_churro_rows()[0]
+    )
 
     assert len(request.messages) == 1
     (message,) = request.messages
@@ -214,7 +307,9 @@ def test_page_chair_request_refuses_an_unrecognized_prompt_shape():
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=lambda: {"weird": "shape"})
 
     with pytest.raises(SchemaRefusal):
-        live_witness.page_chair_request(context, adapter, "made-up.v1", presentation)
+        live_witness.page_chair_request(
+            context, adapter, "made-up.v1", presentation, profile=_sealed_churro_rows()[0]
+        )
 
 
 # =========================== response derivation harness ======================

@@ -4915,7 +4915,14 @@ def _serve_page_unit(
     """One page-scoped chair, one page: one request, then every act view it feeds."""
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
     request = live_witness.page_chair_request(
-        context, adapter, resolved.witness_adapter, presentation
+        context,
+        adapter,
+        resolved.witness_adapter,
+        presentation,
+        # The sealed row this chair is actually running under. Churro's
+        # generation bound is only sendable if that row can hold it
+        # (`live_witness.churro_generation_sent`).
+        profile=client.handle.profile,
     )
     response = client.read(request)
     live = live_witness.captured_page_attempt(
