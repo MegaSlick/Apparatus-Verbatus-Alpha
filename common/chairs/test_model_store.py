@@ -98,7 +98,7 @@ def _store(tmp_path):
     return record
 
 
-def test_host_download_record_fixture_derives_seven_chair_inventory_and_verifies_bytes(tmp_path):
+def test_host_download_record_fixture_derives_six_chair_inventory_and_verifies_bytes(tmp_path):
     record = _store(tmp_path)
 
     inventory = verify_store(tmp_path)
@@ -108,7 +108,7 @@ def test_host_download_record_fixture_derives_seven_chair_inventory_and_verifies
         item.chair for item in REQUIRED_ARTIFACTS
     ]
     assert inventory["refusals"] == [SURYA_OCR_2_REFUSAL]
-    assert len({row["artifact"] for row in inventory["artifacts"]}) == 6
+    assert len({row["artifact"] for row in inventory["artifacts"]}) == 5
 
 
 def test_derived_inventory_cannot_restate_divergent_store_facts(tmp_path):
@@ -328,7 +328,7 @@ def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
 def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
     """A dropped name must refuse by name, not escape the closed refusal taxonomy.
 
-    Six unique artifacts in, six out, so renaming one drops the old name. The
+    Five unique artifacts in, five out, so renaming one drops the old name. The
     transition check read the replacement by that key directly and raised a bare
     ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
     taxonomy", and silent about which artifact left the record.
@@ -671,11 +671,11 @@ def test_validate_record_refuses_a_duplicate_artifact_name(tmp_path):
         derived_inventory(record)
 
 
-def test_validate_record_refuses_a_five_artifact_record(tmp_path):
+def test_validate_record_refuses_a_four_artifact_record(tmp_path):
     record = _store(tmp_path)
-    record["artifacts"] = record["artifacts"][:5]
+    record["artifacts"] = record["artifacts"][:4]
 
-    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
+    with pytest.raises(DigestMismatchRefusal, match="exactly 5 unique roster"):
         derived_inventory(record)
 
 
@@ -705,7 +705,7 @@ def test_derived_inventory_holds_a_renamed_artifact_to_the_artifact_keyed_path_r
 def _mark_pending(tmp_path, record, artifact, reason):
     """Rewrite one entry in the pending-fetch shape and remove its bytes.
 
-    This is the store's real state today: five Hugging Face snapshots fetched,
+    This is the store's real state today: four Hugging Face snapshots fetched,
     the Surya bundle not yet on disk.
     """
     required = next(item for item in REQUIRED_ARTIFACTS if item.artifact == artifact)
@@ -740,11 +740,11 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["complete"] is False
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
-    assert len(rows) == 7
+    assert len(rows) == 6
     assert rows["proposer_surya2"]["state"] == "pending-fetch"
     assert rows["proposer_surya2"]["reason"] == "s3 bundle not yet fetched by the host"
     assert "snapshot" not in rows["proposer_surya2"]
-    # The five artifacts that did land are verified exactly as before.
+    # The four artifacts that did land are verified exactly as before.
     assert all(rows[chair]["state"] == "present" for chair in rows if chair != "proposer_surya2")
     assert inventory == derived_inventory(record)
 
@@ -1148,7 +1148,7 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
         "surya2-detection"
     }
-    assert len(present) == 5
+    assert len(present) == 4
 
     calls = []
     real = model_store.verify_store
@@ -1299,10 +1299,10 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
             assert entry["license"] == UNTEXTED_LICENCE_SNAPSHOT
             assert requirement.license_declaration in text
     # Synthetic evidence must be inside the manifest's custody boundary.
-    yolo = stored["yolo26-detection"]
-    assert yolo["license"] in yolo["required_files"]
-    assert "README.md" in yolo["required_files"]
-    (tmp_path / yolo["snapshot"] / yolo["license"]).write_text("agpl-3.0", encoding="utf-8")
+    chandra = stored["chandra-ocr-2"]
+    assert chandra["license"] in chandra["required_files"]
+    assert "README.md" in chandra["required_files"]
+    (tmp_path / chandra["snapshot"] / chandra["license"]).write_text("openrail", encoding="utf-8")
     with pytest.raises(DigestMismatchRefusal, match=UNTEXTED_LICENCE_SNAPSHOT):
         verify_store(tmp_path)
 
@@ -1310,8 +1310,8 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
 def test_declared_licence_observation_requires_the_model_card_it_cites(tmp_path):
     """A short fetch cannot make a synthetic observation about absent evidence."""
 
-    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "yolo26-detection")
-    (tmp_path / "model.pt").write_bytes(b"weights")
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "chandra-ocr-2")
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
 
     with pytest.raises(DigestMismatchRefusal, match="no regular README.md"):
         model_store._snapshot_licence(tmp_path, requirement)
@@ -1320,13 +1320,13 @@ def test_declared_licence_observation_requires_the_model_card_it_cites(tmp_path)
 
 
 def test_declared_licence_observation_must_match_the_fetched_model_card(tmp_path):
-    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "yolo26-detection")
-    (tmp_path / "model.pt").write_bytes(b"weights")
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "chandra-ocr-2")
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
     (tmp_path / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
 
     with pytest.raises(
         DigestMismatchRefusal,
-        match="model card declares 'apache-2.0'.*roster policy expects 'agpl-3.0'",
+        match="model card declares 'apache-2.0'.*roster policy expects 'openrail'",
     ):
         model_store._snapshot_licence(tmp_path, requirement)
 
@@ -1356,7 +1356,7 @@ def test_nested_third_party_licence_is_not_called_the_repository_licence(tmp_pat
 @pytest.mark.parametrize(
     ("artifact", "reserved_name"),
     [
-        ("yolo26-detection", UNTEXTED_LICENCE_SNAPSHOT),
+        ("chandra-ocr-2", UNTEXTED_LICENCE_SNAPSHOT),
         ("dai-recordgold-atr", UNDECLARED_LICENCE_SNAPSHOT),
     ],
 )
@@ -1379,9 +1379,9 @@ def test_synthetic_licence_observation_never_overwrites_repository_bytes(
 
 def test_declared_and_undeclared_synthetic_licence_records_cannot_be_swapped(tmp_path):
     record = _store(tmp_path)
-    yolo = next(item for item in record["artifacts"] if item["artifact"] == "yolo26-detection")
-    yolo["license"] = UNDECLARED_LICENCE_SNAPSHOT
-    yolo["required_files"] = [UNDECLARED_LICENCE_SNAPSHOT, "model.safetensors"]
+    chandra = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    chandra["license"] = UNDECLARED_LICENCE_SNAPSHOT
+    chandra["required_files"] = [UNDECLARED_LICENCE_SNAPSHOT, "model.safetensors"]
 
     with pytest.raises(DigestMismatchRefusal, match="must be 'LICENSE-DECLARED-WITHOUT-TEXT.txt'"):
         derived_inventory(record)
@@ -1389,9 +1389,9 @@ def test_declared_and_undeclared_synthetic_licence_records_cannot_be_swapped(tmp
 
 def test_declared_without_text_record_keeps_its_model_card_required(tmp_path):
     record = _store(tmp_path)
-    yolo = next(item for item in record["artifacts"] if item["artifact"] == "yolo26-detection")
-    yolo["license"] = UNTEXTED_LICENCE_SNAPSHOT
-    yolo["required_files"] = [UNTEXTED_LICENCE_SNAPSHOT, "model.safetensors"]
+    chandra = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    chandra["license"] = UNTEXTED_LICENCE_SNAPSHOT
+    chandra["required_files"] = [UNTEXTED_LICENCE_SNAPSHOT, "model.safetensors"]
 
     with pytest.raises(DigestMismatchRefusal, match="README.md.*required file"):
         derived_inventory(record)
@@ -1552,7 +1552,7 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         "notes were not compared"
     )
     assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 6
+    assert len(carried) == 5
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1594,7 +1594,7 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
 
     plan = pod_materialization_plan(tmp_path)
 
-    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
+    # Five Hugging Face chairs over four snapshots: the two chandra chairs each
     # need their own role-keyed cache entry, both made from the one stored
     # snapshot, because a cache entry is keyed by role and a store is not.
     assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
@@ -1602,10 +1602,9 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
         "attestator_1": "hf/chandra-ocr-2",
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
-        "secondary_proposer": "hf/yolo26-detection",
         "perlector": "hf/qwen3.8-27B",
     }
-    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
+    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 4
     # model_root is local-repository only; it is not a second cache.
     assert plan["model_root_entries"]["proposer_surya2"]["snapshot"] == ("local/surya2-detection")
     assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]

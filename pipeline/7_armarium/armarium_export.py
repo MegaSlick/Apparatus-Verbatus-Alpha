@@ -239,7 +239,13 @@ class ArmariumProjection:
     writer refuses any record that resembles an act.
     """
 
-    fixture_id: str
+    # Exactly one of ``fixture_id``/``submission_id`` is a non-blank string, never
+    # both and never neither -- ``_validate_projection`` requires it and the
+    # manifest's own ``run`` block carries whichever one is set, under its own
+    # name. A corpus identity stamped into the field named ``fixture_id`` would
+    # travel in every export forever and read as a fixture run; GLOSSARY's "one
+    # concept per word" is why the two are never overloaded onto one field.
+    fixture_id: str | None
     scenario: str
     config_digest: str
     aggregate: dict[str, Any]
@@ -253,6 +259,10 @@ class ArmariumProjection:
     # reasons.  Carrying this basis lets the exported claim be recomputed rather
     # than merely checked for a plausible-looking nonempty reason list.
     aggregate_basis: dict[str, Any]
+    # A real submission's identity: the filename ledger's self-hash
+    # (``common.stage.submission_identity``). ``None`` on a fixture run, which
+    # carries ``fixture_id`` instead.
+    submission_id: str | None = None
     # ``None`` means this run has no sealed salvage inventory at all.  That is
     # materially different from a sealed, empty inventory: the former must not
     # be exported as a reassuring count of zero.
@@ -733,7 +743,13 @@ _MANIFEST_FIELDS: Final = frozenset(
         "self_hash",
     }
 )
-_MANIFEST_RUN_FIELDS: Final = frozenset({"fixture_id", "scenario", "config_digest"})
+# Two closed shapes, not one field set with an optional member: a fixture run's
+# manifest names `fixture_id` and a real run's names `submission_id`, and a
+# manifest naming both or neither is refused rather than treated as "the other
+# one is just absent". `_verify_manifest_field_closure` picks the shape by which
+# key the manifest actually carries.
+_MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest"})
+_MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest"})
 _MANIFEST_MEMBER_FIELDS: Final = frozenset({"path", "sha256", "bytes"})
 _MANIFEST_CLAIM_FIELDS: Final = frozenset(
     {
@@ -825,16 +841,41 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     shapes would create a second schema that could drift from their recomputation.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
+    raw_run = manifest.get("run")
+    if not isinstance(raw_run, dict):
+        raise SchemaRefusal("the manifest run binding is not an object")
+    has_fixture = "fixture_id" in raw_run
+    has_submission = "submission_id" in raw_run
+    if has_fixture and has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names both a fixture identifier and a submission "
+            "identifier; a run's export is identified by exactly one, never both"
+        )
+    if not has_fixture and not has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    identity_field = "fixture_id" if has_fixture else "submission_id"
     run = _require_exact_fields(
-        manifest["run"], _MANIFEST_RUN_FIELDS, subject="the manifest run binding"
+        raw_run,
+        _MANIFEST_RUN_FIELDS_FIXTURE if has_fixture else _MANIFEST_RUN_FIELDS_REAL,
+        subject="the manifest run binding",
     )
     if any(
         not isinstance(run.get(field), str) or not run[field].strip()
-        for field in ("fixture_id", "scenario")
+        for field in (identity_field, "scenario")
     ):
+        subject = "fixture" if has_fixture else "submission"
         raise SchemaRefusal(
-            "the manifest run binding has no non-blank fixture and scenario identities"
+            f"the manifest run binding has no non-blank {subject} and scenario identities"
         )
+    if has_submission:
+        # Mirrors `_validate_projection`'s tightening: the manifest boundary must
+        # not be looser than the projection boundary that fed it, or a resealed
+        # package could carry a hand-typed corpus label under the field
+        # documented as a filename ledger's self-hash.
+        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
@@ -1285,8 +1326,26 @@ def _validate_logical_act_conservation(
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
-    if not isinstance(projection.fixture_id, str) or not projection.fixture_id:
-        raise SchemaRefusal("an Armarium projection has no fixture identifier")
+    has_fixture = isinstance(projection.fixture_id, str) and bool(projection.fixture_id)
+    has_submission = isinstance(projection.submission_id, str) and bool(projection.submission_id)
+    if not has_fixture and not has_submission:
+        raise SchemaRefusal(
+            "an Armarium projection has neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    if has_fixture and has_submission:
+        raise SchemaRefusal(
+            "an Armarium projection has both a fixture identifier and a submission "
+            "identifier; a run's export must be identified by exactly one, never both"
+        )
+    if has_submission:
+        # `fixture_id` is a human-chosen label with no fixed shape; `submission_id`
+        # is documented (dataclass comment above, HANDOFF.md) as the filename
+        # ledger's own self-hash, and `common.stage.submission_identity` refuses
+        # to produce one that is not a sha256. The export boundary must be at
+        # least as strict as the thing that produces the value, or a hand-typed
+        # corpus label could ride out of the pipeline under this field forever.
+        _require_sha256(projection.submission_id, "an Armarium projection submission identity")
     if not isinstance(projection.scenario, str) or not projection.scenario:
         raise SchemaRefusal("an Armarium projection has no scenario")
     _require_sha256(projection.config_digest, "an Armarium projection sealed configuration digest")
@@ -1696,6 +1755,26 @@ def _pages_by_ordinal(
             raise SchemaRefusal("an export page census has no unique integer ordinal")
         indexed[ordinal] = page
     return indexed
+
+
+def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
+    """The manifest's `run` block, under whichever identity name this run carries.
+
+    `_validate_projection` has already required exactly one of `fixture_id` /
+    `submission_id` to be a non-blank string before this is ever called, so the
+    branch here only projects that decision; it does not make a second one.
+    """
+    if isinstance(projection.submission_id, str) and projection.submission_id:
+        return {
+            "submission_id": projection.submission_id,
+            "scenario": projection.scenario,
+            "config_digest": projection.config_digest,
+        }
+    return {
+        "fixture_id": projection.fixture_id,
+        "scenario": projection.scenario,
+        "config_digest": projection.config_digest,
+    }
 
 
 def _verify_region_page_binding(
@@ -3089,11 +3168,7 @@ def _export_manifest(
             if len(set(_LITERAL_TEXT_FORMATS) & set(formats.formats)) >= 2
             else [],
         },
-        "run": {
-            "fixture_id": projection.fixture_id,
-            "scenario": projection.scenario,
-            "config_digest": projection.config_digest,
-        },
+        "run": _manifest_run_binding(projection),
         "formats": formats.to_record(),
         "claims": {
             # Measured, not constant. A status that says `partial` on every run

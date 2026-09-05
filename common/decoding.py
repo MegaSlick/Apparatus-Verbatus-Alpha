@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from pathlib import Path
 from typing import Any, Final
@@ -54,15 +55,39 @@ def load_decoding_policy(
 
 
 def _validate_decoding_policy(policy: Any) -> None:
-    """Close both sections before their values can mint provenance identities."""
+    """Close every section before its values can mint provenance identities.
+
+    Three sections, each closed. `reading_of_record` is pinned to temperature
+    0: it is the posture every Attestator and the Perlector read under, and a
+    reading of record that varied would not be one. `structure` is the
+    Designator's structure pass's own posture (Tyrel, 2026-09-02) and is
+    admitted at any finite, non-negative temperature: the ruling is that this
+    pass may vary, sealed and recorded, so the loader does not pin the number
+    -- whether a given value can actually be executed is the pass's own refusal
+    to make at its point of use, not this loader's to hide by rejecting the
+    bytes. The section is required, not optional: `common/stage.py` binds the
+    name `structure` to the sealed digest of these bytes on every structural
+    seal, and a sealed file with no such section would be a posture named
+    over bytes that do not contain it.
+    """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
-    if set(policy) != {"schema", "reading_of_record", "variance_experiment"}:
+    if set(policy) != {"schema", "reading_of_record", "variance_experiment", "structure"}:
         raise ContractError("decoding configuration has the wrong closed schema")
     if policy["schema"] != "decoding.v1":
         raise ContractError("decoding configuration has an unsupported schema")
     record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
+    structure = policy["structure"]
+    if (
+        not isinstance(structure, dict)
+        or set(structure) != {"temperature"}
+        or isinstance(structure["temperature"], bool)
+        or not isinstance(structure["temperature"], (int, float))
+        or not math.isfinite(structure["temperature"])
+        or structure["temperature"] < 0
+    ):
+        raise ContractError("decoding structure must declare one finite, non-negative temperature")
     if (
         not isinstance(record, dict)
         or set(record) != {"temperature"}

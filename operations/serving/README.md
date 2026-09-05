@@ -60,13 +60,39 @@ log-directory default: the pod assembler must give every manager for the same
 card the same stable lock path. The launcher passes that lock descriptor to
 the exact vLLM child, so a controller crash cannot release the lease while its
 child remains resident. The default command is
-`sys.executable -m vllm serve`: the executable and the inspected installed
-distribution therefore come from the same Python environment. That equality is
-enforced, not merely defaulted — a supplied `command_prefix` naming a different
-interpreter is refused at construction unless the caller also supplies the
-`PackageInspector` for the environment it launches. Otherwise the exact package
-pin would pass against distributions the engine never imports, and the launch
-audit's `runtime_packages.observed` would measure the wrong Python.
+`sys.executable -m vllm.entrypoints.cli.main serve`: the executable and the
+inspected installed distribution therefore come from the same Python
+environment. The module is `vllm.entrypoints.cli.main`, not `vllm` itself —
+checked against the pinned vLLM 0.27.1's own published wheel, not assumed:
+`vllm/__main__.py` is absent from its central directory (and from the tree at
+v0.10.1, v0.27.1, and v0.28.0), so `python -m vllm` raises `No module named
+vllm.__main__` before a request is ever served, while `vllm.entrypoints.cli.main`
+is the module vLLM's own `[project.scripts] vllm =
+"vllm.entrypoints.cli.main:main"` console script points at and it ends with
+`if __name__ == "__main__": main()`. That equality between launcher and
+inspected interpreter is enforced, not merely defaulted — a supplied
+`command_prefix` naming a different interpreter is refused at construction
+unless the caller also supplies the `PackageInspector` for the environment it
+launches. Otherwise the exact package pin would pass against distributions the
+engine never imports, and the launch audit's `runtime_packages.observed` would
+measure the wrong Python.
+
+**Where the pinned stack comes from.** This package asserts the pins; it never
+installs them. For the real catalogue the installer is the pod: `pyproject.toml`
+carries a `pod` dependency group — `vllm 0.27.1`, `transformers 5.14.1`,
+`qwen-vl-utils 0.0.14`, under `sys_platform == 'linux' and platform_machine ==
+'x86_64'` markers — resolved in `uv.lock`, and `operations/pod/bootstrap.py`
+syncs it with `--group pod`. Those versions and every
+`required_packages` row in `config/serving_recipes_real.toml` are the same
+bytes, and `operations/pod/test_pod_run.py` fails if they ever stop being: a
+group that drifted from the catalogue would mean a pod that downloads about ten
+gigabytes of wheels and is then refused by the pin assertion above, on a billing
+card. `operations/pod/README.md`'s "The serving stack, re-planned and locked"
+carries why those three versions and no others, chair by chair, with the vendor
+pages and the date they were read. Nothing there is a claim that the stack has
+run: the versions were chosen from published metadata, every real row is still
+`unproven`, and the first boot is what turns an installable stack into a served
+one.
 
 The command uses the verified base snapshot; gives the API a stable
 `--served-model-name`; and passes the typed profile flags. For a Hugging Face
@@ -288,3 +314,172 @@ while a handle is active, and `PreflightRunner` reads its chairs in sequence —
 the precondition is stated rather than locked: a lock inside the handle would not
 make the reader's read-after-write atomic, and would advertise a concurrency this
 seam does not support.
+
+## Client
+
+`client.ChairClient` is the one client a stage holds for one chair, across
+every reading in a pass. It composes an already-built `ServingManager`; it
+never starts a pod, never picks between chairs, and never retries, re-samples,
+or edits a response (GOVERNANCE 7). Enter it as a context manager — `__enter__`
+calls `manager.start` and then re-reads the published receipt back through the
+tree (`read_receipt`, production `context.tree.read_run_receipt`), refusing
+with `ReceiptDriftRefusal` (`CHAIR_RECEIPT_DRIFT`) and stopping the service
+unless the receipt still names this exact chair and revision — nothing is
+read from a start whose own record has already drifted. `__exit__` always
+stops the handle; a `ServiceStopError` from an unverified shutdown propagates
+rather than being swallowed.
+
+A refused receipt drift stops the handle before raising; if that shutdown
+itself cannot be verified (`ServiceStopError`), the drift refusal is what the
+caller sees — the stop failure is chained onto it (`__cause__`), never
+allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
+
+`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
+in this order: refuse an unbuildable request (a `kind` other than
+`chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
+`seed`, or `n` — those are the manager's and the decoding policy's alone; an
+image whose digest does not match the claimed `image_sha256s`, exactly and in
+order) before anything is built or sent; build the body deterministically
+(`request_body(..., deterministic=True)` forces temperature 0 and the
+profile's seed — this is why the client refuses at construction unless its
+caller's `record_temperature` is already 0, so a policy that disagrees is a
+named refusal, not a silent override); POST through
+`ServiceHandle.request_reading`; refuse before retention if the response is
+non-200 or names another model (bytes from the wrong source are not this
+chair's evidence); retain the raw response through the caller's `retain`
+callable; only then parse content — a content/choices problem becomes
+`parse_problem` on the returned `ChairResponse`, never a raised exception,
+because a malformed body from a witness or reader is retained evidence, not a
+stage abort; and finally write one `chair-call-record.v1` blob (the closed
+field set in `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`, canonical
+bytes) before returning. A body that names no model at all is retained and
+parsed the same as any other malformed body, but `parse_openai_reading`'s own
+comparison (`payload.get("model") != expected_model_id`) cannot distinguish
+"no model was named" from "the wrong model was named" — both come back as
+`CHAIR_RESPONSE_MODEL_MISMATCH`. `read` remaps that one ambiguous case to
+`CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
+the recorded `parse_problem` never asserts a foreign-source observation that
+was never made (GOVERNANCE 10).
+
+**The reading parser, against the probe parser.** `http.parse_openai_reading`
+is not `parse_openai_answer` reused: a readiness probe must prove the engine
+can answer at all, so it refuses blank content. A witness or reader's
+legitimate output can be the empty string (`genuinely-empty`), so the reading
+parser accepts one choice with `content == ""` and refuses only a missing or
+non-string content, never an empty one. Its `finish_reason` is always the
+engine's own word, verbatim — missing or `null` become `None`, and nothing
+here maps an unrecognized string to anything; that mapping is the stages' job
+(§1.6 of the seam spec), not this parser's.
+
+**`request_timeout_seconds`** is a per-profile field (`config.py`,
+`config/serving_recipes_real.toml`) because a non-streaming generation of
+real length returns nothing until it is done, and the manager's own
+readiness/adapter probes stay on their own short, hardcoded budgets — a slow
+reading must never be able to stretch those.
+
+`serving_mode_for(recipes, identity, tier)` is the live/fixture selector: a
+three-name lookup (`recipe`, `chair`, `tier`) in the sealed serving-recipe
+catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
+first — if all of them are fixture rows, the chair is fixture regardless of
+tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
+the profile at that exact tier decides, with an `UnsupportedProfile` refusing
+by its own recorded reason and a fixture row at that tier refused when any
+other tier for the same chair is not a fixture row — a catalogue may not be
+half fixture for one chair — and that refusal names whichever posture the
+other tiers actually hold (live, unsupported, or both) rather than asserting
+they are live. A tier with no configured row at all for
+this chair is also this function's own vocabulary:
+`config.ServingRecipes.for_identity`'s zero-match
+`ServingConfigurationError` is caught and re-raised as
+`ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
+this function's refusals to report a placement-tier problem never sees a
+bare configuration error instead.
+
+`fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
+`FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and
+the structure-chair builders `structure_box_1000`, `structure_answer_body`,
+`scripted_structure_answer`, `scripted_structure_refusal`,
+`scripted_structure_cut_off`) is a shared fake endpoint for stage tests built against `ChairClient` — mirrors of
+this package's own `test_manager.py` fakes, not moved from there, so that
+suite stays untouched. `ScriptedAnswer.finish_reason` takes an explicit
+`ABSENT` sentinel distinct from `None`: `None` scripts a JSON `null`, `ABSENT`
+omits the key from the wire entirely, and the reading parser treats both the
+same way — verbatim absence, never a default. `FakeEndpoint` auto-answers a
+manager's one readiness POST (recognized structurally: it is always the first
+POST a fresh instance sees, made inside `ServingManager.start` before any
+reading is possible) without consuming a scripted answer, so every
+`ScriptedAnswer` a test schedules is consumed by an actual `ChairClient.read`
+call. Its optional `assert_retained_before_next_request` flag proves
+response-as-arrival by construction: when set, the fake refuses a reading
+request until the *exact* raw bytes it served for the previous reading — its
+own sha256, checked through `FakeBlobStore.has`, not merely the store's
+overall size — are already on disk in the shared `FakeBlobStore`. A count
+alone is satisfied by any retention order, since the client also writes one
+`chair-call-record.v1` blob per read; naming the digest is what actually
+pins retain-before-parse from outside the client, without reading its
+source. The strongest proof of that ordering, though, lives in
+`test_client.py`: a test that monkeypatches `parse_openai_reading` itself to
+raise, and shows the raw bytes were already retained before that call ever
+ran — the one case a passing-response check like this fake's cannot reach,
+because retain-after-parse and retain-before-parse look identical whenever
+parsing succeeds.
+
+The structure-chair builders take rectangles in the sealed page's own pixels
+and return the wire JSON whose normalized boxes convert back to exactly those
+rectangles, found by search over the 0-1000 grid and checked through
+`common.structure_answer.to_page_bounds` itself rather than by a second
+closed-form formula — a builder that re-derived the arithmetic could agree with
+a converter that had changed underneath it. Each builder then parses the body
+it built through the contract that will parse it live, so a drifted builder
+fails in the builder rather than as an unexplained hold three stages
+downstream. `scripted_structure_refusal` is keyed by the `PARSE_OUTCOMES` code
+and verifies the body reaches that outcome and no other;
+`scripted_structure_cut_off` truncates a real answer mid-object and sets the
+`length` stop word, which is what a page whose transcription overran
+`max_model_len` actually looks like.
+
+`FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
+`test_manager.py`'s own fake: it keeps the loopback health endpoint answering
+after its bound process is told to exit, the exact ambiguity
+`ServingManager._assert_endpoint_absent` exists to catch, for a test that
+needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+
+## End to end
+
+`pipeline/test_live_reading_seam_e2e.py` is where the whole seam runs as one
+run: the real stage programs carry a tree to the Designator, the
+Attestatores reads it through three live witness chairs, the Perlector reads it
+through a live chair, and the Recensor, Archetypus and Armarium then consume
+what those two wrote. Every chair answers through `fakes.py`; nothing starts a
+pod. What makes the run live there is the same thing that makes it live on a
+card — a tmp catalogue whose rows say `kind = "vllm"` for all four servable
+chairs at all three tiers — so the selector under test is the sealed one, not a
+test-only switch.
+
+Two facts that suite establishes and no single-stage suite can. First, a live
+run reaches a **sealed terminal export that is held for review, not delivered**:
+both acts are read and every reading names the exact bytes its engine sent, but
+two witnesses of a floor of three count. Chandra now reads under its own
+response contract and its act attachment aligns live; what is still missing is
+Churro, which publishes no native layout and so never attaches to an act by
+geometry on a live path — a Churro layout channel is Unit 12's obligation, and
+the export stays held until it lands (`pipeline/3_attestatores/HANDOFF.md`).
+Second, two independent drivers reach the same
+fixture tree byte for byte: the orchestrator's own subprocess chain on one
+side, and — on the other — the identical driver this module uses for the live
+seam, pointed at the committed fixture catalogue, with `--placement-tier`
+supplied and both stage `main`s called in-process rather than as subprocesses.
+That equality says this seam's own driving code takes the fixture path
+unchanged; whether the fixture tree itself has moved relative to history is
+`pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST`
+pin to say, not this suite.
+
+`pipeline/test_structure_chair_e2e.py` runs the same shape of run one stage
+earlier: the Designator's own live pass against a scripted
+`designator_structure` chair, so the acts the roster then witnesses, reads,
+reviews and exports are the ones a *model* drew rather than the ones a fixture
+declared. It imports the live-seam suite's driver rather than copying it, so
+the two suites' claims stay comparable; the one difference is the catalogue,
+which marks `designator_structure` live as well. Its export is held for the
+same Churro-shaped reason, which is how it says that replacing declared acts
+with proposed ones moved the denominator and not the coverage.

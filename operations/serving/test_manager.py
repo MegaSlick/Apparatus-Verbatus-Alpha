@@ -28,7 +28,13 @@ from PIL import Image, ImageDraw
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal, UnresolvedChairRefusal
-from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
+from common.chairs.models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    ServingDetails,
+    VerifiedSnapshot,
+)
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
 from common.runtree.store import RunTree
@@ -50,12 +56,12 @@ from .assembly import (
     assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
 )
+from .client import serving_mode_for
 from .config import (
     FixtureProfile,
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
-    UnsupportedProfile,
     chair_preflight_identity_digest,
     load_serving_recipes,
     model_and_tokenizer_pins,
@@ -407,6 +413,7 @@ def profile_row(
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
         "poll_interval_seconds": 1,
+        "request_timeout_seconds": 30,
         "readiness_probe": {
             "kind": "chat-completions",
             "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',
@@ -836,7 +843,13 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     handle = manager.start(chair, TIER)
 
     argv, log_path = launcher.calls[0]
-    assert argv[:5] == (sys.executable, "-m", "vllm", "serve", str(tmp_path / "reader"))
+    assert argv[:5] == (
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.cli.main",
+        "serve",
+        str(tmp_path / "reader"),
+    )
     assert _value_after(argv, "--revision") == REVISION
     assert _value_after(argv, "--tokenizer-revision") == REVISION
     assert _value_after(argv, "--served-model-name") == "reader-api"
@@ -924,7 +937,7 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
     assert launcher.calls[0][0] == (
         sys.executable,
         "-m",
-        "vllm",
+        "vllm.entrypoints.cli.main",
         "serve",
         snapshot_root,
         "--tokenizer",
@@ -2409,8 +2422,17 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
 
 
-def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_service():
-    """The real roster is opt-in; every row is launch-red for its actual cause."""
+def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
+    """The real roster is opt-in, and every configured chair is served.
+
+    `secondary_proposer` is absent from `config/models-real.toml` (Tyrel's
+    ruling of 2026-08-12), so it never reaches `configured` and needs no row.
+    Every chair that *is* configured has a live-shaped row at every tier,
+    `attestator_1` included: Chandra is served and read in the Attestatores'
+    own call rather than reusing the Designator's reading (Tyrel's ruling of
+    2026-09-02). Every row is `preflight_state = "unproven"` -- a planning
+    shape, never a claim that anything has started on real silicon.
+    """
 
     root = Path(__file__).resolve().parents[2]
     placement = load_placement_table(root / "config/pod_placement.toml")
@@ -2427,18 +2449,27 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
     configured = [
         value for value in real_models.chairs.values() if isinstance(value, ChairIdentity)
     ]
+    assert {identity.role for identity in configured} == {
+        "designator_structure",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+    }
+    # The absence itself is a ruling, so the shipped roster must keep saying so
+    # and the catalogue must cover nothing for a chair no stage resolves.
+    secondary = real_models.chairs["secondary_proposer"]
+    assert isinstance(secondary, AbsentChair)
+    assert "2026-08-12" in secondary.reason
+    assert [row for row in real_catalogue.profiles if row.chair == "secondary_proposer"] == []
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
         for tier in tiers:
             profile = real_catalogue.for_identity(identity, tier)
-            if identity.role == "secondary_proposer":
-                assert isinstance(profile, UnsupportedProfile)
-                assert "Ultralytics YOLO object detector" in profile.reason
-                assert "vLLM completion serving" in profile.reason
-            else:
-                assert isinstance(profile, ServingProfile)
-                assert profile.preflight_state == "unproven"
-                assert profile.required_packages["vllm"] == "0.10.1"
+            assert isinstance(profile, ServingProfile)
+            assert profile.preflight_state == "unproven"
+            assert profile.required_packages["vllm"] == "0.27.1"
+            assert serving_mode_for(real_catalogue, identity, tier) == "live"
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

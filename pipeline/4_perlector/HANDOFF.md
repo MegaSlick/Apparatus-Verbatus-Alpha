@@ -577,13 +577,235 @@ test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals` captures
 the real reader call and requires exact equality with the sealed plan; it is the
 test that fails if the two ever part again.
 
+**A `testimony-diff` flag's end and a re-proof's change span can each be
+suffix-trimmed by one coincidental byte, against two different strings.**
+`audit.py` computes a flag's location by `text_change_span(text, testimony)`;
+`common.perlector_audit.change_record` computes a re-proof's change span by
+the same function over `(before, after)` — and `before` is that same act
+text. Suffix trimming is exact for the pair it compares, but exact for two
+different pairs is not the same claim: when the act's own text and the one
+testimony that located a flag happen to share their final character, the
+flag's recorded end lands one byte short of the true end of the text, and a
+re-proof that genuinely rewrites through to that true end (a tail correction,
+not an escape) produces an envelope one byte wider than every flag —
+`change_record` used to refuse it outright, on the strength of a single
+witness's coincidental last character rather than the content of the change.
+`change_record` now credits a witness-derived flag with the one trailing byte
+its own trim could have coincidentally eaten, and only there: the envelope
+must actually reach into the flag, the gap must reach exactly `len(before)`
+(suffix trimming can only ever fall short at the true end of a string) and be
+exactly one byte, or the change still refuses as a real escape from every
+flagged location — this loosens the coincidence, not the posture.
+`common/test_perlector_audit.py` and `pipeline/4_perlector/test_audit.py` pin
+the one-byte credit, the requirement that the envelope overlap the flag, and
+the boundary. **The credit is flat at one byte, not general to the trim
+width**: a real act text and testimony that happen to share two or more
+trailing characters still produce a flag short by that many bytes, and a
+re-proof rewriting through to the true end still refuses as an escape —
+`change_record` has no way to tell a two-byte coincidence from two bytes of
+real content without carrying the flag's own trim width alongside it. A
+re-proof caught this way must be re-planned to a span the flag actually
+covers; widening the credit past one byte is a later call, not this one.
+
+## Live reader
+
+The stage reads through `VLLMReader` (`live_reader.py`) behind one `ChairClient`
+(`operations/serving/client.py`) whenever the sealed serving-recipe row for the
+resolved Perlector chair is a `kind = "vllm"` row. Everything below is offline-proven
+against `operations/serving/fakes.py` in `test_live_perlector.py`; none of it has met a
+card.
+
+**The selector is the sealed catalogue, never a flag.** `perlector_serving_mode` asks
+`serving_mode_for` for the `(serving_recipe, chair, tier)` row in the catalogue named by
+`--serving-recipes-config`, whose digest is already inside `config_digest` through
+`serving_config_inputs`. No new configuration key was added and none is planned:
+`bound_serving_recipes` refuses a catalogue whose bytes are not the ones the run sealed,
+so the posture cannot be moved after the run was bound. `--placement-tier` must be
+supplied beside a live catalogue and is deliberately *not* sealed — it is a measured
+runtime fact of the card, and the receipt records the caps that actually bound the
+serving moment. An absent chair is fixture without consulting the catalogue: an absence
+has no resolved identity to look a row up by. `main(registry_factory=…,
+serving_factory=…)` are dependency seams only; neither makes a run live or fixture.
+
+**Stop reason, verbatim, and where it stops the pass.** `"stop"` and `"length"` reach
+`truncation.classify` as the reader protocol's own two words; an absent `finish_reason`
+arrives as `None` and classifies `unknown`, which holds. Any other engine string —
+`"abort"`, a vendor's own vocabulary — raises `EngineSignalRefusal` from `live_reader`
+and stops the pass with nothing published for that act. Nothing is lost: `ChairClient`
+retains the raw response before it parses, so the bytes that stopped the pass are on
+disk under their own digest and the refusal names them. The same refusal covers a body
+that is not a reading at all (`parse_problem`): a Perlectio has no `failed` shape —
+`outcome="failed"` is produced nowhere in `run.py` — and minting one here would invent a
+record kind this section does not own.
+
+**A declared reading failure never reaches a live chair's answer.** `declared_failure`
+stands in for a real engine's own report exactly once, before there is one — the
+fixture's own docstring says so. In live mode a real report is always coming, so the
+establishing pass refuses before it ever asks: the check
+(`serving_mode == "live" and declared_failure is not None`) sits immediately after the
+live-resume skip, ahead of every reader call, chair start, and publication, leaving the
+tree exactly as the invocation found it — no orphaned `lectio-prior`, no engine call
+spent on a reading that would be discarded, and no opaque `IncompatibleReuse` on the
+operator's retry. It refuses this way rather than letting a declared `no-readable-text`
+blank real transcribed ink, or a declared `truncated` overwrite a real `complete`, which
+would be a declared value standing where a measurement belongs (GOVERNANCE 10). The
+guard is one branch that never executes in fixture mode, so it does not move the
+acceptance pin. Proven end to end in
+`test_live_perlector.py::test_a_live_pass_refuses_a_fixture_declared_reading_failure`
+against a run tree sealed under `no-readable-text-reading` throughout — a live pass
+cannot honestly mix a `happy`-sealed run tree with a different Perlector-only scenario,
+because `config_digest` binds the scenario too, so the test builds its own chain rather
+than pointing a `happy` run at a different `--scenario`.
+
+**Real ingress.** The stage opens through `common.stage.open_stage_context`, which
+decides the route from one read of the run authority and, on a real submission, carries
+the registry, the sealed digest map and the serving configuration inputs this stage
+requires before its first line of work (`decoding`, `perlector-protocol`,
+`perlector-audit`, and `bound_serving_recipes`). The route is read off `context.run`
+(`real_ingress`), the same reading `common.stage` makes for `expected_acts`. Two fixture
+concepts have no real-mode counterpart:
+
+- `reading_failure` -- `declared_reading_failure` answers `None` on a real run, by name,
+  not by an empty table. A real reading's non-completion is the engine's own stop reason,
+  reaching `truncation.classify` through the Section A mapping above; no declaration
+  stands in for it, and the live guard that refuses a declared outcome beside a live
+  answer is therefore unreachable there.
+- the fixture reader -- `fixture_reader_for` refuses a real submission whose sealed
+  serving-recipe row for a configured Perlector chair is not live, because a declared
+  text cannot stand in for a reading of real ink, and the catalogue is sealed at the Door
+  so the repair is a new run. An absent chair reads nothing and needs no reader: every act
+  publishes the same explicit `not-run` record it does on the fixture route. The selector
+  is still the sealed row, never a flag, and the fixture route constructs its reader
+  exactly as before.
+
+The context's fixture slot is `None` behind a refusing accessor and is not touched on
+the real route. No real Attestatores seal exists yet, so a real run refuses at
+`predecessor attestatores has no stage-seal` with its context already opened, writing
+nothing; `pipeline/5_recensor/test_recensor_real_ingress.py` pins that for this stage beside the
+Recensor and the Archetypus.
+
+**`engine_call`, and what it names.** A live reading's payload carries
+`engine_call = {call_record_ref, raw_response_ref, response_sha256, finish_reason,
+served_model_id}`, and the envelope binds both blobs as direct inputs, re-derived from
+disk and compared to what the reader claimed. The field names *the call the published
+text came from*: on an act whose Pass-C re-proof changed the text, it moves to the
+re-proof's own call, beside `truncation` and `self_revision`, which move for the same
+reason (audit finding H6). A re-proof reading that ran and changed nothing is still
+bound as an input — it is the second thing that looked at this act's pixels and it is
+what the `change_record` reports on — but it does not become the named call. The field
+widens the closed field set for the record that carries it (`with_engine_call`, the
+`_NOT_RUN_CAPACITY_FIELDS` precedent) rather than becoming optional inside one set. A
+`FixtureReader` result never sets it, so fixture payloads and their envelopes are
+byte-for-byte what they were, which is what leaves the acceptance pin where it is.
+`engine_call_inputs` refuses a malformed `engine_call` by name — the wrong key set, or
+`response_sha256` disagreeing with `raw_response_ref["sha256"]` — rather than raising a
+bare `KeyError` or publishing two digests for one response.
+
+**`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
+may claim.** The envelope refuses a repeated path outright, even at an identical digest
+(`validate_input_refs`) — that is the double-count guard GOVERNANCE 5's "one text" rests
+on, and nothing here touches it: a duplicate inside a published `inputs` list still
+reaches that refusal unchanged. It is used at exactly two seams, both of them places
+where one content-addressed blob is honestly reachable by two names.
+
+- *The Pass-C publication path* dedups only `reproof_inputs`, and only against
+  `row["inputs"]` (the image, testimonia, attachment and prior references, which can
+  never legitimately repeat). A live re-proof answering with the same bytes as the
+  establishing call content-addresses to the same path twice.
+- *`validate_page_testimonium_record`* dedups the expectation it builds from a page
+  record's `raw_response_refs` and its `native_capture`. A page whose partition was
+  derived from the very bytes its own capture describes reaches one blob through both
+  fields, and a page-edge overshoot finding is *required* to be traceable through
+  `raw_response_refs` while the capture still names it (`common/native_witness.py`). The
+  producer names it once (`pipeline/3_attestatores/run.py::_named_once`), so
+  concatenating the two fields here built an expectation no publishable record could
+  meet — a correct record, correctly published, refused one stage later. Unreachable
+  while no page witness parsed live; reachable the moment one did.
+
+**A page witness on a continuation page is judged on its alignment, not on `attached`.**
+`act_attachment_view` derives `attached` from geometry alone — the chair's reported
+observations against the act's sealed regions on that page — and refuses an entry that
+disagrees with that derivation, on every contributing page. It used *also* to refuse any
+continuation-page entry that was attached, and the two rules contradicted each other for
+a served page witness whose block really does cover an act's continuation half:
+`false` was refused as not derived from geometry, `true` as claiming an anchor, and no
+honest record existed in either state. The second rule is gone. What a continuation page
+genuinely lacks is an *anchor* — it is derived from the act's own primary page, so there
+is no comparison view to compute here even when the geometry attaches — and the
+surviving rule says exactly that, refusing any alignment other than
+`{"status": "unaligned", "reason": "continuation-page-no-act-anchor"}`. An
+attached-but-unaligned entry is a shape the branches below already admit: a
+`geometric-overlap` basis, a null span, an explicit unaligned reason. The contradiction
+was unreachable while the fixture declared no geometry on a continuation page
+(`pipeline/3_attestatores/HANDOFF.md`).
+
+**The receipt is the live one.** `provenance_for(..., receipt_ref=…)` takes the receipt
+the serving manager published and `ChairClient.__enter__` re-read through the tree and
+matched to this chair and revision. Fixture mode passes nothing and writes the declared
+`fixture_serving_details` receipt exactly as before; minting one of those beside a
+reading a real engine produced would put a declared value (`fixture://`, dtype
+`fixture`) where a measurement belongs.
+
+**One chair, started late, stopped before the seal.** The client is entered on the first
+act that actually needs a reading, so a resumed pass whose acts are all sealed never
+loads a model onto a card that bills by the hour. `ResidentChair` owns the shutdown:
+`_read_the_acts` closes it before `seal_boundary`, so a failed shutdown is never
+reported over a sealed stage, and `main`'s `finally` catches every path that raised
+first. A `ServiceStopError` propagates — an unverified shutdown is fatal. This ordering
+is pinned by `test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written`,
+which wraps the injected client so `__exit__` raises after really shutting the fake
+service down, and asserts the run tree's `stage-seal` directory stays empty — a
+mutation probe deleting the `service.close()` call ahead of the seal left the rest of
+the module green before this test existed.
+
+**The live resume rule.** An act whose `perlectio` already exists at
+`perlegere:<ordinal>` is never asked again (`_reading_already_sealed`). Fixture readers
+are deterministic, so a resumed fixture pass republishes identical bytes and the store
+reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and the
+store refuses the collision. Skipped acts are counted apart from `read`, because this
+invocation did not read them.
+
+**Two live-resume limits, named rather than hidden.** First, an act interrupted *between*
+its `lectio-prior` publication and its Perlectio cannot resume: the resume rule looks at
+the Perlectio, so the act is read again and Pass A is republished from a fresh live
+reading, which the store refuses as an incompatible reuse. Extending the rule to skip on
+a lone Pass A would leave the act permanently unread, which is worse; the forward path
+from that refusal is the one the design already has, a Recensor recovery request.
+Second, every re-invocation of a live pass starts and stops the service, so an `--act`
+recovery loop pays a full model load per act
+(`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
+outlives one stage, but no cross-process handle exists; that is the next serving item.
+
+**`max_tokens` is not sent, and that is a decision.** No output bound is sealed
+anywhere, and this section does not invent one. vLLM bounds generation by
+`max_model_len`, so an engine `"length"` then honestly means the context itself was
+exhausted rather than that the harness cut the reading short. A sealed output bound
+belongs with the variance-experiment section, which will need one too.
+
+**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` reads a tree the
+Attestatores wrote through three *live* witness chairs — every record on it
+carrying `native_capture`, `serving_call_ref` and `raw_response_kind`, which no
+fixture record has — and then hands what this stage publishes to the Recensor,
+Archetypus and Armarium. Nothing here refused it: every act reaches a Perlectio
+whose `engine_call` names a retained blob holding exactly the bytes the engine
+put on the wire, the live receipt is on every reading's provenance, and the run
+seals a terminal export. The export is held for review rather than delivered,
+for a witness-coverage reason recorded in `pipeline/3_attestatores/HANDOFF.md`
+and not for anything this stage did. The same driver in fixture mode reproduces
+the orchestrator's own tree byte for byte, `--placement-tier` supplied, which is
+the fixture-path claim `with_engine_call` and the mode selector rest on.
+
 ## Not built here
 
-- Real serving (vLLM, LoRA-unmerged adapter, revision pinning, readiness
-  polling, service receipts) is spec 04's territory and needs a live pod.
-  `reader.py`'s `Reader` protocol and `prompts.py`'s per-recipe registry are the
-  seam a real implementation occupies later without `run.py`'s orchestration
-  changing.
+- Real serving on real silicon. What is proven offline: reader selection by sealed row
+  kind, the stop-reason mapping and its refusals, the call record and its retained
+  bytes, the live receipt on the record, the resume rule, and one chair started and
+  stopped per pass — all against `operations/serving/fakes.py`. What still needs a card:
+  readiness against a real vLLM process, the real builder's byte fidelity against a real
+  chat template (`prompts.py` renders a declared template, and no tokenizer files are
+  fetched here), whether vLLM emits an omitted `finish_reason` key or an explicit
+  `null`, and every timing value in `config/serving_recipes_real.toml`, which is
+  labelled UNMEASURED in the file for that reason.
 - Reconciliation across several *independently produced* readings of one
   unrecovered attempt (spec_08's general "where it produces several readings, it
   reconciles them itself, against the image") is not modeled: nothing upstream
@@ -652,3 +874,32 @@ test that fails if the two ever part again.
   is the instrument's *content*. A real serving path registers a re-proof builder and
   binds its rendered bytes at this same seam; nothing about the record's shape has to
   move for it.
+
+## Who wrote what
+
+The live reading seam this stage sits in was built by several seats across eight
+units. The record of which seat wrote which unit is the dispatch record — the
+workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
+`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`). These are session-local
+dispatch scripts kept outside the repository (in the workbench, gitignored),
+not tracked paths this record can point to; they name the model each
+seat was dispatched as. **The commit trailers on this branch are self-reported
+and several are wrong**: some Opus and Sonnet seats copied the host's own
+`Co-Authored-By` line. Where a trailer and this table disagree, this table is
+the record. The Fable seat was the host orchestrator and wrote no unit code.
+
+| unit | built by | verified by | fixed by |
+|---|---|---|---|
+| U1 contract and parser | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U2 client and fakes | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U3 Perlector live reader | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U5 Attestatores live boundary | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U7p placement-tier plumbing | Sonnet 5 | Opus 5 | Sonnet 5 |
+| U4 Perlector wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U6 Attestatores wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| U8 cross-file seams | Opus 5 | Opus 5 | Sonnet 5 |
+| U7-e2e end to end | Opus 5 | Opus 5 | Sonnet 5 (host committed) |
+
+This stage's own live reader is U3, its wiring into the stage is U4, and the
+cross-file seams that let its reader and the Attestatores' chairs share one card
+are U8. U7-e2e is the whole-run proof recorded under "Live reader" above.

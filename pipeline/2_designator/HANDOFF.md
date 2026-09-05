@@ -39,15 +39,31 @@ filename ledger with every Exemplar page outcome and the one self-hashed corpus
 seal. A sealed page's Door admission and pixel blob are checked again before its
 pixels are cropped. The check is deliberately before the first region write.
 
-The current structural proposer is the declared synthetic walking skeleton, and
-it is a real visual pass rather than a fixture value standing in for one: every
-sealed page is decoded and independently ink-scanned (`structure.py`), and the
-result is grouped into acts by geometry and structural cues alone (`grouping.py`)
-— no text, no election among candidates. On real ingress this program performs
-the Exemplar boundary check and then stops with a refusal: it does not invent
-proposals, holds, or text in place of a real structure-pass *model* (the ink
-scan above stands in for the model call itself, not for the geometric reasoning
-built on top of it, which runs for real either way).
+That reconciliation includes the merged page — two byte-identical files deriving
+one `page_id` — which this stage refuses because `page_records` keys on the
+submitted ordinal and would otherwise mint each act on such a page twice. **It
+is no longer where an operator meets that case.** The Door now refuses the whole
+submission when two submitted files would merge, naming their ordinals, while it
+still has the filenames and before it seals its own boundary
+(`pipeline/1_exemplar/door.py::require_no_duplicate_sources`). This check stays
+as the second line of defence over the sealed shape itself, rather than over one
+route into it; what it no longer has to be is the first thing that tells an
+operator their export wrote one scan twice.
+
+Two structural proposers exist, and the sealed serving catalogue says which one
+a run gets (`structure_pass.structure_serving_mode`, never a flag and never the
+ingress route). Under a `fixture` row for `designator_structure` the proposer is
+the declared synthetic walking skeleton: every sealed page is decoded and
+independently ink-scanned (`structure.py`), and the result is grouped into acts
+by geometry and structural cues alone (`grouping.py`) — no text, no election
+among candidates — reconciled against the fixture's declared rectangles. Under a
+`vllm` row the proposer is the served structure chair itself, asked once per
+sealed page through the live reading seam (`structure_pass.py`,
+`run.py::live_initial_pass`; see "The structure chair" below), and the ink scan
+becomes corroboration rather than ground truth. A real submission under the
+fixture catalogue is refused by name after the Exemplar boundary check — it may
+not be marked out by an ink scan standing in for a model, and no proposals or
+holds are fabricated for it.
 
 ## `kind="region"`
 
@@ -67,12 +83,15 @@ provenance (resolved Designator chair identity, revision, and serving receipt)
 `transform.bounds` is always the *final* rectangle actually cut — the one
 `common/exemplar_boundary.py::verify_exemplar_crop_lineage` reproduces the crop
 from, and the sole reason `transform` keeps exactly its historical four fields.
-`raw_bounds` is the *structural* rectangle the sealed synthetic fixture
-declared and act identity is bound to (`common/contracts/identities.py::act_bindings`).
-The real structure-model path is not built; there, this would instead be the
-structure pass's own authoritative rectangle. The current visual grouping is
-recorded separately as `act-group.detected_bounds` and must reconcile against
-the fixture rectangle rather than silently replacing it. A
+`raw_bounds` is the *structural* rectangle act identity is bound to
+(`common/contracts/identities.py::act_bindings`): on the fixture path the
+rectangle the sealed synthetic fixture declared, on the live path the structure
+chair's own rectangle, converted from its normalized answer to page pixels once,
+at the edge (`common/structure_answer.py::to_page_bounds`). Either way it is the
+denominator `common/stage.py` recomputes the act's identity against, and on the
+live path it is also the rectangle the page's retained `structure-answer` must
+list. The visual grouping is recorded separately as `act-group.detected_bounds`
+and reconciles against `raw_bounds` rather than replacing it. A
 proposal crop's `raw_bounds` differs from `transform.bounds` by the configured
 capture padding (`config/designator_padding.toml`), asymmetric and clamped to
 the page edge, with `padding.applied_px` recording the exact pixels actually
@@ -114,12 +133,33 @@ unknown field rather than passing because a denylist did not predict its name.
 
 ```text
 act_key, declared_bounds
-structure_evidence ("detected" | "fallback-tiles"), detected_bounds | null
-body_member_count, anchor_count, rationale
+structure_evidence ("detected" | "fallback-tiles" | "shared-detection" |
+                   "split-detection" | "model-only")
+detected_bounds | null, body_member_count, anchor_count, rationale
 continuation = {declared_bounds, structure_evidence, detected_bounds | null,
                 body_member_count, anchor_count, rationale,
                 geometric_corroboration} | null
 ```
+
+On the live path `declared_bounds` means declared by the structure chair, the
+field set does not change, and `continuation` is always `null` (a per-page call
+has no cross-page knowledge; the relation is the Recensor's). The three extra
+evidence values exist only there (`structure_pass.model_evidence_blocks`, which
+never raises): `shared-detection` carries a real scanned region and its counts,
+like `detected`, but says the same region covers at least half of another
+proposed act too — the merged-boundary case the fixture path *refuses* at
+`_claim_structural_group` because there the declared rectangles are ground
+truth, recorded here on both acts as *not* independent corroboration
+(GOVERNANCE 10). `split-detection` is its mirror: two or more scanned regions
+each cover at least half of one rectangle, so the chair drew one act where the
+scan found several. It carries null bounds and zero counts, because naming one
+of the two would be a choice between them (GOVERNANCE 3) and a union of them
+would be a region nothing measured. `model-only` is a rectangle no scanned
+region covers half of: null bounds, zero counts, the rectangle resting on the
+chair's proposal alone — a different fact from `split-detection`, and recorded
+as a different one, because "nothing covers this" and "too much covers this"
+are not the same measurement. None of the three gates anything; the fixture
+path never emits any of them.
 
 `rationale` is one of a small set of code-generated strings naming which
 grouping rule fired (a single anchor, a brace linking two acts, an isolated
@@ -167,8 +207,18 @@ below; this record is corroboration, never the relation itself.
 
 ## `kind="page-fallback"`
 
-One record per sealed page the structure pass found **no ink at all** on,
-subject-keyed to the one act that page's predetermined crops belong to. Where a
+One record per sealed page the structure pass is cutting into predetermined
+crops rather than a chair-drawn rectangle. On the fixture path (`initial`, a
+fixture catalogue) that page is one the declared fixture rows say has **no ink
+at all**, and the payload's `reason` names that premise. On the live path
+(`structure_pass.ask_page`) it is one the *chair* answered with zero acts —
+which is not the same fact as a blank page: the page's own ink scan may well
+have found and grouped ink, and that measurement is recorded independently on
+the page's `structure-status`, not asserted or denied by this record. The two
+call sites pass different `reason` text (`_publish_page_fallback`'s `reason`
+keyword in `run.py`) so the record never claims a measurement the live path
+did not make. Subject-keyed to the one act that page's predetermined crops
+belong to. Where a
 declared act or continuation already has a proposal crop on that page, the
 fallback bands are clipped around its final padded bounds before they are cut:
 the union still sends the whole page downstream, but no pixel reaches readers
@@ -233,7 +283,8 @@ asserting it.
 
 A fallback tile's region carries `padding: null`, like a recovery crop and for
 the same reason: the tile *is* the final rectangle, computed from the page's own
-dimensions with `grouping.DEFAULT_FALLBACK_OVERLAP_PX` already built into it.
+dimensions with this page's own resolved `fallback_overlap_px` already built
+into it.
 Expanding it again by the capture padding would conflate a structural pad with a
 capture pad, which `geometry.py`'s docstring says must never happen.
 
@@ -265,13 +316,38 @@ background cannot be inferred is recorded
 
 ```text
 page_ordinal, background_source, background_value | null
+page_width, page_height, reconciliation_thresholds | null
 ink_measurable, reason | null
 total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
-residual_components = [{bounds, pixel_count, review_priority}]
+residual_component_count, residual_ink_fraction_bp | null, max_residual_components
+residual_enumeration = "complete" | "withheld-page-held"
+residual_components = [{bounds, pixel_count, review_priority}]   # key OMITTED when withheld
 ```
 
 `claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` always,
-by construction, whenever `ink_measurable` is true.
+by construction, whenever `ink_measurable` is true — on a withheld page too.
+
+`residual_enumeration` is a closed pair and is on every record. It is what lets
+a consumer tell a page with no unclaimed ink from a page whose unclaimed ink was
+counted and not listed; when it is `withheld-page-held` the `residual_components`
+key is **omitted rather than emptied**, because an empty list is the first of
+those two claims and the key's absence is what makes every existing consumer
+fail loudly instead of reading absence as none. `residual_component_count`
+equals `len(residual_components)` on an enumerated page and is the count the
+reconciliation took on a withheld one. `residual_ink_fraction_bp` is
+`residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
+gating nothing. `max_residual_components` is the sealed bound the page was judged
+against, published whether or not it was crossed.
+
+`page_width`, `page_height` and `reconciliation_thresholds` are what this scan
+actually executed on and under. The thresholds are exactly the two
+`conservation.reconcile` is given — `gap_tolerance_px` and
+`review_priority_min_dimension_px` — never the whole `GroupingThresholds`: this
+record answers for its own measurement, not for the structure pass. They are
+`null` when `ink_measurable` is false, where no reconciliation ran to have
+executed under anything. This is the record that keeps a structure-held page
+honest: its `structure-status` says null for a pass that never ran, and this one
+says what did.
 
 The background fields belong to this reconciliation, not to the structure
 pass. This distinction matters on a page whose structure pass was held before
@@ -334,6 +410,32 @@ construction: it derives from `act_id(page_id, "residual", bounds)` -- the
 structure pass's `"proposal"`-class identities can never collide with it,
 present fixture or real one.
 
+**The `page-residual` hold is the fourth act class and the second hold shape.**
+When a page's reconciliation counts more residual components than the sealed
+`max_residual_components` allows, no per-component act is minted for that page
+at all; one act is, bound to `act_id(page_id, "page-residual", page_rectangle)`
+and held. Its hold record carries `act_key`, `page_id`, `page_ordinal`,
+`page_bounds`, `residual_component_count`, `max_residual_components`,
+`grouping_config_sha256`, `blocking_page_ordinal`, `reason_code` and `reason`,
+and names exactly one input: that page's own `conservation` record, which is
+the independent premise saying the count exceeded the bound.
+`common/stage.py::_verify_page_residual_act_row` recomputes every one of those
+rather than reading it — the rectangle from the sealed page bytes, the identity
+from the reserved class, the bound against the run's own sealed
+`designator-grouping` digest — and
+`_verify_every_conservation_residual_is_accounted` checks the other direction, so
+a withheld record with no such row is a refusal rather than a silent loss.
+`reason_code = "residual-components-over-page-bound"` names the reconciliation
+and never the paper: nothing in this artifact says a page is speckled, foxed or
+bad, only that this many components were counted against this bound.
+
+The Recensor consumes the same decision in `geometry_coverage_inputs`, with its
+own refusals and its own finding shape: `residual_act_count` is 0 on a withheld
+page, and the count, the bound, the enumeration and the one page-residual act
+are named beside it so that zero cannot read as a loss. The check it genuinely
+loses there is the per-component pixel sum, because the list it summed is the
+thing deliberately not carried.
+
 ## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
 `secondary-provenance` is published exactly once per run, subject
@@ -384,6 +486,20 @@ turned a complete run into a fatal one with no denominator at all — the exact
 inverse of spec 06's test 5, "removing the proposer changes no authority
 decision (it adds recall, never verdicts)".
 
+**Bounded per page, like the residual enumeration beside it.** Each published
+candidate costs a cropped PNG blob and two records, so a page speckled enough to
+trip `max_residual_components` would rebuild the unopenable run here — on the
+one path that bound does not cover. Past `max_secondary_proposals` the page's
+secondary pass is a single held `secondary-proposal` instead: the page
+rectangle, `secondary_candidate_count`, the bound it was judged against, the
+run's own sealed grouping digest, and no crop cut at all. Nothing is filtered
+out of the scan itself (GOVERNANCE 10) — `structure.secondary_scan` still
+returns everything it finds — and the candidates stay recomputable from the
+sealed page bytes. `secondary_enumeration` is `complete` or `withheld-page-held`
+on every one of these records, exactly the closed pair `residual_enumeration`
+is, so "this page had no unclaimed candidate" and "this page's candidates were
+counted and not cut" cannot be read as each other.
+
 Each proposal directly references a `rescue-crop`: the exact unpadded source
 pixels inside the secondary box, with its origin, null padding, transform,
 image digests and the same `overlapping_claimed_act_count`. Both
@@ -411,8 +527,25 @@ different fact about the *act*, not this per-page structural pass record.
 ```text
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 background_source | null, structure_evidence | null
+page_width | null, page_height | null
+resolved_thresholds | null (every field of GroupingThresholds)
 provenance (the resolved Designator chair)
+structure_answer_ref            # live path only: the page's retained answer
 ```
+
+On the live path every page's status carries `structure_answer_ref`, the
+digest-checked reference to that page's `structure-answer` record, and
+`structure_evidence` is the *answer's* fact rather than the scan's — `detected`
+when the chair returned at least one act, `fallback-tiles` when it returned
+none, `null` on a held page. The scan still ran on every page and its
+background and resolved thresholds are recorded beside it; what decides which
+crops a page gets is what the chair returned, and the field says so.
+`reason_code` on a live-held page is one of `structure_pass.STRUCTURE_HELD_CODES`
+(the table under "The structure chair"). `common/stage.py::
+_verify_proposal_act_row` follows `structure_answer_ref` for every structural
+row of a served seal, and `_verify_page_fallback_act_row` reads
+`structure_evidence` for every page-fallback row, so both facts are consumed
+rather than merely recorded.
 
 `background_source` and `structure_evidence` are the structure pass's own audit
 trail for *how* this page was read, and they are published here because this is
@@ -427,12 +560,232 @@ a page held before it was analysed at all: the structure pass produced no
 background and no evidence there, and saying `inferred-modal` of a pass that
 never ran would be the same defect these fields exist to close.
 
-A failure is declared per scenario by the fixture's `[[structure_failure]]`
-rows, because the walking skeleton has no live structure model that can fail.
-Everything downstream of the declaration is real: `structure_failures` refuses
-two declarations for one page rather than taking either, and ignores a
-declaration naming a page this run never sealed, since the Exemplar's own
-refusal already accounts for that loss and a second hold would double-count it.
+`page_width`/`page_height` and `resolved_thresholds` answer the next question
+out: not how the page was read, but **what geometry the run executed on it**.
+The sealed grouping policy is in basis points of a page dimension, so the pixel
+numbers a page runs under are a function of the policy and of that page's own
+size, and until now they lived only in `_analyze_page`'s cache. A calibration
+session reading a finished run back can now say, per page, what the structure
+pass actually ran at instead of re-deriving it from the seal and the pixels —
+and a re-derivation is what stops matching the run the day the resolution rule
+changes. The whole of `GroupingThresholds` is published rather than a chosen
+subset, `max_residual_components` included: it is part of what the page ran
+under, and a subset boundary would be a second judgment about which of one
+dataclass's fields matter. These fields are a recording and decide nothing; they
+are `null` on a page held before analysis for the same reason the two above are.
+
+**That null answers for the structure pass, not for the page.** Conservation
+scans a structure-held page all the same — the ink is real and no crop claims
+it — so the geometry that reconciliation ran under is published on that page's
+own `conservation` record instead. Neither record speaks for the other, and
+neither leaves a null standing beside a computation that did happen.
+This is the cheap honest half of the 300-DPI question — there is no physical
+page size on disk for a photographed master, so there is no DPI to probe, and a
+probe that guessed one would be a measurement invented rather than taken.
+
+On the fixture path a failure is declared per scenario by the fixture's
+`[[structure_failure]]` rows, because the walking skeleton has no live structure
+model that can fail. Everything downstream of the declaration is real:
+`structure_failures` refuses two declarations for one page rather than taking
+either, and ignores a declaration naming a page this run never sealed, since the
+Exemplar's own refusal already accounts for that loss and a second hold would
+double-count it. On the live path the failures are the chair's own — a page
+whose answer was cut off, did not parse, could not be read, or touched none of
+the page's ink — and they reach exactly the same `failures` map, so everything
+downstream of a hold (no crop cut, ink reconciled as residual, `EXIT_HELD`) is
+the one code path the fixture scenario already proves.
+
+## The structure chair
+
+The live pass (`structure_pass.py` for what faces the chair,
+`run.py::live_initial_pass` for the wiring) is selected when the sealed
+serving-recipe row for `designator_structure` says `kind = "vllm"` and a
+`--placement-tier` names the measured card. It shares with the fixture pass
+every piece that is not the proposer: the Exemplar boundary, the sealed
+padding, geometry and grouping policies, the per-page ink analysis,
+`cut_minted_region`, `publish_structure_status`, the page-fallback tiling,
+conservation, the residual holds, the once-only seal and the exit rule. What
+replaces the fixture's declared acts is one call per sealed page through
+`operations/serving/client.py::ChairClient`, built by
+`structure_pass.default_serving_factory` in production and injected by a test
+(`main(serving_factory=...)`) exactly as the Attestatores and the Perlector
+inject theirs.
+
+**What is sent.** One `chat-completions` request per sealed page, the whole
+page, the exact sealed PNG bytes as one `data:image/png;base64` block, with
+`image_sha256s=(source_sha256,)` so the client's digest check binds the request
+to the Exemplar. The prompt is code, sealed by digest
+(`structure_prompt.py`, `verbatus-structure-prompt.v1`); it asks for every act as
+one rectangle in normalized 0–1000 coordinates of the image as shown, its
+transcription as written, an optional label, in reading order, and states no
+preference, severity floor or confidence budget. No `max_tokens` and no
+generation knobs of the stage's own: the engine bounds generation by
+`max_model_len`, and a `"length"` stop then honestly means the answer did not
+fit.
+
+**What comes back** is parsed with `common/structure_answer.py`'s closed
+contract — one accepted wire shape, every other key a named refusal, floats
+quantized under a declared rule, coordinates converted to page pixels once by
+this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
+
+**What each answer does to the page** (`structure_pass.ask_page`):
+
+| Answer | Page | Acts |
+|---|---|---|
+| parsed, complete stop (or unreported), ≥1 act | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
+| parsed, complete stop, zero acts | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
+| `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | none; ink → residual holds |
+| parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
+| the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
+| custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
+| parsed, the scan found ink, and no rectangle touches any ink pixel | `held`, `structure-answer-no-ink-overlap` | as above |
+| serving or transport refusal | **fatal**, nothing published for the page | — |
+| an engine stop word outside the closed vocabulary | **fatal** | — |
+
+A cut-off answer is held even though it parsed: a truncated act list is a
+missed act (GOALS 1). The custody row is held before the body is looked at and
+is *one page's* outcome, not the run's: the client retained the bytes and the
+call record before custody was reached, so what a refusal costs is the binding
+that proves which call they came from — and a rectangle minted without it would
+be attributed to a call nothing ties it to (GOVERNANCE 6). The record still
+publishes what the body said, with `custody_problem` naming the refusal and
+both custody references null.
+
+The no-ink-overlap row is the coordinate-space tripwire
+for a chair whose geometry is in a space this stage never sees: it is a pixel
+test against the components the page's own scan counted, not a threshold, and
+it fires only when the scan itself found ink and nothing the chair drew touches
+any of it. A held page is not tiled, its ink reconciles as conservation
+residual, and the run exits `EXIT_HELD`; the retained bytes, `parse_outcome`
+and `prompt_sha256` are the evidence.
+
+**Minting.** For each rectangle in reading order: validated against the page,
+minted once per distinct rectangle (a repeat is a `duplicate-rectangle` finding
+on the answer record naming both ordinals — the class-and-bounds identity has
+no ordinal namespace, so the second is the same crop), `act_id = act_id(page_id,
+"proposal", raw_bounds)`, `act_key = "proposal:<page>:<ordinal>"` (a label,
+never identity), one proposal region through `cut_minted_region` with the
+sealed capture padding, one `act-group` with the scan's corroboration, one
+seal row with `has_continuation = false`. **No continuation is proposed by the
+live pass**; the unproposed cross-page half act stays the named evidence defect
+below.
+
+**`kind="structure-answer"`**, one per sealed page, subject the page identity,
+validated against its own closed field set before publication and then swept
+for content fields (`_validate_structure_answer_payload`, which closes the
+payload, each act entry, the decoding block and each finding, and calls
+`_refuse_text_fields` last). Both of the chair's free strings are reduced the
+same way: `text_digest`/`text_length` and
+`label_digest`/`label_length` are what let a later reader prove it derived the
+same strings from the same retained bytes, and a `label` — the chair's word for
+a rectangle, which in these books can be a whole act — is published no more
+than a transcription is:
+
+```text
+schema = "designator-structure-answer.v1"
+page_id, page_ordinal, page_w, page_h
+prompt_version, prompt_sha256, answer_schema = "verbatus-structure-answer.v1"
+call_record_ref, raw_response_ref | null, custody_ref | null,
+custody_problem | null, receipt_ref, request_sha256
+finish_reason (verbatim | null), served_model_id, call_problem | null
+parse_state ("parsed" | "refused"), parse_outcome | null
+disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
+act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
+                    label_digest | null, label_length | null}]
+findings = [{kind, ...}]
+quantization, page_text_rule
+decoding = {policy = "structure", temperature, decoding_config_sha256}
+provenance (the served chair, its real receipt, and `engine_call`)
+```
+
+The raw response is retained twice under one digest: by the client before it
+is parsed, and under `common/chandra_custody.py`'s one-receipt binding
+(`custody_ref`), which pairs those bytes with the chair's own serving receipt.
+Nothing on the served path reads that second blob back today — the capture
+intake that would have was removed when Attestator 1 went back to its own
+Chandra pass (Tyrel, 2026-09-02) — and that is a named follow-up, not a
+silence. The text
+itself lives only in that blob. `common/stage.py::_verify_proposal_act_row`
+holds every structural row of a served seal to this record: the page's status
+must say `scanned` and name it, it must have parsed under the same
+`engine_call` the seal records, its `call_record_ref` must resolve to a genuine
+`chair-call-record.v1` for this chair under the run's sealed decoding digest,
+and it must list the row's exact rectangle — no nearest match.
+
+**Provenance on the live path** is `structure_pass.live_chair_record`: the
+chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
+value — a declared moment on a path that called the chair would be a fabricated
+one, GOVERNANCE 6) plus `engine_call`, the closed `structure-chair-call.v1`
+posture `{schema, call_kind, decoding_policy = "structure",
+decoding_config_sha256}` that `validate_serving_provenance` binds to the run's
+sealed decoding digest. The secondary proposer is resolved on this path too and
+must be absent (Tyrel, 2026-08-12); a configured row is refused by name before
+any chair starts, because nothing serves it and no fixture receipt may be
+written for it.
+
+**Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
+section and never under `reading_of_record` (Tyrel, 2026-09-02: the
+Attestatores keep the fixed posture; the structure pass may vary, sealed and
+recorded per run, so its re-run variance is a clue beside the witnesses). The
+value is read from the sealed bytes, rechecked by digest at the point of use,
+and recorded on every page's answer record. **The limit, stated plainly:** the
+live reading seam records the reading-of-record temperature and puts 0 on the
+wire for every call (`ChairClient`, `request_body(deterministic=True)`), so
+today a sealed `[structure]` temperature other than 0 is refused by name before
+any chair starts (`structure_pass.executable_temperature`) — running at 0 under
+a record that says otherwise would be a posture reported rather than executed.
+Widening the seam to carry a per-call temperature is what unlocks a non-zero
+value; the section, the loader, the recheck and the record are already in
+place for it.
+
+**Every witness runs its own pass.** SPEC_D §3's "captured" kind — filing the
+structure chair's transcription as Attestator 1's Testimonium instead of
+serving Chandra a second time — was retired by ruling on 2026-09-02: the three
+witnesses are three independently trained systems and each runs end to end.
+The live pass therefore captures nothing for the witnesses; what it retains
+under custody is its own evidence. Nothing here is a picker: the chair
+proposes, the scan corroborates, and nothing selects among witnesses.
+
+**Proved end to end.** `pipeline/test_structure_chair_e2e.py` runs this pass as
+the *denominator* of a whole run: the Door, Exemplar and Ink Map as real
+programs, this stage's live pass against a scripted structure chair, then the
+three live witness chairs, a live Perlector, and the Recensor, Archetypus and
+Armarium as real programs over acts no fixture declared. It asserts that each
+minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
+recomputes from them, that the seal verifies at the Attestatores' own
+boundary, that the sealed `[structure]` temperature is both on the wire and on
+every answer record, that no Designator artifact carries a byte of the chair's
+transcription, and that a second attempt whose rectangles moved is an ordinary
+run — different acts on the page that changed, the same act on the page that
+did not, because identity is content-addressed rather than positional. The
+zero-act and cut-off answers, and 7 of the 11 named parse refusals
+(`_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`), are exercised there
+over the real chain as well as in this stage's own suite; the remaining four
+refusal codes are exercised only at the parser level
+(`common/test_structure_answer.py`). The export it reaches
+is *held*, for the reason the live seam suite measures over declared acts:
+Churro publishes no native layout, so two witnesses of a floor of three count
+(`pipeline/3_attestatores/HANDOFF.md`). That is a witness-coverage fact, not a
+fact about this stage — every act the chair proposed was read.
+
+**Named risks.** The real `designator_structure` rows' `max_model_len` is a
+planning value, and a whole-page transcription plus geometry may not fit it;
+`structure-answer-cut-off` on every page of the first real run is the
+measurement that says so. The engine resizes the page internally, so the exact
+image the model saw is not the sealed page (ARCHITECTURE invariant 3): the
+request binds the sealed bytes, the receipt records `pixel_cap`, and normalized
+coordinates keep geometry resolution-independent — a residual gap, named, not
+closed. Bounded recovery from a structural hold stays unbuilt (below).
+`excluded` stays unproduced: it exists only with a Tyrel approval reference,
+and no Designator path resolves one.
+
+**The fixture path is unchanged and re-pinned once.** Under the committed
+catalogue `initial_pass` runs as before: no answer record, no `engine_call`, no
+`structure_answer_ref`, the same `fixture://` receipt. The one fixture-visible
+change of this unit is the `[structure]` section itself — its bytes move
+`config/decoding.toml`'s digest and therefore every fixture run's
+`config_digest` — so the acceptance pins are re-measured by the host on `main`,
+not inferred here.
 
 ## `kind="hold"` and `kind="proposal-seal"`
 
@@ -477,6 +830,50 @@ denominator, an unaccounted Designator record, a duplicate, a claimed
 continuation with no supporting proposal, or a mismatch between the row and its
 evidence.
 
+## Real ingress: what the real structural pass must publish
+
+On a real submission this stage refuses: it proves its Ink Map boundary,
+reconciles the Exemplar filename ledger, and then says that real structural
+proposal/model work is outside System 03 rather than fabricating proposals or
+holds. Everything below is the contract the pass that replaces that refusal has
+to meet, because it is what consumers already recompute rather than believe.
+
+**Publish `raw_bounds` equal to the rectangle the act identity was minted
+from.** On the fixture route the proposal seal is checked against an
+independent sealed declaration, which is the stronger check; a real run has no
+declaration, so the producer's own crop rectangle is the only independent thing
+left to recompute against. `common.stage.expected_acts` therefore takes each
+structural row's proposal-origin `region` on that row's own page and requires
+`act_bindings(page_id, "proposal", region["payload"]["raw_bounds"])` to
+reproduce the row's `act_id`. `cut_minted_region` already publishes exactly
+that rectangle, so no change is needed today — but a pass that padded, rounded
+or renormalised `raw_bounds` on the way out would break the real denominator
+while leaving the fixture route green, which is why it is written down here.
+
+Three more fields on that same row are recomputed beside the identity, and each
+is a refusal by name when it disagrees with the region's own evidence:
+`act_key`, `page_ordinal` (both published beside every region, as `act_key` and
+`transform.source_page_ordinal`), and `has_continuation` — which is checked in
+both directions, so a claimed continuation with no far-page proposal region and
+a denied one with such a region are equally refused. A row's class is decided by
+which evidence record exists for it, never by trying identities until one
+verifies; two minted-class records on one row refuse as ambiguous.
+
+**Publish the conservation denominator too, per sealed page.** This is the
+first thing a real run cannot get past today, and it is measured rather than
+predicted: `pipeline/test_real_ingress_contexts_e2e.py` carries a real
+submission through the Door, the Exemplar, the Ink Map, a full served
+Attestatores roster and a served Perlector, and the Recensor then stops the run
+with *"Designator conservation pages 1, 2 carry non-held expected acts but have
+no conservation records"*. `geometry_coverage_inputs` requires one
+`kind="conservation"` record for every sealed page carrying a non-held expected
+act, and independently reconciles its residual components against the held
+residual acts in the seal. Those are measurements of the real page — total ink,
+claimed ink, the unclaimed remainder and its components — so nothing but this
+stage's own pass can supply them, and no test may compose them on its behalf
+(GOVERNANCE 10). Until the real pass exists, that refusal is the honest end of
+a real run, and the e2e pins it there.
+
 ## Exit code
 
 `EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, no
@@ -504,8 +901,10 @@ complete result.
 ## Run binding
 
 `config/designator_padding.toml` is sealed into `run.json`'s `config_digest`
-alongside `config/models.toml`, `config/pdf_render.toml` and
-`config/recovery.toml`. Padding decides how many pixels a witness is actually
+alongside `config/models.toml`, `config/pdf_render.toml`,
+`config/recovery.toml` and `config/decoding.toml` (whose `[structure]` section
+the live pass reads, rechecked under the sealed `decoding` name at the point of
+use). Padding decides how many pixels a witness is actually
 shown, so two runs under different padding cut different crop bytes; without the
 binding, one run id could be reused across a padding change and produce a second
 geometry under the first run's name. The stage reads the policy from the run's
@@ -527,7 +926,14 @@ page-pixel re-check above, and closed the same way.
 ## Recovery boundary
 
 `--operation recover --act <id> --recovery-request <id>` is the only recovery
-entry point. The request must be the exact current, digest-checked Recensor
+entry point, and it is real-ingress-blind by construction: a recrop's geometry
+comes from the fixture's own declared rectangle (`context.fixture["act"]`),
+which a real submission does not carry. `main` refuses `--operation recover`
+against a real submission by name, before touching `--act` or
+`--recovery-request`, rather than let the generic fixture-accessor refusal
+(`common/stage.py`) stand in for it. Bounded recovery from a real submission
+is not built; when it is, this stage will need a source for a recrop's
+geometry that a real page can supply. The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
 run-bound `config/recovery.toml` policy, including its reconciled total and
 per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
@@ -631,19 +1037,66 @@ asked for the claimed regions on each page separately (pages × regions) and
 (`_claimed_regions_by_page`, `_designator_holds_by_subject`). Neither changed
 what is computed.
 
-**The residual denominator itself stays unbounded in the input, deliberately.**
-Every residual component becomes one held act, one hold artifact and one seal
-row, because "every residual region is accounted regardless of size" is spec
-06's own sentence and a size floor in the accounting is GOVERNANCE 10's named
-defect. A page whose ink is scattered rather than clustered therefore mints
-acts in proportion to the scatter: measured on this build, a synthetic A4 page
-at 300 dpi with 3% randomly scattered ink reconciles to ~60,000 residual
-components in about 3 seconds of labeling, and would mint ~60,000 held acts
-that every stage after this one carries to the Armarium's review list. That is
-the correct accounting and the wrong ergonomics, and it is a real operating
-limit rather than a bug to close by dropping regions: whatever bounds it must
-bound the *page* (refuse a page this speckled, visibly and as a hold) rather
-than the accounting over one. Named here rather than discovered at scale.
+**The residual denominator is unbounded in the accounting and bounded on the
+page.** Every residual component still enters the reconciliation regardless of
+size — "every residual region is accounted regardless of size" is spec 06's own
+sentence and a size floor in the accounting is GOVERNANCE 10's named defect, so
+`conservation.reconcile` returns all of them and no ink leaves the measurement.
+What is bounded is how many of them become *separate review items*. A page whose
+reconciliation counts more components than the sealed
+`max_residual_components` allows becomes one `page-residual` held act instead of
+that many, and its record says so in `residual_enumeration`.
+
+The number this closes is measured on this build: a synthetic A4 page at 300 dpi
+with 3% scattered ink reconciles to ~60,000 residual components (this tree now
+measures ~254,000 at a 33px pitch), each of which used to mint its own held act,
+hold artifact and seal row. `operations/operator/review.py` refuses a run past
+`MAX_REVIEW_ITEMS` by name, so one such page made every *other* page's findings
+unreadable on the only surface a person uses.
+
+**The bound is per page and the console's ceiling is per run — a named
+remainder, not a thing this bound does.** What it buys is that no single page
+can make a run unopenable on its own. Thirty pages each sitting just inside
+`max_residual_components` still carry a run past the console's 50,000 items and
+still meet that refusal, by name, at the console. Nothing in the pipeline counts
+the run-wide total while a run is produced, and the Designator deliberately does
+not: the queue an operator opens is assembled in the Armarium's export from
+every stage's review items, so a total counted in this stage would be a fraction
+of the run's presented as the whole of it, which GOVERNANCE 10 forbids more
+firmly than it wants the check. A run-wide accounting belongs where the queue is
+assembled if it is wanted; until then the ceiling is enforced at the console
+against the queue it actually reads.
+
+**The secondary rescue pass is bounded the same way, on the same page.**
+`max_secondary_proposals` caps how many rescue candidates one page cuts and
+holds separately; past it the pass becomes one held `secondary-proposal` record
+naming the count, the bound and the sealed grouping digest, and cuts no crop.
+That path mints a PNG blob per candidate as well as two records, so it is the
+more expensive of the stage's two per-page enumerations, and leaving it
+unbounded would have rebuilt the unopenable run by the one route the residual
+bound does not cover. `secondary_enumeration` is a closed pair on both shapes,
+for the reason `residual_enumeration` is one on every conservation record.
+`pipeline/2_designator/test_page_residual_bound.py` carries that case, marked
+`full` because the pure-Python structure pass takes ~100 seconds at that size.
+
+**The honest cost, stated as a cost.** On a withheld page the per-component
+rectangles are not in any artifact. They stay recomputable from the sealed page
+bytes under the sealed conservation policy — the same reasoning the pipeline
+already uses for the exact image a model was shown — and both the count and the
+bound are on the hold and on the record. But a reviewer cannot open that page's
+evidence and read off where the unclaimed ink was. The alternative is a payload
+of the order of megabytes per page that nobody reads and that makes the run
+unopenable for a different reason.
+
+**The retirement condition, written down now.** The bound counts review items,
+and the number of review items is a property of how well the structure pass
+performed as much as of the page. Today's pass is one modal-background ink scan
+at a 20-level margin, so a run in which *every* page carries a `page-residual`
+hold is the legible first-run signal that the structure pass does not work on
+this corpus — a true finding delivered on run one. But if roadmap item 4 lands a
+real structural Designator and real pages still trip the bound, the bound is
+measuring the wrong thing and must be revisited rather than raised. The first
+real run's `page-residual` count is the measurement that settles it.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
@@ -674,9 +1127,10 @@ reads the act, never a gate here.
 **RecordGold cannot close padding calibration, and `calibrated_for_this_corpus`
 stays `false` regardless of how many of its pages are fetched.**
 `padding_calibration.py` needs `(detected, true_content)` pairs on this
-project's own material; RecordGold supplies `true_content` only, because the
-Designator refuses real ingress and nothing in this stage runs over fetched
-RecordGold pages to produce a `detected` half. Running `structure.py` /
+project's own material; RecordGold supplies `true_content` only: the live
+structure pass below can now mark out a real page, but no structure chair has
+been served over fetched RecordGold pages, so no `detected` half of this
+project's own exists to pair with it. Running `structure.py` /
 `grouping.py` offline over those pages and calibrating against that output is
 an honest route, but the result it would produce describes the walking
 skeleton's ink-scan stand-in, not this project's own structure model, and
@@ -690,6 +1144,15 @@ rectangles across 113 pages (784 records less the 15 refused for
 rectangle pairs, not pages, so sample size clears it comfortably. Sample size
 was never the obstacle here, provenance is, and provenance is not a number a
 larger sample can fix.
+
+**A page-fallback tile's per-tile `rationale` still says "no ink to group"
+even on the live path.** The record-level `reason` on `page-fallback` now
+tells the live and fixture premises apart (see `kind="page-fallback"` above),
+but each tile's own `rationale` string is a `grouping.fallback_tiles`
+constant (`grouping.py:395-399`) written for the fixture premise and unaware
+of which call site produced it. `grouping.py` is not this unit's owned path.
+Whoever owns it should give `fallback_tiles` (or its caller) the same
+live/fixture distinction this unit gave `_publish_page_fallback`'s `reason`.
 
 **An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
 limitation.** The Recensor reconciles only continuations this stage *proposed*, so
@@ -728,15 +1191,14 @@ while an *unsealed-page* hold stays terminal means distinguishing the two in a
 contract owned across two stages, and that is a decision for Tyrel rather than a
 distinction to introduce quietly here.
 
-**Captured structure text.** Spec 06's contracts section says the structure
-pass's transcription is "captured and handed to the Attestatores stage as a
-Testimonium rather than re-run", recorded at capture time with full provenance.
-Nothing in this tree does that, and nothing here could: the walking skeleton's
-structure pass is an ink scan with no transcription to capture, and the intake
-contract it would hand to is spec 07's, which the spec's own exit criteria say
-is verified "against the intake schema **as written in Spec 07's text**". This
-is a named gap awaiting a real structure model and that intake schema, not an
-oversight.
+**Captured structure text — settled, not a gap.** Spec 06's contracts section
+said the structure pass's transcription is "captured and handed to the
+Attestatores stage as a Testimonium rather than re-run". Tyrel ruled otherwise
+on 2026-09-02: every witness runs its own pass, and Attestator 1 is served and
+read in its own call. The live pass retains the chair's transcription under
+custody as its own evidence (`structure-answer.raw_response_ref`,
+`custody_ref`) and hands nothing to the witnesses; the Attestatores stage is
+untouched by the live Designator and reads a served seal under its own rows.
 
 **`infer_background`'s majority-paper assumption is now checked from both
 sides, and a page that fails the check is read but not counted.** The premise is
@@ -813,23 +1275,86 @@ absent. This closes the silent `EXIT_COMPLETE` path found in review on
 2026-08-10; the remaining calibration limit is the unmeasured derivation of both
 thresholds recorded below.
 
-**Eight grouping and scanning thresholds ship with no recorded derivation.**
-`grouping.DEFAULT_MARGIN_FRACTION`, `DEFAULT_CHAIN_GAP_PX`,
-`DEFAULT_ANCHOR_REACH_PX`, `DEFAULT_BRACE_MIN_HEIGHT_PX`,
-`DEFAULT_PAGE_EDGE_REACH_PX`, and `structure.DEFAULT_GAP_TOLERANCE_PX`,
-`PRIMARY_MARGIN`/`SECONDARY_MARGIN` are tuned by eye against the synthetic
-fixtures' own small pages. Five are absolute pixel counts; on a 300-dpi
-register scan (~2480×3508) a 6-pixel chain gap or a 30-pixel brace threshold
-is not the same approximation it is on a 200×300 synthetic page. The capture
-padding in `config/designator_padding.toml` got a required
-`[padding.provenance]` schema, a calibration harness, and an honest
-"not calibrated for this corpus" flag; these eight constants got a comment.
-Not a blocker while the structure pass is a synthetic ink scan with no real
-page to calibrate against. Before the pod leg: either move them into a
-`config/designator_grouping.toml` with the padding config's own provenance
-schema, or express them as fractions of page dimensions rather than absolute
-pixels — the padding entry is the model for how. Named here rather than left
-uncalibrated and unremarked. Found in review, 2026-08-10.
+**The grouping and scanning thresholds are sealed policy now, and the inventory
+has been wrong twice.** `config/designator_grouping.toml` carries them with the
+padding config's own provenance schema and the same honest
+`calibrated_for_this_corpus = false`; `grouping_config.py` loads it,
+`run.py::_analyze_page` resolves it against *each page's own* width and height,
+and the modules take the resolved pixel integers as required keyword arguments
+with no defaults left to fall back on. The digest is sealed as
+`designator-grouping` and rechecked at that point of use.
+
+The count went eight → nine → eleven, and both corrections are worth keeping
+here because both were found by reading rather than by a test. The ninth was
+`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`, which orders review
+rather than filtering it, but at 2480×3508 every residual over 6px on either
+axis is "high", so the ordering silently stopped working. The tenth and
+eleventh were `grouping.DEFAULT_FALLBACK_BANDS` (4) and
+`DEFAULT_FALLBACK_OVERLAP_PX` (8), which the sweep left behind while `run.py`'s
+own docstring claimed no module in the stage carried a threshold any more. They
+are the two that decide the crop rectangles which actually reach the
+Attestatores and the Perlector on a page nothing was found on — an 8px overlap
+is a comfortable band on a 260px fixture and a hairline on a 3508px scan — so
+they were the worst two to have missed. `fallback_overlap_bp` is a basis point
+of the page's own height like the others; `fallback_bands` is a bare count,
+because a page twice as tall gets bands twice as tall rather than twice as many.
+
+**A twelfth candidate was found and deleted rather than sealed, and the count
+stays eleven.** `grouping.find_continuation_candidate` also carried a
+`column_overlap_px` slack defaulting to `0` — horizontal tolerance on the test
+that decides whether page A's trailing group and page B's leading group share a
+column, and so whether an act is judged to run across a page break. No caller
+ever passed it, so every real continuation decision ran at 0px under a value in
+no config, on no `structure-status` record and in no inventory, which is exactly
+the shape of the ninth/tenth/eleventh above. The parameter is gone. What was
+being defaulted to zero is not a threshold but the absence of one: with no
+tolerance the test is plain interval intersection, which — unlike an absolute
+8px overlap — means the same thing on a 3508px scan as on a 260px fixture,
+because there is no length in it to scale. Zero is also the strict end, and this
+check is recorded rather than gating, so the direction of a miss is a `false` on
+an act-group record, never a lost continuation. Slack here would be a page-width
+proportion (`margin_bp`'s basis, not the six height-based fields'), and if a real
+corpus ever shows consecutive pages need it, it enters the config as a basis
+point and arrives as a required keyword.
+`test_grouping.py::test_find_continuation_candidate_shares_a_column_with_no_slack_at_all`
+holds all three halves down: touching x-ranges do not corroborate, one shared
+pixel does, and the keyword is refused. `_x_range` reports the half-open pixel
+span `[x, x+w)`, so two ranges that meet exactly at an endpoint share no pixel
+column at all — a review-round correction to this same test (`grouping.py`'s
+`find_continuation_candidate`) after it was first found asserting the reverse,
+because `_intervals_overlap`'s boundary-inclusive comparison is right for the
+*tolerance* call sites (a gap up to the reach is meant to still attach) and
+wrong for this zero-tolerance one, which now tests non-empty intersection
+directly instead of going through that shared helper.
+
+Seven fields are integer basis points of a page dimension — `margin_bp` of the
+page's **width**, the other six of its **height** — and each resolves
+bit-identically to its retired constant on the 200×260 fixture pages, so no
+fixture geometry changed. Three are bare counts: `max_residual_components`,
+`max_secondary_proposals` and `fallback_bands`.
+
+Two do **not** move and never will. `structure.PRIMARY_MARGIN` and
+`SECONDARY_MARGIN` are 8-bit ink-intensity offsets, not geometry;
+`common/test_designator_recensor_ink_calibration.py` is an AST pin that reads
+`SECONDARY_MARGIN` as a source literal and cross-checks it against the
+Recensor's own contrast constant, and a per-run value would make that
+cross-stage invariant unenforceable statically. The config's closed schema
+refuses both names wherever they are written.
+
+**`gap_tolerance_px` stays absolute at 3, and must never be scaled — do not
+"fix" this by reflex.** It is a stroke-connectivity radius, not a page-layout
+proportion: scaled to a 3508-tall page it becomes ~41px, which bridges
+inter-word gaps and changes what "connected" means, and
+`structure.label_components` builds a Chebyshev offset list of radius
+`gap + 1`, so the labeller's cost is quadratic in it and would grow with the
+cube of page scale. Its correct value is a function of scan resolution, not of
+page dimension, and no measurement of that relationship exists here yet. It is
+the one threshold this build cannot honestly set, and it is set by decision
+rather than by oversight. Related and separate: `structure.ink_pixels` builds a
+Python set over every pixel (8.7 million on an A4 page at 300 dpi) before
+labelling starts, which roadmap item 4 replaces rather than optimises.
+
+Original finding: review, 2026-08-10.
 
 **This stage builds occlusion geometry and publishes none of it.**
 `geometry_layer.occlusion_envelope` derives an occlusion envelope, and
@@ -851,3 +1376,20 @@ Closing it is stage integration, not a Recensor change: it needs a producer here
 and a settled contract for what an occlusion record seals (page identity,
 polygon in that page's own coordinate space, and the `z_relationship` the
 Recensor already refuses to infer). Named in review of PR #78, 2026-08-31.
+
+## Who wrote what (from the dispatch record, not the trailers)
+
+Derived from the session's workflow scripts (realpage-ua-ub-*, realpage-uc-sealing-*,
+realpage-ue-verifier-*, realpage-unit-d-*, realpage-unit-f-*), which record the model
+each seat was dispatched as. Commit trailers are self-reported by the seats and some
+are wrong (seats copied the host's "Fable 5.1" line); this table is authoritative.
+The Fable seat was the host orchestrator and wrote no unit code.
+
+| unit | built by | verified by | fixed by |
+|---|---|---|---|
+| A config + loader | Sonnet 5 | Opus 5 | Sonnet 5 |
+| B pure modules lose defaults | Sonnet 5 | Opus 5 | Sonnet 5 |
+| C sealing wiring | Opus 5 | Opus 5 | Sonnet 5 |
+| E act class + consumer verifier | Opus 5 | Opus 5 | Sonnet 5 |
+| D Designator behaviour + Recensor withheld branch | Opus 5 | Opus 5 | Sonnet 5 |
+| F Door refusal, geometry, pins | Opus 5 | Opus 5 | Sonnet 5 |

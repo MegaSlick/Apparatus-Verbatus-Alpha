@@ -44,7 +44,12 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.stage import EXIT_COMPLETE, run_stage, stage_parser  # noqa: E402
+from common.stage import (  # noqa: E402
+    EXIT_COMPLETE,
+    run_stage,
+    stage_parser,
+    submission_identity,
+)
 
 EXTRACTION_NAME = "bundle"
 
@@ -92,6 +97,69 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
             "artifact recorded; nothing may be published over changed bytes"
         )
     return data, record["payload"]
+
+
+def _expected_run_binding(payload: dict, run: dict) -> dict:
+    """The `run` binding a sealed export artifact's payload should reseal to.
+
+    Mirrors `armarium_export._verify_manifest_field_closure`'s two closed shapes:
+    a fixture run's payload carries `fixture_id`, a real run's carries
+    `submission_id`, never both and never neither. Which field the payload
+    carries is read rather than decided again -- that decision was `run.py`'s
+    (`export_run_identity`), made once, before this bundle was ever sealed --
+    so a payload naming both or neither is refused by name instead of silently
+    comparing against a binding this stage invented.
+
+    **Which shape it may carry is not the payload's own to say, though.** A
+    `submission_id` is a real submission's filename-ledger self-hash
+    (`common.stage.submission_identity`), and this reader used to accept
+    whichever value the payload named: a fixture run's package relabelled to
+    the `submission_id` shape published cleanly, under a submission identity
+    the run never had and a ledger nobody ever admitted. `config_digest` beside
+    it was already checked against `run.json`; the identity that says *whose
+    pages these are* was not checked against anything. So the run authority
+    decides the route here -- a submission identifier is refused on a run that
+    names no real submission, held to that submission's exact identity on a run
+    that does, and a fixture identifier is refused on a real run for the same
+    reason in the other direction.
+    """
+    has_fixture = "fixture_id" in payload
+    has_submission = "submission_id" in payload
+    if has_fixture and has_submission:
+        raise ContractError(
+            "the sealed export artifact names both a fixture identifier and a submission "
+            "identifier; a run's export is identified by exactly one, never both"
+        )
+    if not has_fixture and not has_submission:
+        raise ContractError(
+            "the sealed export artifact names neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    submission_id = submission_identity(run)
+    if has_submission and submission_id is None:
+        raise ContractError(
+            "the sealed export artifact names a submission identifier, but this run's "
+            "authority names no real submission; a fixture run's package is never published "
+            "under a submission identity"
+        )
+    if has_submission and payload.get("submission_id") != submission_id:
+        raise ContractError(
+            "the sealed export artifact's submission identifier is not this run's own "
+            "filename-ledger identity; nothing is published under a submission the run it "
+            "came out of never carried"
+        )
+    if has_fixture and submission_id is not None:
+        raise ContractError(
+            "the sealed export artifact names a fixture identifier, but this run's authority "
+            "names a real submission; a real run's package is never published under a fixture "
+            "identity"
+        )
+    identity_field = "fixture_id" if has_fixture else "submission_id"
+    return {
+        identity_field: payload.get(identity_field),
+        "scenario": payload.get("scenario"),
+        "config_digest": run.get("config_digest"),
+    }
 
 
 def publish(tree: RunTree, out_dir: Path) -> dict:
@@ -143,11 +211,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                     "retrying publication"
                 )
             run = tree.read_run()
-            expected_run_binding = {
-                "fixture_id": payload.get("fixture_id"),
-                "scenario": payload.get("scenario"),
-                "config_digest": run.get("config_digest"),
-            }
+            expected_run_binding = _expected_run_binding(payload, run)
             if manifest.get("run") != expected_run_binding:
                 # A clean-machine verifier has no external record to compare these
                 # labels with. The publisher does: fixture/scenario come from the

@@ -33,10 +33,77 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
-A wholly refused Door is that second case: it publishes its refusal report and
-its duplicate report, and only then does `require_some_admitted` raise — so the
-evidence is on disk and no `stage-seal` is, and the Exemplar's "predecessor door
-has no stage-seal" names a refused submission rather than a missing file.
+A refused Door is that second case: it publishes its refusal report and its
+duplicate report, announces both, and only then do `require_no_duplicate_sources`
+and `require_some_admitted` raise — so the evidence is on disk and no `stage-seal`
+is, and the Exemplar's "predecessor door has no stage-seal" names a refused
+submission rather than a missing file.
+
+**That sentence now holds on a real submission too, and it was a gap before it
+did.** Until the shared constructor landed, `run.py` built its real-ingress
+`StageContext` by hand instead of going through `common.stage.open_context` —
+the fixture/scenario binding it exists to check has nothing to compare on a real
+run — and `verify_predecessor_seal` was called from `open_context` alone, so a
+real run whose Door refused still sealed its Exemplar pages when the programs
+were driven one at a time; only `pipeline/orchestrator/run.py::invoke`, which
+refuses any stage exit outside complete/held/halted, stood between a refused
+Door and a sealed corpus. The gap is closed here: the Exemplar, the Ink Map and
+the Designator all open through `common.stage.open_stage_context`, which decides
+the route from one read of the run authority and asks for the predecessor's
+completion seal on both routes, in the same order, before anything writes. A
+hand-driven Exemplar over a Door that never sealed its boundary now refuses with
+"predecessor door has no stage-seal" and leaves the tree byte-identical
+(`test_exemplar_seal.py`'s
+`test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page` and
+`test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar` pin both,
+and `test_door.py`'s
+`test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`
+drives the refusing Door that leaves that state). Two consequences ride the same
+change: the real Exemplar's `scenario` is `REAL_SCENARIO`, never the unchecked
+argv value it used to store, and its context carries the roster and the sealed
+digest map like every later stage's, checked name by name against the run before
+the seal check.
+
+**A second, unpinned ordering moved with the same commit.** The deleted real-route
+`_open` verified the corpus register and read the sealed snapshot before doing
+anything else — ahead of the fixture/scenario/registry/binding work `open_context`
+does first on the fixture route. `open_context` runs those two checks last, so
+opening through the shared constructor moved that ordering onto the real route too:
+a run with both register drift and an unloadable fixture now names the fixture
+first. Nothing pinned depends on the old order — the drift test's fixture is sound —
+so this is recorded rather than reverted.
+
+**The Door seals three names on a real run alone, and they are what stands in
+for the whole-digest check downstream.** `_real_bindings` adds `models`,
+`armarium-formats` and `run-policy` to `sealed_config_digests` on the real path
+only — never into `config_digest`, so the real digest does not move and no run
+in flight is invalidated by their arrival. They exist because a real run's
+`config_digest` cannot be recomputed by any later stage: it binds the submission
+ledger's file list and self-hash, the data-handling policy that gated admission,
+the triage documents, and `_door_execution_recipe`, which is the PDFium and
+Pillow build of the machine that ran the Door. Recomputing that downstream would
+refuse a sound run after a library upgrade, so `open_context`'s whole-digest
+comparison has no counterpart on the real route and the name-by-name recheck of
+the sealed map takes its place. Without these three names that recheck would
+cover neither the model roster (only inside `config_digest`, via
+`models.to_record()`), nor the Armarium's format projection, nor the run-level
+reading knobs — the witness-context regime and its declaration, the Lectio nuda
+rate and approval reference, the Perlector instrument rate and approval
+reference, and `draft_fed`, which `real_run_policy_digest` closes under one
+name. A real run resumed with a different `--models-config` would otherwise
+publish stage-3 testimony naming one model and stage-4 dossiers naming another,
+every check green, which is GOVERNANCE 6 broken silently on the one path that
+will ever carry real material.
+
+**A real run created before these three names cannot be resumed under this
+build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
+moved one — "run 'r1' sealed no digest for the … configuration, so a stage
+cannot prove which bytes it is bound to" — because the two need different
+operator actions: restore the file, versus start the run again on a build that
+seals the name. That is correct and cheap today, and only today: nothing real
+has ever gone past the Designator, so no corpus is stranded. It stops being
+cheap the moment a real corpus is in flight, which is why this landed before the
+first live pod rather than after it.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
@@ -148,10 +215,15 @@ A refused payload has `reason`, whose prefix is one of the closed alarm codes:
 `unsupported-variant`, or `digest-mismatch`. The artifact retains the
 filename; a terminal is only presentation.
 
-Byte-identical submitted sources are not refusals. Each ordinal is admitted and
-keeps its filename link, may reuse the same content-addressed blob, and the Door
-seals a private `duplicate-report` naming the first observed ordinal/path and
-operator-visible duplicate counts.
+Byte-identical submitted sources are not *per-source* refusals. Each ordinal is
+still admitted and keeps its filename link, may reuse the same content-addressed
+blob, and the Door seals a private `duplicate-report` naming the first observed
+ordinal/path and operator-visible duplicate counts. The **run** is then refused
+whole once that report exists — see the merged-page section below — because two
+files carrying one page identity is a submission the pipeline cannot read
+correctly, not a bad file. Two byte-identical *pages inside one container* are a
+different thing entirely and are never touched by this: the report groups by
+declared filename, so a scanned volume's blank pages stay two pages.
 
 ## Exemplar `kind="page"` and corpus seal
 
@@ -174,14 +246,36 @@ every consumer reads that set. The top-level `ordinal` and filename facts descri
 one of those rows and must agree with it. A refused admission becomes an Exemplar
 `refused` page outcome with the same original filename/digest and reason.
 
-**A merged page is refused at the next boundary, by name.** Every stage behind the
-Exemplar still keys its work by submitted ordinal and would mint each act on such a
-page twice, so `verify_exemplar_corpus_seal` stops the run there rather than letting
-it read the page twice or report the second row as a lost ordinal it plainly is not.
-The operator consequence is worth knowing before a run starts: a submitted folder
-holding the same scan under two filenames — routine in archive exports — produces a
-green Exemplar and then a fatal Designator. This lifts when consumers process merged
-pages once per identity.
+**A submission that would merge two files into one page is refused at the Door,
+before any of this happens.** `door.py::require_no_duplicate_sources` raises after
+the duplicate report is sealed and announced and before the Door seals its own
+boundary, naming the submitted ordinals of every group — ordinals only, never
+filenames, because the message goes to a terminal and the sealed report is where
+the filenames belong. The whole submission is refused and no file is dropped:
+choosing which copy to discard is an automated exclusion, which GOVERNANCE reserves
+to Tyrel, and choosing to read the merged page once would decide silently whether
+identical bytes are one page shot twice or an export that wrote one scan under two
+names. There is deliberately no `--allow-duplicate-sources`. The remedy the message
+names is a re-submission whose `--submission-manifest` names each distinct scan
+once.
+
+**A merged page is still refused at the next boundary, by name**, and that stays.
+`verify_exemplar_corpus_seal` guards the sealed shape rather than one route into
+it, so a merged page record reaching a consumer another way — a future producer, a
+repaired tree, a caller that never passed a Door — is refused on its own merits
+rather than depending on the Door having run. Every stage behind the Exemplar still
+keys its work by submitted ordinal and would mint each act on such a page twice.
+
+The operator consequence has changed shape: the same scan under two filenames —
+routine in archive exports — now stops at the stage that read the filenames, with a
+report naming them, instead of producing a green Exemplar and then a fatal
+Designator complaining about an ordinal that was never lost. **What lifts the Door
+refusal is a decision, not a code change**: consumers processing merged pages once
+per identity is tractable (`sealed_submission_rows` was built for it; the census is
+one row per ordinal and `expected_refs` is a set, so only the Designator's
+`page_records` keying by ordinal breaks), but it would leave the operator with a run
+that silently reads one page where two files were submitted. Whether the pipeline
+may make that call automatically is Tyrel's, not a session's.
 
 The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
 per submitted ordinal — per *ordinal*, not per page, so a merged page contributes a

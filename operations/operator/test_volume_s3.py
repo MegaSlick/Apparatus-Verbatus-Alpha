@@ -15,10 +15,13 @@ import pytest
 
 from operations.pod.transfer import ChecksummedTransfer
 
-from .errors import ErrorCode, OperatorError
+from .errors import ERRORS, ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
+    MAX_LISTED_KEYS,
+    MAX_LISTED_PAGES,
     SHA256_METADATA_KEY,
+    S3VolumeObjectReader,
     S3VolumeReadChannel,
     S3VolumeTarget,
     VolumeSpec,
@@ -346,6 +349,34 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
     assert any("zero GPU-hours" in line for line in messages)
 
 
+def test_a_volume_fetch_run_cannot_prepare_is_a_fetch_run_refusal_not_an_upload_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The words on screen must name the verb the operator actually ran.
+
+    `UPLOAD_VOLUME_UNAVAILABLE`'s registered next step is "run `verbatus
+    upload` again". An operator who asked for a run tree and follows that
+    sends files instead, and nothing they wanted arrives. Every other refusal
+    in `fetch_run` is `FETCH_RUN_FAILED`, and the volume detail rides in the
+    detail line.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    # Explicitly absent, for the reason the upload test above states: with the
+    # keys exported this would build a real client and reach the network.
+    monkeypatch.delenv("RUNPOD_S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_S3_SECRET_KEY", raising=False)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", volume=_spec())
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "could not be prepared for reading" in str(refusal.value.detail)
+    next_step = ERRORS[refusal.value.code].next_step
+    assert "verbatus fetch-run" in next_step and "verbatus upload" not in next_step
+
+
 def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path: Path) -> None:
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
@@ -535,3 +566,242 @@ def test_a_body_that_drops_mid_read_is_a_refusal_and_the_body_is_closed() -> Non
 def test_a_nonpositive_read_bound_is_refused_at_construction() -> None:
     with pytest.raises(VolumeTransferRefusal, match="must be positive"):
         _channel(FakeReadClient(), max_bytes=0)
+
+
+# --- the list-and-fetch seam `fetch-run` reads a run tree through -------------
+
+
+class _StreamBody:
+    def __init__(self, payload: bytes, *, error: Exception | None = None) -> None:
+        self.payload = payload
+        self.error = error
+        self.offset = 0
+        self.closed = False
+
+    def read(self, amount: int) -> bytes:
+        if self.error is not None and self.offset > 0:
+            raise self.error
+        chunk = self.payload[self.offset : self.offset + amount]
+        self.offset += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeListingClient:
+    """`list_objects_v2` in pages and `get_object` as a stream, nothing else."""
+
+    def __init__(self, objects: dict[str, bytes], *, page_size: int = 2) -> None:
+        self.objects = dict(objects)
+        self.page_size = page_size
+        self.drop_token = False
+        self.vanish: set[str] = set()
+        self.drop_body_for: set[str] = set()
+        self.listings: list[dict] = []
+        self.bodies: list[_StreamBody] = []
+
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken: str | None = None):  # noqa: N803
+        del Bucket
+        self.listings.append({"Prefix": Prefix, "ContinuationToken": ContinuationToken})
+        keys = sorted(key for key in self.objects if key.startswith(Prefix))
+        start = int(ContinuationToken or 0)
+        page = keys[start : start + self.page_size]
+        truncated = start + self.page_size < len(keys)
+        response: dict = {"Contents": [{"Key": key} for key in page], "IsTruncated": truncated}
+        if truncated and not self.drop_token:
+            response["NextContinuationToken"] = str(start + self.page_size)
+        return response
+
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        del Bucket
+        if Key in self.vanish or Key not in self.objects:
+            raise _client_error("NoSuchKey", 404)
+        error = OSError("the connection dropped") if Key in self.drop_body_for else None
+        body = _StreamBody(self.objects[Key], error=error)
+        self.bodies.append(body)
+        return {"Body": body}
+
+
+def _reader(client: FakeListingClient) -> S3VolumeObjectReader:
+    return S3VolumeObjectReader(_spec(), client=client)
+
+
+def test_listing_walks_every_page_and_fetches_each_object_intact(tmp_path: Path) -> None:
+    objects = {f"runs/r1/{name}": name.encode() * 3 for name in ("a", "b", "c", "d", "e")}
+    objects["runs/r2/other"] = b"another run"
+    client = FakeListingClient(objects, page_size=2)
+    reader = _reader(client)
+
+    keys = reader.list_keys("runs/r1/")
+
+    assert keys == tuple(sorted(key for key in objects if key.startswith("runs/r1/")))
+    assert [page["ContinuationToken"] for page in client.listings] == [None, "2", "4"]
+    target = tmp_path / "local" / "a"
+    size = reader.fetch_to("runs/r1/a", target, max_bytes=1024)
+    assert size == 3 and target.read_bytes() == b"aaa"
+    assert client.bodies[-1].closed
+    assert not [path for path in target.parent.iterdir() if path.name.startswith(".")]
+
+
+def test_a_prefix_that_is_not_a_directory_is_refused() -> None:
+    with pytest.raises(VolumeTransferRefusal, match="end in '/'"):
+        _reader(FakeListingClient({})).list_keys("runs/r1")
+
+
+def test_a_truncated_listing_without_a_continuation_token_is_a_refusal() -> None:
+    """A partial listing is not a shorter run; it is no run at all."""
+
+    client = FakeListingClient({f"runs/r1/{index}": b"x" for index in range(5)}, page_size=2)
+    client.drop_token = True
+
+    with pytest.raises(VolumeTransferRefusal, match="without a continuation token"):
+        _reader(client).list_keys("runs/r1/")
+
+
+def test_a_listing_with_a_repeated_continuation_token_is_a_refusal_not_a_hang() -> None:
+    """A page that answers empty + truncated + the same token again is not progress."""
+
+    class StuckTokenClient(FakeListingClient):
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.listings.append({"Prefix": Prefix})
+            return {"Contents": [], "IsTruncated": True, "NextContinuationToken": "STUCK"}
+
+    with pytest.raises(VolumeTransferRefusal, match="repeated a continuation token"):
+        _reader(StuckTokenClient({})).list_keys("runs/r1/")
+
+
+def test_a_listing_with_a_fresh_token_every_page_is_bounded_by_page_count() -> None:
+    """A stuck token is refused by name; a never-repeating one is bounded by page count."""
+
+    class NeverEndingClient(FakeListingClient):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.calls = 0
+
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.calls += 1
+            self.listings.append({"Prefix": Prefix})
+            return {"Contents": [], "IsTruncated": True, "NextContinuationToken": f"t{self.calls}"}
+
+    client = NeverEndingClient()
+    with pytest.raises(VolumeTransferRefusal, match="pages listing"):
+        _reader(client).list_keys("runs/r1/")
+    assert client.calls == MAX_LISTED_PAGES
+
+
+def test_a_single_page_past_the_key_bound_is_refused_by_name() -> None:
+    """The key bound the docstring leans on, proven rather than assumed.
+
+    Only the page bound was exercised; the key bound is reachable on its own
+    (a thousand pages of a thousand keys) and a listing far past the shape of
+    one run tree must be refused, not walked.
+    """
+
+    class OneHugePageClient(FakeListingClient):
+        def __init__(self) -> None:
+            super().__init__({})
+
+        def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken=None):  # noqa: N803
+            del Bucket, ContinuationToken
+            self.listings.append({"Prefix": Prefix})
+            return {
+                "Contents": [{"Key": f"{Prefix}{index}"} for index in range(MAX_LISTED_KEYS + 1)],
+                "IsTruncated": False,
+            }
+
+    client = OneHugePageClient()
+    with pytest.raises(VolumeTransferRefusal, match=f"more than {MAX_LISTED_KEYS} objects"):
+        _reader(client).list_keys("runs/r1/")
+
+
+@pytest.mark.parametrize("bad_value", [None, "false", 0, 1])
+def test_a_page_with_no_usable_istruncated_is_a_refusal_not_a_complete_listing(
+    bad_value: object,
+) -> None:
+    """A page missing or malforming ``IsTruncated`` used to read exactly like
+    ``False`` -- a listing this reader cannot tell complete from partial must
+    not be recorded as verified over what could be a hidden remaining page.
+    """
+
+    class UntruncatedShapedClient(FakeListingClient):
+        def list_objects_v2(self, **_kwargs):  # type: ignore[no-untyped-def]
+            page: dict = {"Contents": [{"Key": "runs/r1/a"}]}
+            if bad_value is not None:
+                page["IsTruncated"] = bad_value
+            return page
+
+    with pytest.raises(VolumeTransferRefusal, match="no usable IsTruncated flag"):
+        _reader(UntruncatedShapedClient({})).list_keys("runs/r1/")
+
+
+def test_a_listing_the_volume_refuses_is_a_refusal_not_an_empty_run() -> None:
+    class RefusingClient(FakeListingClient):
+        def list_objects_v2(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise _client_error("AccessDenied", 403)
+
+    with pytest.raises(VolumeTransferRefusal, match="refused or could not answer a listing"):
+        _reader(RefusingClient({})).list_keys("runs/r1/")
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "not a mapping",
+        {"Contents": "not a list"},
+        {"Contents": [{"Key": 7}]},
+        {"Contents": [{"Key": "elsewhere/x"}]},
+    ],
+)
+def test_a_listing_of_the_wrong_shape_is_a_named_refusal(page: object) -> None:
+    class ShapedClient(FakeListingClient):
+        def list_objects_v2(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return page
+
+    with pytest.raises(VolumeTransferRefusal):
+        _reader(ShapedClient({})).list_keys("runs/r1/")
+
+
+def test_a_listed_object_that_then_reads_absent_is_a_refusal_not_a_skip(tmp_path: Path) -> None:
+    client = FakeListingClient({"runs/r1/a": b"a"})
+    client.vanish.add("runs/r1/a")
+
+    with pytest.raises(VolumeTransferRefusal, match="vanished mid-fetch"):
+        _reader(client).fetch_to("runs/r1/a", tmp_path / "a", max_bytes=16)
+    assert not (tmp_path / "a").exists()
+
+
+def test_an_object_past_the_bound_is_refused_and_leaves_no_file_behind(tmp_path: Path) -> None:
+    client = FakeListingClient({"runs/r1/big": b"x" * 100})
+
+    with pytest.raises(VolumeTransferRefusal, match="larger than the 64-byte bound"):
+        _reader(client).fetch_to("runs/r1/big", tmp_path / "big", max_bytes=64)
+    assert list(tmp_path.iterdir()) == []
+    assert client.bodies[-1].closed
+
+
+def test_a_body_that_drops_mid_fetch_is_refused_and_leaves_no_file_behind(tmp_path: Path) -> None:
+    client = FakeListingClient({"runs/r1/a": b"x" * 100})
+    client.drop_body_for.add("runs/r1/a")
+
+    with pytest.raises(VolumeTransferRefusal, match="dropped the body"):
+        S3VolumeObjectReader(_spec(), client=client).fetch_to(
+            "runs/r1/a", tmp_path / "a", max_bytes=1024
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_fetch_the_volume_refuses_is_named_as_a_refusal(tmp_path: Path) -> None:
+    class RefusingClient(FakeListingClient):
+        def get_object(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise _client_error("AccessDenied", 403)
+
+    with pytest.raises(VolumeTransferRefusal, match="refused or could not answer a read"):
+        _reader(RefusingClient({})).fetch_to("runs/r1/a", tmp_path / "a", max_bytes=8)
+
+
+def test_a_nonpositive_fetch_bound_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(VolumeTransferRefusal, match="must be positive"):
+        _reader(FakeListingClient({})).fetch_to("runs/r1/a", tmp_path / "a", max_bytes=0)

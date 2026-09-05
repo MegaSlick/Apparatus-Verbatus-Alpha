@@ -37,7 +37,7 @@ from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
-from common.contracts.envelope import build_envelope
+from common.contracts.envelope import build_envelope, verify_input_bytes
 from common.contracts.errors import (
     ContractError,
     FatalAccounting,
@@ -55,11 +55,16 @@ from common.contracts.outcomes import (
 from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
-from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_SCHEMA,
+    SERVING_CONFIG_INPUTS_FIELDS,
+    SERVING_CONFIG_INPUTS_SCHEMA,
+)
 from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
     DESIGNATOR,
+    DOOR,
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
@@ -135,6 +140,22 @@ MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
 NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
 PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 
+# The one scenario name a real submission runs under. A constant, never argv:
+# the fixture path seals `--scenario` into `config_digest` and refuses a resumed
+# run under another, but the real `config_digest` binds no scenario at all, so
+# an argv value there would be the one run-shaping fact nothing ever checked.
+# Every real-ingress context carries this and nothing else.
+REAL_SCENARIO: Final = "real-submission"
+
+# The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
+# fake adapter. Bumped deliberately whenever source behaviour changes so a real
+# run cannot resume under pixels made by a different Door implementation. Named
+# here rather than in `pipeline/1_exemplar/door.py`, because the downstream
+# open-time recheck (`_refuse_incompatible_real_reuse`) has to compare the run
+# authority's Door recipe against it, and `common/` may never import a stage.
+# The Door imports it from here.
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
+
 # The Designator's capture padding decides how many pixels a witness is actually
 # shown around each act, so two runs under different padding produce different
 # crop bytes. Sealing its digest here is what makes reusing one run id across a
@@ -145,6 +166,15 @@ DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
 )
 DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
+)
+# The grouping and reconciliation thresholds the Designator's structure pass runs
+# under: which marks join into one act, how far a chain reaches, and how many
+# residual components one page's conservation record may enumerate before the page
+# is held as a single review item. They decide what is marked out and what is held,
+# so two runs under different thresholds produce different acts from identical
+# pixels — the same reason padding is sealed, one step earlier in the same stage.
+DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
 )
 DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
@@ -319,8 +349,48 @@ _PROVENANCE_FIELDS = frozenset(
         "resolved_revision",
         "receipt_ref",
         "witness_regime",
+        "engine_call",
     }
 )
+
+# The structure chair's serving posture, carried on every artifact the
+# structural pass produces. It is the one provenance field that says a model was
+# *asked something* rather than that a chair was resolved: `receipt_ref` names
+# the serving moment a chair was launched under, and on the fixture path that
+# receipt is a declared value over a chair nothing called
+# (`fixture_serving_details`). A run whose Designator actually served
+# `designator_structure` says so here, once, in a closed shape.
+#
+# Not a per-page call record. The structure pass makes one call per sealed page
+# and each page's own `structure-answer` record names that call
+# (`call_record_ref`, SPEC_D §1.3); what travels on provenance is the posture
+# every one of those calls ran under, which is the part a consumer can check
+# without opening any of them.
+STRUCTURE_CALL_SCHEMA: Final = "structure-chair-call.v1"
+STRUCTURE_CALL_FIELDS: Final = frozenset(
+    {"schema", "call_kind", "decoding_policy", "decoding_config_sha256"}
+)
+# The one wire kind a vision chair is served through
+# (`operations/serving/client.py` refuses anything else by name). Recorded so a
+# later reader can tell what the chair was asked through without inferring it
+# from the shape of what came back.
+STRUCTURE_CALL_KIND: Final = "chat-completions"
+# The `config/decoding.toml` section the structure pass runs under. Tyrel ruled
+# on 2026-09-02 that the Designator's structure pass may run at a variable
+# temperature, sealed and recorded per run, so its re-run variance is a clue
+# beside the witnesses, while every Attestator keeps `reading_of_record`. The
+# two postures are different sealed sections, so naming the wrong one is a
+# posture reported rather than executed.
+STRUCTURE_DECODING_POLICY: Final = "structure"
+
+# The Designator's per-page record of what the structure chair answered, and the
+# two words a consumer needs to reach one: the artifact kind and the payload
+# schema. Named here, beside the verifier that recomputes against them, for the
+# reason `fallback_page_act_key` is — the producer writes them and this module
+# reads them back, so the two may not spell them differently.
+STRUCTURE_ANSWER_KIND: Final = "structure-answer"
+STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
+STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
 
 class StageChairProtocol(ChairProtocol, Protocol):
@@ -410,7 +480,7 @@ class StageContext:
     __slots__ = (
         "tree",
         "run",
-        "fixture",
+        "_fixture",
         "scenario",
         "stage",
         "adapter_revision",
@@ -440,7 +510,10 @@ class StageContext:
     ):
         self.tree = tree
         self.run = run
-        self.fixture = fixture
+        # `None` on a real submission, behind the refusing `fixture` property
+        # below; a loaded declaration on the fixture path. The parameter keeps
+        # its name so every existing construction is untouched.
+        self._fixture = fixture
         self.scenario = scenario
         self.stage = stage
         self.adapter_revision = adapter_revision
@@ -453,8 +526,9 @@ class StageContext:
         # the stage would then work under a policy the run never sealed while
         # every other check still passed. `require_sealed_config` is the
         # point-of-use comparison that makes the second read prove it saw the
-        # first read's bytes. Empty for a context built without one (real
-        # ingress, which reaches no configuration-driven work).
+        # first read's bytes. Both ingress routes carry it: `open_context` on a
+        # fixture run and `_open_real_context` on a real one, where five stages
+        # require these names before their first line of work.
         self.sealed_config_digests = dict(sealed_config_digests or {})
         # A stage that opens a fixture run receives the already-parsed values
         # from the exact bytes that participated in its sealed config digest.
@@ -476,6 +550,26 @@ class StageContext:
         # use so a reintroduced second read cannot pass silently.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
         self.sealed = False
+
+    @property
+    def fixture(self) -> dict[str, Any]:
+        """The declared synthetic fixture, or a named refusal on a real submission.
+
+        `None`, not `{}` and not a Mapping-shaped sentinel: the failure this
+        guards against is `context.fixture.get("act", [])` returning `[]` on a
+        real run and a fixture-shaped check *passing* over it. Anything that
+        supports `.get` reproduces exactly that. Refusing at first touch turns
+        every unconverted fixture reader in the pipeline into a refusal that
+        names the stage, and makes the audit mechanical: `rg 'context\\.fixture'`
+        is the complete list of readers a real-mode branch had to decide about.
+        """
+        if self._fixture is None:
+            raise ContractError(
+                f"{self.stage} asked its context for fixture declarations on a real "
+                "submission. Real ingress carries no fixture; this reader must derive the "
+                "fact from sealed upstream evidence or refuse by name"
+            )
+        return self._fixture
 
     @property
     def config_digest(self) -> str:
@@ -516,10 +610,23 @@ class StageContext:
         """The sealed named/blinded regime this run's Perlector reads under.
 
         Read straight off this process's own parsed CLI flag rather than off
-        `run.json`: the flag is what `run_config_bindings` folded into
-        `config_digest`, and `open_context`'s existing IncompatibleReuse check
-        already refuses a resumed run supplied a different value, so there is
-        no separate run-authority copy for this property to disagree with.
+        `run.json`, because on both routes something already refuses a resume
+        that supplied a different value, so there is no separate run-authority
+        copy for this property to disagree with. Which check that is differs:
+
+        - fixture ingress: the flag is folded into `config_digest` by
+          `run_config_bindings`, and `open_context`'s IncompatibleReuse check
+          refuses the moved value;
+        - real ingress: `open_context` does not run at all, and the real
+          `config_digest` is not recomputable downstream. What stands here
+          instead is the `run-policy` sealed digest -- the Door seals
+          `real_run_policy_digest` over this flag and its six siblings, and
+          `_refuse_incompatible_real_reuse` recomputes it from this process's
+          argv at every stage open.
+
+        Naming only the first was how this docstring read before, on a branch
+        that had just built the second; a reader checking the claim on the real
+        route would have found the check absent and the argv read unbacked.
         """
         return self.args.witness_context
 
@@ -529,7 +636,11 @@ class StageContext:
 
     @property
     def nuda_per_mille(self) -> int:
-        """The sealed Lectio nuda sampling rate, in thousandths. See `witness_context`."""
+        """The sealed Lectio nuda sampling rate, in thousandths.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.nuda_per_mille
 
     @property
@@ -539,15 +650,28 @@ class StageContext:
         Empty when nothing is sampled. `run_config_bindings` requires the exact
         recognized selector for a non-zero rate; the Perlector later resolves
         that selector to Tyrel's typed approval-record reference in the run tree.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
         """
         return self.args.nuda_approval_ref
 
     @property
     def perlector_instrument_per_mille(self) -> int:
+        """The sealed instrumented-reading rate, in thousandths.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.perlector_instrument_per_mille
 
     @property
     def perlector_instrument_approval_ref(self) -> str:
+        """The selector for the approval the instrumented reading draws under.
+
+        Argv on both routes, backed by `config_digest` on the fixture route and
+        by the `run-policy` digest on the real one. See `witness_context`.
+        """
         return self.args.perlector_instrument_approval_ref
 
     @property
@@ -1528,6 +1652,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--designator-geometry-config", default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
     )
     parser.add_argument(
+        "--designator-grouping-config",
+        default=str(DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH),
+        help=(
+            "the sealed grouping, structure and conservation thresholds the Designator's "
+            "pass resolves per page"
+        ),
+    )
+    parser.add_argument(
         "--perlector-instrument-per-mille",
         type=int,
         default=0,
@@ -1594,6 +1726,22 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     )
     parser.add_argument(
         "--chair", default=None, help="one chair role, for an Attestatores reread operation"
+    )
+    parser.add_argument(
+        "--placement-tier",
+        default=None,
+        help=(
+            "the measured placement tier of the card actually serving this run "
+            "(e.g. generic-48gb); required to resolve a live serving profile "
+            "(serving_mode_for), refused by name when a live catalogue is selected "
+            "without it. Deliberately NOT sealed into config_digest: it is a measured "
+            "runtime fact of the card, not run configuration, so it carries no "
+            "'--no-placement-tier' companion and is simply omitted from a fixture "
+            "run's argv. GOVERNANCE 6 — 'the record itself protects the past' — is "
+            "why the receipt records the caps that actually bound the serving "
+            "moment (the launch audit's profile.tier) rather than folding this into "
+            "the reproducibility contract config_digest exists to protect."
+        ),
     )
     return parser
 
@@ -1744,6 +1892,47 @@ def validate_witness_context_bindings(
     return witness_context_config_digest
 
 
+def real_run_policy_digest(
+    *,
+    witness_context: str,
+    witness_context_declaration_sha256: str,
+    nuda_per_mille: int,
+    nuda_approval_ref: str,
+    perlector_instrument_per_mille: int,
+    perlector_instrument_approval_ref: str,
+    draft_fed: bool,
+) -> str:
+    """The digest a real run seals its run-level reading knobs under.
+
+    On the fixture path these seven facts live inside `config_digest`, and
+    `open_context`'s reuse check refuses a resumed run that supplies a different
+    value. The real `config_digest` cannot be recomputed downstream
+    (`_open_real_context` says why), so on that path they need a *named* seal of
+    their own, or `--witness-context blinded` on a resume would reach the
+    Perlector unchecked while every other refusal stayed green. One function,
+    called by `door._real_bindings` when the run is created and by
+    `real_run_bindings` at every later stage's open, so the two sides cannot
+    drift on which fields the name covers. The field set is closed: a knob added
+    to one caller and not the other is a run-policy digest that never moves.
+
+    Values are validated by `validate_witness_context_bindings` on both paths
+    before this is called; this only closes the set and hashes it.
+    """
+    if not isinstance(draft_fed, bool):
+        raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
+    return digest_of(
+        {
+            "witness_context_regime": witness_context,
+            "witness_context_declaration_sha256": witness_context_declaration_sha256,
+            "nuda_per_mille": nuda_per_mille,
+            "nuda_approval_ref": nuda_approval_ref,
+            "perlector_instrument_per_mille": perlector_instrument_per_mille,
+            "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
+            "draft_fed": draft_fed,
+        }
+    )
+
+
 def run_config_bindings(
     models: ModelsConfig,
     fixture: dict[str, Any],
@@ -1753,6 +1942,7 @@ def run_config_bindings(
     pdf_render_config_sha256: str | None = None,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -1779,7 +1969,7 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding and geometry policy, Armarium projection configuration,
+    Designator padding, geometry and grouping policy, Armarium projection configuration,
     recovery policy, decoding policy, the run-level hard-failure policy,
     serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
     declares byte-backed pages only, so
@@ -1848,6 +2038,30 @@ def run_config_bindings(
             "the Designator geometry configuration binding at "
             f"{designator_geometry_config_path} could not be read"
         ) from error
+    # Hashed here and parsed at the point of use — geometry's shape exactly, and
+    # deliberately not `triage_modes`', which is validated here as well.
+    #
+    # The schema this file has to satisfy lives in
+    # `pipeline/2_designator/grouping_config.py::load_grouping_config`, and
+    # `common/` may never import a stage module: `common/README.md` says "it never
+    # imports back" and `common/chairs/test_chairs_import_boundary.py` reads every
+    # file under `common/` through `ast` to enforce it. Reaching that loader from
+    # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
+    # holds to the same rule across stage directories — would buy a bind-time
+    # refusal by breaking two live guards, so the refusal for a *malformed* file
+    # sits where the loader already is: the Designator's structure pass,
+    # loading it in `initial_pass` and proving it against this digest through
+    # `require_sealed_config("designator-grouping", ...)`, with
+    # `load_grouping_config` refusing loudly there, before the stage marks
+    # anything out. An *unreadable* file still refuses right here, at run
+    # creation, exactly as geometry's does.
+    try:
+        grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator grouping configuration binding at "
+            f"{designator_grouping_config_path} could not be read"
+        ) from error
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -1905,6 +2119,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
                 "designator_geometry_config_sha256": geometry_config_digest,
+                "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
@@ -1944,13 +2159,14 @@ def run_config_bindings(
         # merely re-derive them.
         #
         # Every name here is bound into `config_digest` above, and every name here
-        # has a point of use that requires it: padding and geometry at the
-        # Designator's crop, alignment at the Attestatores, the shard limit at run
-        # creation, the two Perlector policies at the reading, `recovery` at the
-        # Recensor, the Designator recovery pass and the orchestrator's dispatch,
-        # `pdf-render` at the Door that parsed it, and `hard-failure` at the
-        # orchestrator's own checkpoint. A name sealed with no point of use would
-        # read as a closed window that nothing actually shuts.
+        # has a point of use that requires it: padding, geometry and grouping at
+        # the Designator's crop and structure pass, alignment at the
+        # Attestatores, the shard limit at run creation, the two Perlector
+        # policies at the reading, `recovery` at the Recensor, the Designator
+        # recovery pass and the orchestrator's dispatch, `pdf-render` at the Door
+        # that parsed it, and `hard-failure` at the orchestrator's own
+        # checkpoint. A name sealed with no point of use would read as a closed
+        # window that nothing actually shuts.
         #
         # `hard-failure` is the family's fourth member and the last to be sealed.
         # It is the one the orchestrator reads BEFORE the run exists — the tally
@@ -1961,6 +2177,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
+            "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
@@ -1975,6 +2192,123 @@ def run_config_bindings(
         # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
         # carried into `StageContext` so the Recensor and the Designator recovery
         # pass never open the file a second time (audit S3).
+        "recovery_policy": recovery_policy,
+    }
+
+
+def _read_config_digest(path: str | Path, description: str) -> str:
+    """Digest one configuration file's bytes, refusing an unreadable one by name.
+
+    The same read-and-name shape `run_config_bindings` spells out inline for
+    each file; shared here by the real path so its refusals say the same thing
+    about the same file. `run_config_bindings` is deliberately left as written:
+    the fixture path's bytes are pinned by the acceptance digests, and a
+    behaviour-neutral rewrite of it buys nothing those pins can measure.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(f"the {description} binding at {path} could not be read") from error
+
+
+# The names a real run seals that no stage after the Door can recompute. The
+# data-handling policy gated admission and is named by the Door alone
+# (`--data-gate-policy` is a Door-only flag the orchestrator forwards to no
+# other stage), so a later stage can require the name to be *present* — the
+# run was gated — but cannot say which bytes it should carry.
+_REAL_DOOR_ONLY_SEALED_NAMES: Final = ("data-handling",)
+
+
+def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
+    """The downstream-relevant subset of a real run's bindings, recomputed at open.
+
+    Reads the same files `run_config_bindings` reads, under the same names, and
+    returns what a stage after the Door needs: the sealed digest map to recheck
+    `run.json` against and to carry as `StageContext.sealed_config_digests`, the
+    parsed Armarium formats and recovery policy, the serving configuration
+    inputs, and the roster facts. It computes no `config_digest`: the real one
+    binds the submission ledger and the Door machine's decoder versions, which
+    this stage does not hold and must not bind to (`_open_real_context`).
+
+    Three names here exist only on the real path — `models`, `armarium-formats`
+    and `run-policy` — because on the fixture path the same facts are inside
+    `config_digest` and already rechecked whole. Here they are what stands in
+    for that check, name by name.
+    """
+    validate_witness_adapter_bindings(models)
+    witness_context_declaration_sha256 = validate_witness_context_bindings(
+        models,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
+        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+    )
+    _, alignment_config_digest = load_alignment_limits(args.alignment_config)
+    _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
+        DEFAULT_CORPUS_FRAME_CONFIG_PATH
+    )
+    _decoding_policy, decoding_config_digest = load_decoding_policy(args.decoding_config)
+    triage_modes_raw = _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    _validate_triage_modes_config(triage_modes_raw, DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(args.formats_config)
+    serving_recipes_config_digest = _read_config_digest(
+        args.serving_recipes_config, "serving recipes configuration"
+    )
+    pod_placement_config_digest = _read_config_digest(
+        DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
+    )
+    recovery_policy = load_recovery_policy(args.recovery_config)
+    hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
+    adapter_recipes = dict(sorted(models.adapter_recipes.items()))
+    adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
+    return {
+        "witness_chairs": list(models.witness_chairs),
+        "adapter_recipes": adapter_recipes,
+        "serving_config_inputs": {
+            "schema": SERVING_CONFIG_INPUTS_SCHEMA,
+            "serving_recipes_sha256": serving_recipes_config_digest,
+            "pod_placement_sha256": pod_placement_config_digest,
+        },
+        "sealed_config_digests": {
+            "designator-padding": _read_config_digest(
+                args.designator_padding_config, "Designator padding configuration"
+            ),
+            "designator-geometry": _read_config_digest(
+                args.designator_geometry_config, "Designator geometry configuration"
+            ),
+            "designator-grouping": _read_config_digest(
+                args.designator_grouping_config, "Designator grouping configuration"
+            ),
+            "alignment": alignment_config_digest,
+            "corpus-frame-shard": corpus_frame_config_digest,
+            "decoding": decoding_config_digest,
+            "perlector-protocol": _read_config_digest(
+                args.perlector_protocol_config, "Perlector protocol configuration"
+            ),
+            "perlector-audit": _read_config_digest(
+                args.perlector_audit_config, "Perlector audit configuration"
+            ),
+            "pdf-render": _read_config_digest(args.pdf_render_config, "PDF render configuration"),
+            "recovery": recovery_policy["config_sha256"],
+            "hard-failure": hard_failure_policy["config_sha256"],
+            "triage-modes": digest_bytes(triage_modes_raw),
+            "serving-recipes": serving_recipes_config_digest,
+            "pod-placement": pod_placement_config_digest,
+            "models": models.models_digest,
+            "armarium-formats": armarium_formats_digest,
+            "run-policy": real_run_policy_digest(
+                witness_context=args.witness_context,
+                witness_context_declaration_sha256=witness_context_declaration_sha256,
+                nuda_per_mille=args.nuda_per_mille,
+                nuda_approval_ref=args.nuda_approval_ref,
+                perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+                perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+                draft_fed=args.draft_fed,
+            ),
+        },
+        "armarium_formats": armarium_formats,
         "recovery_policy": recovery_policy,
     }
 
@@ -2218,6 +2552,40 @@ def validate_serving_provenance(
     chair = provenance.get("chair")
     if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no chair name")
+    # **Owned by one producer and one chair, checked from both directions.** The
+    # same reasoning `witness_regime` above is held to: a field validated only
+    # when it happens to be present is a field any stage may attach, and an
+    # unvalidated field inside a sealed reading is exactly what invariant #42
+    # exists to stop. Only the Designator's structure pass calls a chair to mark
+    # out structure (ARCHITECTURE: the Designator marks out; the Attestatores
+    # bear witness), and only `designator_structure` sits in that chair
+    # (`unaddressed_chairs` names the whole role set). A witness Testimonium
+    # carrying a structure-chair call, or a structure call attributed to a
+    # witness role, would be a reading claiming a serving moment that was not
+    # its own — GOVERNANCE 6, and the same fabricated-moment refusal spec D §7
+    # names.
+    if provenance.get("engine_call") is not None:
+        if producer_stage != DESIGNATOR:
+            raise SchemaRefusal(
+                "only the Designator's structure pass records an engine call; provenance "
+                f"produced by {producer_stage!r} carries one"
+            )
+        if chair != DESIGNATOR_CHAIR:
+            raise SchemaRefusal(
+                f"provenance for chair {chair!r} carries a structure-chair engine call; the "
+                f"structural pass is served by {DESIGNATOR_CHAIR!r} and by no other chair"
+            )
+        if state != "configured":
+            raise SchemaRefusal(
+                f"chair {chair!r} is recorded as {state!r} and still carries an engine call; a "
+                "chair that was not configured served nothing"
+            )
+        if not require_receipt:
+            raise SchemaRefusal(
+                f"chair {chair!r} carries an engine call but is recorded as not run; a call is a "
+                "serving moment, and it owes the receipt that moment was issued under"
+            )
+        _validate_structure_chair_call(context, provenance["engine_call"])
     if state == "absent":
         configured = context.registry.resolve(chair)
         if not isinstance(configured, AbsentChair):
@@ -2309,6 +2677,61 @@ def validate_serving_provenance(
     return identity
 
 
+def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
+    """The closed record of the posture the structure chair was served under.
+
+    Two facts, and only the two a consumer can check without opening a per-page
+    call record: the wire kind the chair was asked through, and the decoding
+    policy this run sealed for the structural pass.
+
+    `decoding_policy` is a *name*, not a value. The Designator's structure pass
+    runs under `config/decoding.toml`'s `[structure]` section while every
+    Attestator reads at `reading_of_record` (Tyrel, 2026-09-02), so provenance
+    naming the wrong section would report a posture the pass did not run under —
+    GOVERNANCE 10's confusion of a claim with a measurement, and the reason the
+    temperature itself is deliberately *not* copied here: a number beside the
+    name could disagree with the sealed bytes, and then two artifacts in one run
+    would say different things about one run's decoding.
+
+    `decoding_config_sha256` binds that name to the exact bytes. It is checked
+    through `require_sealed_config` against the digest this run bound at
+    `open_context`, so a `config/decoding.toml` edited between the binding read
+    and the structure call refuses here rather than travelling into a sealed
+    reading unnoticed — the point-of-use recheck the whole sealing family
+    exists for, applied to the one policy the structural pass is free to vary.
+    """
+    if not isinstance(call, Mapping) or set(call) != STRUCTURE_CALL_FIELDS:
+        named = sorted(call) if isinstance(call, Mapping) else type(call).__name__
+        raise SchemaRefusal(
+            "a structure-chair engine call carries exactly its schema, call kind, decoding "
+            f"policy name and sealed decoding digest; this one carries {named}"
+        )
+    if call["schema"] != STRUCTURE_CALL_SCHEMA:
+        raise SchemaRefusal(
+            f"a structure-chair engine call must declare schema {STRUCTURE_CALL_SCHEMA!r}, not "
+            f"{call['schema']!r}"
+        )
+    if call["call_kind"] != STRUCTURE_CALL_KIND:
+        raise SchemaRefusal(
+            f"the structure chair is served through {STRUCTURE_CALL_KIND!r}; this call names "
+            f"{call['call_kind']!r}"
+        )
+    if call["decoding_policy"] != STRUCTURE_DECODING_POLICY:
+        raise SchemaRefusal(
+            f"the structural pass runs under the sealed {STRUCTURE_DECODING_POLICY!r} decoding "
+            f"policy; this call names {call['decoding_policy']!r}, which is a posture it did "
+            "not run under"
+        )
+    if not is_sha256(call["decoding_config_sha256"]):
+        raise SchemaRefusal(
+            "a structure-chair engine call names its sealed decoding digest as a lowercase "
+            "SHA-256 value"
+        )
+    require_sealed_config(
+        run_sealed_config_digests(context.run), "decoding", call["decoding_config_sha256"]
+    )
+
+
 def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
     """The declared scenario, refused loudly when the fixture does not name it.
 
@@ -2390,9 +2813,564 @@ def expected_acts(context) -> list[dict[str, Any]]:
         act_ids.add(act["act_id"])
         act_keys.add(act["act_key"])
         classify(DESIGNATOR, act.get("outcome"))
-    _verify_synthetic_act_denominator(context, acts)
-    _verify_proposal_seal_evidence(context, seal, acts)
+    # Gated on the run authority's ingress record by name, never on the shape of
+    # the fixture. With `fixture={}` on a real run the synthetic floor did not
+    # skip: it read `[]`, found nothing missing, and sent every row to the
+    # minted-row check, which admits only a residual hold and a page-fallback --
+    # so a real Designator's ordinary structural act was refused with a sentence
+    # about a fixture the run never had. Real mode classifies each row from its
+    # own Designator evidence instead (`_verify_real_act_denominator`).
+    #
+    # Ingress is no longer the only thing that opens that route. Which pass
+    # produced this seal is a fact about the sealed serving catalogue, not about
+    # where the pages came from: the offline end-to-end run drives a *served*
+    # structure chair over fixture pages, and a real submission may be marked out
+    # by a fixture chair over no chair at all. The two questions are independent,
+    # so the seal's own provenance is asked as well as the run's ingress, and a
+    # seal produced by a served structure chair takes the recomputing route
+    # whichever ingress it ran under.
+    structure_call = _structure_chair_call(context, payload)
+    if structure_call is not None or is_real_ingress(context.run):
+        by_subject = _proposal_evidence_by_subject(context, act_ids)
+        _verify_real_act_denominator(context, acts, by_subject, structure_call=structure_call)
+        _verify_proposal_seal_evidence(context, seal, acts, by_subject=by_subject)
+    else:
+        _verify_synthetic_act_denominator(context, acts)
+        _verify_proposal_seal_evidence(context, seal, acts)
     return acts
+
+
+def _structure_chair_call(context, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The served structure chair's posture, or `None` when no chair was called.
+
+    **Why the artifact and not the catalogue.** `common/` may never import
+    `operations/` (`common/contracts/serving.py`'s own docstring says why: both
+    sides import the shared shapes, and neither may depend on the other), so
+    this module cannot call `serving_mode_for` over the bound recipes the way
+    the Designator's own `main` does when it chooses which pass to run. What it
+    reads instead is the decision that choice already wrote down: on the live
+    path the structure chair's provenance carries an `engine_call`, and
+    `validate_serving_provenance` binds that record to the run's registry, its
+    sealed adapter recipe, its sealed decoding digest and a digest-checked
+    serving receipt before a single row is admitted on the strength of it. The
+    catalogue decides; this reads what the catalogue decided, and refuses a
+    claim the run cannot support.
+
+    **What a seal cannot escape by staying silent.** Omitting `engine_call` does
+    not buy a forged seal an easier check. On real ingress the route is taken
+    anyway. On fixture ingress the fixture floor is the *stronger* check —
+    every act the sealed fixture declares must appear, with the identity the
+    fixture derives — so a seal that drops the field is measured against a
+    declaration instead of against its own evidence. The one seal both routes
+    would admit is one whose rectangles are exactly the fixture's own, which is
+    the same act at the same identity by either name.
+
+    The refusal is `validate_serving_provenance`'s own, deliberately not
+    rewrapped: it names which field of the provenance is wrong, and a
+    `FatalAccounting` about the denominator would hide that behind a sentence
+    about act counts.
+    """
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, Mapping) or provenance.get("engine_call") is None:
+        return None
+    validate_serving_provenance(
+        context, dict(provenance), producer_stage=DESIGNATOR, require_receipt=True
+    )
+    return dict(provenance["engine_call"])
+
+
+def is_real_ingress(run: Mapping[str, Any]) -> bool:
+    """Whether a run authority names the real route.
+
+    An absent ingress record reads as the synthetic walking skeleton, exactly as
+    `refuse_halted_run` reads it: the hand-built trees in this module's own unit
+    tests predate the record, and a present one must still parse or it refuses.
+
+    The single reader behind this check: each stage's own `real_ingress(context)`
+    calls straight through to this function rather than restating the read, so a
+    change to how the ingress record is parsed lands once.
+    """
+    return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+
+
+def _verify_real_act_denominator(
+    context,
+    acts: list[dict[str, Any]],
+    by_subject: dict[str, list[dict[str, Any]]],
+    *,
+    structure_call: Mapping[str, Any] | None = None,
+) -> None:
+    """Every expected-act row on a real run, proven against its own evidence.
+
+    There is no declaration to check a real seal against, so the fixture floor
+    does not run. What replaces it is not trust: each row is classified by which
+    Designator record exists for it -- a `hold` naming `residual_bounds`, a
+    `hold` naming `page_bounds`, a `page-fallback` record, or a proposal-origin
+    `region` on the row's own page -- and then recomputed against that record
+    exactly as the fixture path recomputes its minted rows. The three minted
+    classes go through `_verify_minted_act_rows` unchanged. The fourth, the
+    structural proposal, is the one class the fixture path never had to
+    recompute (its declaration was the stronger check) and here is checked
+    against the producer's own crop rectangle (`_verify_proposal_act_row`,
+    which adds the hop to the retained structure answer when a chair was
+    actually served).
+
+    A row matching more than one minted class is refused as ambiguous, and a
+    row matching none and carrying no region is refused as unevidenced. Nothing
+    tries the classes in turn until one verifies: the evidence decides the
+    class, or nothing does (GOVERNANCE 3, hard rule 8).
+    """
+    fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
+    # One index of this run's own pages, built once. A region's page is checked
+    # against it rather than against the row that cites the region: the row is
+    # the thing under test, so "the transform does not name the row's page"
+    # cannot distinguish a genuine continuation from a transform that names no
+    # page at all, or a page belonging to some other run.
+    page_ordinals = {page_id: ordinal for ordinal, page_id in exemplar_page_ids(context).items()}
+    holds_by_subject: dict[str, dict[str, Any]] = {}
+    minted_rows: dict[str, dict[str, Any]] = {}
+    observed = {act["act_id"]: act for act in acts}
+    for act_id in sorted(observed):
+        row = observed[act_id]
+        records = by_subject.get(act_id, [])
+        holds = [record for record in records if record["kind"] == "hold"]
+        if len(holds) > 1:
+            raise FatalAccounting(
+                f"act {act_id} has {len(holds)} hold records; one act is held once, and "
+                "nothing may decide which hold speaks for it"
+            )
+        hold = holds[0] if holds else None
+        hold_payload = (
+            hold.get("payload")
+            if hold is not None and isinstance(hold.get("payload"), dict)
+            else {}
+        )
+        # A hold whose payload names neither rectangle matches no minted class,
+        # so a row carrying one alongside a region used to fall through to the
+        # structural pass -- reclassified as a proposal, its hold never
+        # examined, on the one route where the hold is the only evidence that
+        # the act was held at all. The fixture route refuses the same row by
+        # name; so does this one now.
+        if hold is not None and not {"residual_bounds", "page_bounds"} & set(hold_payload):
+            raise FatalAccounting(
+                f"act {act_id} carries a hold record naming neither residual_bounds nor "
+                "page_bounds, so the rectangle it was held over cannot be recomputed; a held "
+                "act whose hold the denominator cannot read is refused, never reclassified as "
+                "a structural proposal"
+            )
+        proposal_regions = [record for record in records if record["kind"] == "region"]
+        for record in proposal_regions:
+            # Refused, never filtered out. A region whose transform is not an
+            # object names no page, so it lands in neither the own-page nor the
+            # far-page list -- and dropping it silently would let a published
+            # continuation crop vanish beneath a `has_continuation=False` row,
+            # which is the loss `_verify_structural_act_row` exists to catch.
+            if not isinstance(record["payload"].get("transform"), Mapping):
+                raise FatalAccounting(
+                    f"act {act_id}'s proposal region {record['artifact_id']!r} carries no "
+                    "transform object, so the page it was cut from cannot be read; a region "
+                    "the denominator cannot place is not a region it may pass over"
+                )
+            # And the page it names must be a page this run has. Without this,
+            # "not the row's own page" was the whole far-page test, so a
+            # transform naming no page at all, or a page id from some other
+            # run, counted as a continuation -- satisfying `has_continuation`
+            # against a crop nothing downstream could ever open.
+            source_page_id = record["payload"]["transform"].get("source_page_id")
+            if source_page_id not in page_ordinals:
+                raise FatalAccounting(
+                    f"act {act_id}'s proposal region {record['artifact_id']!r} names source "
+                    f"page {source_page_id!r}, which this run's Exemplar never published; a "
+                    "region the denominator cannot place on a page of this run is not a "
+                    "region it may pass over"
+                )
+        regions = [
+            record
+            for record in proposal_regions
+            if record["payload"]["transform"].get("source_page_id") == row["page_id"]
+        ]
+        far_regions = [record for record in proposal_regions if record not in regions]
+        classes = []
+        if "residual_bounds" in hold_payload:
+            classes.append("residual")
+        if "page_bounds" in hold_payload:
+            classes.append("page-residual")
+        if act_id in fallbacks_by_subject:
+            classes.append("page-fallback")
+        # A structural proposal is the row with regions and no minted-class
+        # record at all. Regions alone do not name a class: a page-fallback act's
+        # predetermined crops are proposal regions too (`_publish_page_fallback`
+        # cuts them through `cut_minted_region`), and what says which unit they
+        # belong to is the `page-fallback` record beside them, whose own
+        # rectangle and premise `_verify_page_fallback_act_row` then recomputes.
+        if regions and not classes:
+            classes.append("proposal")
+        if len(classes) > 1:
+            raise FatalAccounting(
+                f"act {act_id}'s Designator evidence matches more than one act class "
+                f"({', '.join(classes)}); a row's class is decided by which evidence record "
+                "exists for it, and ambiguous evidence is not a choice to make"
+            )
+        if not classes:
+            raise FatalAccounting(
+                f"act {act_id} has no Designator evidence to recompute its identity from: no "
+                "proposal region on its page, no hold naming residual or page bounds, and no "
+                "page-fallback record; real ingress carries no declaration to admit it on"
+            )
+        if classes == ["proposal"]:
+            _verify_proposal_act_row(
+                context,
+                act_id,
+                row,
+                regions,
+                far_regions,
+                page_ordinals,
+                structure_call=structure_call,
+            )
+            continue
+        minted_rows[act_id] = row
+        if hold is not None:
+            holds_by_subject[act_id] = hold
+    _verify_minted_act_rows(
+        context, minted_rows, holds_by_subject, fallbacks_by_subject, beyond="the structural pass"
+    )
+    _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
+
+
+def _verify_proposal_act_row(
+    context,
+    act_id: str,
+    row: dict[str, Any],
+    regions: list[dict[str, Any]],
+    far_regions: list[dict[str, Any]],
+    page_ordinals: dict[str, int],
+    *,
+    structure_call: Mapping[str, Any] | None,
+) -> None:
+    """A structural act, recomputed and then held to the answer it came from.
+
+    `_verify_structural_act_row` proves the row against the rectangle its own
+    region record was cut over: identity, act key, page ordinal, continuation.
+    That is everything a consumer can check when the rectangle has no earlier
+    author — the walking skeleton's crops come from the sealed fixture, and the
+    region record is the first place they exist as evidence.
+
+    When a chair was actually served, the rectangle *does* have an earlier
+    author, and one more thing becomes checkable: the answer that chair returned
+    was retained, parsed and published per page (`structure-answer`, SPEC_D
+    §1.3), so a rectangle no answer names is a crop this run cannot attribute to
+    the model it says marked it out. Without this hop a Designator could mint a
+    perfectly self-consistent act over any rectangle at all: identity
+    recomputes, the act key agrees with the region that carries it, and every
+    downstream stage reads, witnesses and establishes text over ink no model
+    ever proposed. GOVERNANCE 10 is the rule that forbids it (the claim is "the
+    structure chair marked this out"), and GOVERNANCE 6 is the rule it would
+    break next, since the reading would carry the chair's provenance for a
+    rectangle the chair never returned.
+
+    **What this hop does not prove.** The rectangle is checked against
+    `payload["acts"]` — the Designator's own published record of what the chair
+    answered — reached on a digest-checked reference, so the record cannot have
+    changed since the status cited it. It is not checked against the retained
+    response bytes, which this function never reads or re-parses. A producer
+    that published a doctored act list beside its own status therefore passes
+    here; what it cannot do is publish one rectangle and mint a different one.
+    Re-deriving the acts from the retained blob would close that gap and is a
+    design change, not a correction: it would make `common/stage.py` a second
+    parser of the chair's wire contract, which today has exactly one
+    (`common/structure_answer.py`).
+
+    Three claims, and each is refused separately so the refusal says which one
+    failed. The **page** must have been scanned: the page's own
+    `structure-status` is read at its identity-derived address — a page id is
+    not a producer's choice of string but this act's own binding, already
+    recomputed above — and it must record `state="scanned"` for this row's page
+    and page **ordinal**. The **answer** is then reached through that record's
+    `structure_answer_ref` on the digest-checked hop rather than by address, the
+    same "prove its premise" step `_verify_page_fallback_act_row` makes, so a
+    status pointing at bytes that have since changed refuses instead of
+    resolving. And the **rectangle** must appear in that answer's own act list,
+    exactly — no nearest match, no containment, no tolerance (hard rule 8: a
+    "nearest" rectangle is a selection among candidates dressed as arithmetic).
+
+    Two smaller bindings sit alongside. The answer's own `engine_call` must be
+    the seal's, so a page answered under one sealed decoding posture cannot
+    supply rectangles for a seal that claims another. And the answer must name
+    the per-page `call_record_ref` it was derived from: a `parsed` answer citing
+    no call is a record of a reading with no reading behind it.
+
+    A rectangle may legitimately appear more than once. Two identical rectangles
+    on one page are one crop and mint one act (SPEC_D §2.2 — the class-and-bounds
+    identity has no ordinal namespace), with the second recorded as a
+    `duplicate-rectangle` finding rather than refused. So this asks that the
+    rectangle be *present*, never that it be unique; requiring uniqueness would
+    turn a recorded, deliberate merge into a fatal accounting error.
+    """
+    _verify_structural_act_row(act_id, row, regions, far_regions, page_ordinals)
+    if structure_call is None:
+        # A structural proposal with no served chair is only reachable here on
+        # real ingress (`expected_acts` takes this route on a fixture run only
+        # when the seal itself names a call; without one, a fixture run falls
+        # to the stronger fixture floor instead). Omitting `engine_call` must
+        # not buy a real proposal an easier check than the one its own
+        # docstring above promises: staying silent skips not just the answer
+        # hop but the geometry recompute's only counterparty, so a forger's
+        # self-consistent rectangle would be admitted on its own say-so.
+        if is_real_ingress(context.run):
+            raise FatalAccounting(
+                f"act {act_id} is a structural proposal on real ingress, but the proposal "
+                "seal's own provenance names no engine_call; a real submission's structural "
+                "proposal is minted from a served structure chair's answer, and a seal that "
+                "omits the call it was served under may not be admitted on a recomputed "
+                "rectangle alone"
+            )
+        return None
+    bounds = regions[0]["payload"]["raw_bounds"]
+    status = context.tree.read_artifact(
+        DESIGNATOR,
+        "structure-status",
+        artifact_id(DESIGNATOR, "structure-status", row["page_id"]),
+    )
+    status_payload = status.get("payload") if isinstance(status.get("payload"), Mapping) else {}
+    if (
+        status_payload.get("state") != "scanned"
+        or status_payload.get("page_id") != row["page_id"]
+        or status_payload.get("page_ordinal") != row["page_ordinal"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id} is a structural proposal on page {row['page_id']} at page ordinal "
+            f"{row['page_ordinal']!r}, but that page's own structure-status records state "
+            f"{status_payload.get('state')!r} for page {status_payload.get('page_id')!r} at "
+            f"ordinal {status_payload.get('page_ordinal')!r}; a rectangle is not marked out on "
+            "a page the structure pass did not scan, nor under an ordinal that page never had"
+        )
+    reference = status_payload.get("structure_answer_ref")
+    if not isinstance(reference, Mapping):
+        raise FatalAccounting(
+            f"act {act_id}'s page {row['page_id']} was marked out by a served structure chair, "
+            "but its structure-status names no retained structure answer; the answer is the "
+            "only record of what the chair actually returned, and without it this rectangle "
+            "rests on nothing but the producer's own word"
+        )
+    answer = context.tree.read_artifact_reference(
+        dict(reference),
+        stage=DESIGNATOR,
+        kind=STRUCTURE_ANSWER_KIND,
+        subject_id=row["page_id"],
+    )
+    payload = answer.get("payload") if isinstance(answer.get("payload"), Mapping) else {}
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
+        raise FatalAccounting(
+            f"act {act_id}'s page names a structure answer whose schema is "
+            f"{payload.get('schema')!r}, not {STRUCTURE_ANSWER_RECORD_SCHEMA!r}"
+        )
+    if payload.get("parse_state") != STRUCTURE_ANSWER_PARSED:
+        raise FatalAccounting(
+            f"act {act_id} was minted from page {row['page_id']}'s structure answer, whose "
+            f"parse state is {payload.get('parse_state')!r} with outcome "
+            f"{payload.get('parse_outcome')!r}; a page whose answer did not parse is held, and "
+            "a held page proposes nothing"
+        )
+    if (
+        payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != row["page_ordinal"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names page {row['page_id']} at ordinal "
+            f"{row['page_ordinal']!r}, but the structure answer it rests on names page "
+            f"{payload.get('page_id')!r} at ordinal {payload.get('page_ordinal')!r}"
+        )
+    answer_provenance = (
+        payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+    )
+    # The answer's own provenance is the premise the minted act rests on, and it
+    # is held to the same closed schema, registry, sealed recipe and
+    # digest-checked receipt the seal's provenance is -- not compared only on
+    # the one field (`engine_call`) this hop happens to need next.
+    validate_serving_provenance(
+        context, dict(answer_provenance), producer_stage=DESIGNATOR, require_receipt=True
+    )
+    if answer_provenance.get("engine_call") != dict(structure_call):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer was produced under a different structure-chair "
+            "call than the proposal seal records; one run's seal and the answers its acts were "
+            "minted from name one serving posture"
+        )
+    try:
+        call_record_reference = _serving_evidence_reference(
+            payload.get("call_record_ref"), "structure answer call record"
+        )
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer parsed but names no usable call record to have "
+            f"parsed: {error}"
+        ) from error
+    try:
+        call_record_bytes = context.tree.read_bytes(call_record_reference["relative_path"])
+    except OSError as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that could not be read: {error}"
+        ) from error
+    try:
+        verify_input_bytes(call_record_reference, call_record_bytes)
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record reference whose bytes have "
+            f"changed since it was cited: {error}"
+        ) from error
+    try:
+        call_record = json.loads(call_record_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that is not valid JSON: {error}"
+        ) from error
+    if (
+        not isinstance(call_record, Mapping)
+        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
+        or call_record.get("chair") != DESIGNATOR_CHAIR
+        or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer names a call record that is not a "
+            f"{CHAIR_CALL_RECORD_SCHEMA!r} record for chair {DESIGNATOR_CHAIR!r} under the "
+            "seal's own sealed decoding digest; a parsed answer naming a call record with no "
+            "genuine reading behind it is a reading of nothing"
+        )
+    answered = payload.get("acts")
+    if not isinstance(answered, list):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer carries no act list to check its rectangle against"
+        )
+    if payload.get("act_count") != len(answered):
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer counts {payload.get('act_count')!r} acts over a "
+            f"list of {len(answered)}; the record's own denominator does not reconcile"
+        )
+    if not any(
+        isinstance(entry, Mapping) and entry.get("raw_bounds") == bounds for entry in answered
+    ):
+        raise FatalAccounting(
+            f"act {act_id} was minted over rectangle {bounds}, which page {row['page_id']}'s "
+            "structure answer does not list at any ordinal; a crop the structure chair never "
+            "returned may not be attributed to it"
+        )
+
+
+def _verify_structural_act_row(
+    act_id: str,
+    row: dict[str, Any],
+    regions: list[dict[str, Any]],
+    far_regions: list[dict[str, Any]],
+    page_ordinals: dict[str, int],
+) -> None:
+    """A real structural act, recomputed from the rectangle it was minted over.
+
+    `cut_minted_region` publishes `raw_bounds` beside every proposal region: the
+    structural rectangle the act identity was bound to, before capture padding.
+    That is the one producer-independent fact a consumer can recompute the
+    identity against, so a real run's denominator is *verified* rather than
+    trusted. Exactly one proposal-origin region may sit on the row's own page; a
+    continuation is a second region on a far page and is not counted here, but
+    it is not ignored either.
+
+    Act identity binds only page, class and bounds (`act_bindings`), so the
+    identity check above proves none of `act_key`, `page_ordinal` or
+    `has_continuation` -- a seal row is free to *name* a different page ordinal
+    or a foreign act key for the very region whose bounds it verified against,
+    and stages 3-7 index and join by those named fields, not by identity.
+    `cut_minted_region` publishes `act_key` and `transform.source_page_ordinal`
+    beside every region, so both are recomputable and are recomputed here.
+
+    `has_continuation` is the same kind of belief otherwise: nothing before this
+    reconciled it against the regions the Designator actually cut. A row
+    claiming a continuation with no far-page region names one that was never
+    cut; a row denying one while a far-page region exists would drop a
+    published continuation crop silently downstream (the Attestatores append
+    the far page only when the flag is set) -- exactly the loss GOALS 1 calls
+    worse than a poorly read act. So the far-page count is checked against the
+    flag in both directions.
+
+    The far region is then recomputed as far as it can be. Its page is already
+    known to be a page of this run (the denominator walk refuses one that is
+    not, so "far" now means *another page of this run* rather than merely "not
+    the row's"), and beside that its `act_key` must be the row's and its
+    `source_page_ordinal` must be the ordinal this run's own Exemplar gives
+    that page -- both the same facts recomputed for the near region, against
+    the run's page index rather than the row, since no seal-row field names the
+    far page.
+
+    The one fact that cannot be recomputed for a far region is the act
+    identity. `act_bindings` binds one page id, one class and one rectangle,
+    and the rectangle it binds is the near one; a continuation crop is a second
+    cut whose bounds enter no identity anywhere, so there is no digest to
+    reproduce it against. What is required instead is that it carry the
+    `raw_bounds` a consumer needs to open it at all: a continuation region
+    whose rectangle cannot be read is refused, not passed over, because the
+    flag beside it has already promised a downstream reader that crop.
+    """
+    if len(regions) != 1:
+        raise FatalAccounting(
+            f"act {act_id} has {len(regions)} proposal regions on page {row['page_id']}, not "
+            "exactly one; a structural act is minted over one rectangle on its own page"
+        )
+    region_payload = regions[0]["payload"]
+    bounds = region_payload.get("raw_bounds")
+    if not isinstance(bounds, dict):
+        raise FatalAccounting(
+            f"act {act_id}'s proposal region carries no raw_bounds to recompute its identity "
+            "from; the real structural pass must publish the rectangle the act was minted over"
+        )
+    try:
+        verify_identity(act_id, "act", act_bindings(row["page_id"], "proposal", bounds))
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the proposal class and the raw_bounds its "
+            f"own region record names: {error}"
+        ) from error
+    if region_payload.get("act_key") != row["act_key"]:
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names act_key {row['act_key']!r}, but its own proposal "
+            f"region names act_key {region_payload.get('act_key')!r}; the two must agree"
+        )
+    region_ordinal = region_payload["transform"].get("source_page_ordinal")
+    if region_ordinal != row["page_ordinal"]:
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names page_ordinal {row['page_ordinal']!r}, but its own "
+            f"proposal region names source_page_ordinal {region_ordinal!r}; the two must agree"
+        )
+    if len(far_regions) > 1:
+        raise FatalAccounting(
+            f"act {act_id} has {len(far_regions)} proposal regions on pages other than "
+            f"{row['page_id']}; a continuation is at most one region on one far page"
+        )
+    if row["has_continuation"] != bool(far_regions):
+        raise FatalAccounting(
+            f"act {act_id}'s seal row names has_continuation={row['has_continuation']!r}, but "
+            f"its Designator evidence names {len(far_regions)} proposal region(s) on a page "
+            "other than its own; the two must agree"
+        )
+    if not far_regions:
+        return
+    far_payload = far_regions[0]["payload"]
+    if far_payload.get("act_key") != row["act_key"]:
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region names act_key {far_payload.get('act_key')!r}, "
+            f"but its seal row names act_key {row['act_key']!r}; the two must agree"
+        )
+    far_page_id = far_payload["transform"]["source_page_id"]
+    far_ordinal = far_payload["transform"].get("source_page_ordinal")
+    if far_ordinal != page_ordinals[far_page_id]:
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region on page {far_page_id} names "
+            f"source_page_ordinal {far_ordinal!r}, but that page is ordinal "
+            f"{page_ordinals[far_page_id]} of this submission; the two must agree"
+        )
+    if not isinstance(far_payload.get("raw_bounds"), dict):
+        raise FatalAccounting(
+            f"act {act_id}'s continuation region carries no raw_bounds, so the rectangle cut "
+            "from the far page cannot be read; the row's has_continuation has already promised "
+            "that crop to a reader, and a continuation nothing can open is not one to pass over"
+        )
 
 
 def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> None:
@@ -2400,12 +3378,17 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
 
     This check belongs only to the declared synthetic walking skeleton: its fake
     Designator derives every act from fixture data, and the run configuration
-    seals those fixture bytes.  Real ingress intentionally stops before any
-    proposal seal exists, so no unbuilt structural model is being prescribed.
+    seals those fixture bytes.  Two other routes exist now and neither reaches
+    here — a real submission, whose rows are classified from their own Designator
+    evidence (`_verify_real_act_denominator`), and a seal produced by a served
+    structure chair, whose rows are additionally held to the answers that chair
+    returned (`_verify_proposal_act_row`). What is prescribed below is therefore
+    the fixture path alone, and a run arriving here has a fixture to be measured
+    against.
 
     The fixture's own acts are a *floor*, never a ceiling: every one must
-    appear, and the seal may also carry acts the fixture never declared. Two
-    kinds exist, and neither is fixture data, so neither can be checked against
+    appear, and the seal may also carry acts the fixture never declared. Three
+    kinds exist, and none is fixture data, so none can be checked against
     it — `_verify_minted_act_rows` checks each against the one thing it *can*
     be checked against: its own Designator evidence record, recomputed rather
     than trusted. A **residual** act (`_publish_residual_holds`) is ink
@@ -2413,6 +3396,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     **page-fallback** act (`_publish_page_fallback`) is the predetermined crop
     grid cut over a page the structure pass found nothing on, and is `proposed`,
     because the whole point of cutting it is that it goes downstream to be read.
+    A **page-residual** act is the whole page held in place of more residuals
+    than the sealed bound allows to be minted separately, and is `held`.
     """
     fixture_acts = context.fixture.get("act", [])
     expected = {
@@ -2454,14 +3439,24 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     # and always fired; which act it accused was a coin flip, which is the kind of
     # evidence nobody can act on twice. Found by the Opus read of this branch,
     # which demonstrated five different orders over six keys in five runs.
+    # One read of the hold artifacts for both directions. Each
+    # `_designator_records_by_subject` call walks the stage's whole manifest and
+    # opens every record of its kind, and a page held for over-bound residuals is
+    # by construction a run with many holds — the case where reading them twice
+    # costs most is the one the second direction was added for.
+    holds_by_subject = _designator_records_by_subject(context, "hold")
     _verify_minted_act_rows(
-        context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
+        context,
+        {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))},
+        holds_by_subject,
     )
-    _verify_every_conservation_residual_is_accounted(context, observed)
+    _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
 def _verify_every_conservation_residual_is_accounted(
-    context, observed: dict[str, dict[str, Any]]
+    context,
+    observed: dict[str, dict[str, Any]],
+    holds_by_subject: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Every residual a conservation record found must reach the denominator.
 
@@ -2483,14 +3478,48 @@ def _verify_every_conservation_residual_is_accounted(
 
     Position within `residual_components` orders evidence only; identity binds
     the residual class and its bounds, so a new component cannot rename one.
+
+    A record may also decline to enumerate, and that is the one case where the
+    list's absence is not a gap: a page whose reconciliation exceeded the sealed
+    residual bound is held as a single `page-residual` review item instead of as
+    that many held acts, and the components are then recomputable from the sealed
+    page bytes rather than carried. The tolerance is exactly as wide as the thing
+    that earns it — one page-residual hold, naming this page, judged against the
+    same bound this record recorded. A withheld record with no such row is the
+    silent loss this check exists to prevent, wearing a policy's name.
     """
+    if holds_by_subject is None:
+        holds_by_subject = _designator_records_by_subject(context, "hold")
+    accounted_pages = _page_residual_holds_by_page(holds_by_subject, observed)
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = record.get("payload")
-        components = payload.get("residual_components") if isinstance(payload, Mapping) else None
+        payload = payload if isinstance(payload, Mapping) else {}
+        enumeration = payload.get("residual_enumeration")
+        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+            _verify_withheld_page_is_held_as_one_item(
+                page_id, payload, accounted_pages.get(page_id, [])
+            )
+            continue
+        if enumeration != RESIDUAL_ENUMERATION_COMPLETE:
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} records its residual enumeration as "
+                f"{enumeration!r}, which is outside the closed set {RESIDUAL_ENUMERATIONS}; a "
+                "consumer cannot tell a page with no unclaimed ink from one whose unclaimed ink "
+                "was counted and not listed without being told which it is"
+            )
+        components = payload.get("residual_components")
         if not isinstance(components, list):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} carries no residual-component list "
                 "to reconcile the denominator against"
+            )
+        declared_count = payload.get("residual_component_count")
+        if not _is_count(declared_count) or declared_count != len(components):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} names residual_component_count "
+                f"{declared_count!r} but its residual_components list carries {len(components)} "
+                "entries; on an enumerated page the count a reviewer is told is the count the "
+                "list itself supports, recomputed rather than believed"
             )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, Mapping) else None
@@ -2510,6 +3539,67 @@ def _verify_every_conservation_residual_is_accounted(
                 )
 
 
+def _page_residual_holds_by_page(
+    holds_by_subject: dict[str, dict[str, Any]], observed: dict[str, dict[str, Any]]
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Every page-residual hold in the run, indexed by the page it holds.
+
+    Read from the Designator's own artifacts rather than from the seal rows, so
+    that a hold the denominator never accounted for is a refusal here instead of
+    an absence nothing notices. `_verify_minted_act_rows` has already proven each
+    of these against the sealed page and its conservation record; what this index
+    is for is the other direction — finding the page that has no hold at all.
+    """
+    by_page: dict[str, list[Mapping[str, Any]]] = {}
+    for act_id, hold in holds_by_subject.items():
+        payload = hold.get("payload") if isinstance(hold.get("payload"), Mapping) else {}
+        if "page_bounds" not in payload:
+            continue
+        row = observed.get(act_id)
+        if row is None:
+            raise FatalAccounting(
+                f"the Designator published a page-residual hold for act {act_id}, which the "
+                "proposal seal's expected-act denominator does not account for; a page held in "
+                "place of its residuals is a unit this run reports, not evidence beside the "
+                "denominator"
+            )
+        by_page.setdefault(row["page_id"], []).append(payload)
+    return by_page
+
+
+def _verify_withheld_page_is_held_as_one_item(
+    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
+) -> None:
+    """A record that withheld its components owes exactly one page-residual row.
+
+    And that row must have been judged against the bound this record itself
+    names. A hold carrying a laxer bound than the reconciliation applied would
+    describe a decision the run never took, which is the same class of untruth
+    as the missing row: both leave a reviewer reading a policy that was not the
+    one in force.
+    """
+    if len(holds) != 1:
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record withheld its residual components, but the run "
+            f"carries {len(holds)} page-residual holds for that page rather than exactly one; "
+            "unlisted ink is accounted for by the single review item that replaced it, or it is "
+            "lost silently"
+        )
+    bound = payload.get("max_residual_components")
+    if not _is_count(bound):
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record withheld its residual components without "
+            "naming the integer bound it was judged against"
+        )
+    held_bound = holds[0].get("max_residual_components")
+    if not _is_count(held_bound) or held_bound != bound:
+        raise FatalAccounting(
+            f"page {page_id} is held against a bound of {held_bound!r} residual components "
+            f"while its own conservation record applied {bound}; the held page and the "
+            "reconciliation that held it must name one policy, as one integer"
+        )
+
+
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
@@ -2521,8 +3611,54 @@ def fallback_page_act_key(page_ordinal: int) -> str:
     return f"page-fallback:{page_ordinal}"
 
 
-def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
+# How much of a page's residual reconciliation its conservation record actually
+# enumerates. A closed pair, named once, because the whole point of the withheld
+# value is that a consumer must be able to tell "this page had no residual" from
+# "this page's residuals were counted and not listed" — and a third spelling
+# appearing on one side of that distinction is how the two become one again.
+RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
+RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
+RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD)
+
+# Why a page held in place of its residual components was held. The Designator
+# declares the closed hold vocabulary and imports this name into it, and this
+# module checks a page-residual hold against the same constant, so the producer
+# and the verifier cannot spell the one machine-readable statement of the cause
+# differently -- the same reason `page_residual_act_key` is defined here and
+# recomputed there.
+PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
+
+
+def page_residual_act_key(page_ordinal: int) -> str:
+    """The label of the one act a page held for over-bound residual scatter becomes.
+
+    The same presentation-only role `fallback_page_act_key` has, and named here
+    for the same reason: the Designator writes it and this module recomputes it,
+    so the two may not spell it differently. Identity is carried by the closed
+    ``page-residual`` act class over the page rectangle, never by this string.
+    """
+    return f"page-residual:{page_ordinal}"
+
+
+def _verify_minted_act_rows(
+    context,
+    extra_rows: dict[str, dict[str, Any]],
+    holds_by_subject: dict[str, dict[str, Any]] | None = None,
+    fallbacks_by_subject: dict[str, dict[str, Any]] | None = None,
+    *,
+    beyond: str = "the fixture",
+) -> None:
     """Every expected-act row beyond the fixture's own denominator.
+
+    `beyond` names what a row is being checked against in refusal sentences.
+    The synthetic caller has a fixture denominator to name; the real caller has
+    none, so it passes "the structural pass" instead -- a malformed real-mode
+    row must never be told it "extends the denominator beyond the fixture",
+    the exact sentence a real run never had a fixture to be measured against.
+    Every refusal here therefore says `beyond` and none names a fixture in its
+    own words: the neither-held-nor-proposed refusal used to open "is not
+    declared in the sealed fixture", which told a real operator to go and look
+    at a declaration their run does not have.
 
     Two units the Designator may add beyond what the fixture declares, and no
     others. Both exist for GOALS 1's "a missed act is worse than a poorly read
@@ -2536,6 +3672,16 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
     must recompute from facts a reviewer can check against the conservation
     record that found it.
 
+    That identity binds page, class and rectangle alone (`act_bindings`), so
+    re-deriving it proves nothing about the `page_ordinal` and `act_key` the
+    seal row *names* -- the same gap `_verify_structural_act_row` closes for a
+    structural row, and stages 3-7 index and join by those named fields rather
+    than by identity. A residual row naming another page's ordinal would file
+    its review item under a page whose ink it is not. `hold_residual_act`
+    records both beside the rectangle, so both are recomputable, and both are
+    held to the row here. The two page-wide classes below already do the same
+    against their own records.
+
     A **page-fallback** act is the predetermined crop grid cut over a page the
     structure pass found no ink on (Tyrel, 2026-08-11: "If the designator sees
     no text it should default to predetermined crops ... and send the crops down
@@ -2544,38 +3690,57 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
     identity must recompute against the page's own `structure-status` record,
     which is what independently says the structure pass found nothing there.
 
-    The evidence index is built once for the whole set rather than per row.
-    Every residual component on a page mints one of these rows, and a speckled
-    or foxed page reconciles to tens of thousands of them, so a per-row walk of
-    the stage's whole artifact tree makes ordinary input quadratic in itself.
+    A **page-residual** act is the third, and it is a *held* row like the first:
+    a page whose conservation reconciled more unclaimed components than the
+    sealed bound allows becomes one review item instead of that many. Both held
+    kinds arrive here as a `hold` record, so the routing between them is the
+    rectangle the hold names — `residual_bounds` for one component, `page_bounds`
+    for the whole page — and a hold naming both is refused by name rather than
+    resolved in either direction.
+
+    The evidence index is built once for the whole set rather than per row, and
+    the caller may hand in the hold index it already holds. Every residual
+    component on a page mints one of these rows, and a speckled or foxed page
+    reconciles to tens of thousands of them, so a per-row walk of the stage's
+    whole artifact tree makes ordinary input quadratic in itself.
     """
-    holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
-    fallbacks_by_subject = (
-        _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
-    )
+    if holds_by_subject is None:
+        holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
+    if fallbacks_by_subject is None:
+        fallbacks_by_subject = (
+            _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
+        )
     for act_id, row in extra_rows.items():
         if row["has_continuation"]:
             raise FatalAccounting(
-                f"act {act_id} extends the denominator beyond the fixture but claims a "
+                f"act {act_id} extends the denominator beyond {beyond} but claims a "
                 "continuation; a residual has no declared continuation to claim, and neither "
-                "has a page-fallback act"
+                "has a page-fallback or page-residual act"
             )
         if row["outcome"] == "proposed":
-            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject)
+            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject, beyond=beyond)
             continue
         if row["outcome"] != "held":
             raise FatalAccounting(
-                f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
-                "'proposed'; the only units that may extend the denominator beyond the fixture "
-                "are a conservation residual and a page-fallback act"
+                f"act {act_id} extends the denominator beyond {beyond} and is neither 'held' "
+                f"nor 'proposed'; the only units that may extend the denominator beyond "
+                f"{beyond} are a conservation residual, a page-residual hold, and a "
+                "page-fallback act"
             )
         hold = holds_by_subject.get(act_id)
         if hold is None:
             raise FatalAccounting(
-                f"act {act_id} extends the denominator beyond the fixture but the Designator "
+                f"act {act_id} extends the denominator beyond {beyond} but the Designator "
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+        # Presence, not shape: a hold whose `page_bounds` is malformed is still a
+        # page-residual hold making a malformed claim, and must be refused as one
+        # rather than fall through to the component path and be accused of
+        # carrying no residual bounds.
+        if "page_bounds" in payload:
+            _verify_page_residual_act_row(context, act_id, row, hold)
+            continue
         bounds = payload.get("residual_bounds")
         if not isinstance(bounds, dict):
             raise FatalAccounting(
@@ -2589,11 +3754,68 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
                 f"act {act_id} does not verify against the residual class and bounds its own "
                 f"hold record names: {error}"
             ) from error
+        if payload.get("page_ordinal") != row["page_ordinal"]:
+            raise FatalAccounting(
+                f"act {act_id}'s seal row names page_ordinal {row['page_ordinal']!r}, but its "
+                f"own hold record names page_ordinal {payload.get('page_ordinal')!r}; the two "
+                "must agree"
+            )
+        if payload.get("act_key") != row["act_key"]:
+            raise FatalAccounting(
+                f"act {act_id}'s seal row names act_key {row['act_key']!r}, but its own hold "
+                f"record names act_key {payload.get('act_key')!r}; the two must agree"
+            )
         _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
 
 
+def _prove_page_wide_act_rectangle(
+    context, act_id: str, page_id: str, ordinal: int, bounds: dict, act_class: str
+) -> None:
+    """The read/re-derive proof both page-wide act rows share, parameterized by class.
+
+    Recomputes the sealed page's own rectangle from its sealed bytes rather than
+    trusting the bounds a record claims, refuses a rectangle that is not the
+    whole page, and re-derives the act's identity against the reserved
+    ``act_class`` and that rectangle. Shared verbatim by
+    `_verify_page_fallback_act_row` and `_verify_page_residual_act_row` — the
+    two rows differ only in which act class they mint and which premise gates
+    them, both handled by their own callers before and after this proof.
+    """
+    sources = [
+        source
+        for source in context.run.get("source_manifest", [])
+        if source.get("ordinal") == ordinal
+    ]
+    if len(sources) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
+        )
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    width, height = dimensions(page_bytes)
+    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
+    if bounds != full_page_bounds:
+        raise FatalAccounting(
+            f"act {act_id}'s {act_class} rectangle {bounds} is not the complete sealed page "
+            f"rectangle {full_page_bounds}"
+        )
+    try:
+        verify_identity(act_id, "act", act_bindings(page_id, act_class, bounds))
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the reserved {act_class} class and the "
+            f"page rectangle its own record names: {error}"
+        ) from error
+
+
 def _verify_page_fallback_act_row(
-    context, act_id: str, row: dict[str, Any], fallbacks_by_subject: dict[str, dict[str, Any]]
+    context,
+    act_id: str,
+    row: dict[str, Any],
+    fallbacks_by_subject: dict[str, dict[str, Any]],
+    *,
+    beyond: str = "the fixture",
 ) -> None:
     """The one extra row that may be `proposed`, checked against its own evidence.
 
@@ -2612,7 +3834,7 @@ def _verify_page_fallback_act_row(
     record = fallbacks_by_subject.get(act_id)
     if record is None:
         raise FatalAccounting(
-            f"act {act_id} extends the denominator beyond the fixture as a proposed act but the "
+            f"act {act_id} extends the denominator beyond {beyond} as a proposed act but the "
             "Designator published no page-fallback record for it; it is not 'held' either, so it "
             "is not a conservation residual"
         )
@@ -2631,34 +3853,9 @@ def _verify_page_fallback_act_row(
             f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
             "derived fallback key, and page rectangle it must bind"
         )
-    sources = [
-        source
-        for source in context.run.get("source_manifest", [])
-        if source.get("ordinal") == ordinal
-    ]
-    if len(sources) != 1:
-        raise FatalAccounting(
-            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
-        )
-    page = context.tree.read_artifact(
-        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-fallback"
     )
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    width, height = dimensions(page_bytes)
-    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
-    if bounds != full_page_bounds:
-        raise FatalAccounting(
-            f"act {act_id}'s page-fallback rectangle {bounds} is not the complete sealed page "
-            f"rectangle {full_page_bounds}"
-        )
-    try:
-        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-fallback", bounds))
-    except IdentityRefusal as error:
-        raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-fallback class and the "
-            f"page rectangle its own record names: {error}"
-        ) from error
     inputs = record.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
         raise FatalAccounting(
@@ -2679,6 +3876,188 @@ def _verify_page_fallback_act_row(
             "'fallback-tiles'; a predetermined grid may not be minted over a page the "
             "structure pass actually found regions on"
         )
+
+
+def _verify_page_residual_act_row(
+    context, act_id: str, row: dict[str, Any], hold: dict[str, Any]
+) -> None:
+    """The held row that stands for a whole page, checked against its own evidence.
+
+    A page-residual act says something no other minted row says: *this page's
+    reconciliation found more unclaimed components than the sealed bound allows,
+    so the page is one review item and the components are not listed*. That makes
+    it the one row whose evidence a reader cannot open and count for themselves,
+    which is exactly why none of it may be believed here.
+
+    Five things are recomputed rather than read. The rectangle comes from the
+    sealed page bytes, so a hold naming a rectangle that is not the whole page —
+    or naming a page it was not minted over — refuses however self-consistent its
+    own identity is. The identity is re-derived against the reserved
+    ``page-residual`` class and that rectangle. The premise is followed to the
+    page's own `conservation` record through the digest-checked hop, never by
+    address, and that record has to *itself* say the count exceeded the bound the
+    hold names and that its enumeration was withheld. And the record must carry
+    no `residual_components` key at all: an empty list would mean a page with no
+    unclaimed ink, which is the opposite claim, and the key's absence is what
+    makes every existing consumer fail loudly instead of reading absence as none.
+
+    The bound itself is not merely internally consistent, it is bound to the run.
+    `max_residual_components` is a Designator grouping-policy parameter (SPEC_C
+    1), and this run sealed a `designator-grouping` digest for exactly that
+    policy at `open_context`. A hold naming its own bound and never naming which
+    grouping configuration it was judged against would let a Designator invent
+    any bound it liked; the hold's `grouping_config_sha256` is checked against
+    `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
+    is bound to the policy this run actually sealed, not merely to itself.
+
+    The hold's own `residual_component_count` is held to the record's. It is the
+    number a reviewer reads off the review item, and a hold free to name a
+    different one would put a figure in front of a person that no artifact in the
+    run supports. GOVERNANCE 10: the count is a measurement, so it is checked
+    against the thing that measured it.
+
+    The `reason_code` and `blocking_page_ordinal` are checked too, and they are
+    the cheapest checks here for the field that carries the most: the hold
+    vocabulary is closed so that a consumer can branch on the cause without
+    parsing prose, and this is the one hold whose evidence a reviewer cannot open
+    and count for themselves. A page-residual hold arriving under another cause's
+    code, or blaming another page, would be routed by everything downstream as
+    that other thing.
+    """
+    payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+    if "residual_bounds" in payload:
+        raise FatalAccounting(
+            f"act {act_id}'s hold names both a residual rectangle and a page rectangle; a hold "
+            "accounts for one component of unclaimed ink or for a whole page held in place of "
+            "its components, and nothing may decide which of the two it meant"
+        )
+    bounds = payload.get("page_bounds")
+    ordinal = row["page_ordinal"]
+    expected_key = page_residual_act_key(ordinal)
+    if (
+        not isinstance(bounds, dict)
+        or payload.get("act_key") != row["act_key"]
+        or payload.get("act_key") != expected_key
+        or payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != ordinal
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
+            "derived page-residual key, and page rectangle it must bind"
+        )
+    if (
+        payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE
+        or payload.get("blocking_page_ordinal") != ordinal
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold records its cause as "
+            f"{payload.get('reason_code')!r} against page "
+            f"{payload.get('blocking_page_ordinal')!r} rather than "
+            f"{PAGE_RESIDUAL_REASON_CODE!r} against page {ordinal}; the hold vocabulary is "
+            "closed so that a consumer can branch on the cause without reading prose"
+        )
+    grouping_digest = payload.get("grouping_config_sha256")
+    if not isinstance(grouping_digest, str) or not grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not name the sealed grouping "
+            "configuration digest its residual bound was judged against"
+        )
+    sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
+    if sealed_grouping_digest is None:
+        # Named apart from drift below, the way `require_sealed_config` names
+        # them apart: a run that never sealed the policy and a hold that names
+        # the wrong one need different things done about them, and one message
+        # printing `None` as the digest sends both operators to the same place.
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, but this run sealed no designator-grouping digest at all "
+            "for it to be judged against; the bound behind a held page cannot be bound to a "
+            "policy the run never named"
+        )
+    if grouping_digest != sealed_grouping_digest:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold names grouping configuration digest "
+            f"{grouping_digest!r}, which is not the designator-grouping digest "
+            f"{sealed_grouping_digest!r} this run sealed at binding time; a Designator free to "
+            "invent the grouping policy behind its bound could hold any page it likes"
+        )
+    _prove_page_wide_act_rectangle(
+        context, act_id, row["page_id"], ordinal, bounds, "page-residual"
+    )
+    inputs = hold.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not reference exactly one conservation "
+            "artifact to check its premise against"
+        )
+    conservation = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=row["page_id"]
+    )
+    _verify_page_residual_premise(act_id, row["page_id"], payload, conservation)
+
+
+def _verify_page_residual_premise(
+    act_id: str, page_id: str, hold_payload: Mapping[str, Any], conservation: dict[str, Any]
+) -> None:
+    """The conservation record's own account of why this page is held as one item."""
+    payload = conservation.get("payload")
+    payload = payload if isinstance(payload, Mapping) else {}
+    bound = hold_payload.get("max_residual_components")
+    declared = hold_payload.get("residual_component_count")
+    if not _is_count(bound) or not _is_count(declared):
+        raise FatalAccounting(
+            f"act {act_id}'s page-residual hold does not name an integer residual component "
+            "count and the integer bound it was judged against"
+        )
+    enumeration = payload.get("residual_enumeration")
+    if enumeration != RESIDUAL_ENUMERATION_WITHHELD:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for withheld residual enumeration, but that "
+            f"page's own conservation record records its enumeration as {enumeration!r} rather "
+            f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
+            "over a reconciliation that enumerated its components"
+        )
+    # Checked only once the record has already proven it means to withhold: a
+    # record that enumerated its components is refused above for that alone,
+    # whatever its outcome says, and folding this check in ahead of that one
+    # would report the wrong reason for the same wrong record.
+    outcome = conservation.get("outcome")
+    if outcome != "held":
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} as one review item, but that page's own "
+            f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
+            "record standing behind a held page may not still say it was proposed"
+        )
+    if "residual_components" in payload:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
+            "conservation record still carries a residual_components key; the key is omitted "
+            "when it is withheld, so that no consumer reads a present list as the complete one"
+        )
+    measured = payload.get("residual_component_count")
+    if not _is_count(measured):
+        raise FatalAccounting(
+            f"page {page_id}'s conservation record names no integer residual component count "
+            f"for act {act_id} to be held against"
+        )
+    if measured != declared:
+        raise FatalAccounting(
+            f"act {act_id} reports {declared} residual components while page {page_id}'s own "
+            f"conservation record measured {measured}; the count a reviewer is shown is the "
+            "count the reconciliation took, never a second figure beside it"
+        )
+    if measured <= bound:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
+            f"but that page's conservation record measured {measured}, which does not exceed it; "
+            "a page whose reconciliation stays within the bound owes one held act per residual, "
+            "not one held page"
+        )
+
+
+def _is_count(value: Any) -> bool:
+    """A plain non-negative integer. `bool` is an `int` and is not a count."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _verify_residual_traces_to_conservation(
@@ -2731,25 +4110,38 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
     evidence below, but ahead of it: the denominator check runs first, so an
     extra row must already name its own real evidence record before that later,
     more general evidence check ever sees it.
+
+    A subject named twice refuses, exactly as the duplicate-hold rule in
+    `_verify_real_act_denominator` does. Two records of one kind for one act
+    differ in their attempt, so both reach the manifest, and a dict built by
+    comprehension kept whichever the manifest order visited last -- one act
+    verified against a rectangle chosen by artifact-hash ordering, which is a
+    picker with no one at the controls (GOVERNANCE 3, hard rule 8).
     """
-    return {
-        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == kind
-    }
+    records: dict[str, dict[str, Any]] = {}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != kind:
+            continue
+        subject = entry["subject_id"]
+        if subject in records:
+            raise FatalAccounting(
+                f"{subject} has more than one Designator {kind} record; one subject is "
+                f"evidenced once, and nothing may decide which {kind} record speaks for it"
+            )
+        records[subject] = context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
+    return records
 
 
-def _verify_proposal_seal_evidence(
-    context, seal: dict[str, Any], acts: list[dict[str, Any]]
-) -> None:
-    """Reconcile the immutable expected-act denominator to Designator evidence.
+def _proposal_evidence_by_subject(
+    context, expected_ids: set[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Every proposal-origin region and every hold, by the act it is evidence for.
 
-    The proposal seal is the sole downstream denominator, so it cannot be a
-    shorter producer-authored list than the regions and holds actually published.
-    Only original proposal regions belong to it; recovery regions are later,
-    append-only evidence and must not rewrite the denominator.
+    The one walk of the Designator's region and hold records. It is the walk
+    `_verify_proposal_seal_evidence` reconciles the seal against, and on a real
+    run it is also what `_verify_real_act_denominator` classifies each row from,
+    so the two share it rather than reading the stage twice.
     """
-    expected_ids = {act["act_id"] for act in acts}
     by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in expected_ids}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] not in {"region", "hold"}:
@@ -2764,6 +4156,25 @@ def _verify_proposal_seal_evidence(
         if entry["kind"] == "region" and record["payload"].get("origin") != "proposal":
             continue
         by_subject[subject].append(record)
+    return by_subject
+
+
+def _verify_proposal_seal_evidence(
+    context,
+    seal: dict[str, Any],
+    acts: list[dict[str, Any]],
+    *,
+    by_subject: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Reconcile the immutable expected-act denominator to Designator evidence.
+
+    The proposal seal is the sole downstream denominator, so it cannot be a
+    shorter producer-authored list than the regions and holds actually published.
+    Only original proposal regions belong to it; recovery regions are later,
+    append-only evidence and must not rewrite the denominator.
+    """
+    if by_subject is None:
+        by_subject = _proposal_evidence_by_subject(context, {act["act_id"] for act in acts})
 
     expected_seal_refs: list[dict[str, str]] = []
     for act in acts:
@@ -2810,8 +4221,22 @@ def open_context(
     stage: str,
     *,
     registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
+    tree: RunTree | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> StageContext:
-    """Open an existing run for a stage that is not the first to write."""
+    """Open an existing run for a stage that is not the first to write.
+
+    The synthetic-ingress branch of `open_stage_context`, which passes in the
+    tree and the run authority it already read to decide the branch. Supplied
+    together or not at all: a branch decided on one read and a binding checked
+    on another would be the two-read fault `_verify_stage_seal` names, with a
+    mode switch in it.
+    """
+    if (tree is None) != (run is None):
+        raise ContractError(
+            "open_context takes the run tree and its read authority together or neither; "
+            "a binding checked against a second read of run.json can straddle a rewrite"
+        )
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
     registry = registry_factory(args.models_config)
@@ -2822,6 +4247,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
@@ -2839,8 +4265,9 @@ def open_context(
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
     )
-    tree = RunTree(Path(args.run_root), args.run_id)
-    run = tree.read_run()
+    if tree is None:
+        tree = RunTree(Path(args.run_root), args.run_id)
+        run = tree.read_run()
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     # `sealed_config_digests` is compared as a field of its own, not left to be
@@ -2909,6 +4336,229 @@ def open_context(
         serving_config_inputs=bindings["serving_config_inputs"],
         recovery_policy=bindings["recovery_policy"],
     )
+
+
+def open_stage_context(
+    args,
+    stage: str,
+    *,
+    registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
+) -> StageContext:
+    """Open an existing run for any stage after the Door, on either ingress route.
+
+    One read of the run authority decides the route and is then passed down,
+    never re-read: the ingress record is inside `run.json`'s own self-hash, so
+    which of the two routes created a run cannot be quietly switched, and a
+    branch decided on one read with a binding checked on another would be the
+    "two reads can straddle a rewrite" fault with a mode switch in it. The
+    synthetic route is `open_context`, unchanged; the real route is
+    `_open_real_context`.
+    """
+    tree = RunTree(Path(args.run_root), args.run_id)
+    run = tree.read_run()
+    if not is_real_ingress(run):
+        return open_context(args, stage, registry_factory=registry_factory, tree=tree, run=run)
+    return _open_real_context(args, stage, tree, run, registry_factory)
+
+
+def _open_real_context(
+    args,
+    stage: str,
+    tree: RunTree,
+    run: Mapping[str, Any],
+    registry_factory: Callable[[str], StageChairProtocol],
+) -> StageContext:
+    """Open a real submission's run for a stage after the Door.
+
+    Mirrors `open_context` step for step, so the two routes refuse the same
+    things in the same order: the register snapshot, the roster, the binding
+    recheck, the predecessor seal, the run-level cap, then construction.
+
+    **The real `config_digest` is not recomputed here, and must not be.** The
+    Door composes it over the submission ledger's file list and self-hash, the
+    format policy, the data-handling policy that gated admission, the triage
+    documents, and `_door_execution_recipe` -- the PDFium and Pillow versions of
+    the machine that ran the Door. A later stage holds none of those inputs, and
+    for the execution recipe it must not: recomputing it would bind the
+    Armarium to the Door's decoder build and refuse a sound run after a library
+    upgrade. So `open_context`'s whole-digest comparison has no counterpart on
+    this route, and what stands in for it is the name-by-name recheck of the
+    sealed map (`_refuse_incompatible_real_reuse`), which is why the Door seals
+    `models`, `armarium-formats` and `run-policy` on the real path alone: they
+    are the facts stages 3-7 act on that the whole digest would otherwise have
+    been the only thing covering.
+
+    The context carries `fixture=None` (behind the refusing accessor) and
+    `REAL_SCENARIO`, never `args.scenario`: the real digest binds no scenario,
+    so an argv value there would be unchecked.
+    """
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
+    registry = registry_factory(args.models_config)
+    bindings = real_run_bindings(registry.config, args)
+    # Before any write and before the seal check, so a moved policy is named as
+    # a policy and not as a missing boundary.
+    _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
+    verify_predecessor_seal(tree, stage)
+    refuse_halted_run(tree, stage, args.hard_failure_config)
+    return StageContext(
+        tree=tree,
+        run=run,
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage=stage,
+        adapter_revision=adapter_recipe_for(run, stage),
+        args=args,
+        registry=registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
+        armarium_formats=bindings["armarium_formats"],
+        serving_config_inputs=bindings["serving_config_inputs"],
+        recovery_policy=bindings["recovery_policy"],
+    )
+
+
+def _refuse_incompatible_real_reuse(
+    run: Mapping[str, Any], bindings: Mapping[str, Any], *, run_id: str
+) -> None:
+    """Refuse a real run resumed under inputs other than the ones it sealed.
+
+    The same class `open_context` raises, so operators and the operator console
+    see one shape; the same closing sentence, because on this route the promise
+    that nothing was written is the whole value of checking at open time. Every
+    fact that moved is named in one sentence, and an absent name is named apart
+    from a changed one -- `require_sealed_config`'s distinction -- because they
+    need different operator actions: restore the file, versus create the run
+    again on a build that seals the name. A real run created before the three
+    real-only names existed therefore cannot be resumed under this build.
+    """
+    differing: list[str] = []
+    if list(run.get("witness_chairs", [])) != sorted(bindings["witness_chairs"]):
+        differing.append("witness_chairs")
+    if run.get("adapter_recipes") != bindings["adapter_recipes"]:
+        differing.append("adapter_recipes")
+    sealed = run_sealed_config_digests(run)
+    moved: list[str] = []
+    absent: list[str] = []
+    for name, digest in sorted(bindings["sealed_config_digests"].items()):
+        recorded = sealed.get(name)
+        if recorded is None:
+            absent.append(name)
+        elif recorded != digest:
+            moved.append(name)
+    absent.extend(name for name in _REAL_DOOR_ONLY_SEALED_NAMES if name not in sealed)
+    if not differing and not moved and not absent:
+        return
+    # Three independent sentences, not three clauses spliced into one frame. The
+    # frame was "run X is bound to different {clauses} than the currently loaded
+    # run inputs", which reads correctly only for the roster clause: an absent
+    # name produced "bound to different this run sealed no digest for the
+    # data-handling configuration ... than the currently loaded run inputs".
+    # This is the sentence an operator acts on, so it says one thing at a time.
+    named: list[str] = []
+    if differing:
+        named.append(
+            f"run {run_id!r} is bound to different {', '.join(differing)} than the currently "
+            "loaded run inputs"
+        )
+    if moved:
+        named.append(f"run {run_id!r} sealed configuration {', '.join(moved)} moved")
+    if absent:
+        named.append(
+            f"run {run_id!r} sealed no digest for the {', '.join(absent)} configuration, so a "
+            "stage cannot prove which bytes it is bound to"
+        )
+    raise IncompatibleReuse(
+        ". ".join(named) + ". No stage work was written. Resume with the original sealed "
+        "inputs, or start a new run for the changed inputs"
+    )
+
+
+def submission_identity(run: Mapping[str, Any]) -> str | None:
+    """The one identity a real submission carries: its filename ledger's self-hash.
+
+    Every real source row carries `ledger_sha256`, it is one value across the
+    run, and `pipeline/1_exemplar/run.py::_verify_source_ledger` already proves
+    it reproduces the self-hashed ledger that admitted the submission. `None` on
+    the fixture route, which has a fixture id instead; the two are different
+    concepts and are never written under one name.
+    """
+    if not is_real_ingress(run):
+        return None
+    rows = run.get("source_manifest")
+    if not isinstance(rows, list) or not rows:
+        raise ContractError("run.json has no submitted source manifest to name a submission by")
+    hashes = {row.get("ledger_sha256") if isinstance(row, Mapping) else None for row in rows}
+    if len(hashes) != 1:
+        raise ContractError(
+            f"run.json source rows name {len(hashes)} filename ledgers, not one; a real "
+            "submission is one ledger and its identity cannot be chosen among several"
+        )
+    identity = next(iter(hashes))
+    if not is_sha256(identity):
+        raise ContractError(
+            "run.json source rows carry no filename-ledger sha256; a real submission's "
+            "identity is that ledger's self-hash and nothing may stand in for it"
+        )
+    return identity
+
+
+def exemplar_page_ids(context) -> dict[int, str]:
+    """Every Exemplar page by submitted ordinal, sealed and refused alike.
+
+    The one index of "which page is ordinal N" for both ingress routes: the
+    Exemplar's own `page` artifacts are the only correct source, because a
+    fanned container page binds its container digest, page index and render
+    contract into its identity, which neither the fixture declaration nor the
+    run authority's manifest row carries. A refused page keeps its ordinal so a
+    reader can tell "refused" from "never submitted". This is the Ink Map's
+    census generalised, minus the pixel verification that belongs to the Ink
+    Map: it says which page an ordinal names, not that the page's bytes are
+    sound.
+
+    A sealed page citing more than one submitted row would leave the other
+    rows' ordinals with no entry, so it refuses by name rather than dropping
+    them; the Door refuses such a submission before the Exemplar ever runs.
+    """
+    submitted = {
+        row.get("ordinal")
+        for row in context.run.get("source_manifest", [])
+        if isinstance(row, Mapping)
+    }
+    pages: dict[int, str] = {}
+    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+        if entry["kind"] != "page":
+            continue
+        page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        payload = page.get("payload")
+        ordinal = payload.get("ordinal") if isinstance(payload, Mapping) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                f"Exemplar page {page.get('artifact_id')!r} has no integer ordinal, so it "
+                "cannot be matched to one submitted source"
+            )
+        if ordinal in pages:
+            raise FatalAccounting(
+                f"more than one Exemplar page names ordinal {ordinal}; one submitted source "
+                "is one page, and nothing may decide which of two pages it became"
+            )
+        if ordinal not in submitted:
+            raise FatalAccounting(
+                f"Exemplar page {page['subject_id']!r} names ordinal {ordinal}, which the run "
+                "authority's source manifest never submitted"
+            )
+        cited = {
+            row.get("ordinal")
+            for row in payload.get("submission_rows", [])
+            if isinstance(row, Mapping)
+        } - {ordinal}
+        if cited:
+            raise FatalAccounting(
+                f"Exemplar page {page['subject_id']!r} for ordinal {ordinal} also cites "
+                f"submitted ordinal(s) {sorted(cited)}; one page per ordinal is the contract, "
+                "and those ordinals would otherwise leave this index silently"
+            )
+        pages[ordinal] = page["subject_id"]
+    return dict(sorted(pages.items()))
 
 
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:

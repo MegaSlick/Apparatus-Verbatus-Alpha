@@ -52,10 +52,15 @@ from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
+    EXIT_COMPLETE,
+    EXIT_FATAL,
     StageContext,
+    require_sealed_config,
     require_triage_modes,
     run_sealed_config_digests,
+    run_stage,
 )
 from operations.submit import gate, submit
 from operations.triage import instrument, producer
@@ -100,6 +105,9 @@ def _sealed_binding_digests() -> dict[str, str]:
         ),
         "designator_geometry_config_sha256": door._geometry_config_digest(
             DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
+        "designator_grouping_config_sha256": door._grouping_config_digest(
+            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
         ),
     }
 
@@ -890,7 +898,18 @@ def test_the_refusal_census_survives_an_artifact_that_decodes_to_a_non_object(
     assert census == {"unreadable record": 1}
 
 
-def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tmp_path, capsys):
+def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refused_per_file(
+    tmp_path, capsys
+):
+    """Each duplicate is admitted and reported; no *file* is refused for being one.
+
+    The run itself is refused at the close, by the test below -- this one stops
+    before `_finish_door_run` deliberately, because what it pins is the half
+    that survives that refusal: both admissions, the `duplicate_of` link, one
+    stored blob for both copies, and the complete per-filename report an
+    operator reads back. Dropping the second copy would be an automated
+    exclusion, and GOVERNANCE reserves those to Tyrel.
+    """
     data = png(3, 2)
     sources = [
         SourceEntry(1, "source-a.png", digest_bytes(data)),
@@ -939,9 +958,165 @@ def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tm
     ]
     door._announce_duplicate_report(tree, report)
     summary = capsys.readouterr().err
-    assert "1 duplicate source(s) admitted across 1 page ordinal(s)" in summary
+    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
     assert "source-a.png" not in summary
     assert "source-b.png" not in summary
+
+
+def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path):
+    """The merged-page trap, closed where the filenames are still in hand.
+
+    Two byte-identical files derive one `page_id`, so the Exemplar seals one
+    page citing both submission rows while every stage behind it still works one
+    page per row. Left to run, that submission reads one page where two files
+    were submitted, and the only trace is a private report nobody was told to
+    open. The door refuses the whole submission instead.
+
+    What this pins is the *order*, which is the half a refusal can quietly get
+    wrong: the duplicate report is published, counted and announced first, so
+    the operator keeps the complete per-filename evidence in the tree, and only
+    then does the run stop -- before `seal_boundary` writes the door's own
+    completion. Refusing before the report would lose the evidence; refusing
+    after the seal would leave a completed door on an unreadable submission.
+    """
+    data = png(3, 2)
+    sources = [
+        SourceEntry(1, "source-a.png", digest_bytes(data)),
+        SourceEntry(2, "source-b.png", digest_bytes(data)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(
+        context, tree, sources, reader({"source-a.png": data, "source-b.png": data}), policy=POLICY
+    )
+    assert admitted == 2
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "ordinal(s) 1 and 2 carry identical bytes" in message
+    assert "derives one page identity from more than one submitted file" in message
+    # By ordinal, never by filename: `run_stage` prints this to stderr, and the
+    # data-handling logging rule excludes a declared path from that channel.
+    assert "source-a.png" not in message
+    assert "source-b.png" not in message
+    # Nothing was excluded and nothing was dropped -- both admissions and the
+    # full report survive in the tree, which is what the operator reads back.
+    assert {record["outcome"] for record in admissions(tree).values()} == {"admitted"}
+    entry = next(
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    )
+    duplicate = tree.read_artifact(DOOR, "duplicate-report", entry["artifact_id"])["payload"]
+    assert duplicate["duplicate_source_count"] == 1
+    assert duplicate["duplicate_ordinal_count"] == 1
+    assert [source["declared_path"] for source in duplicate["groups"][0]["sources"]] == [
+        "source-a.png",
+        "source-b.png",
+    ]
+    assert entry["relative_path"] in message, (
+        "the refusal must point at the sealed report, which is where the filenames are"
+    )
+    # The door never completed: no stage seal, so nothing downstream may treat
+    # this run as a door that finished.
+    assert [
+        item for item in tree.build_manifest(DOOR)["artifacts"] if item["kind"] == "stage-seal"
+    ] == []
+
+
+def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
+    """The four-source case: two copies of one two-page PDF.
+
+    Four ordinals, and two page identities between them -- ordinals 1 and 3 are
+    page 0 of the same container bytes, 2 and 4 are page 1 -- so the refusal has
+    to name all four rather than the two it happened to notice first. Pages
+    *inside* one container are never duplicates of each other, and this run is
+    refused for the second copy of the file, not for the book having two pages.
+    """
+    data = two_page_pdf()
+    files = {"scan-1.pdf": data, "scan-2.pdf": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    assert admitted == 4
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
+    assert "scan-1.pdf" not in message
+    assert "scan-2.pdf" not in message
+
+
+def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
+    """The regression against over-refusal: distinct bytes are not a trap.
+
+    Including two byte-identical *pages of one container*, which produce no
+    duplicate report at all -- the report groups by declared path, so a scanned
+    volume's blank pages never reach this refusal, and a run that started
+    refusing them would be losing pages that genuinely exist (GOALS 1).
+    """
+    volume = blank_pages_pdf(2, width=8, height=6)
+    files = {"scanned-volume.pdf": volume, "other.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    assert admitted == 3
+
+    assert door._finish_door_run(context, tree, admitted) == EXIT_COMPLETE
+    assert [
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    ] == []
+
+
+def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(
+    tmp_path,
+):
+    """A corrupt twin keeps its own corruption alarm.
+
+    `process_sources` registers a source as "seen" only once it is admitted, so
+    two copies of a broken file are each refused on their own merits and neither
+    becomes a duplicate of the other. That distinction predates this refusal and
+    must survive it: the door admitted nothing here, so what fires is
+    `require_some_admitted`'s census naming the format alarm, and no duplicate
+    claim is made about pixels that never entered the Exemplar.
+    """
+    data = b"not an image at all"
+    sources = [
+        SourceEntry(1, "broken-a.png", digest_bytes(data)),
+        SourceEntry(2, "broken-b.png", digest_bytes(data)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(
+        context, tree, sources, reader({"broken-a.png": data, "broken-b.png": data}), policy=POLICY
+    )
+    assert admitted == 0
+
+    with pytest.raises(ContractError) as refusal:
+        door._finish_door_run(context, tree, admitted)
+
+    message = str(refusal.value)
+    assert "the door admitted nothing" in message
+    assert "unrecognized-format: 2" in message
+    assert "page identity" not in message
 
 
 def test_expansion_ordinals_are_stable_by_filename_and_page_index():
@@ -1498,6 +1673,10 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -1574,6 +1753,10 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -1625,6 +1808,10 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1679,6 +1866,10 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1880,6 +2071,79 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert "reconciled the Exemplar filename ledger" in boundary.stderr
     assert "no proposals or holds were fabricated" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
+
+
+def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes(
+    tmp_path, monkeypatch, capsys
+):
+    """The operator case the refusal exists for, end to end on the real route.
+
+    A folder holding the same scan under two filenames is routine in archive
+    exports. Before this it produced a green door, a green Exemplar, and then a
+    fatal Designator complaining about a page ordinal that was never lost — the
+    wrong stage saying the wrong thing about the wrong page. Now the door itself
+    exits `EXIT_FATAL`, which `pipeline/orchestrator/run.py::invoke` refuses to
+    carry ("exited 2"), so the run stops at the stage that still had the
+    filenames in hand.
+
+    **A hand-driven Exemplar is barred too, and this is the one place that is
+    proved over the real Door's own refusal.** It used to be the one route by
+    which a caller running the programs one by one, past the door's non-zero
+    exit, still got a sealed merged page: the Exemplar built its real-ingress
+    `StageContext` by hand and so never called `verify_predecessor_seal`. The
+    shared constructor now asks for the door's completion seal on both ingress
+    routes before anything is written, so the Exemplar refuses by name here.
+    `test_exemplar_seal.py::
+    test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
+    pins the same check over a hand-built refused door, and
+    `test_exemplar_seal.py::
+    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
+    keeps the second-line-of-defence coverage the retired
+    `verify_exemplar_corpus_seal` call used to exercise here.
+    """
+    data = png(4, 3)
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": data, "iPhone/FS-1234 copy.png": data}
+    )
+    run_root = approved / "runs"
+
+    def door_main():
+        return _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="merged",
+        )
+
+    assert run_stage(door_main) == EXIT_FATAL
+    stderr = capsys.readouterr().err
+    assert "derives one page identity from more than one submitted file" in stderr
+    assert "FS-1234.png" not in stderr
+    assert "FS-1234 copy.png" not in stderr
+
+    tree = RunTree(run_root, "merged")
+    artifacts = tree.build_manifest(DOOR)["artifacts"]
+    assert [item for item in artifacts if item["kind"] == "duplicate-report"], (
+        "the evidence must be sealed before the run is refused"
+    )
+    assert [item for item in artifacts if item["kind"] == "stage-seal"] == [], (
+        "the door refused, so it never completed its own boundary"
+    )
+
+    sealed = subprocess.run(
+        [sys.executable, str(EXEMPLAR_CLI), "--run-root", str(run_root), "--run-id", "merged"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert sealed.returncode != 0
+    assert "predecessor door has no stage-seal" in sealed.stderr
+    manifest = tree.build_manifest(EXEMPLAR)
+    assert [item for item in manifest["artifacts"] if item["kind"] == "page"] == [], (
+        "the exemplar must refuse before sealing the merged page the door refused"
+    )
 
 
 def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, monkeypatch):
@@ -2933,6 +3197,10 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         def to_record():
             return {"models": "synthetic"}
 
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
@@ -2943,6 +3211,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     supplied = _sealed_binding_digests()
     padding_digest = supplied["designator_padding_config_sha256"]
     geometry_digest = supplied["designator_geometry_config_sha256"]
+    grouping_digest = supplied["designator_grouping_config_sha256"]
     recovery = door.load_recovery_policy()
     bindings = door._real_bindings(
         Models(),
@@ -2964,6 +3233,12 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
         "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
         "run, so a real run without it refuses unconditionally (same class as F-S5)"
+    )
+    assert sealed.get("designator-grouping") == grouping_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'designator-grouping' entry bound to the exact digest passed in; the structure "
+        "pass resolves its thresholds from these bytes one step before the crop, so a "
+        "real run without the name refuses unconditionally (same class as F-S5)"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
@@ -2995,6 +3270,149 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
     )
     require_triage_modes(sealed, triage_modes)
+    # The three real-only names. On the fixture path these facts sit inside
+    # `config_digest`, which every later stage recomputes whole; the real digest
+    # cannot be recomputed downstream, so `common.stage._open_real_context`'s
+    # name-by-name recheck is the only thing that catches a resumed real run
+    # under a moved roster, format projection or witness regime.
+    assert sealed.get("models") == Models().models_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'models' entry bound to the roster digest; without it a real run resumed under a "
+        "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
+        "dossiers naming another (GOVERNANCE 6)"
+    )
+    formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
+    assert sealed.get("armarium-formats") == formats_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing an "
+        "'armarium-formats' entry bound to the format projection the Armarium exports under"
+    )
+    expected_policy = door.real_run_policy_digest(
+        witness_context="named",
+        witness_context_declaration_sha256=digest_bytes(
+            Path(door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH).read_bytes()
+        ),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
+        perlector_instrument_per_mille=0,
+        perlector_instrument_approval_ref="",
+        draft_fed=True,
+    )
+    assert sealed.get("run-policy") == expected_policy, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'run-policy' entry over the seven run-level reading knobs; without it "
+        "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
+    )
+    blinded = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+        witness_context="blinded",
+        **supplied,
+    )
+    assert blinded["sealed_config_digests"]["run-policy"] != expected_policy, (
+        "a moved witness regime must move the run-policy name, or the recheck cannot see it"
+    )
+    # Named only, never folded into the real `config_digest`: a run in flight
+    # keeps its identity across this build.
+    assert blinded["config_digest"] != bindings["config_digest"], (
+        "the witness regime was already inside the real config_digest and must stay there"
+    )
+    unchanged = door._real_bindings(
+        Models(), ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
+    )
+    assert unchanged["config_digest"] == bindings["config_digest"]
+
+
+def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
+    """The sealed grouping name must be able to fail, and to say which fault it is.
+
+    A name in `sealed_config_digests` earns its place by having a point of use
+    that requires it; a name nothing can refuse against "would read as a closed
+    window that nothing actually shuts" (`common/stage.py`). So this drives the
+    Door's own real-path map into the comparison `require_sealed_config` makes,
+    and proves both refusals separately: a file rewritten after the door bound
+    it, and an authority that never sealed the name at all. They need different
+    operator actions — restore the policy, versus create the run again on a
+    build that seals it — so they must not collapse into one message.
+
+    Deliberately a rewritten *file*, not an invented hex string: the digest under
+    test is one the loader would really produce from bytes really on disk, which
+    is what the point of use is handed on a real run.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    supplied = _sealed_binding_digests()
+    bindings = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
+        door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
+        **supplied,
+    )
+    # Read back the way a later stage reads it: out of a run authority, not off
+    # the bindings dict, so the name has to survive being recorded and re-read.
+    sealed = run_sealed_config_digests({"sealed_config_digests": bindings["sealed_config_digests"]})
+    bound = supplied["designator_grouping_config_sha256"]
+
+    # The run as sealed: the bytes the Designator re-reads are the bound bytes.
+    require_sealed_config(sealed, "designator-grouping", bound)
+
+    # The fixture path's own `sealed_config_digests` names the same bytes under
+    # the same name — a different function on a different route from the real
+    # path exercised above, so a deleted entry on either side shows up here
+    # rather than surviving because both sides were built by the same mutated
+    # code.
+    from common.chairs.registry import ChairRegistry
+    from common.stage import load_fixture, run_config_bindings
+
+    fixture_bindings = run_config_bindings(
+        ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config,
+        load_fixture(str(ROOT / "proof")),
+        "happy",
+    )
+    assert fixture_bindings["sealed_config_digests"]["designator-grouping"] == bound
+
+    edited = tmp_path / "designator_grouping.toml"
+    edited.write_bytes(
+        DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_bytes()
+        + b"\n# a comment added after this run bound the file\n"
+    )
+    rewritten = door._grouping_config_digest(str(edited))
+    assert rewritten != bound, "the edited policy must actually differ, or this proves nothing"
+    with pytest.raises(ContractError, match="designator-grouping configuration changed") as drift:
+        require_sealed_config(sealed, "designator-grouping", rewritten)
+    assert bound in str(drift.value) and rewritten in str(drift.value), (
+        "the drift refusal must name both digests, so an operator can tell which file on "
+        f"disk is the one the run was bound to: {drift.value}"
+    )
+
+    unsealed = {name: digest for name, digest in sealed.items() if name != "designator-grouping"}
+    with pytest.raises(ContractError, match="sealed no digest for the designator-grouping") as gap:
+        require_sealed_config(unsealed, "designator-grouping", bound)
+    assert "changed between" not in str(gap.value), (
+        "a binding step that never sealed this name is a different fault from a file that "
+        f"moved under a run that did, and must not be reported as drift: {gap.value}"
+    )
 
 
 def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
@@ -3015,6 +3433,10 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3313,6 +3735,10 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
@@ -4118,6 +4544,10 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
         @staticmethod
         def to_record():
             return {"models": "synthetic"}
+
+        @property
+        def models_digest(self):
+            return digest_of(self.to_record())
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],

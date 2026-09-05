@@ -16,8 +16,7 @@ from itertools import groupby
 from threading import RLock
 from typing import Any, Callable, Iterator
 
-from common.chandra_custody import read_retained_chandra_response
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.native_witness import (
@@ -186,7 +185,26 @@ def dai_model_view(
     query_prompt_ref: dict[str, str],
     generation_config_ref: dict[str, str],
 ) -> dict[str, Any]:
-    """Build DAI's crop view, referencing carried prompt/config bytes by manifest."""
+    """Build DAI's crop view, referencing carried prompt/config bytes by manifest.
+
+    **The identity transform is a claim about bytes, not about paths.** When no
+    resize is needed the model must have been shown exactly the source image,
+    and the two references are therefore required to name the same content —
+    the same SHA-256, which is what "the same retained blob" means in a
+    content-addressed store. They are deliberately not required to be the same
+    *reference dict*: the source is the Designator's own proposal crop under
+    `2_designator/`, and every blob this stage shows a witness is published
+    into `3_attestatores/blobs/sha256/`, so a byte-identical image legitimately
+    appears at two stage-owned paths. `verify_exemplar_crop_lineage` already
+    proves a proposal crop is exactly `crop_png(sealed page, bounds)`, and
+    `_dai_present` re-derives the same crop from the same sealed page on that
+    path, so equal digests here are equal pixels and not a coincidence. Held to
+    the whole dict instead, this rule refused every genuine no-resize DAI act
+    after its response had already come back — the Attestatores HANDOFF's
+    second owed gap. Refusing on digest keeps the invariant that mattered (the
+    model saw the source bytes) and drops only the one that never did (both
+    stages spell the same bytes' location the same way).
+    """
     for name, reference in (
         ("source image", source_image_ref),
         ("model image", model_image_ref),
@@ -204,7 +222,7 @@ def dai_model_view(
     resized = (resized_width, resized_height) != (width_px, height_px)
     if resized and source_image_ref["sha256"] == model_image_ref["sha256"]:
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
-    if not resized and source_image_ref != model_image_ref:
+    if not resized and source_image_ref["sha256"] != model_image_ref["sha256"]:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = _dai_image_limits()
     view = {
@@ -312,7 +330,7 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
     model_ref = value["model_image_ref"]
     if resized and source_ref["sha256"] == model_ref["sha256"]:
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
-    if not resized and source_ref != model_ref:
+    if not resized and source_ref["sha256"] != model_ref["sha256"]:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
 
     limits = value["image_limits"]
@@ -362,44 +380,6 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     return target_width, target_height
 
 
-def chandra_capture_intake(
-    tree: Any,
-    *,
-    page_id: str,
-    page_ordinal: int,
-    response_ref: object,
-    receipt_ref: object,
-    custody_ref: object,
-) -> dict[str, Any]:
-    """Consume R2's one-receipt raw response without re-serving Chandra.
-
-    The shared custody rule lives in common/chandra_custody.py (a stage may not
-    import another stage's module).  ``custody_ref`` is the content-addressed
-    binding record R2's write recorded; without it, two individually-valid
-    references would not be proof they came from the same Chandra call.  The
-    result intentionally carries the original references alongside the exact
-    raw bytes' digest.
-    """
-    raw = read_retained_chandra_response(
-        tree,
-        response_ref,
-        receipt_ref,
-        custody_ref,
-        page_id=page_id,
-        page_ordinal=page_ordinal,
-    )
-    return {
-        "schema": "attestatores-chandra-capture.v1",
-        "adapter": "chandra-capture.v1",
-        "page_id": page_id,
-        "page_ordinal": page_ordinal,
-        "response_ref": response_ref,
-        "receipt_ref": receipt_ref,
-        "custody_ref": custody_ref,
-        "raw_response_sha256": digest_bytes(raw),
-    }
-
-
 def retain_model_view(
     tree: Any,
     *,
@@ -408,8 +388,18 @@ def retain_model_view(
     raw_response: bytes,
     transport_stop_reason: str,
     parser: str | None = None,
+    served: bool = False,
 ) -> dict[str, Any]:
-    """Retain a reproducible view and raw response, including parser failure bytes."""
+    """Retain a reproducible view and raw response, including parser failure bytes.
+
+    ``served`` says the bytes came off a chair that actually answered rather
+    than out of the committed fixture. It reaches exactly one parser --
+    Chandra's, which accepts the fixture's own placeholder schema on the
+    offline posture and must not on the live one (CodeRabbit round 1, T7) --
+    and changes nothing else here. Retention itself is posture-blind, and
+    stays so: the bytes are published to the tree before any parser runs, so a
+    refusal names a surprise without losing it.
+    """
     if not isinstance(adapter, str) or not adapter:
         raise SchemaRefusal("model-view adapter is blank")
     if not isinstance(raw_response, bytes):
@@ -451,10 +441,11 @@ def retain_model_view(
         )
     elif adapter == "chandra.v1" and parser == "json":
         # Import locally: the runnable sibling module imports this retention
-        # seam, while its parser must remain the one owner of Chandra's shape.
+        # seam, while its parser must remain the one owner of Chandra's shapes
+        # (the wire contract in `chandra_response`, and the fixture placeholder).
         from chandra import parse as parse_chandra
 
-        parsed = parse_chandra(raw_response)
+        parsed = parse_chandra(raw_response, served=served)
         if isinstance(parsed, dict) and set(parsed) == {"parse_outcome"}:
             record["parse"] = {
                 "state": "unrecognized-shape",
