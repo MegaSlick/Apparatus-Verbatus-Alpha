@@ -573,6 +573,42 @@ def test_the_shared_snapshot_reports_what_a_refusal_leaves_that_is_not_a_file(tm
     assert fifos["artifacts/kept.json"] == f"file {hashlib.sha256(b'{}').hexdigest()}"
 
 
+def test_the_shared_snapshot_tells_a_missing_root_from_an_empty_one(tmp_path):
+    """The blindness one level up from the ones above: the root itself.
+
+    Describing only what was *under* the root meant `os.walk` of a path that
+    does not exist yielded nothing, and an existing but empty root yielded
+    nothing either -- so the two compared equal. A probe asserting that a
+    refusal "wrote nothing" then passed on the state it was written to catch: a
+    run root created, claimed, and left behind under inputs that were refused.
+
+    `pipeline/test_decoding_seal.py` carried exactly that assertion, and this is
+    the property that lets it be tightened to require absence rather than
+    emptiness.
+    """
+    missing = tmp_path / "never-created"
+    assert tree_snapshot(missing) == {}
+
+    missing.mkdir()
+    assert tree_snapshot(missing) == {".": "directory"}
+
+    # The root is described the way any other entry is, so a root replaced by a
+    # link out of the tree is reported as the link and not walked as what it
+    # points at.
+    outside = tmp_path / "elsewhere"
+    (outside / "not-ours").mkdir(parents=True)
+    linked = tmp_path / "linked-root"
+    linked.symlink_to(outside)
+    assert tree_snapshot(linked) == {".": f"symlink -> {outside}"}
+
+    # And the entries under a real root are still reported beside it.
+    (missing / "kept.json").write_bytes(b"{}")
+    assert tree_snapshot(missing) == {
+        ".": "directory",
+        "kept.json": f"file {hashlib.sha256(b'{}').hexdigest()}",
+    }
+
+
 def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
     tmp_path, monkeypatch
 ):

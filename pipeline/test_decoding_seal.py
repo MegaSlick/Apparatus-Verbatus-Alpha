@@ -110,12 +110,15 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     # different operator problems, and the message has to say which one it is.
     assert what in refused.stderr, refused.stderr
     assert "No run or stage artifact was written" in refused.stderr, refused.stderr
-    # Nothing at all, not merely no artifacts: the run root is the thing the
-    # message disowns, and an empty directory tree left behind would already be
-    # a run id claimed under a policy that was never accepted.
-    assert not run_root.exists() or tree_snapshot(run_root) == {}, sorted(
-        str(path) for path in run_root.rglob("*")
-    )
+    # The run root must be *absent*, not merely empty. The earlier form of this
+    # assertion allowed either, and the permissive half made it unable to fail:
+    # `tree_snapshot` described what was under a root and nothing about the root
+    # itself, so a Door that created `runs/` and then refused produced the same
+    # empty mapping as a Door that created nothing -- and the assertion passed on
+    # the state it was written to catch. An existing run root is a run id claimed
+    # under a policy this build already rejected, and the retry the message
+    # invites then collides with it.
+    assert not run_root.exists(), tree_snapshot(run_root)
 
 
 @pytest.mark.parametrize(

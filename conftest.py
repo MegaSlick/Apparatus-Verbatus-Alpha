@@ -44,24 +44,46 @@ def tree_snapshot(root: Path) -> dict[str, str]:
     `os.walk` rather than `rglob`, and with `followlinks` left at its default:
     the walk must not descend through a symlinked directory it has just recorded
     as a symlink.
+
+    **`root` itself is described, under `"."`.** Describing only what is *under*
+    it left one blindness of exactly the shape above: `os.walk` of a path that
+    does not exist yields nothing, so a refusal that created the root and wrote
+    nothing into it produced the same empty snapshot as a refusal that created
+    nothing at all. That is not a detail -- the root is usually the run root,
+    and a run root that exists is a run id claimed under inputs that were
+    refused. A missing root is `{}` and an empty one is `{".": "directory"}`, so
+    the two can no longer compare equal, and every before/after probe that uses
+    this helper now also sees a root deleted, replaced, or swapped for a link
+    between its two snapshots.
+
+    A symlinked root is described and not walked, for the reason a symlinked
+    entry is: the link is what was left behind, and following it would report a
+    tree that lives somewhere else.
     """
 
-    snapshot: dict[str, str] = {}
+    root = Path(root)
+    if not root.is_symlink() and not root.exists():
+        return {}
+    snapshot: dict[str, str] = {".": _describe(root)}
+    if root.is_symlink():
+        return snapshot
     for parent, directory_names, file_names in os.walk(root):
         for name in (*directory_names, *file_names):
             path = Path(parent) / name
-            relative = str(path.relative_to(root))
-            if path.is_symlink():
-                snapshot[relative] = f"symlink -> {os.readlink(path)}"
-                continue
-            mode = path.lstat().st_mode
-            if stat.S_ISDIR(mode):
-                snapshot[relative] = "directory"
-            elif stat.S_ISREG(mode):
-                snapshot[relative] = f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
-            else:
-                snapshot[relative] = "irregular entry"
+            snapshot[str(path.relative_to(root))] = _describe(path)
     return dict(sorted(snapshot.items()))
+
+
+def _describe(path: Path) -> str:
+    """One entry, as the snapshot records it -- the root included."""
+    if path.is_symlink():
+        return f"symlink -> {os.readlink(path)}"
+    mode = path.lstat().st_mode
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
+    return "irregular entry"
 
 
 def rebind_stage_seal_artifact(tree, stage: str, *, rewrite_manifest: bool = True) -> None:
