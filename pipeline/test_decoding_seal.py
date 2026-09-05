@@ -13,7 +13,6 @@ without being told which policy moved.
 
 from __future__ import annotations
 
-import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +22,7 @@ import pytest
 from common.contracts.canonical import digest_bytes
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.runtree.store import RunTree
+from conftest import tree_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "proof"
@@ -46,22 +46,6 @@ def invoke_stage(run_root: Path, program: str, **extra) -> subprocess.CompletedP
     for key, value in extra.items():
         command.extend((f"--{key.replace('_', '-')}", str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
-def _tree_snapshot(run_root: Path) -> dict[str, str]:
-    """Every byte under the run root, so a refusal's own claim can be checked.
-
-    Both refusals below tell the operator that nothing was written. That is a
-    statement about this directory, and until it is compared against the
-    directory it is a statement the suite takes on trust -- exactly the shape
-    GOVERNANCE 10 refuses, since a stage that half-wrote and then refused would
-    still print it.
-    """
-    return {
-        str(path.relative_to(run_root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(run_root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def _through_designator(tmp_path: Path) -> tuple[Path, RunTree]:
@@ -129,7 +113,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     # Nothing at all, not merely no artifacts: the run root is the thing the
     # message disowns, and an empty directory tree left behind would already be
     # a run id claimed under a policy that was never accepted.
-    assert not run_root.exists() or _tree_snapshot(run_root) == {}, sorted(
+    assert not run_root.exists() or tree_snapshot(run_root) == {}, sorted(
         str(path) for path in run_root.rglob("*")
     )
 
@@ -175,7 +159,7 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     substitute.write_text(body, encoding="utf-8")
     assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1], what
 
-    before = _tree_snapshot(run_root)
+    before = tree_snapshot(run_root)
     refused = invoke_stage(run_root, program, decoding_config=substitute)
 
     assert refused.returncode != 0
@@ -184,7 +168,7 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     assert "Resume with the original sealed inputs" in refused.stderr, refused.stderr
     # The sentence above is a claim about the run tree, so it is compared with
     # the run tree rather than believed.
-    assert _tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
+    assert tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
 
 
 @pytest.mark.parametrize("program", CONSUMING_STAGES)

@@ -43,27 +43,13 @@ from common.runtree.store import (
     RunTree,
     _default_corpus_frame_membership,
 )
+from conftest import tree_snapshot
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
 CONFIG_DIGEST = "c" * 64
 RECIPES = {"designator": "fake-designator-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
-
-
-def _tree_snapshot(root: Path) -> dict[str, str]:
-    """Every byte under `root`, so a refusal's own claim can be checked.
-
-    `_verify_compatible_reuse` tells the operator "Nothing was written". That is a
-    statement about this directory, and until it is compared against the directory
-    it is a statement the suite takes on trust -- exactly the shape GOVERNANCE 10
-    refuses, since a store that half-wrote and then refused would still print it.
-    """
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
@@ -527,16 +513,64 @@ def test_an_incompatible_reuse_writes_nothing(tmp_path, overrides, field):
     """
     tree = make_run(tmp_path)
     tree.publish_artifact(make_envelope())
-    before = _tree_snapshot(tmp_path)
+    before = tree_snapshot(tmp_path)
 
     with pytest.raises(IncompatibleReuse) as caught:
         make_run(tmp_path, **overrides)
 
     assert field in str(caught.value)
     assert "Nothing was written" in str(caught.value)
-    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+    assert _stray_writes(before, tree_snapshot(tmp_path)) == [], (
         "the refusal wrote to the run tree it disowned"
     )
+
+
+def test_the_shared_snapshot_reports_what_a_refusal_leaves_that_is_not_a_file(tmp_path):
+    """The comparison above is only as strong as what the snapshot can see.
+
+    Filtered by `is_file()`, it saw regular files and nothing else, so a refusal
+    that created a directory and stopped -- the ordinary shape of a half-done
+    write -- left a tree that compared equal to one where nothing happened. Each
+    case here is something a store can leave behind on the way to refusing, and
+    each is asserted to move the snapshot.
+    """
+    root = tmp_path / "run"
+    (root / "artifacts").mkdir(parents=True)
+    (root / "artifacts" / "kept.json").write_bytes(b"{}")
+    before = tree_snapshot(root)
+
+    # The case CodeRabbit named: a refusal that created a stage directory and
+    # wrote nothing into it. Invisible to a file-only snapshot.
+    (root / "blobs").mkdir()
+    after = tree_snapshot(root)
+    assert _stray_writes(before, after) == ["blobs"]
+    assert after["blobs"] == "directory"
+
+    # A dangling symlink: `is_file()` is False because the target is absent, so
+    # a file-only snapshot could not report the name that was claimed.
+    (root / "dangling").symlink_to(root / "never-written")
+    assert _stray_writes(after, tree_snapshot(root)) == ["dangling"]
+
+    # A symlink to a directory, recorded as the link rather than walked as the
+    # directory: what matters is that a name inside the run tree now points out
+    # of it, not what the target happens to contain today.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "not-ours.json").write_bytes(b"{}")
+    (root / "escape").symlink_to(outside)
+    escaped = tree_snapshot(root)
+    assert escaped["escape"] == f"symlink -> {outside}"
+    assert "escape/not-ours.json" not in escaped
+
+    # An irregular entry -- a fifo left by an interrupted write -- is reported as
+    # one rather than skipped for not being a regular file.
+    os.mkfifo(root / "half-written.fifo")
+    fifos = tree_snapshot(root)
+    assert fifos["half-written.fifo"] == "irregular entry"
+
+    # The file that was there all along is still reported by content, so nothing
+    # above was bought by loosening the original check.
+    assert fifos["artifacts/kept.json"] == f"file {hashlib.sha256(b'{}').hexdigest()}"
 
 
 def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
