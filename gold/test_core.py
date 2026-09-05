@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import subprocess
@@ -1912,19 +1913,113 @@ def test_corpus_transaction_lock_serializes_check_and_publish(tmp_path):
     assert acquired.is_set()
 
 
-def test_corpus_lock_failures_are_named_before_any_record_is_written(tmp_path, monkeypatch):
-    """Lock failure cannot fall through to an unlocked publication or a traceback;
-    the refusal states the risk, the safe remedy, and that no evidence was written."""
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every byte under `root`, so a refusal's own claim can be checked.
 
+    Each refusal below tells the operator that no gold record was written. That is a
+    statement about this directory, and until it is compared against the directory it
+    is a statement the suite takes on trust -- exactly the shape GOVERNANCE 10
+    refuses, since a publication that landed a record and then refused on the way out
+    would still print it.
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
+
+
+def _unopenable_corpus(tmp_path, _monkeypatch):
+    """A name already held by a regular file: the lock's own `mkdir` refuses it."""
+    blocked = tmp_path / "corpus.json"
+    blocked.write_bytes(b"{}\n")
+    return blocked, "could not be opened for a publication"
+
+
+def _unlockable_corpus(tmp_path, monkeypatch):
     def refuse_lock(_descriptor, _operation):
         raise OSError("locking unavailable")
 
     monkeypatch.setattr(cli.fcntl, "flock", refuse_lock)
-    with pytest.raises(SchemaRefusal, match="supports advisory locks.*no gold record was written"):
-        with cli._locked_corpus(tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    write_append_only(corpus / "held.json", {"example": "evidence"})
+    return corpus, "supports advisory locks"
+
+
+@pytest.mark.parametrize(
+    "build",
+    (
+        pytest.param(_unopenable_corpus, id="unopenable"),
+        pytest.param(_unlockable_corpus, id="unlockable"),
+    ),
+)
+def test_corpus_lock_failures_are_named_before_any_record_is_written(tmp_path, monkeypatch, build):
+    """Lock failure cannot fall through to an unlocked publication or a traceback;
+    the refusal states the risk, the safe remedy, and that no evidence was written.
+
+    That last clause is the one an operator acts on -- the remedy is to correct the
+    directory and retry, and a retry is only safe while the refused attempt published
+    nothing. A gold record is immutable once its name exists, so a record laid down
+    under a lock that was never held is not something the retry can take back.
+
+    So it is measured rather than read. The unlockable case starts from a corpus that
+    already holds a record, because a glob for JSON names cannot see a record that was
+    overwritten rather than created, and the comparison is over content. The assertion
+    names the paths that moved, because "one file changed" does not say which.
+    """
+    directory, named = build(tmp_path, monkeypatch)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(SchemaRefusal) as refusal:
+        with cli._locked_corpus(directory):
             raise AssertionError("an unheld corpus lock must never yield")
 
-    assert not list(tmp_path.glob("*.json"))
+    assert named in str(refusal.value)
+    assert "no gold record was written" in str(refusal.value)
+    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the corpus it disowned"
+    )
+
+
+def test_a_publication_refused_for_an_unlistable_directory_wrote_no_record(tmp_path, monkeypatch):
+    """The collision scan's own failure is a refusal, and it claims no record.
+
+    `write_append_only` lists the held descriptor to catch a name that collides by
+    case or Unicode normalization. When that listing fails it cannot prove the
+    absence of a collision, so it refuses -- and tells the operator no record was
+    written. The temporary and the link that publish the record come after, which is
+    exactly the ordering this measures rather than reads.
+    """
+    records = tmp_path / "records"
+    records.mkdir()
+    write_append_only(records / "first.json", {"example": "evidence"})
+    real_listdir = os.listdir
+
+    def refuse_descriptor_listing(target):
+        # Scoped to the held descriptor: a path-shaped listing is somebody else's.
+        if isinstance(target, int):
+            raise OSError(errno.EIO, "simulated directory listing failure")
+        return real_listdir(target)
+
+    monkeypatch.setattr(os, "listdir", refuse_descriptor_listing)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(SchemaRefusal) as refusal:
+        write_append_only(records / "second.json", {"example": "another"})
+
+    assert "could not be listed through" in str(refusal.value)
+    assert "no record was written" in str(refusal.value)
+    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the directory it disowned"
+    )
 
 
 def test_cli_empty_corpus_refusal_names_the_next_step(tmp_path):

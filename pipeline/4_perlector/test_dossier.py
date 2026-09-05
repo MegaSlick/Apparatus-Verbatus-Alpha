@@ -223,6 +223,66 @@ def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
         dossier.assert_no_order_bearing_field(tampered)
 
 
+# Far past any interpreter's recursion allowance, so a sweep that reaches the
+# bottom of this proves it is not spending the interpreter stack, and one that
+# refuses proves it refuses by name rather than by crashing.
+PATHOLOGICAL_DEPTH = 1_000_000
+
+
+def test_the_no_order_bearing_sweep_walks_a_pathological_dossier_instead_of_the_stack():
+    """The last no-picker screen to stop recursing, and it had the family's defect.
+
+    The family is enumerated in `common/test_preference_screen_walks.py`. The
+    round that converted the others reported four screens and complete coverage;
+    there were six, and this was the one still recursing -- missed because it
+    lives in dossier assembly and is not *called* a preference screen. It does
+    the same forbidden-vocabulary walk over the same class of witness-derived
+    data -- a dossier carries every Testimonium verbatim -- and it runs on the
+    production path, before the digest, on every dossier this build produces.
+    Recursing over a deep one raised `RecursionError`: a crash naming nothing,
+    from the guard standing over GOVERNANCE 3.
+    """
+    nested: object = {"leaf": 1}
+    for _ in range(PATHOLOGICAL_DEPTH):
+        nested = {"nested": [nested]}
+
+    # Clean to the bottom: depth alone must not stop the sweep.
+    dossier.assert_no_order_bearing_field(nested)
+    del nested
+
+    buried: object = {"trust_score": 100}
+    for _ in range(PATHOLOGICAL_DEPTH):
+        buried = {"nested": [buried]}
+    with pytest.raises(ContractError, match="names a preference") as caught:
+        dossier.assert_no_order_bearing_field(buried)
+    message = str(caught.value)
+    # The position is elided rather than rendered whole: a path of several
+    # million characters has named nothing an operator can read.
+    assert "more levels" in message
+    assert len(message) < 1000
+
+
+def test_a_dossier_that_contains_itself_is_named_rather_than_swept_forever():
+    """The recursive sweep ended a cycle by exhausting itself. A sweep with no
+    stack to exhaust must say so, or it hangs -- and a hang reports less than
+    the traceback it replaced."""
+    looped: dict = {"testimonia": []}
+    looped["testimonia"].append(looped)
+
+    with pytest.raises(ContractError, match="contains itself"):
+        dossier.assert_no_order_bearing_field(looped)
+
+
+def test_the_sweep_still_names_the_first_offender_a_recursive_walk_would_have_found():
+    """Order is observable through the refusal message, so the rewrite has to
+    keep it: a key is checked after the preceding sibling's whole subtree and
+    before its own value's, exactly where the recursive form checked it."""
+    with pytest.raises(ContractError, match=r"\$\.a\.rank names a preference"):
+        dossier.assert_no_order_bearing_field({"a": {"rank": 1}, "zz_trust": 2})
+    with pytest.raises(ContractError, match=r"\$\.a_trust names a preference"):
+        dossier.assert_no_order_bearing_field({"a_trust": 1, "b": {"rank": 2}})
+
+
 @pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
 def test_voting_synonyms_are_refused_at_the_dossier_boundary_before_reading(evidence, field):
     """Every durable voting synonym is also blocked before a reader sees it."""

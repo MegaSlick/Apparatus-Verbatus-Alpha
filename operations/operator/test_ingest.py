@@ -1173,3 +1173,136 @@ def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
     assert len(planned) == len(set(planned))
     # Three candidate-evidence records make the exact branch totals 15 and 18.
     assert len(planned) == (18 if with_confirmation else 15)
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every byte under `root`, so a refusal's own claim can be checked.
+
+    Each bound the preparer enforces tells the operator that nothing was written.
+    That is a statement about the approved tree, and until it is compared against
+    the tree it is a statement the suite takes on trust -- exactly the shape
+    GOVERNANCE 10 refuses, since a preparer that had already laid down part of the
+    ready folder would still print it.
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
+
+
+def _file_sizes(source: Path) -> list[int]:
+    return [path.stat().st_size for path in source.rglob("*") if path.is_file()]
+
+
+def _too_many_frames(source, output, policy, monkeypatch):
+    monkeypatch.setattr(ingest_worker, "MAX_INGEST_FRAMES", len(_file_sizes(source)) - 1)
+    return _request(source, output, policy, operation="preview")
+
+
+def _replaced_output_folder(source, output, policy, _monkeypatch):
+    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+    pinned = _pinned_commit_request(source, output, policy, ingest_worker._summary(previewed))
+    output.rename(output.with_name("original-ready"))
+    output.mkdir()
+    return pinned
+
+
+def _one_master_over_the_ceiling(source, output, policy, monkeypatch):
+    monkeypatch.setattr(inventory, "MAX_SUBMITTED_BYTES", min(_file_sizes(source)) - 1)
+    return _request(source, output, policy, operation="preview")
+
+
+def _retained_bytes_over_the_ceiling(source, output, policy, monkeypatch):
+    monkeypatch.setattr(inventory, "MAX_SUBMITTED_BYTES", max(_file_sizes(source)))
+    return _request(source, output, policy, operation="preview")
+
+
+def _proxy_that_disagrees_with_its_own_digest(source, output, policy, monkeypatch):
+    real = instrument.build_proxies_from_bytes
+
+    def corrupt(data, config):
+        return replace(real(data, config), signature_png_sha256="0" * 64)
+
+    monkeypatch.setattr(instrument, "build_proxies_from_bytes", corrupt)
+    return _request(source, output, policy, operation="preview")
+
+
+def _output_folder_replaced_during_preparation(source, output, policy, monkeypatch):
+    """The second identity read, which exists to catch a swap mid-preparation."""
+    real = ingest_worker._directory_identity
+    reads = []
+
+    def drifting(path):
+        reads.append(path)
+        device, inode = real(path)
+        return (device, inode) if len(reads) == 1 else (device, inode + 1)
+
+    monkeypatch.setattr(ingest_worker, "_directory_identity", drifting)
+    return _request(source, output, policy, operation="preview")
+
+
+def _too_many_candidate_pairs(source, output, policy, monkeypatch):
+    monkeypatch.setattr(ingest_worker, "MAX_INGEST_CANDIDATE_PAIRS", 0)
+    return _request(source, output, policy, operation="preview")
+
+
+@pytest.mark.parametrize(
+    ("build", "named"),
+    (
+        pytest.param(_too_many_frames, "image masters", id="frame-ceiling"),
+        pytest.param(_replaced_output_folder, "output folder changed", id="output-replaced"),
+        pytest.param(_one_master_over_the_ceiling, "in the ledger's path order", id="one-master"),
+        pytest.param(
+            _retained_bytes_over_the_ceiling, "may hold in memory at once", id="retained-bytes"
+        ),
+        pytest.param(
+            _proxy_that_disagrees_with_its_own_digest,
+            "does not match the digest computed while it was prepared",
+            id="proxy-digest",
+        ),
+        pytest.param(_too_many_candidate_pairs, "-pair ceiling", id="pair-ceiling"),
+        pytest.param(
+            _output_folder_replaced_during_preparation,
+            "changed while the plan was being prepared",
+            id="output-drifted",
+        ),
+    ),
+)
+def test_a_refused_ingest_preparation_wrote_nothing_it_disowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build, named: str
+):
+    """Every bound's "nothing was written" measured against the approved tree.
+
+    The tests above check the named cause, and two of them check that the ready
+    folder stayed empty. Neither reaches the sentence an operator acts on: the
+    advice is to split the submission and run ingest again, and re-running is only
+    safe while the refused attempt left the ready folder unusable by nobody -- an
+    ingest output folder that is not empty is refused outright by the preparer's own
+    earlier check, so a partial write here costs the operator the folder.
+
+    The comparison covers the whole approved tree, not the ready folder alone, and
+    it is over content rather than names: the submitted masters are immutable
+    evidence, and a preparer that rewrote one would leave the name list untouched.
+    The assertion names the paths that moved, because "one file changed" does not
+    say which.
+    """
+    source, output, policy, approved = _inputs(tmp_path)
+    request = build(source, output, policy, monkeypatch)
+    before = _tree_snapshot(approved)
+
+    with pytest.raises((ValueError, instrument.InstrumentRefusal)) as refusal:
+        ingest_worker._prepare(request)
+
+    assert named in str(refusal.value)
+    assert "nothing was written" in str(refusal.value)
+    assert _stray_writes(before, _tree_snapshot(approved)) == [], (
+        "the refusal wrote to the approved tree it disowned"
+    )
