@@ -1396,6 +1396,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "category": category.value,
             "under_witnessed": review["payload"]["coverage"]["under_witnessed"],
             "witness_coverage": review["payload"]["coverage"],
+            # Restated here, not left in the Recensor tree, because this is the
+            # record the export publishes about the act. A continuation page's
+            # testimony content coverage carries no verdict -- the Perlector
+            # declares the page unanchorable, so the diff has no span union to
+            # take -- and an export that delivered the act while saying nothing
+            # about that would be a partial result wearing a complete one's face
+            # (GOVERNANCE 2). Indexed, not `.get`: every review shape this stage
+            # can read writes the field, and a review without it is a stale or
+            # foreign record this stage should refuse over rather than paper.
+            "testimony_content_coverage_continuation": review["payload"][
+                "testimony_content_coverage_continuation"
+            ],
             "evidence_refs": export_evidence_refs(context, review, established),
         }
         approval_ref = exclusion_approval_ref(act, category)

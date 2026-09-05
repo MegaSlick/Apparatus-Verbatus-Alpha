@@ -52,6 +52,7 @@ constant.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -897,6 +898,36 @@ def _reviews(live_seam) -> list[dict[str, Any]]:
     ]
 
 
+def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, Any]]) -> None:
+    """Tyrel's ruling on Unit 12 F2, asserted on a live tree.
+
+    Page 2 carries a2's continuation region and both page witnesses transcribe
+    its whole text. No attachment on it can ever be `aligned` -- the Perlector
+    declares every row there `continuation-page-no-act-anchor`, because the act
+    anchor is derived from the act's own primary page -- so the diff has no span
+    union to take. Before the ruling that produced `shortfall: True` on a page
+    whose finding no act's review read: dropped in silence under a DELIVERED
+    export. It is now recorded as unmeasured, by name, with the observation
+    kept, on the act that spans the page. The counterfactual below drops the row
+    again and requires this to fail.
+    """
+    rows = {
+        (review["payload"]["act_key"], row["page_ordinal"]): row
+        for review in reviews
+        for row in review["payload"]["testimony_content_coverage_continuation"]
+    }
+    assert set(rows) == {("a2", 2)}, sorted(rows)
+    row = rows[("a2", 2)]
+    assert row["shortfall"] is None, row
+    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"], row
+    for chair, measured in sorted(row["by_chair"].items()):
+        assert measured["attached_spans"] == [], chair
+        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
+        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
+    assert "continuation-page-no-act-anchor" in row["reason"], row["reason"]
+    assert "page 2's testimony content coverage is unmeasured" in row["reason"], row["reason"]
+
+
 def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(live_seam):
     """The stages after the seam have never met a live tree before this one.
 
@@ -941,10 +972,37 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
         assert content["shortfall"] is False, content
         for chair, measured in content["by_chair"].items():
             assert measured["uncovered_non_whitespace"]["count"] == 0, (chair, measured)
+    # The third named half, since Tyrel's F2 ruling: the page neither act is
+    # primary on. Delivered, and visibly unmeasured rather than silently clean.
+    _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
+    delivered = {item["act_key"]: item for item in export["payload"]["delivered"]}
+    assert sorted(delivered) == ["a1", "a2"]
+    assert delivered["a1"]["testimony_content_coverage_continuation"] == []
+    assert [
+        (row["page_ordinal"], row["shortfall"])
+        for row in delivered["a2"]["testimony_content_coverage_continuation"]
+    ] == [(2, None)]
     assert sorted(aggregate["reasons"]) == []
     assert export["outcome"] == ArmariumCategory.DELIVERED.value
     assert aggregate["status"] == "complete"
     assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
+
+
+def test_silently_dropping_the_continuation_row_again_would_fail_that_assertion(live_seam):
+    """The counterfactual, run against this same live tree.
+
+    Restoring the old behaviour is exactly deleting the restatement: before the
+    F2 ruling every review read its primary `page_ordinal` alone, so page 2's
+    finding existed in the Recensor and reached no record. The assertion above
+    must not be satisfiable by that run, or it would be pinning the export's
+    politeness rather than its honesty.
+    """
+    dropped = copy.deepcopy(_reviews(live_seam))
+    for review in dropped:
+        review["payload"]["testimony_content_coverage_continuation"] = []
+
+    with pytest.raises(AssertionError):
+        _assert_the_continuation_page_is_unmeasured_by_name(dropped)
 
 
 def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):

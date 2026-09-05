@@ -1440,10 +1440,35 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+#
+# Re-pinned for Unit 12's F2, under Tyrel's ruling that a continuation page's
+# testimony content coverage is recorded unmeasured by name. Two record changes,
+# both deliberate: page 2's finding now carries `shortfall: None` with a reason
+# instead of `shortfall: True`, and every Recensor review, recovery request,
+# Armarium manifest entry and export row carries the new
+# `testimony_content_coverage_continuation` restatement -- empty for an act that
+# spans one page, one row for the act that continues onto page 2. No new file is
+# written and no outcome moves: happy still exits 0 at 96 files and review still
+# exits 3 at 107.
+#
+# Checked, not assumed. Both trees were built and compared leaf by leaf against
+# the pre-change tree: happy 15 changed files / 151 changed leaves, review 20 /
+# 111, and **every non-digest leaf among them belongs to the new field** -- 96
+# in happy and 51 in review, all under
+# `testimony_content_coverage_continuation`; everything else that moved is a
+# 64-hex digest, a content-addressed blob path, or the one Armarium bundle blob
+# per scenario whose name is its own content digest. Review's
+# `2_designator/artifacts/region` record moves too, and only in two digests: its
+# recovery recrop names the Recensor recovery request whose bytes moved.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
+# roots agreed exactly on both scenarios, and the pre-change tree reproduced the
+# superseded literals below it exactly before the change was applied.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
-REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
+HAPPY_RUN_TREE_DIGEST = "c97fee05d934ce8811afa12499c255b3941740d9afacc7996b0f5c3b92b8e632"
+REVIEW_RUN_TREE_DIGEST = "5c9b5bd28a924f40c7e8b72b2145f8a49bd3b76487a423a0e786efa076f0613f"
 
 
 def orchestrate(
@@ -3313,6 +3338,63 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
     assert export["non_delivered"] == []
+    assert {item["category"] for item in export["delivered"]} == {"delivered"}
+
+
+def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
+    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+
+    Both acts are marked out on page 1; a2 continues onto page 2, and both page
+    witnesses transcribe page 2's whole text. No attachment there can ever be
+    `aligned` — the Perlector declares every continuation row
+    `continuation-page-no-act-anchor` because the act anchor is derived from the
+    act's own primary page — so the span union page 2's text was diffed against
+    is empty by declaration, not by measurement.
+
+    Until this ruling the Recensor called that `shortfall: True` on a page no
+    act's review read, and the export said DELIVERED over 34 transcribed
+    non-whitespace characters nothing accounted for. Now the observation is kept
+    and the verdict is withheld: `shortfall: None`, the reason naming the cause,
+    the chairs, the page and the count, restated on the act that spans the page
+    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    happy path still establishes both acts — this is a visible partial, not a
+    hold — and the Perlector gap that would make the measurement real is filed.
+    """
+    _, tree = happy_run
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "complete"
+    assert export["aggregate"]["reasons"] == []
+
+    reviews_by_key = {
+        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
+    }
+    assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
+    rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
+    assert [row["page_ordinal"] for row in rows] == [2]
+    row = rows[0]
+    assert row["shortfall"] is None
+    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"]
+    for chair, measured in sorted(row["by_chair"].items()):
+        assert measured["attached_spans"] == [], chair
+        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
+        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
+    assert "continuation-page-no-act-anchor" in row["reason"]
+    assert "page 2's testimony content coverage is unmeasured" in row["reason"]
+    # Unmeasured is not a hold and not a route input: a2 is delivered.
+    assert reviews_by_key["a2"]["outcome"] == "accepted"
+
+    entries = {
+        record["payload"]["act_key"]: record["payload"]
+        for record in (
+            tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])
+            for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+            if entry["kind"] == "manifest-entry"
+        )
+    }
+    delivered = {item["act_key"]: item for item in export["delivered"]}
+    for restatement in (entries, delivered):
+        assert restatement["a1"]["testimony_content_coverage_continuation"] == []
+        assert restatement["a2"]["testimony_content_coverage_continuation"] == rows
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 

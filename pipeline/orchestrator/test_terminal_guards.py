@@ -291,7 +291,13 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
     accepted_review = {
         "artifact_id": "art_accepted",
         "outcome": "accepted",
-        "payload": {"coverage": {"under_witnessed": False}},
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage_continuation": [],
+        },
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
@@ -334,7 +340,13 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     accepted_review = {
         "artifact_id": "art_accepted",
         "outcome": "accepted",
-        "payload": {"coverage": {"under_witnessed": False}},
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage_continuation": [],
+        },
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
@@ -403,7 +415,13 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
     accepted_review = {
         "artifact_id": "art_accepted",
         "outcome": "accepted",
-        "payload": {"coverage": {"under_witnessed": False}},
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage_continuation": [],
+        },
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
@@ -466,7 +484,13 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     accepted_review = {
         "artifact_id": "art_accepted",
         "outcome": "accepted",
-        "payload": {"coverage": {"under_witnessed": False}},
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage_continuation": [],
+        },
     }
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
