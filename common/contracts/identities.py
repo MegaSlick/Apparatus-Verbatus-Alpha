@@ -174,7 +174,7 @@ def page_id(origin: Any, transform: Any) -> str:
     return derive("page", page_bindings(origin, transform))
 
 
-ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback"})
+ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-residual"})
 
 
 def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
@@ -191,13 +191,29 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     rectangle twice — the Designator at `_refuse_duplicate_proposal_bounds`
     and `hold_residual_act`.
 
+    Two of the four classes are minted over the *page rectangle* rather than
+    over a detected region, and they are separate classes precisely because
+    they say opposite things about the same rectangle. A ``page-fallback`` act
+    is proposed: the structure pass found nothing, so the whole page is cut and
+    sent downstream to be read. A ``page-residual`` act is held: the page's own
+    conservation reconciled more unclaimed components than the sealed bound
+    allows, so the page becomes one review item instead of that many. One
+    rectangle, one page, two irreconcilable dispositions — folding them into one
+    class would make a held page and a page on its way to the Perlector share an
+    identity.
+
     Validation lives here rather than in `act_id` so `verify()` — which is
     handed bindings rebuilt from a payload a stage read back — refuses a shape
     the minting path could never have produced, instead of hashing it and
     reporting a mismatch that says nothing about why.
     """
     if act_class not in ACT_CLASSES:
-        raise IdentityRefusal("act class must be 'proposal', 'residual', or 'page-fallback'")
+        # Spelled from the enum rather than beside it. The prose list said
+        # "'proposal', 'residual', or 'page-fallback'" while the set held the
+        # same three, and a fourth class added to one and not the other reports
+        # a closed vocabulary that is not the one being enforced.
+        allowed = ", ".join(repr(name) for name in sorted(ACT_CLASSES))
+        raise IdentityRefusal(f"act class must be one of {allowed}")
     _identity(page, "pg", "act page")
     _bounds(bounds, "act bounds")
     return {

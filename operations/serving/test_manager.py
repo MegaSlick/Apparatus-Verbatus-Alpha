@@ -407,6 +407,7 @@ def profile_row(
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
         "poll_interval_seconds": 1,
+        "request_timeout_seconds": 30,
         "readiness_probe": {
             "kind": "chat-completions",
             "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',
@@ -836,7 +837,13 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     handle = manager.start(chair, TIER)
 
     argv, log_path = launcher.calls[0]
-    assert argv[:5] == (sys.executable, "-m", "vllm", "serve", str(tmp_path / "reader"))
+    assert argv[:5] == (
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.cli.main",
+        "serve",
+        str(tmp_path / "reader"),
+    )
     assert _value_after(argv, "--revision") == REVISION
     assert _value_after(argv, "--tokenizer-revision") == REVISION
     assert _value_after(argv, "--served-model-name") == "reader-api"
@@ -924,7 +931,7 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
     assert launcher.calls[0][0] == (
         sys.executable,
         "-m",
-        "vllm",
+        "vllm.entrypoints.cli.main",
         "serve",
         snapshot_root,
         "--tokenizer",
@@ -2438,7 +2445,7 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
             else:
                 assert isinstance(profile, ServingProfile)
                 assert profile.preflight_state == "unproven"
-                assert profile.required_packages["vllm"] == "0.10.1"
+                assert profile.required_packages["vllm"] == "0.27.1"
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

@@ -28,6 +28,11 @@ from pathlib import Path
 import pytest
 from _test_support import load_designator
 
+from common.contracts.approval import (
+    ApprovalRefusal,
+    real_ingress_record,
+    synthetic_fixture_ingress_record,
+)
 from common.contracts.errors import ContractError
 from common.contracts.stages import ARMARIUM, DESIGNATOR
 from common.runtree.store import RunTree
@@ -46,6 +51,70 @@ class _Context:
     def __init__(self, fixture, scenario):
         self.fixture = fixture
         self.scenario = scenario
+
+
+def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(monkeypatch):
+    """`_open` keeps its `(context, real_input)` tuple; the flag comes from `context.run`.
+
+    Both routes open through `common.stage.open_stage_context` now. The stage
+    used to read `run.json` itself to choose a route and then hand-build the
+    real context, so the route `main` acted on and the context it acted with
+    came from two reads; now the constructor reads once, and the flag is read
+    back off the very authority the context carries. A run authority with no
+    closed ingress record refuses, as it did before, and nothing about the
+    route is decided for it.
+
+    Each case is set up so the two disagree: argv names one route, the opened
+    context's own `run` names the other, and the assertion follows the context.
+    A regression that went back to reading argv would pass a test that handed
+    both the same record.
+    """
+    designator = _load_designator()
+    handed = []
+
+    class _Opened:
+        def __init__(self, run):
+            self.run = run
+
+    # Every case hands the constructor argv naming one route and gets back a
+    # context whose own authority names the other. A stage that read the route
+    # from `args` -- the second read this change removed -- therefore answers
+    # the opposite of what each assertion below expects, instead of agreeing
+    # with it by accident because the two records were the same object.
+    opened = []
+
+    def open_stage_context(args, stage, *, registry_factory):
+        handed.append((args, stage, registry_factory))
+        return _Opened(opened.pop(0))
+
+    monkeypatch.setattr(designator, "open_stage_context", open_stage_context)
+    factory = object()
+
+    real_run = {"ingress": real_ingress_record()}
+    fixture_run = {"ingress": synthetic_fixture_ingress_record()}
+
+    real_args = {"run": dict(fixture_run)}
+    opened.append(real_run)
+    context, real_input = designator._open(real_args, factory)
+    assert real_input is True
+    assert context.run is real_run
+
+    fixture_args = {"run": dict(real_run)}
+    opened.append(fixture_run)
+    context, real_input = designator._open(fixture_args, factory)
+    assert real_input is False
+    assert context.run is fixture_run
+
+    unrecorded_args = {"run": dict(real_run)}
+    opened.append({})
+    with pytest.raises(ApprovalRefusal, match="not a closed fixture-or-real record"):
+        designator._open(unrecorded_args, factory)
+
+    assert handed == [
+        (real_args, DESIGNATOR, factory),
+        (fixture_args, DESIGNATOR, factory),
+        (unrecorded_args, DESIGNATOR, factory),
+    ]
 
 
 # --- level 1: reading the declared failures ------------------------------------
@@ -229,6 +298,28 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
         "the held structure pass did not infer a background; the independent "
         "conservation record above attributes the measurement that actually ran"
     )
+    # And the same for the geometry. The status record says null because the
+    # structure pass resolved and ran nothing on this page; the reconciliation
+    # that *did* run says what it ran under, on its own record. A null on one
+    # record beside a real computation recorded nowhere is the shape this pair
+    # exists to keep apart.
+    assert status["resolved_thresholds"] is None
+    assert (status["page_width"], status["page_height"]) == (None, None)
+
+    import grouping_config
+
+    resolved = grouping_config.resolve_thresholds(
+        grouping_config.load_grouping_config(str(ROOT / "config" / "designator_grouping.toml")),
+        page_one["page_width"],
+        page_one["page_height"],
+    )
+    assert (page_one["page_width"], page_one["page_height"]) == (200, 260), (
+        "the fixture pages measure 200x260; the record names the size it decoded"
+    )
+    assert page_one["reconciliation_thresholds"] == {
+        "gap_tolerance_px": resolved.gap_tolerance_px,
+        "review_priority_min_dimension_px": resolved.review_priority_min_dimension_px,
+    }, "exactly the two thresholds conservation.reconcile was given, and no more"
 
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
     residual_keys = [
@@ -392,7 +483,7 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     # Defence in depth: even a caller bypassing inference cannot turn the
     # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
-        primary_scan(width, height, rows, background=0)
+        primary_scan(width, height, rows, background=0, gap_tolerance_px=3)
     assert PRIMARY_MARGIN == 20
 
 
@@ -459,7 +550,7 @@ def test_a_background_exactly_at_the_margin_still_infers():
     rows = [bytearray([20] * 8) for _ in range(8)]
     rows[3][3] = 0
     assert infer_background(8, 8, rows) == 20
-    assert primary_scan(8, 8, rows, background=20) == [
+    assert primary_scan(8, 8, rows, background=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
     ]
 
@@ -581,10 +672,37 @@ def blank_first_page_run(tmp_path, monkeypatch):
     # The premise, asserted rather than assumed: the real structure pass over
     # these real pixels finds nothing. If a later threshold change made this page
     # scan as inked, every assertion below would still pass for the wrong reason.
-    width, height, rows = designator.decode_grayscale_png(_flat_page_png(200, 260, 230))
+    width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
     background = designator.structure.infer_background(width, height, rows)
-    assert designator.structure.primary_scan(width, height, rows, background=background) == []
-    assert designator.grouping.group_page([], width, height) == []
+    # Resolved from the sealed policy the way the run resolves it, rather than
+    # written out as literals: this premise stands in for what `initial_pass`
+    # below actually does, and a hand-copied threshold is how the two would
+    # quietly stop being the same scan.
+    thresholds = designator.grouping_config.resolve_thresholds(
+        designator.grouping_config.load_grouping_config(), width, height
+    )
+    assert (
+        designator.structure.primary_scan(
+            width,
+            height,
+            rows,
+            background=background,
+            gap_tolerance_px=thresholds.gap_tolerance_px,
+        )
+        == []
+    )
+    assert (
+        designator.grouping.group_page(
+            [],
+            width,
+            height,
+            margin_px=thresholds.margin_px,
+            chain_gap_px=thresholds.chain_gap_px,
+            anchor_reach_px=thresholds.anchor_reach_px,
+            brace_min_height_px=thresholds.brace_min_height_px,
+        )
+        == []
+    )
 
     held = designator.initial_pass(context)
     return designator, context, held
@@ -801,7 +919,10 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     import grouping
 
     page_w, page_h = 100, 200
-    tiles = grouping.fallback_tiles(page_w, page_h)
+    # The grid takes its band count and overlap in from the sealed policy now,
+    # like every other threshold this module resolves per page; the values here
+    # are the fixture-size resolution of `config/designator_grouping.toml`.
+    tiles = grouping.fallback_tiles(page_w, page_h, bands=4, overlap_px=8)
 
     covered = set()
     for tile in tiles:
@@ -816,6 +937,44 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     for earlier, later in zip(tiles, tiles[1:], strict=False):
         earlier_end = earlier["bounds"]["y"] + earlier["bounds"]["h"]
         assert later["bounds"]["y"] < earlier_end, "adjacent bands must overlap, not merely touch"
+
+
+def test_fallback_tiles_refuse_a_band_count_or_overlap_they_cannot_cut_under():
+    """The grid takes its two numbers in, so it refuses them by name.
+
+    A caller that forgets one fails on the keyword; one that resolves a bad
+    value fails here, rather than cutting a real page's only crops under it.
+    """
+    import grouping
+
+    with pytest.raises(TypeError):
+        grouping.fallback_tiles(100, 200, bands=4)
+    with pytest.raises(ContractError, match="cuts nothing"):
+        grouping.fallback_tiles(100, 200, bands=0, overlap_px=8)
+    with pytest.raises(ContractError, match="cuts nothing"):
+        grouping.fallback_tiles(100, 200, bands=4.0, overlap_px=8)
+    with pytest.raises(ContractError, match="not a non-negative integer"):
+        grouping.fallback_tiles(100, 200, bands=4, overlap_px=-1)
+
+
+def test_fallback_tiles_refuse_more_bands_than_the_page_is_tall():
+    """A sealed band count the page cannot honestly cut is refused, not clamped.
+
+    `structure-status` publishes the sealed policy's `fallback_bands` as the
+    geometry this page executed under (SPEC_C 4.2). A `min(bands, page_h)`
+    clamp here would silently cut fewer bands than that record claims, so a
+    page shorter than the sealed band count is refused by name instead of
+    being quietly given a smaller grid than its own record says it got.
+    """
+    import grouping
+
+    with pytest.raises(ContractError, match="4 bands cannot be cut on a 3px-tall page"):
+        grouping.fallback_tiles(100, 3, bands=4, overlap_px=0)
+    # A page exactly as tall as the band count is the boundary, not a refusal:
+    # every band is exactly one pixel high, none is zero.
+    tiles = grouping.fallback_tiles(100, 4, bands=4, overlap_px=0)
+    assert len(tiles) == 4
+    assert all(tile["bounds"]["h"] >= 1 for tile in tiles)
 
 
 def test_designator_refuses_two_proposals_with_identical_bounds_on_one_page():

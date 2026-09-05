@@ -16,6 +16,11 @@
 # pod_placement.toml.  The common stage parser seals the selected catalogue's
 # exact bytes, so using this catalogue cannot silently share a run authority
 # with the fixture-only catalogue.
+#
+# `request_timeout_seconds` bounds one non-streaming reading request, which
+# returns nothing until generation completes.  Witness rows carry 600s,
+# Perlector rows 1800s — both UNMEASURED planning values, not a claim that any
+# reading has ever been timed on real silicon.
 schema = "serving-recipes.v1"
 
 # Chandra fills the Designator structure chair and Attestator 1.  They have
@@ -31,7 +36,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -47,6 +52,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -59,7 +65,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -75,6 +81,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -87,7 +94,7 @@ port = 8101
 served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -103,6 +110,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -115,7 +123,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -131,6 +139,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -143,7 +152,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -159,6 +168,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -171,7 +181,7 @@ port = 8102
 served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -187,6 +197,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # DAI and Churro each have a dedicated stage-side chair and may not inherit
@@ -201,7 +212,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -217,6 +228,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -229,7 +241,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -245,6 +257,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -257,7 +270,7 @@ port = 8103
 served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -273,6 +286,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -285,7 +299,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -301,6 +315,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -313,7 +328,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -329,6 +344,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -341,7 +357,7 @@ port = 8104
 served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -357,6 +373,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # The secondary proposer is a separately configured chair, even though its
@@ -395,7 +412,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 2048
 max_num_seqs = 1
 max_num_batched_tokens = 512
@@ -411,6 +428,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -423,7 +441,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 4096
 max_num_seqs = 2
 max_num_batched_tokens = 1024
@@ -439,6 +457,7 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
@@ -451,7 +470,7 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", "qwen-vl-utils" = "0.0.14", "flash-attn" = "2.7.4.post1" }
+required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 4
 max_num_batched_tokens = 2048
@@ -467,4 +486,5 @@ generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

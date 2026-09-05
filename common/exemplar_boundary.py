@@ -645,6 +645,20 @@ def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any
     pages once per identity, this is refused by name here rather than surfacing
     downstream as "lost submitted page ordinal(s)" — which would be a lie about
     a page that was sealed, cited, and never lost at all.
+
+    **The byte-identical route is now closed at the Door**, which refuses such a
+    submission whole before its Exemplar ever runs
+    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`), so an
+    operator learns from the stage that read the filenames rather than from a
+    green Exemplar followed by a fatal consumer. That guard groups on the
+    submitted bytes, which is one route to a merged page and not all of them: a
+    triage-declared frame binds its identity to the admitted derivative, so two
+    sources with different bytes and identical derivatives still arrive here.
+    This is therefore the second line of defence for one route and the only one
+    for the other — it guards the sealed shape itself rather than any route into
+    it, and a merged page record handed to a consumer directly, by a future
+    producer, a repaired tree, or a caller that never passed a door, is refused
+    here on its own merits.
     """
     for ordinal, record in records.items():
         if record.get("outcome") != "sealed":

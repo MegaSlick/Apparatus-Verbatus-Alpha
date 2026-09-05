@@ -182,15 +182,27 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
 
     rows = [bytearray(row) for row in rows]
     rows[stray_y][stray_x] = 10  # unambiguous ink, far below any background threshold
-    analysis = {"width": width, "height": height, "rows": rows, "background": background}
+    analysis = {
+        "width": width,
+        "height": height,
+        "rows": rows,
+        "background": background,
+        # The secondary scan runs at this page's own resolved gap tolerance, the
+        # way `_analyze_page` resolves it for the primary scan, so a page
+        # analysis handed in by a test carries the same field the real one does.
+        "thresholds": designator.grouping_config.resolve_thresholds(
+            designator.grouping_config.load_grouping_config(), width, height
+        ),
+    }
     secondary = _published_secondary_provenance(designator, context)
 
     before_kinds = {
         entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
     }
+    policy = designator.grouping_config.load_grouping_config()
     assert (
         designator._publish_secondary_proposals(
-            context, 1, page_record, analysis, claimed, secondary
+            context, 1, page_record, analysis, claimed, secondary, policy
         )
         is True
     )
@@ -215,6 +227,7 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     assert payload["authoritative"] is False
     assert proposals[0]["outcome"] == "held"
     assert payload["terminal_disposition"] == "held-for-review"
+    assert payload["secondary_enumeration"] == designator.SECONDARY_ENUMERATION_COMPLETE
     assert payload["rescue_ref"]["relative_path"] == rescue_entries[0]["relative_path"]
     assert rescues[0]["outcome"] == "held"
     assert rescues[0]["payload"]["authoritative"] is False
@@ -256,7 +269,76 @@ def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path,
             {"width": width, "height": height, "rows": rows, "background": background},
             designator._claimed_regions_by_page(context)[1],
             secondary,
+            designator.grouping_config.load_grouping_config(),
         )
+
+
+def test_a_page_with_more_rescue_candidates_than_the_bound_is_held_as_one_item(tmp_path):
+    """The other per-page enumeration, bounded the same way the residual one is.
+
+    A page speckled enough to trip `max_residual_components` would mint a
+    rescue crop, a PNG blob and a proposal per candidate here, on the very page
+    the residual bound holds as one item -- the unopenable run rebuilt by the
+    route that bound does not cover. Past `max_secondary_proposals` the pass is
+    one held record instead: the count and the bound on the record, the sealed
+    policy digest it was judged against, and no crop cut at all.
+
+    The bound is exercised at zero rather than by drawing two thousand specks:
+    what is under test is the boundary and the shape it publishes, and a
+    threshold is crossed identically whichever side of it the page is on.
+    """
+    import dataclasses
+
+    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
+    records = designator.page_records(context)
+    page_record = designator.sealed_pages(records)[1]
+    width, height, rows, background = designator.page_pixels(context, page_record)
+    rows = [bytearray(row) for row in rows]
+    rows[height - 2][width - 2] = 10
+    policy = designator.grouping_config.load_grouping_config()
+    analysis = {
+        "width": width,
+        "height": height,
+        "rows": rows,
+        "background": background,
+        "thresholds": dataclasses.replace(
+            designator.grouping_config.resolve_thresholds(policy, width, height),
+            max_secondary_proposals=0,
+        ),
+    }
+    secondary = _published_secondary_provenance(designator, context)
+    claimed = designator._claimed_regions_by_page(context)[1]
+
+    assert (
+        designator._publish_secondary_proposals(
+            context, 1, page_record, analysis, claimed, secondary, policy
+        )
+        is True
+    )
+    context.finish()
+
+    manifest = context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+    assert [entry for entry in manifest if entry["kind"] == "rescue-crop"] == [], (
+        "a withheld secondary pass cuts no crop; cutting them is what the bound prevents"
+    )
+    proposals = [
+        context.tree.read_artifact(
+            designator.DESIGNATOR, "secondary-proposal", entry["artifact_id"]
+        )
+        for entry in manifest
+        if entry["kind"] == "secondary-proposal"
+    ]
+    assert len(proposals) == 1
+    assert proposals[0]["outcome"] == "held"
+    payload = proposals[0]["payload"]
+    assert payload["secondary_enumeration"] == designator.SECONDARY_ENUMERATION_WITHHELD
+    assert payload["secondary_candidate_count"] == 1
+    assert payload["max_secondary_proposals"] == 0
+    assert payload["grouping_config_sha256"] == policy["config_sha256"]
+    assert payload["page_bounds"] == {"x": 0, "y": 0, "w": width, "h": height}
+    assert "bounds" not in payload and "rescue_ref" not in payload, (
+        "the withheld record names no single candidate rectangle and cites no crop"
+    )
 
 
 # --- level 3: configuring the real roster changes no authoritative outcome -----
@@ -304,7 +386,11 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "secondary held-exit test")
 
-    def one_stray_candidate(width, height, rows, *, background):
+    # `gap_tolerance_px` is now resolved per page from the sealed grouping
+    # policy and passed in, so a stand-in for the real scan takes it too --
+    # a stub with the old signature would pass by not being called the way the
+    # stage calls it.
+    def one_stray_candidate(width, height, rows, *, background, gap_tolerance_px):
         return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
 
     monkeypatch.setattr(designator.structure, "secondary_scan", one_stray_candidate)
@@ -401,7 +487,7 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
         designator, root, models_config, "out-of-page secondary candidate test"
     )
 
-    def out_of_page_candidate(width, height, rows, *, background):
+    def out_of_page_candidate(width, height, rows, *, background, gap_tolerance_px):
         return [{"bounds": {"x": width - 1, "y": height - 1, "w": 5, "h": 5}, "pixel_count": 25}]
 
     monkeypatch.setattr(designator.structure, "secondary_scan", out_of_page_candidate)

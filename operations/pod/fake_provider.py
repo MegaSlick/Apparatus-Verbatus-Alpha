@@ -57,6 +57,8 @@ class FakeProvider:
         self.terminate_calls: list[str] = []
         self._next_id = 1
         self._account_balance_usd = Decimal("100.00")
+        # Off unless a caller wires it, exactly as the real adapter's is.
+        self._balance_notify: Callable[[Decimal, Decimal | None], object] | None = None
 
     def inject_failure(self, verb: str, error: BaseException, *, times: int = 1) -> None:
         """Make a verb raise ``error`` the requested finite number of times."""
@@ -98,11 +100,30 @@ class FakeProvider:
     def set_account_balance(self, available_usd: Decimal | str) -> None:
         self._account_balance_usd = as_decimal(available_usd, "fake available account balance")
 
+    def set_balance_notify(self, notify: Callable[[Decimal, Decimal | None], object]) -> None:
+        """The same duck-typed seam ``cli.py --notify`` reaches on a real adapter.
+
+        The fake carries it so the balance half of ``--notify`` is provable
+        end to end through ``cli.main`` without a provider account, a
+        credential, or a live GraphQL call -- the drill the rest of this
+        module exists for. A fake with no such method would have let the
+        wiring be asserted only against a mock of the wiring itself.
+        """
+
+        self._balance_notify = notify
+
     def observe_account_balance(self) -> AccountBalanceObservation:
         self._call("observe_account_balance", None)
-        return AccountBalanceObservation(
-            self._account_balance_usd, self.now(), "fake provider account balance"
-        )
+        source = "fake provider account balance"
+        if self._balance_notify is not None:
+            # Best-effort and never raised, exactly as the RunPod adapter's own
+            # observer treats it: a notification hook may not turn a successful
+            # observation into a failed one.
+            try:
+                self._balance_notify(self._account_balance_usd, None)
+            except Exception as error:  # noqa: BLE001 -- a notification hook must never propagate
+                source = f"{source}; balance notification raised and was contained: {error!r}"
+        return AccountBalanceObservation(self._account_balance_usd, self.now(), source)
 
     def estimate(self, request: PodCreateRequest) -> PodEstimate:
         self._call("estimate", request.name)

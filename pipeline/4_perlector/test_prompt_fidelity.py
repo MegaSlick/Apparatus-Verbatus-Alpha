@@ -207,6 +207,60 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
     assert after["rendered_sha256"] != before["rendered_sha256"]
 
 
+# --- `unproven-real-perlector` (the first real recipe) -----------------------
+
+
+def test_unproven_real_perlector_reproduces_the_neutral_template_plus_the_pinned_instruction():
+    built = prompts.build_prompt("unproven-real-perlector", "perlector", _dossier())
+    fixture_shape = prompts.build_prompt("fake-perlector-v0", "perlector", _dossier())
+    assert built == fixture_shape + "\n" + prompts.TRANSCRIPTION_INSTRUCTION
+
+
+def test_the_pinned_transcription_instruction_names_no_preference_and_sets_no_floor():
+    """GOVERNANCE 3 ('the Perlector never picks') and GOVERNANCE 10 ('the
+    instrument may not constrain what it measures'), enforced on the one
+    sentence this recipe adds beyond the shared neutral structure."""
+    lowered = prompts.TRANSCRIPTION_INSTRUCTION.lower()
+    forbidden = (
+        "prefer",
+        "best",
+        "score",
+        "rank",
+        "confidence",
+        "severity",
+        "priority",
+        "agree",
+        "choose",
+    )
+    present = [word for word in forbidden if word in lowered]
+    assert present == []
+
+
+def test_unproven_real_perlector_is_covered_by_the_same_builder_sha256():
+    from common.chairs.models import ChairIdentity
+    from common.contracts.canonical import digest_bytes
+
+    chair = ChairIdentity(
+        role="perlector",
+        source="local-repository",
+        repo=None,
+        path="perlector",
+        revision=None,
+        digest_manifest="0" * 64,
+        manifest="manifests/perlector.json",
+        adapter_of=None,
+        serving_recipe="unproven-real-perlector",
+        license_note="fixture identity only; no model weights or model license apply",
+    )
+    dossier = _dossier() | {"dossier_digest": "d" * 64}
+    evidence = prompts.prompt_evidence(chair, dossier)
+    module_bytes = Path(prompts.__file__).resolve().read_bytes()
+    assert evidence["builder_sha256"] == digest_bytes(module_bytes)
+    assert evidence["rendered_sha256"] == digest_bytes(
+        prompts.build_prompt("unproven-real-perlector", "perlector", dossier).encode("utf-8")
+    )
+
+
 def test_the_default_protocols_policy_literal_agrees_with_the_protocol_pin():
     """prompts.py is self-digesting (its bytes are builder_sha256), so the
     duplicate literal cannot be replaced with an import without moving every

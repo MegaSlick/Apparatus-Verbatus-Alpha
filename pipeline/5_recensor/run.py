@@ -77,11 +77,17 @@ from common.residual_ink import MINIMUM_INK_PIXELS, page_residual_ink  # noqa: E
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    RESIDUAL_ENUMERATION_COMPLETE,
+    RESIDUAL_ENUMERATION_WITHHELD,
+    RESIDUAL_ENUMERATIONS,
     WITNESS_READING_OUTCOMES,
     expected_acts,
+    is_real_ingress,
     latest_attempt,
     latest_per_chair,
-    open_context,
+    open_context,  # noqa: F401  (re-export: this stage's tests open fixture trees through it)
+    open_stage_context,
+    page_residual_act_key,
     reading_basis_regions,
     recovery_region_count,
     require_current_witness_basis,
@@ -1974,6 +1980,34 @@ def unresolved_observation_hold(
     )
 
 
+def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, int, int]:
+    """Pixel-count typing and conservation, shared by every consumer of `pixel_counts`.
+
+    Both the enumerated and the withheld page shapes hold the sealed page's own
+    ink accounting to the same two facts: the three counts are non-negative
+    integers, and `claimed + residual == total`. Returns the triple so the
+    enumerated caller can still check its own per-component sum against it.
+    """
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in pixel_counts.values()
+    ):
+        raise FatalAccounting(
+            f"Designator conservation page {ordinal} has malformed measured pixel "
+            "counts; total, claimed, and residual must be non-negative integers"
+        )
+    total = pixel_counts["total_ink_pixel_count"]
+    claimed = pixel_counts["claimed_pixel_count"]
+    residual = pixel_counts["residual_pixel_count"]
+    if claimed + residual != total:
+        raise FatalAccounting(
+            f"Designator conservation page {ordinal} pixel accounting does not "
+            "reconcile: claimed_pixel_count + residual_pixel_count does not equal "
+            "total_ink_pixel_count"
+        )
+    return total, claimed, residual
+
+
 def geometry_coverage_inputs(context) -> dict[int, dict]:
     """Consume, and independently reconcile, R2's conservation denominator.
 
@@ -1984,9 +2018,28 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     partition or a missing sealed-page denominator a refusal, rather than a
     reassuring Recensor record.  An all-held page is the distinct door-refusal
     shape: it never reached sealing, so absence remains absence for its reviews.
+
+    **A page that withheld its enumeration is a third shape, and it fails for
+    its own name.**  The Designator holds a page as one `page-residual` review
+    item when its reconciliation counted more unclaimed components than the
+    sealed grouping policy allows one page to enumerate, and then omits
+    `residual_components` rather than emptying it -- an empty list is the claim
+    "no unclaimed ink", which is the opposite of what happened.  Without a
+    branch of its own such a record arrived at the malformed-facts refusal and
+    was reported as a broken artifact, which is a true statement about the
+    shape and a false one about the run: nothing was malformed, a page was
+    held under a policy, and the operator was told the wrong thing.  Every
+    condition below is recomputed from the record and the seal, never read off
+    the Designator's word for it: the count must exceed the bound it names, the
+    page must carry exactly one page-residual act, and it must carry none of
+    the per-component ones -- minting both would account for the same unlisted
+    ink twice.
     """
     acts = expected_acts(context)
     residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
+    page_residual_keys = [
+        act["act_key"] for act in acts if act["act_key"].startswith("page-residual:")
+    ]
     findings: dict[int, dict] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] != "conservation":
@@ -1996,6 +2049,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         ordinal = payload.get("page_ordinal")
         measurable = payload.get("ink_measurable")
         components = payload.get("residual_components")
+        enumeration = payload.get("residual_enumeration")
         pixel_count_fields = (
             "total_ink_pixel_count",
             "claimed_pixel_count",
@@ -2006,10 +2060,42 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
             or not isinstance(measurable, bool)
-            or not isinstance(components, list)
             or ordinal in findings
         ):
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        if enumeration not in RESIDUAL_ENUMERATIONS:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} records its residual enumeration as "
+                f"{enumeration!r}, which is outside the closed set {RESIDUAL_ENUMERATIONS}; "
+                "this stage cannot tell a page with no unclaimed ink from one whose unclaimed "
+                "ink was counted and not listed without being told which it is"
+            )
+        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+            findings[ordinal] = _withheld_page_conservation(
+                ordinal, payload, measurable, pixel_counts, residual_keys, page_residual_keys
+            )
+            continue
+        page_residual_act_count = page_residual_keys.count(page_residual_act_key(ordinal))
+        if page_residual_act_count > 0:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} enumerated its residual components "
+                "and is also held as one page-residual review item; a page is accounted for by "
+                "one held act per residual or by the single item that replaced them, never by "
+                "both"
+            )
+        if not isinstance(components, list):
+            raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        declared_count = payload.get("residual_component_count")
+        if (
+            not isinstance(declared_count, int)
+            or isinstance(declared_count, bool)
+            or declared_count != len(components)
+        ):
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} names residual_component_count "
+                f"{declared_count!r} but lists {len(components)} residual components; the count "
+                "a review is shown is the count the list beside it supports"
+            )
         if not measurable and components:
             raise FatalAccounting(
                 f"unmeasured Designator conservation page {ordinal} must carry no residual "
@@ -2035,23 +2121,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                     "is malformed"
                 )
         if measurable:
-            if any(
-                not isinstance(count, int) or isinstance(count, bool) or count < 0
-                for count in pixel_counts.values()
-            ):
-                raise FatalAccounting(
-                    f"Designator conservation page {ordinal} has malformed measured pixel "
-                    "counts; total, claimed, and residual must be non-negative integers"
-                )
-            total = pixel_counts["total_ink_pixel_count"]
-            claimed = pixel_counts["claimed_pixel_count"]
-            residual = pixel_counts["residual_pixel_count"]
-            if claimed + residual != total:
-                raise FatalAccounting(
-                    f"Designator conservation page {ordinal} pixel accounting does not "
-                    "reconcile: claimed_pixel_count + residual_pixel_count does not equal "
-                    "total_ink_pixel_count"
-                )
+            _, _, residual = _require_reconciled_pixels(ordinal, pixel_counts)
             if sum(component["pixel_count"] for component in components) != residual:
                 raise FatalAccounting(
                     f"Designator conservation page {ordinal} residual component pixel sum "
@@ -2073,10 +2143,24 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             raise FatalAccounting(
                 f"unmeasured Designator conservation page {ordinal} minted residual acts"
             )
+        bound = payload.get("max_residual_components")
+        if not isinstance(bound, int) or isinstance(bound, bool) or bound < 0:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} names no integer "
+                "max_residual_components; every record carries the bound that was in force, "
+                "crossed or not, and a page cannot be reconciled against a policy it does not "
+                "name"
+            )
         findings[ordinal] = {
             "ink_measurable": measurable,
             "residual_component_count": len(components),
             "residual_act_count": len(actual),
+            "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
+            "max_residual_components": bound,
+            # Zero, and checked rather than assumed: the refusal above is what
+            # proves an enumerated page carries no page-residual item.
+            "page_residual_act_count": page_residual_act_count,
+            "reason": None,
         }
     required_ordinals = {act["page_ordinal"] for act in acts if act["outcome"] != "held"}
     missing = sorted(required_ordinals - findings.keys())
@@ -2092,6 +2176,104 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "but have no conservation records"
         )
     return findings
+
+
+def _withheld_page_conservation(
+    ordinal: int,
+    payload: dict,
+    measurable: bool,
+    pixel_counts: dict,
+    residual_keys: set,
+    page_residual_keys: list,
+) -> dict:
+    """One page held as a single review item in place of its residual components.
+
+    This stage is the second consumer of that decision and reconciles it the
+    same way it reconciles an enumerated page: against the seal, never against
+    the producer's assurance.  What it cannot do is add up the components, so
+    the two checks that survive are the ones that still can be made -- the ink
+    accounting itself (`claimed + residual == total`, still exact and still
+    published) and the partition (exactly one page-residual act for this page,
+    and none of the per-component ones).  The per-component pixel sum is the
+    one check genuinely lost here, and it is lost because the list it summed is
+    the thing deliberately not carried; saying so is better than quietly
+    dropping it.
+
+    The finding this returns carries the same key set as every other shape this
+    function can produce, and says something different in it.  `residual_act_count`
+    is 0 and true -- no `residual:` act was minted -- and on its own it would
+    read to a reviewer as a page whose unclaimed components vanished, so the
+    count, the bound, the enumeration and the one page-residual act are named
+    beside it.  What it may not do is *lose* those keys on the other two shapes:
+    an enumerated page states the same facts with `residual_enumeration:
+    "complete"` and a null reason, and a page with no record at all states them
+    as null, so a consumer reads one schema and finds absence as a value rather
+    than as a `KeyError` on whichever shape a page happened to produce.  Filling
+    them is only honest because each value is true of the page it describes;
+    restating a withheld page in an enumerated page's *values* would be the same
+    class of untruth as `NO_PAGE_CONSERVATION` defaulting to
+    `ink_measurable: False`.
+    """
+    if not measurable:
+        raise FatalAccounting(
+            f"unmeasured Designator conservation page {ordinal} withheld its residual "
+            "enumeration; a page with no threshold to separate ink from paper enumerated "
+            "nothing because nothing was measured, not because a bound stopped it"
+        )
+    if "residual_components" in payload:
+        raise FatalAccounting(
+            f"withheld Designator conservation page {ordinal} still carries a "
+            "residual_components key; the key is omitted when the enumeration is withheld, so "
+            "that no consumer reads a present list as the complete one"
+        )
+    count = payload.get("residual_component_count")
+    bound = payload.get("max_residual_components")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in (count, bound)
+    ):
+        raise FatalAccounting(
+            f"withheld Designator conservation page {ordinal} names no integer residual "
+            "component count and no integer bound it was judged against"
+        )
+    if count <= bound:
+        raise FatalAccounting(
+            f"withheld Designator conservation page {ordinal} counted {count} residual "
+            f"components against a bound of {bound}, which it does not exceed; a page within "
+            "the bound owes one held act per residual, not a withheld enumeration"
+        )
+    _require_reconciled_pixels(ordinal, pixel_counts)
+    minted = sorted(key for key in residual_keys if key.startswith(f"residual:{ordinal}:"))
+    if minted:
+        raise FatalAccounting(
+            f"withheld Designator conservation page {ordinal} withheld its residual "
+            f"enumeration and still minted {len(minted)} per-component residual acts; the "
+            "unlisted ink is accounted for by the single item that replaced those acts, never "
+            "by both at once"
+        )
+    held_as_one = page_residual_keys.count(page_residual_act_key(ordinal))
+    if held_as_one != 1:
+        raise FatalAccounting(
+            f"withheld Designator conservation page {ordinal} is accounted for by "
+            f"{held_as_one} page-residual acts in the proposal seal rather than exactly one; "
+            "unlisted ink is accounted for by the single review item that replaced it, or it "
+            "is lost silently"
+        )
+    return {
+        "ink_measurable": measurable,
+        "residual_component_count": count,
+        "residual_act_count": 0,
+        "residual_enumeration": RESIDUAL_ENUMERATION_WITHHELD,
+        "max_residual_components": bound,
+        "page_residual_act_count": held_as_one,
+        "reason": (
+            f"this page's reconciliation counted {count} residual components against the "
+            f"sealed bound of {bound}, so the Designator held the page as one page-residual "
+            "review item and did not list them; no per-component held act exists for this "
+            "page by design, and the per-component pixel sum is the one reconciliation this "
+            "stage cannot recompute against a list that was deliberately not carried"
+        ),
+    }
 
 
 def current_act_attachments(context) -> dict[str, dict]:
@@ -2510,6 +2692,9 @@ NO_PAGE_CONSERVATION = {
     "ink_measurable": None,
     "residual_component_count": None,
     "residual_act_count": None,
+    "residual_enumeration": None,
+    "max_residual_components": None,
+    "page_residual_act_count": None,
     "reason": (
         "the Designator published no conservation record for this page, so nothing on it "
         "was measured; its acts are held for the reason the page itself carries"
@@ -2826,10 +3011,65 @@ def write_partition_receipt(context, budget: dict) -> None:
     context.tree.write_recensor_partition_receipt(receipt)
 
 
+def real_ingress(context) -> bool:
+    """Whether this context's run authority names the real route.
+
+    Delegates to `common.stage.is_real_ingress`, the same reader the shared
+    constructor and `expected_acts` use, so the two cannot disagree about
+    which route a run is on.
+    """
+    return is_real_ingress(context.run)
+
+
+def declared_scenario(context) -> dict | None:
+    """The declared scenario on the fixture route; `None` on a real submission.
+
+    A real submission carries no fixture to declare one, and its refusing
+    accessor is never touched here -- `real_ingress` alone decides the branch,
+    read once off `context.run`. Extracted so the branch is one named function
+    a unit test can call directly, rather than a bare conditional only visible
+    inside `main`.
+    """
+    return None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
+
+
+def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario holds this act as unreconciled.
+
+    `review_route_from_findings`'s `unreconciled` cause has exactly one feeder
+    in the tree: a synthetic scenario's declared `hold_acts`. It is not a
+    measurement this stage takes. On a real submission there is no scenario
+    (`scenario is None`) and therefore no producer of the cause at all, so this
+    is `False` there -- which says that nothing fed it, not that the act was
+    measured as reconciled. The only cross-act anomaly computation in the tree
+    is Pass C's flag pass at the Perlector, and its verdict reaches the review
+    through `audit_unresolved`. The HANDOFF says the same under `kind="review"`.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["hold_acts"]
+
+
+def declared_recovery(scenario: dict | None, act_key: str) -> bool:
+    """Whether a declared scenario asks a recrop for this act.
+
+    `False` with no scenario, because nothing fed it -- not because the act
+    was measured as needing none. On a real submission the only producer of
+    a recovery request is ink measured outside the live crop union, which
+    reaches `recovery_request_origin` as COVERAGE_OBSERVATION_ORIGIN.
+    """
+    if scenario is None:
+        return False
+    return act_key in scenario["recover_acts"]
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, RECENSOR, registry_factory=registry_factory)
+    # Either ingress route, decided from one read of the run authority; the
+    # real route carries the registry, the sealed digests and the parsed
+    # recovery policy the lines below require.
+    context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
     # The run's own sealed policy, parsed once when the run's binding was checked,
     # never reopened here. `config/recovery.toml` used to be read a second time at
     # this line: a rewrite landing between `open_context` and it published reviews
@@ -2843,7 +3083,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
 
-    scenario = scenario_for(context.fixture, context.scenario)
+    # The declared scenario on the fixture route; nothing on a real submission.
+    # `hold_acts` and `recover_acts` are the two things read from it, below.
+    scenario = declared_scenario(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -2980,7 +3222,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             testimony_shortfall=content_coverage["shortfall"],
             audit_unresolved=audit_unresolved,
             under_witnessed=coverage["under_witnessed"],
-            unreconciled=act_key in scenario["hold_acts"],
+            unreconciled=declared_unreconciled(scenario, act_key),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3015,7 +3257,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cut_regions,
         )
         wants_recovery = (
-            act_key in scenario["recover_acts"]
+            declared_recovery(scenario, act_key)
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
@@ -3049,7 +3291,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # because a request the orchestrator can only refuse turns a graceful
             # hold into a hard failure for no gain.
             request_origin = recovery_request_origin(
-                declared=act_key in scenario["recover_acts"],
+                declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
             )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
@@ -3120,7 +3362,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # the two coincide.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
-                    declared_crop=act_key in scenario["recover_acts"],
+                    declared_crop=declared_recovery(scenario, act_key),
                     unclaimed_observation=len(outside_ink_requests) > 0,
                 ),
                 "budget_allowed": budget["allowed"],

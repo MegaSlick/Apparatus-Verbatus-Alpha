@@ -181,6 +181,12 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     if (target_width, target_height) == (source_width, source_height):
         # Identity-sized views must record the crop that ran, not a resampler
         # Pillow never consulted, and must retain the crop bytes unchanged.
+        # Published into this stage's own content-addressed store rather than
+        # pointed at the Designator's crop path: every image a witness is shown
+        # is inventoried here, and the bytes are identical either way (both are
+        # `crop_png` of the same sealed page at the same bounds), so
+        # `feeding.dai_model_view`'s identity rule — which compares content,
+        # not the spelling of a path — is satisfied by the digest they share.
         model_image = crop
     else:
         model_image = resize_png_lanczos(crop, target_width, target_height)

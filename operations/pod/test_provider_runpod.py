@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import pytest
 
+from . import notify_hooks
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AccountBalanceObservation,
@@ -28,6 +29,9 @@ from .models import (
 )
 from .provider_runpod import (
     _MAX_RESPONSE_BYTES,
+    BALANCE_QUERY,
+    RUNPOD_GRAPHQL_ROOT,
+    GraphQLBalanceObserver,
     HttpResponse,
     RunPodProvider,
     UrllibRunPodTransport,
@@ -420,6 +424,52 @@ def test_create_without_a_launch_token_refuses_before_any_request() -> None:
         provider(transport).create(request(metadata={}))
 
     assert transport.calls == []
+
+
+class _BreakingRecorder:
+    """Stands in for a ``FixtureRecorder`` whose disk write fails.
+
+    A real recorder writing to a full disk or an unwritable fixture path
+    raises from ``record``. This double reproduces exactly that, on the
+    success path only, so a test can prove the created pod's identity
+    survives a broken recorder rather than being reported as a provider
+    failure with the pod lost.
+    """
+
+    def record(self, method, path, request_body, *, status, response_body, error=None):  # type: ignore[no-untyped-def]
+        if status is not None:
+            raise OSError("no space left on device")
+        return {}
+
+
+def test_a_recorder_failure_after_a_real_create_never_loses_the_pod_identity(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``fixture.RecordingTransport`` must not let a broken evidence write
+    masquerade as a failed provider call.
+
+    Before the fix, ``FixtureRecorder.record`` raising after a successful
+    POST propagated out of ``RunPodProvider.create`` exactly as a real
+    ``ProviderFailure`` would -- ``PodRuntime._create_locked`` catches that
+    broad exception and reports ``PROVIDER_FAILURE`` with no pod record and
+    no lease, even though the provider had already created a real, billing
+    pod. ``create`` here must still return the pod RunPod actually created,
+    and the recorder's own failure must be named on stderr rather than
+    silently dropped (GOVERNANCE 2).
+    """
+
+    from .fixture import RecordingTransport
+
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+    live = provider(transport)
+    live.transport = RecordingTransport(live.transport, _BreakingRecorder())
+
+    record = live.create(request())
+
+    assert record.pod_id == "pod-1"
+    err = capsys.readouterr().err
+    assert "pod fixture recorder failed to record a successful response" in err
+    assert "provider action itself succeeded" in err
 
 
 # -- the effective runtime contract the pod actually got -------------------
@@ -950,3 +1000,630 @@ def test_a_same_name_pod_with_no_env_still_refuses_token_correlation() -> None:
 
     # The refusal happened during correlation: the list GET ran, no POST did.
     assert [call[0] for call in transport.calls] == ["GET"]
+
+
+# -- the GraphQL balance observer -------------------------------------------
+#
+# Documented shapes only (module docstring of provider_runpod.py, 2026-09-02).
+# No live call: the fake transport answers, and two loopback servers measure
+# the query-placed credential the way the redirect test above measures urllib.
+
+
+def balance_body(**overrides: object) -> bytes:
+    myself: dict[str, object] = {"clientBalance": 76.5, "currentSpendPerHr": 0.0}
+    myself.update(overrides)
+    return json.dumps({"data": {"myself": myself}}).encode()
+
+
+def observer(transport: ScriptedTransport) -> GraphQLBalanceObserver:
+    return GraphQLBalanceObserver(transport, now=lambda: NOW)
+
+
+def test_the_balance_observer_sends_exactly_the_documented_query() -> None:
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+
+    observed = observer(transport)()
+
+    assert transport.calls == [("POST", "/graphql", {"query": BALANCE_QUERY})]
+    assert observed.available_usd == Decimal("76.5")
+    assert observed.observed_at == NOW
+    assert "US dollars per the vendor's billing documentation" in observed.source
+    assert "currentSpendPerHr=0.0" in observed.source
+
+
+def test_the_balance_never_exists_as_a_binary_float() -> None:
+    exact = "0.1234567890123456789"
+    body = json.dumps({"data": {"myself": {"clientBalance": 0.5, "currentSpendPerHr": 0}}})
+    transport = ScriptedTransport([HttpResponse(200, body.replace("0.5", exact).encode())])
+
+    assert observer(transport)().available_usd == Decimal(exact)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (
+            json.dumps({"data": {"myself": {"currentSpendPerHr": 0}}}).encode(),
+            "missing field data.myself.clientBalance",
+        ),
+        (
+            json.dumps({"data": {"myself": {"clientBalance": 1}}}).encode(),
+            "missing field data.myself.currentSpendPerHr",
+        ),
+        (json.dumps({"data": {}}).encode(), "missing field data.myself"),
+        (json.dumps({"myself": {}}).encode(), "missing field data"),
+        (balance_body(clientBalance=None), "clientBalance is not a number: NoneType"),
+        (balance_body(clientBalance="76.5"), "clientBalance is not a number: str"),
+        (balance_body(clientBalance=True), "clientBalance is not a number: bool"),
+        (balance_body(currentSpendPerHr="1"), "currentSpendPerHr is not a number: str"),
+        (balance_body(clientBalance=-3.25), "is -3.25; a negative"),
+        (b"[]", "response is not an object"),
+        (b"not json", "response is not JSON"),
+        (
+            json.dumps({"errors": [{"message": "Unauthorized"}], "data": None}).encode(),
+            "answered with errors: Unauthorized",
+        ),
+    ],
+)
+def test_the_balance_observer_refuses_each_doubt_by_name(body: bytes, reason: str) -> None:
+    transport = ScriptedTransport([HttpResponse(200, body)])
+
+    with pytest.raises(ProviderFailure, match=reason):
+        observer(transport)()
+
+
+def test_a_non_200_balance_answer_is_refused_not_read_as_zero() -> None:
+    transport = ScriptedTransport([HttpResponse(401, b'{"errors":[{"message":"nope"}]}')])
+
+    with pytest.raises(ProviderFailure, match="balance query returned HTTP 401"):
+        observer(transport)()
+
+
+def test_a_credential_shaped_field_anywhere_in_the_balance_answer_refuses_unread() -> None:
+    body = json.dumps(
+        {"data": {"myself": {"clientBalance": 9, "currentSpendPerHr": 0, "apiKeys": [{"id": "k"}]}}}
+    ).encode()
+    transport = ScriptedTransport([HttpResponse(200, body)])
+
+    with pytest.raises(ProviderFailure, match="credential-shaped field data.myself.apiKeys"):
+        observer(transport)()
+
+
+def test_the_live_transport_is_the_default_balance_source_and_a_fake_gets_none() -> None:
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    derived = live.balance_observer.transport
+    assert isinstance(derived, UrllibRunPodTransport)
+    assert derived.root == RUNPOD_GRAPHQL_ROOT
+    assert derived.credential_placement == "query"
+    assert derived.capability == "test-capability-value"
+
+    faked = provider(ScriptedTransport([]))
+    assert faked.balance_observer is None
+    with pytest.raises(ProviderFailure, match="balance source was not configured"):
+        faked.observe_account_balance()
+
+
+def test_the_default_observer_runs_through_the_bounded_balance_read() -> None:
+    """The adapter's own timeout and latch apply to the built-in source too."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body(clientBalance=12))])
+    adapter = provider(transport)
+    adapter.balance_observer = observer(transport)
+
+    assert adapter.observe_account_balance().available_usd == Decimal("12")
+
+
+# -- the balance-observation notification hook -------------------------------
+
+
+def test_a_bare_live_transport_carries_no_notify_hook() -> None:
+    """``--notify`` is the single gate for a phone notification: absent it,
+    not even a live-transport provider's default balance observer may carry
+    one.
+
+    A pod's own ``timer_context_from_environment`` builds exactly this
+    unqualified constructor call, with no way to pass ``--notify`` through --
+    so if this defaulted to a hook, a plain ``verbatus pod create`` with no
+    ``--notify`` would still page a phone from the pod on every spend
+    assessment, before any --notify gate was ever consulted. It must not.
+    """
+
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is None
+
+
+def test_a_live_transport_built_with_balance_notify_carries_the_hook() -> None:
+    """The opposite case: a caller that explicitly supplies ``balance_notify``
+    -- the host CLI, only when ``args.notify`` is set -- gets it wired into
+    the default observer.
+
+    Never invoked here: calling it would spawn the real
+    ``operations/notify/notify.sh``.
+    """
+
+    seen: list[tuple[Decimal, Decimal | None]] = []
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_notify=lambda balance, spend: seen.append((balance, spend)),
+    )
+
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is not None
+    assert seen == []
+
+
+def test_an_injected_observer_carries_no_notify_hook_by_default() -> None:
+    """`GraphQLBalanceObserver` built directly, as most of this file's tests
+    build it, never touches the shell -- matching `balance_observer=None`'s
+    own default two classes up."""
+
+    assert observer(ScriptedTransport([])).notify is None
+
+
+def test_a_successful_observation_calls_notify_with_balance_and_spend() -> None:
+    transport = ScriptedTransport(
+        [HttpResponse(200, balance_body(clientBalance=76.5, currentSpendPerHr=1.99))]
+    )
+    seen: list[tuple[Decimal, Decimal]] = []
+    live = GraphQLBalanceObserver(
+        transport, now=lambda: NOW, notify=lambda balance, spend: seen.append((balance, spend))
+    )
+
+    observed = live()
+
+    assert observed.available_usd == Decimal("76.5")
+    assert seen == [(Decimal("76.5"), Decimal("1.99"))]
+
+
+def test_a_raising_notify_hook_never_prevents_the_observation() -> None:
+    """Ruling (b): notifications never become new enforcement."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+
+    def _explode(balance: Decimal, spend: Decimal) -> None:
+        raise RuntimeError("notify.sh is not on PATH")
+
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=_explode)
+
+    observed = live()
+
+    assert observed.available_usd == Decimal("76.5")
+    # ... and the failure is not swallowed: GOVERNANCE 2 wants it visible where
+    # the money decision is written, which is the observation's own source.
+    assert "balance notification raised and was contained" in observed.source
+    assert "notify.sh is not on PATH" in observed.source
+
+
+def test_a_notification_that_was_never_delivered_is_named_in_the_observation() -> None:
+    """A ping refused on sight or not delivered is a fact about this reading."""
+
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    outcome = notify_hooks.NotifyOutcome(True, False, "no topic configured")
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=lambda *_: outcome)
+
+    observed = live()
+
+    assert "balance notification: Phone notification: NOT DELIVERED" in observed.source
+    assert "no topic configured" in observed.source
+
+
+def test_a_delivered_notification_leaves_the_observation_source_alone() -> None:
+    transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    outcome = notify_hooks.NotifyOutcome(True, True, "delivered")
+    live = GraphQLBalanceObserver(transport, now=lambda: NOW, notify=lambda *_: outcome)
+
+    observed = live()
+
+    assert "balance notification" not in observed.source
+
+
+def test_set_balance_notify_wires_the_hook_the_host_cli_reaches() -> None:
+    """The seam ``cli.py --notify`` calls by duck type.
+
+    The comment here used to claim the CLI wired ``notify_hooks.notify_balance``
+    into this observer, and no tracked path could: the provider comes from an
+    untracked ``--provider-factory``, so the constructor argument had no caller.
+    A named method on the returned object is the one place the host CLI can
+    reach a vendor adapter, exactly as ``--record-fixture`` reaches
+    ``record_exchanges``.
+    """
+
+    live = RunPodProvider(
+        UrllibRunPodTransport("test-capability-value"),
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+    )
+    assert isinstance(live.balance_observer, GraphQLBalanceObserver)
+    assert live.balance_observer.notify is None
+
+    def hook(balance: Decimal, spend: Decimal | None) -> notify_hooks.NotifyOutcome:
+        return notify_hooks.NotifyOutcome(True, True, "delivered")
+
+    live.set_balance_notify(hook)
+
+    assert live.balance_observer.notify is hook
+
+
+def test_set_balance_notify_refuses_a_provider_with_no_balance_source() -> None:
+    """A fake transport builds no observer, so ``--notify`` cannot conjure one.
+
+    Refused by name rather than silently doing nothing: a caller that asked for
+    balance pings and will get none has to be told which.
+    """
+
+    faked = provider(ScriptedTransport([]))
+    assert faked.balance_observer is None
+
+    with pytest.raises(ValueError, match="no balance source to notify from"):
+        faked.set_balance_notify(lambda balance, spend: None)
+
+
+def test_set_balance_notify_refuses_an_injected_observer() -> None:
+    """An injected observer is an opaque callable; wiring into it is not this
+    adapter's to do, and pretending otherwise would report a hook that is not
+    there."""
+
+    faked = provider(ScriptedTransport([]))
+    faked.balance_observer = lambda: None
+
+    with pytest.raises(ValueError, match="injected"):
+        faked.set_balance_notify(lambda balance, spend: None)
+
+
+def _serve(handler_class):  # type: ignore[no-untyped-def]
+    import http.server
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_the_graphql_transport_places_the_key_in_the_documented_query_and_no_header() -> None:
+    """Loopback only: what urllib actually sends, measured, never a live call."""
+
+    import http.server
+
+    seen: dict[str, object] = {}
+
+    class Endpoint(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            seen["path"] = self.path
+            seen["authorization"] = self.headers.get("Authorization")
+            seen["content_type"] = self.headers.get("Content-Type")
+            seen["body"] = json.loads(self.rfile.read(length))
+            payload = balance_body(clientBalance=41.25, currentSpendPerHr=0.77)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = _serve(Endpoint)
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{server.server_address[1]}",
+            credential_placement="query",
+        )
+        observed = GraphQLBalanceObserver(transport, now=lambda: NOW)()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Composed, not spelled: the repository's credential scanner reads a literal
+    # `api_key=<value>` as a secret, and its caution is worth more than the line.
+    assert seen["path"] == "/graphql?" + "=".join(("api_key", transport.capability))
+    assert seen["authorization"] is None
+    assert seen["content_type"] == "application/json"
+    assert seen["body"] == {"query": BALANCE_QUERY}
+    assert observed.available_usd == Decimal("41.25")
+    assert "currentSpendPerHr=0.77" in observed.source
+
+
+def test_the_query_placed_key_is_not_carried_across_a_redirect_either() -> None:
+    import http.server
+
+    seen: dict[str, str] = {}
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            seen["path"] = self.path
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_address[1]}/stolen")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    target = _serve(Target)
+    redirector = _serve(Redirector)
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{redirector.server_address[1]}",
+            credential_placement="query",
+        )
+        with pytest.raises(ProviderFailure, match="redirect was not followed") as refused:
+            GraphQLBalanceObserver(transport, now=lambda: NOW)()
+    finally:
+        for server in (target, redirector):
+            server.shutdown()
+            server.server_close()
+
+    assert "path" not in seen
+    assert "test-capability-value" not in str(refused.value)
+
+
+def test_a_query_placed_key_refuses_a_path_that_already_has_a_query() -> None:
+    transport = UrllibRunPodTransport("test-capability-value", credential_placement="query")
+
+    with pytest.raises(ProviderFailure, match="already carries a query string"):
+        transport.request("GET", "/graphql?x=1")
+
+
+def test_a_connection_failure_in_query_placement_names_no_key() -> None:
+    """A refused connection on a closed loopback port: the message carries the
+    reason, never the URL the key rides in."""
+
+    import socket
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    transport = UrllibRunPodTransport(
+        "test-capability-value",
+        timeout_seconds=2.0,
+        root=f"http://127.0.0.1:{port}",
+        credential_placement="query",
+    )
+
+    with pytest.raises(ProviderFailure, match="HTTP request failed") as refused:
+        transport.request("POST", "/graphql", {"query": BALANCE_QUERY})
+
+    assert "test-capability-value" not in str(refused.value)
+
+
+def test_record_exchanges_writes_every_exchange_scrubbed_and_replayable(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from .fixture import SCRUBBED, FixtureRecorder, read_fixture
+
+    created = pod_payload()
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, json.dumps([]).encode()),
+            HttpResponse(200, json.dumps(created).encode()),
+        ]
+    )
+    balance_transport = ScriptedTransport([HttpResponse(200, balance_body())])
+    adapter = provider(transport)
+    adapter.balance_observer = observer(balance_transport)
+    recorder = FixtureRecorder(tmp_path / "evidence" / "fixture.jsonl", now=lambda: NOW)
+
+    adapter.record_exchanges(recorder)
+    adapter.observe_account_balance()
+    record = adapter.create(request())
+
+    records = read_fixture(recorder.path)
+    assert [(entry["method"], entry["path"], entry["status"]) for entry in records] == [
+        ("POST", "/graphql", 200),
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true", 200),
+        ("POST", "/pods", 200),
+    ]
+    balance, listing, create = records
+    assert balance["verbatim"] is True and balance["response_body"] == balance_body().decode()
+    assert balance["body_kind"] == "json-text"
+    assert listing["verbatim"] is True and listing["response_body"] == "[]"
+    assert listing["body_kind"] == "json-text"
+    # The launch token rides in `env` both ways, and the predicate scrubs it.
+    assert create["request_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
+    assert create["verbatim"] is False
+    assert create["body_kind"] == "json-object"
+    assert create["response_body"]["env"]["VERBATUS_LAUNCH_TOKEN"] == SCRUBBED
+    assert "response_body.env.VERBATUS_LAUNCH_TOKEN" in create["scrubbed"]
+    # Money in a scrubbed body is still a number, and the same digits.
+    assert create["response_body"]["costPerHr"] == Decimal("0.77")
+    assert record.pod_id == created["id"]
+    assert (recorder.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_an_existing_fixture_file_is_narrowed_to_0600_before_anything_is_recorded(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The mode is set on the file that is there, not only on one this creates.
+
+    `os.open`'s mode argument applies at creation, so a path an earlier step
+    left readable stayed readable while the recorder appended the provider's
+    own answers to it. The recorder narrows the descriptor it just opened, and
+    the first record is written only after that succeeded.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    path = tmp_path / "prior.jsonl"
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o644)
+
+    recorder = FixtureRecorder(path, now=lambda: NOW)
+    recorder.record("GET", "/pods", None, status=200, response_body=b"[]")
+    recorder.close()
+
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert len(read_fixture(path)) == 1
+
+
+def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A provider body cannot forge a money value on its way to disk.
+
+    The Decimal mark used to be a fixed sentinel rewritten by a regex over the
+    whole serialized line, and a recorded string keeps whatever NUL bytes it
+    carried (`_scrub_body` decodes with errors="replace"). A body echoing
+    NUL + `decimal:` + digits + NUL would have been rewritten from a JSON
+    string into a bare number: evidence altered with no record of it
+    (GOVERNANCE 4). The mark now carries a per-line nonce chosen after the
+    body was read.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    forged = "\x00decimal:99999\x00"
+    recorder = FixtureRecorder(tmp_path / "forged.jsonl", now=lambda: NOW)
+    recorder.record(
+        "GET",
+        "/pods",
+        None,
+        status=200,
+        response_body=json.dumps({"costPerHr": 0.77, "note": forged}).encode(),
+    )
+    recorder.close()
+
+    [entry] = read_fixture(recorder.path)
+    body = (
+        json.loads(entry["response_body"])
+        if isinstance(entry["response_body"], str)
+        else entry["response_body"]
+    )
+    assert body["note"] == forged
+    assert body["costPerHr"] == 0.77
+
+
+def test_a_non_finite_money_value_is_refused_rather_than_written_as_a_marker(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`NaN` and `Infinity` are not JSON numbers.
+
+    Marked and left unconverted, one would have written a literal marker string
+    into the fixture, which the replay side reads back as a shape no test
+    covers. A named failure is the honest answer.
+    """
+
+    from .fixture import _dumps
+
+    with pytest.raises(ValueError, match="non-finite Decimal"):
+        _dumps({"total": Decimal("NaN")})
+
+
+def test_a_credential_shaped_value_under_an_innocuous_key_is_scrubbed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The name check alone let a token through under a harmless key.
+
+    The recorder is the one place on this branch that deliberately writes
+    provider request and response bodies to disk; a RunPod answer echoing a key
+    inside `dockerArgs`, `message` or an env value would have landed there
+    marked `verbatim: true` with an empty `scrubbed` list.
+
+    The probe is an opaque mixed-alphanumeric run rather than a value carrying
+    a vendor prefix: this repository's own ingress scanner recognises the
+    prefixed shape and would refuse the commit that added the test.
+    """
+
+    from .fixture import SCRUBBED, FixtureRecorder, read_fixture
+
+    recorder = FixtureRecorder(tmp_path / "leaky.jsonl", now=lambda: NOW)
+    recorder.record(
+        "POST",
+        "/pods",
+        None,
+        status=200,
+        response_body=json.dumps(
+            {"message": "started with Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8", "id": "pod-abc123"}
+        ).encode(),
+    )
+    recorder.close()
+
+    [entry] = read_fixture(recorder.path)
+    assert entry["verbatim"] is False
+    assert entry["response_body"]["message"] == SCRUBBED
+    assert "response_body.message" in entry["scrubbed"]
+    # And an ordinary provider id is still recorded as itself: the shape test
+    # is narrow on purpose, or the fixture stops being replayable.
+    assert entry["response_body"]["id"] == "pod-abc123"
+
+
+def test_concurrent_record_calls_never_share_a_sequence(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`record_exchanges` shares one recorder between a provider's own
+
+    transport and its balance observer's, and the observer runs on a daemon
+    thread that a caller can abandon on overrun -- its blocked call can still
+    be inside `record` when the main thread records its own exchange. Before
+    the lock covered the whole method, `self.sequence` was re-read nine
+    lines after being incremented, so two concurrent calls could stamp the
+    same sequence and skip one entirely.
+    """
+
+    from .fixture import FixtureRecorder, read_fixture
+
+    class _BlockingBody(dict):
+        """A request body whose ``items()`` parks a thread mid-``_scrub``,
+
+        after `record` has already claimed a sequence number and before it
+        stamps the record with it -- exactly the window the race lived in.
+        """
+
+        def __init__(
+            self,
+            *args: object,
+            release: threading.Event,
+            entered: threading.Event,
+            **kwargs: object,
+        ) -> None:
+            super().__init__(*args, **kwargs)
+            self._release = release
+            self._entered = entered
+
+        def items(self):  # type: ignore[no-untyped-def]
+            self._entered.set()
+            self._release.wait(timeout=5.0)
+            return super().items()
+
+    recorder = FixtureRecorder(tmp_path / "evidence" / "concurrent.jsonl", now=lambda: NOW)
+    release = threading.Event()
+    entered = threading.Event()
+    parked_body = _BlockingBody({"note": "parked"}, release=release, entered=entered)
+
+    def record_parked() -> None:
+        recorder.record("GET", "/parked", parked_body, status=200, response_body=b"{}")
+
+    thread = threading.Thread(target=record_parked)
+    thread.start()
+    # Wait for the parked call to have actually claimed its sequence and
+    # entered `items()`, rather than guessing at a sleep -- a bare sleep
+    # cannot promise the handoff happened before the main thread proceeds.
+    assert entered.wait(timeout=5.0)
+    recorder.record("GET", "/second", {"note": "unparked"}, status=200, response_body=b"{}")
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    recorder.close()
+
+    records = read_fixture(recorder.path)
+    sequences = [record["sequence"] for record in records]
+    assert sequences == sorted(sequences)
+    assert len(set(sequences)) == len(sequences)
+    assert [record["path"] for record in sorted(records, key=lambda r: r["sequence"])] == [
+        "/parked",
+        "/second",
+    ]

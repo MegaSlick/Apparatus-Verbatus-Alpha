@@ -56,7 +56,11 @@ class Component(TypedDict):
 PRIMARY_MARGIN: Final = 20
 SECONDARY_MARGIN: Final = 2
 
-DEFAULT_GAP_TOLERANCE_PX: Final = 3
+# `gap_tolerance_px` used to carry a module default here. It no longer does:
+# it is the one threshold this build cannot honestly scale by page dimension
+# (SPEC_C section 2), so `run.py` resolves it from the sealed absolute-pixel
+# config field and passes it in on every call. A caller that forgets fails
+# loudly rather than running under an unreviewed value.
 
 
 class BackgroundInferenceRefusal(ContractError):
@@ -199,9 +203,7 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
     return ink
 
 
-def label_components(
-    pixels: set, *, gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX
-) -> list[Component]:
+def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     """Connected-component labeling over an arbitrary set of (x, y) pixels.
 
     `scan_ink_components` labels every ink pixel through here. `conservation.py`
@@ -289,7 +291,7 @@ def scan_ink_components(
     *,
     background: int,
     margin: int,
-    gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
+    gap_tolerance_px: int,
 ) -> list[Component]:
     """Every ink-bearing connected component on a decoded grayscale page.
 
@@ -304,9 +306,27 @@ def scan_ink_components(
     return label_components(pixels, gap_tolerance_px=gap_tolerance_px)
 
 
-def primary_scan(width: int, height: int, rows: list, *, background: int) -> list[Component]:
-    return scan_ink_components(width, height, rows, background=background, margin=PRIMARY_MARGIN)
+def primary_scan(
+    width: int, height: int, rows: list, *, background: int, gap_tolerance_px: int
+) -> list[Component]:
+    return scan_ink_components(
+        width,
+        height,
+        rows,
+        background=background,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=gap_tolerance_px,
+    )
 
 
-def secondary_scan(width: int, height: int, rows: list, *, background: int) -> list[Component]:
-    return scan_ink_components(width, height, rows, background=background, margin=SECONDARY_MARGIN)
+def secondary_scan(
+    width: int, height: int, rows: list, *, background: int, gap_tolerance_px: int
+) -> list[Component]:
+    return scan_ink_components(
+        width,
+        height,
+        rows,
+        background=background,
+        margin=SECONDARY_MARGIN,
+        gap_tolerance_px=gap_tolerance_px,
+    )

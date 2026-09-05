@@ -20,6 +20,14 @@ from common.contracts.errors import ContractError
 BACKGROUND = 230
 INK = 40
 
+# Explicit ints equal to conservation.py's retired module defaults
+# (DEFAULT_GAP_TOLERANCE_PX == 3 lived in structure.py;
+# DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX == 6 lived here). Every call below
+# that does not deliberately vary one of these passes it explicitly, so the
+# behaviour the old defaults produced is proven identical, never assumed.
+GAP_TOLERANCE_PX = 3
+REVIEW_PRIORITY_MIN_DIMENSION_PX = 6
+
 
 def _load_designator_run():
     """Load this directory's ``run.py`` by path, under a name of its own.
@@ -108,6 +116,8 @@ def test_ink_fully_covered_by_claimed_bounds_reconciles_with_no_residual():
             {"x": 0, "y": 0, "w": 20, "h": 20},
             {"x": 25, "y": 15, "w": 20, "h": 20},
         ],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result["residual_pixel_count"] == 0
     assert result["residual_components"] == []
@@ -132,6 +142,8 @@ def test_claimed_bounds_must_be_a_closed_integer_rectangle_inside_the_page(claim
             blank_rows(width, height),
             background=BACKGROUND,
             claimed_bounds=[claimed_bounds],
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+            review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
         )
 
 
@@ -147,6 +159,8 @@ def test_claimed_plus_residual_always_equals_total():
         rows,
         background=BACKGROUND,
         claimed_bounds=[{"x": 0, "y": 0, "w": 20, "h": 20}],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert (
         result["claimed_pixel_count"] + result["residual_pixel_count"]
@@ -186,6 +200,7 @@ def test_row_oriented_u13_reimplementation_is_equivalent_to_the_retired_pixel_se
                 background=BACKGROUND,
                 claimed_bounds=claims,
                 gap_tolerance_px=gap_tolerance_px,
+                review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
             ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
@@ -216,6 +231,7 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely
             background=BACKGROUND,
             claimed_bounds=claims,
             gap_tolerance_px=gap_tolerance_px,
+            review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
         ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
@@ -245,6 +261,7 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclai
             background=BACKGROUND,
             claimed_bounds=[],
             gap_tolerance_px=gap_tolerance_px,
+            review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
         ) == _legacy_reference(width, height, rows, [], gap_tolerance_px)
 
 
@@ -266,7 +283,13 @@ def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracl
     for step in range(9):
         paint_pixel(rows, 8 - step, step, INK)
     result = reconcile(
-        width, height, rows, background=BACKGROUND, claimed_bounds=[], gap_tolerance_px=0
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        claimed_bounds=[],
+        gap_tolerance_px=0,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result == _legacy_reference(width, height, rows, [], 0)
     first, second = result["residual_components"]
@@ -297,13 +320,20 @@ def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
                     background=BACKGROUND,
                     claimed_bounds=claims,
                     gap_tolerance_px=gap_tolerance_px,
+                    review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
                 ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
 def test_an_empty_page_reconciles_to_all_zeros():
     width, height = 30, 30
     result = reconcile(
-        width, height, blank_rows(width, height), background=BACKGROUND, claimed_bounds=[]
+        width,
+        height,
+        blank_rows(width, height),
+        background=BACKGROUND,
+        claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result == {
         "total_ink_pixel_count": 0,
@@ -326,6 +356,8 @@ def test_overlapping_claimed_bounds_do_not_double_count():
             {"x": 0, "y": 0, "w": 20, "h": 20},
             {"x": 3, "y": 3, "w": 20, "h": 20},  # heavily overlapping the first
         ],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result["claimed_pixel_count"] == 100
     assert result["residual_pixel_count"] == 0
@@ -341,6 +373,8 @@ def test_claimed_bounds_are_half_open_at_their_far_edge():
         rows,
         background=BACKGROUND,
         claimed_bounds=[{"x": 0, "y": 0, "w": 10, "h": 10}],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result["claimed_pixel_count"] == 0
     assert result["residual_pixel_count"] == 1
@@ -360,6 +394,8 @@ def test_an_uncovered_ink_band_produces_a_held_high_priority_residual():
         rows,
         background=BACKGROUND,
         claimed_bounds=[{"x": 0, "y": 0, "w": 20, "h": 20}],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
     assert result["residual_pixel_count"] == 100
     assert len(result["residual_components"]) == 1
@@ -372,7 +408,15 @@ def test_a_one_pixel_mark_outside_every_claim_is_accounted_not_absent():
     width, height = 20, 20
     rows = blank_rows(width, height)
     paint_pixel(rows, 15, 15, INK)
-    result = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[])
+    result = reconcile(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
+    )
     assert result["residual_pixel_count"] == 1
     assert len(result["residual_components"]) == 1
     only = result["residual_components"][0]
@@ -390,7 +434,15 @@ def test_a_two_line_marginal_note_is_accounted_alongside_a_one_pixel_mark():
     # component under the default gap tolerance.
     paint_rect(rows, 20, 20, 4, 1, INK)
     paint_rect(rows, 20, 22, 4, 1, INK)
-    result = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[])
+    result = reconcile(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
+    )
     assert result["residual_pixel_count"] == 1 + 8
     assert len(result["residual_components"]) == 2
     by_size = sorted(result["residual_components"], key=lambda c: c["pixel_count"])
@@ -410,6 +462,7 @@ def test_review_priority_threshold_only_reorders_never_excludes():
         rows,
         background=BACKGROUND,
         claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
         review_priority_min_dimension_px=1,
     )
     strict = reconcile(
@@ -418,6 +471,7 @@ def test_review_priority_threshold_only_reorders_never_excludes():
         rows,
         background=BACKGROUND,
         claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
         review_priority_min_dimension_px=1000,
     )
     assert len(lenient["residual_components"]) == len(strict["residual_components"]) == 1
@@ -442,8 +496,18 @@ def test_conservation_defaults_to_the_faintest_structural_sensitivity():
         background=BACKGROUND,
         claimed_bounds=[],
         margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
     )
-    sensitive = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[])
+    sensitive = reconcile(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        claimed_bounds=[],
+        gap_tolerance_px=GAP_TOLERANCE_PX,
+        review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
+    )
     assert primary["total_ink_pixel_count"] == 0
     assert sensitive["total_ink_pixel_count"] == 9
     assert SECONDARY_MARGIN < PRIMARY_MARGIN
@@ -460,6 +524,7 @@ def test_refuses_a_negative_review_priority_threshold():
             blank_rows(10, 10),
             background=BACKGROUND,
             claimed_bounds=[],
+            gap_tolerance_px=GAP_TOLERANCE_PX,
             review_priority_min_dimension_px=-1,
         )
 
@@ -472,6 +537,28 @@ def test_refuses_a_non_positive_claimed_rectangle():
             blank_rows(10, 10),
             background=BACKGROUND,
             claimed_bounds=[{"x": 0, "y": 0, "w": 0, "h": 5}],
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+            review_priority_min_dimension_px=REVIEW_PRIORITY_MIN_DIMENSION_PX,
+        )
+
+
+@pytest.mark.parametrize("missing", ["gap_tolerance_px", "review_priority_min_dimension_px"])
+def test_reconcile_refuses_a_missing_required_keyword(missing):
+    """Both thresholds lost their module default -- a caller that forgets one
+    now fails loudly with `TypeError`, never runs under an unreviewed value."""
+    kwargs = {
+        "gap_tolerance_px": GAP_TOLERANCE_PX,
+        "review_priority_min_dimension_px": REVIEW_PRIORITY_MIN_DIMENSION_PX,
+    }
+    del kwargs[missing]
+    with pytest.raises(TypeError):
+        reconcile(
+            10,
+            10,
+            blank_rows(10, 10),
+            background=BACKGROUND,
+            claimed_bounds=[],
+            **kwargs,
         )
 
 

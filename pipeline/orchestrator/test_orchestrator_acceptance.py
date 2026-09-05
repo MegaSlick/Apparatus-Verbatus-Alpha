@@ -1268,10 +1268,156 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # two independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r"; happy exited 0 and review
 # exited 3, and both roots agreed exactly.
+#
+# Section C re-pin (real-page robustness, units A-F on one tree). Three causes,
+# each named because each was measured rather than inferred:
+#
+#   1. `config/designator_grouping.toml` (unit A) now exists and is bound at run
+#      creation, so its digest is in every run's `config_digest` and in
+#      `sealed_config_digests` under `designator-grouping` (unit C).
+#   2. Every `conservation` artifact in every run gained
+#      `residual_component_count`, `residual_ink_fraction_bp`,
+#      `max_residual_components` and `residual_enumeration`, and its `reason` is
+#      three-valued rather than two (unit D, the page-residual bound).
+#   3. Every `structure-status` artifact gained `page_width`, `page_height` and
+#      the eight resolved `resolved_thresholds` integers its page executed under
+#      (unit F, SPEC_C 4.2).
+#
+# Causes 1 and 2 were measured on unit D's own tree at happy
+# 9c591cb105edf162bd69bd5112a59ec37ab10df14bd19893371001f6b0209e48, which this
+# section reproduced exactly here before adding cause 3 -- so the two halves of
+# this re-pin are attributable separately rather than as one lump. Cause 3 was
+# then isolated by running the fixture at that same tree and at this one and
+# diffing the two semantic inventories rather than predicting the difference:
+# happy changes exactly four entries (the two `structure-status` artifacts, the
+# Designator stage-seal that inventories them, and the Designator manifest) and
+# review exactly five (the same, plus review's second Designator stage-seal
+# attempt). No entry appears and none vanishes on either side.
+#
+# **The counts therefore hold, and were checked rather than assumed**: happy 96
+# and review 107, on the line above each digest assertion, in both roots. No
+# fixture page comes near `max_residual_components`, so no fixture run mints a
+# page-residual act and no artifact appears or disappears anywhere in this
+# section. Both digests below were measured twice, in two independent temporary
+# roots, at canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest`; happy exited 0 and review exited 3, and the two
+# roots agreed exactly. The review pin above was measured before unit A existed
+# and describes no tree in this section: it moved for cause 1 and 2 as well,
+# which unit D predicted and did not exercise.
+# Section C review round (the independent panel's four majors, applied). Both
+# digests move again, and both move for the same four causes -- named per pin
+# because each is a different set of bytes. The first three were not measured on
+# trees of their own; the fourth was, by the inventory diff below.
+#
+#   1. `config/designator_grouping.toml` gains `max_secondary_proposals`,
+#      `fallback_bands` and `fallback_overlap_bp`, so the file's digest changes
+#      and with it every run's `config_digest` and the `designator-grouping`
+#      entry in `sealed_config_digests`. This alone reaches every record that
+#      carries the run's configuration digest, which is why no per-cause
+#      inventory diff is offered here: unlike unit F's narrow change, this one
+#      is tree-wide by construction and a diff would say only that.
+#   2. Every `structure-status` record's `resolved_thresholds` gains the three
+#      fields `GroupingThresholds` gained (`fallback_overlap_px`,
+#      `max_secondary_proposals`, `fallback_bands`).
+#   3. Every `conservation` record gains `page_width`, `page_height` and
+#      `reconciliation_thresholds` -- what that reconciliation actually executed
+#      on and under, published on the record of the computation that executed it.
+#   4. Every enumerated page's geometry-coverage finding, built in
+#      `5_recensor/run.py::geometry_coverage_inputs`, gains `residual_enumeration`,
+#      `max_residual_components`, `page_residual_act_count` and `reason`, so the
+#      enumerated shape carries the same key set as the bounded-out one.
+#      `geometry_coverage_for` deep-copies that object into every Recensor review
+#      and recovery-request payload -- an accepted act's as much as a held act's --
+#      so both fixture scenarios carry the new bytes even though neither mints a
+#      page-residual act.
+#
+# Cause 4 was isolated rather than predicted, the way unit F's was: the fixture was
+# run at this tree and at this tree with those four keys removed, and the two
+# semantic inventories diffed. Happy changes exactly 15 entries and review exactly
+# 20 -- the Recensor reviews carrying the bytes (and, on review, the recovery
+# request), then every record that names one of those by digest: the Recensor stage
+# seals and manifest, the Archetypus records with their index, seal and manifest,
+# the Armarium export, its two manifest-entries, seal and manifest, the run-health
+# partition receipt, and on review the Designator region recropped from that
+# recovery request, with its stage seal and manifest. Unlike unit F's diff above,
+# one entry appears and one vanishes on each side, and both are the Armarium
+# bundle blob: it is content-addressed, so changed members give it a new filename
+# rather than adding a file. The totals are unmoved at 96 and 107 in the
+# counterfactual runs as well.
+#
+# **The counts hold and were checked rather than assumed**: happy 96 and review
+# 107, in both roots, on the line above each digest assertion. That is the number
+# this round had to watch, for two reasons now: no fixture page comes near
+# `max_residual_components`, so no page-residual act is minted, and no fixture
+# run configures a `secondary_proposer` chair, so the newly bounded secondary
+# pass publishes nothing either. A moved count would have meant an artifact
+# appeared or vanished for a reason nobody had named.
+#
+# Both digests below were measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` as its own tests call them; happy exited 0 and
+# review exited 3 in both roots, and the two roots agreed exactly.
+# Live reading seam re-pin (2026-09-02, the whole U1-U8 seam on one branch). Both
+# digests moved and neither count did: happy holds at 96 files / exit 0 and review
+# at 107 / exit 3. **One leaf caused it**, and the rest is content addressing doing
+# its job.
+#
+# The leaf is `payload.prompt.builder_sha256` in the Perlectio and lectio-prior
+# records: `prompts.py` digests its own whole module source (`_MODULE_SOURCE_DIGEST`,
+# `prompts.py:33`), and U3 registered the first real chair's prompt template in that
+# module, so the module's bytes moved and every prompt record now claims the new
+# digest. That is exactly what the D-7 entry above installed the field to do -- a
+# builder edit changes what the record says about itself rather than silently
+# invalidating an old record nothing could detect -- so this movement is the design
+# working, not a fixture regression. The fixture path itself is untouched: no live
+# chair runs here, and no reading, region, page, count or exit changed.
+#
+# Measured rather than argued. A fixture happy tree built at 857d325181~15 (before
+# U3) was compared file by file against one built at this commit: 96 files on both
+# sides, 25 of them differing in content, plus one Armarium bundle blob whose own
+# bytes moved to a new content-addressed name -- not because it is a renamed copy
+# of the old blob, but because its own contents changed. That blob was opened on
+# both sides too: it is a zip of 7 entries, same names and metadata on both sides,
+# and four of the entries differ -- EXPORT_MANIFEST.json (three `members[].sha256`
+# leaves and `self_hash`), sources.json and acts.jsonl (`*_ref.sha256` leaves), and
+# acts.sqlite (`acts.evidence_json` on both rows) -- every changed leaf inside it a
+# 64-hex digest, same as everywhere else in the tree. And 118 changed JSON leaves
+# across those 25 files. Every one of those 118 is
+# either a 64-hex digest or a content-addressed blob path -- four of them are
+# `builder_sha256` itself (two lectio-prior, two Perlectio) and the other 114 are
+# the cascade those four force: `self_hash`, the `*_ref` digests that name the
+# changed records, the dossier and audit-request digests computed over them, each
+# stage's `artifact_inventory`/`blob_inventory`, the stage manifests, the Archetypus
+# index, and the Recensor partition receipt. (The bundle blob is excluded from that
+# 25-file/118-leaf count by construction -- it appears as one name-only-old plus one
+# name-only-new -- so its own four changed entries are recorded here instead.) Not
+# one non-digest field changed anywhere in the tree, inside the bundle blob included. The two
+# `builder_sha256` values are the two trees' own `prompts.py` bytes
+# (932f3d48... before, ad623c7d... now), and 10330bc189 (U3) is the only commit in
+# that range that touches the file.
+#
+# Both literals below were measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers. The two roots agreed exactly on both
+# scenarios: happy exited 0 at 96 files, review exited 3 at 107 files. The snapshot
+# counts held, so they are re-stated below unchanged rather than re-pinned.
+# Merge re-pin (real-page robustness PR2 merged with the live reading seam,
+# PR #85). Both parent branches' causes are in this tree at once and neither
+# touches the other's bytes: Section C's `designator_grouping.toml` binding,
+# residual fields and structure-status geometry are orthogonal to the reading
+# seam's `prompts.py` module-source digest, and neither fixture scenario
+# exercises a live chair or a page-residual act, so nothing new is minted by
+# the merge itself. The counts therefore hold at happy 96 / exit 0 and review
+# 107 / exit 3 -- checked, not assumed, the same way as every prior re-pin --
+# and only the two digest literals move, because both parents' sealed bytes
+# are now in one tree. Measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest`; happy exited 0 and review exited 3 in both
+# roots, and the two roots agreed exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "0db78cb02752dba8eb2cb205913ccfd6af71cbe35b689e3d57c400538754f4b2"
-REVIEW_RUN_TREE_DIGEST = "b5e2a1757bbd3915a09c607855f7c1a1958d49e9da81de1f4d2a78fb16d3976d"
+HAPPY_RUN_TREE_DIGEST = "2a6d2373b486ecb0e0810f54655266bf28452c3162b09dd9b5e9923fe132972d"
+REVIEW_RUN_TREE_DIGEST = "6432086b117cfc0b58b3e9636a046a0e0e8007eec4de8f603102bb074454754f"
 
 
 def orchestrate(
@@ -1481,11 +1627,23 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
+        designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
-        formats_config=ROOT / "config" / "armarium_formats.toml",
+        # `config/armarium_formats.toml` until now, which is a file that has
+        # never existed: the Armarium's formats policy is `config/formats.toml`
+        # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, which
+        # is what `--formats-config` actually defaults to). Harmless while these
+        # mocked tests only assert argv presence, and wrong the moment one of
+        # them reads the file -- a stand-in that mirrors the argv surface must
+        # name the surface's own path.
+        formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,
+        # `invoke` reads this by name like every sibling flag; a stand-in that
+        # omits it is not the argv surface it mirrors (U7p; pr/14 broke CI by
+        # missing exactly this for a different flag).
+        placement_tier=None,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
         nuda_per_mille=0,
@@ -3526,6 +3684,33 @@ def _patch_conservation_with_extra_residual(
     same way `_reseal_with_extra_row` extends the seal — and returns the
     digest-checked reference a hold can then cite honestly, exactly as
     `pipeline/2_designator/run.py::hold_residual_act` does for a genuine one.
+
+    **Every field the added component moves is moved with it.** The record now
+    also carries the count, the bound and the enumeration (Section C's page
+    residual bound), and `common/stage.py` recomputes
+    `residual_component_count == len(residual_components)` on an enumerated
+    record. A helper that appended a component and left the count behind made
+    every test using it refuse for the record being internally inconsistent
+    rather than for the thing it was forged to test — the refusal arriving for
+    the wrong reason, which is the failure a pinned message exists to catch.
+    `residual_ink_fraction_bp` is recomputed by the producer's own round-half-up
+    rule for the same reason: nothing verifies it today, and a fixture that
+    quietly disagreed with the three integers beside it would be a lie waiting
+    for the first consumer that does.
+
+    That rule is spelled out below rather than imported from
+    `pipeline/2_designator/run.py::_residual_ink_fraction_bp`, deliberately and
+    on this file's own precedent (`NUDA_APPROVAL_SUBJECT` above). Importing the
+    Designator here would put `pipeline/2_designator` on `sys.path` and bind its
+    sibling module names -- `geometry`, `structure`, `grouping`,
+    `conservation` -- into `sys.modules` for every test in the session, which is
+    what "nothing here imports a stage" is for. The cost is named rather than
+    denied: this is a second copy of three lines of integer arithmetic, nothing
+    cross-checks the two rules, and a producer that changed its rounding without
+    changing this would forge records whose fraction disagrees with its own. It
+    is tolerable only because that field gates nothing and no consumer reads it;
+    the day one does, this helper imports the rule or the rule moves somewhere
+    both can reach.
     """
     conservation_id = artifact_id(DESIGNATOR, "conservation", page_id)
     relative_path = tree.artifact_path(DESIGNATOR, "conservation", conservation_id)
@@ -3539,6 +3724,12 @@ def _patch_conservation_with_extra_residual(
     components.append({"bounds": bounds, "pixel_count": pixel_count, "review_priority": "low"})
     record["payload"]["residual_pixel_count"] += pixel_count
     record["payload"]["total_ink_pixel_count"] += pixel_count
+    record["payload"]["residual_component_count"] = len(components)
+    residual = record["payload"]["residual_pixel_count"]
+    total = record["payload"]["total_ink_pixel_count"]
+    record["payload"]["residual_ink_fraction_bp"] = (
+        0 if total <= 0 else (2 * residual * 10_000 + total) // (2 * total)
+    )
     record["self_hash"] = self_hash(record)
     data = canonical_bytes(record)
     path.write_bytes(data)

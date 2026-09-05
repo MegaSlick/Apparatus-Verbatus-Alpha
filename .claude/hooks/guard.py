@@ -858,8 +858,8 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
 
     One past the five Tyrel named, and named here rather than folded in quietly. It is
     here because CLAUDE.md says it is: "`--no-verify` and `-c core.hooksPath=` are
-    blocked for Claude and open to everything else — hard rule 11. That is his way
-    around his own machinery; do not close it."
+    Tyrel's escape hatches, not the session's" — his way around his own machinery
+    under hard rule 11; do not close it.
     Dropping the check would have left that sentence false, and would have left one
     flag between a session and the credential scan, the branch refusal and the
     attribution check together.

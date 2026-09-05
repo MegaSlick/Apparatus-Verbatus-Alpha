@@ -25,6 +25,7 @@ from common.contracts.errors import ContractError
 
 BACKGROUND = 230
 INK = 40
+GAP_TOLERANCE_PX = 3  # structure.py's retired DEFAULT_GAP_TOLERANCE_PX
 
 
 def blank_rows(width: int, height: int, background: int = BACKGROUND) -> list[bytearray]:
@@ -54,7 +55,12 @@ def test_a_blank_page_has_no_components():
     width, height = 40, 30
     assert (
         scan_ink_components(
-            width, height, blank_rows(width, height), background=BACKGROUND, margin=PRIMARY_MARGIN
+            width,
+            height,
+            blank_rows(width, height),
+            background=BACKGROUND,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
         )
         == []
     )
@@ -65,7 +71,12 @@ def test_one_solid_rectangle_is_one_component_with_exact_geometry():
     rows = blank_rows(width, height)
     paint_rect(rows, 5, 5, 10, 6, INK)
     components = scan_ink_components(
-        width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     assert len(components) == 1
     assert components[0]["bounds"] == {"x": 5, "y": 5, "w": 10, "h": 6}
@@ -77,7 +88,12 @@ def test_a_single_ink_pixel_is_its_own_one_by_one_component():
     rows = blank_rows(width, height)
     paint_pixel(rows, 7, 9, INK)
     components = scan_ink_components(
-        width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     assert len(components) == 1
     assert components[0]["bounds"] == {"x": 7, "y": 9, "w": 1, "h": 1}
@@ -90,7 +106,12 @@ def test_two_well_separated_rectangles_are_two_components():
     paint_rect(rows, 2, 2, 8, 6, INK)
     paint_rect(rows, 40, 20, 8, 6, INK)
     components = scan_ink_components(
-        width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     assert len(components) == 2
     assert {c["bounds"]["x"] for c in components} == {2, 40}
@@ -104,7 +125,12 @@ def test_components_are_returned_sorted_by_top_then_left():
     paint_rect(rows, 2, 2, 4, 4, INK)  # top-left
     paint_rect(rows, 2, 40, 4, 4, INK)  # bottom-left
     components = scan_ink_components(
-        width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     origins = [(c["bounds"]["y"], c["bounds"]["x"]) for c in components]
     assert origins == sorted(origins)
@@ -210,8 +236,13 @@ def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
         "the fixture must actually miss the primary threshold"
     )
     paint_rect(rows, 5, 5, 3, 3, faint)
-    assert primary_scan(width, height, rows, background=BACKGROUND) == []
-    found = secondary_scan(width, height, rows, background=BACKGROUND)
+    assert (
+        primary_scan(width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX)
+        == []
+    )
+    found = secondary_scan(
+        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
+    )
     assert len(found) == 1
     assert found[0]["bounds"] == {"x": 5, "y": 5, "w": 3, "h": 3}
 
@@ -220,8 +251,10 @@ def test_primary_and_secondary_agree_on_clearly_inked_marks():
     width, height = 20, 20
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 2, 6, 6, INK)
-    assert primary_scan(width, height, rows, background=BACKGROUND) == secondary_scan(
-        width, height, rows, background=BACKGROUND
+    assert primary_scan(
+        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
+    ) == secondary_scan(
+        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
     )
 
 
@@ -302,29 +335,64 @@ def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused
 @pytest.mark.parametrize("width,height", [(0, 10), (10, 0), (-1, 10)])
 def test_refuses_non_positive_dimensions(width, height):
     with pytest.raises(ContractError, match=r"a -?\d+x\d+ page has no pixels to scan"):
-        scan_ink_components(width, height, [], background=BACKGROUND, margin=PRIMARY_MARGIN)
+        scan_ink_components(
+            width,
+            height,
+            [],
+            background=BACKGROUND,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
 
 
 def test_refuses_a_scanline_count_that_does_not_match_height():
     with pytest.raises(ContractError, match=r"expected 5 scanlines, got 3"):
-        scan_ink_components(10, 5, blank_rows(10, 3), background=BACKGROUND, margin=PRIMARY_MARGIN)
+        scan_ink_components(
+            10,
+            5,
+            blank_rows(10, 3),
+            background=BACKGROUND,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
 
 
 def test_refuses_a_scanline_whose_width_does_not_match():
     rows = blank_rows(10, 3)
     rows[1] = bytearray([BACKGROUND] * 5)
     with pytest.raises(ContractError, match=r"scanline 1 has width 5, expected 10"):
-        scan_ink_components(10, 3, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
+        scan_ink_components(
+            10,
+            3,
+            rows,
+            background=BACKGROUND,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
 
 
 def test_refuses_a_background_outside_the_8_bit_range():
     with pytest.raises(ContractError, match=r"background value 300 is not an 8-bit sample"):
-        scan_ink_components(5, 5, blank_rows(5, 5), background=300, margin=PRIMARY_MARGIN)
+        scan_ink_components(
+            5,
+            5,
+            blank_rows(5, 5),
+            background=300,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
 
 
 def test_refuses_a_negative_margin():
     with pytest.raises(ContractError, match=r"sensitivity margin -1 is negative"):
-        scan_ink_components(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=-1)
+        scan_ink_components(
+            5,
+            5,
+            blank_rows(5, 5),
+            background=BACKGROUND,
+            margin=-1,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
 
 
 def test_refuses_a_negative_gap_tolerance():
@@ -337,3 +405,25 @@ def test_refuses_a_negative_gap_tolerance():
             margin=PRIMARY_MARGIN,
             gap_tolerance_px=-1,
         )
+
+
+def test_scan_ink_components_refuses_a_missing_gap_tolerance_keyword():
+    """`gap_tolerance_px` lost its module default -- a caller that forgets it
+    now fails loudly with `TypeError`, never runs under an unreviewed value."""
+    with pytest.raises(TypeError):
+        scan_ink_components(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=PRIMARY_MARGIN)
+
+
+def test_label_components_refuses_a_missing_gap_tolerance_keyword():
+    with pytest.raises(TypeError):
+        label_components({(0, 0)})
+
+
+def test_primary_scan_refuses_a_missing_gap_tolerance_keyword():
+    with pytest.raises(TypeError):
+        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)
+
+
+def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
+    with pytest.raises(TypeError):
+        secondary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)

@@ -62,10 +62,10 @@ from __future__ import annotations
 import heapq
 from collections import defaultdict
 from functools import cmp_to_key
-from typing import Final, Iterator, TypedDict
+from typing import Iterator, TypedDict
 
 import geometry
-from structure import DEFAULT_GAP_TOLERANCE_PX, SECONDARY_MARGIN, _ink_threshold
+from structure import SECONDARY_MARGIN, _ink_threshold
 
 from common.contracts.errors import ContractError
 
@@ -77,10 +77,13 @@ class ReconciliationResult(TypedDict):
     residual_components: list[dict]
 
 
-# A residual component at or above this many pixels, on either axis, is
-# reviewed first -- a priority ordering, not a filter. See the module
-# docstring: nothing here may become an inclusion test.
-DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX: Final = 6
+# A residual component at or above `review_priority_min_dimension_px`, on
+# either axis, is reviewed first -- a priority ordering, not a filter. See the
+# module docstring: nothing here may become an inclusion test. The threshold
+# used to carry a module default here; it no longer does, for the same reason
+# as every other geometric default this module and its siblings lost (SPEC_C
+# section 2): `run.py` resolves it per page from a sealed basis-point config
+# and passes the integer in, and a caller that forgets fails loudly.
 
 
 class _Run(TypedDict):
@@ -311,8 +314,8 @@ def reconcile(
     background: int,
     claimed_bounds: list[geometry.Bounds],
     margin: int = SECONDARY_MARGIN,
-    gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
-    review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
+    gap_tolerance_px: int,
+    review_priority_min_dimension_px: int,
 ) -> ReconciliationResult:
     """Reconcile one page's ink against the crops actually cut on it.
 

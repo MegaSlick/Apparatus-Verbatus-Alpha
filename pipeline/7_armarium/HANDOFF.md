@@ -48,6 +48,68 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
+## Real ingress
+
+The Armarium opens through `open_stage_context`, which decides the fixture or
+real route from one read of `run.json` and hands this stage the context that
+route produces; it no longer calls `open_context` directly. `expected_acts`,
+`page_census`, and every other reader that walks sealed upstream artifacts by
+stage and kind already work unchanged on either route — nothing about how the
+Armarium accounts for pages and acts is fixture-shaped.
+
+**The one thing that is fixture-shaped is the manifest's run identity, and it is
+now two closed shapes rather than one.** A fixture run's export names
+`fixture_id`; a real run's names `submission_id` — `common.stage.submission_identity`'s
+filename-ledger self-hash, which every real source row carries and which
+`pipeline/1_exemplar/run.py`'s ledger check already proves reproduces the
+ledger that admitted the submission. `ArmariumProjection` carries both fields,
+exactly one of them non-blank; `_validate_projection` refuses a projection
+naming both or neither, and the resealed-manifest verifier
+(`_verify_manifest_field_closure`) refuses the same shape a second time from
+package-supplied JSON that never went through the projection at all. **The
+field is never overloaded**: stamping a submission's identity into the field
+named `fixture_id` would travel in every export forever and read as a fixture
+run, which is exactly the corpus-identity confusion GLOSSARY's "one concept per
+word" rule exists to prevent. `run.py` computes which shape applies once, from
+`submission_identity(context.run)`, before it ever touches `context.fixture` —
+so the refusing fixture accessor is never asked a question on the route where
+it would refuse.
+
+**The gap above is closed.** `bundle.py::_expected_run_binding` now reads
+whichever identity key the sealed `export` artifact's payload actually carries
+— `fixture_id` or `submission_id`, refusing by name if it carries both or
+neither — instead of hardcoding `fixture_id`. `test_bundle_publish.py` pins a
+real-shaped export payload publishing clean and a both-named payload being
+refused by name.
+
+**The manifest schema id is deliberately not versioned to this shape.** The
+real run identity travels under the existing `EXPORT_MANIFEST_SCHEMA`
+(`armarium-export-manifest.v3`) rather than a new schema id, unlike the
+clustered act-partition claim a few lines below, which does get its own id
+(`.v4`) with an id/shape refusal (`_verify_manifest_field_closure`, the
+`expected_schema` check). The two cases differ in what a consumer needs to
+decide first: a clustered manifest changes the *denominator* — a reader must
+know which counting convention a package uses before it can interpret
+`expected_count` at all, so the id has to carry that decision before the
+reader opens `claims`. A real-run manifest changes only *which run this
+package is,* the way a different `fixture_id` value already did before this
+unit — but it changes it by a shape, not a value: every v3 package before
+this unit carried `run.fixture_id` unconditionally, and a reader doing
+`manifest["run"]["fixture_id"]` worked on all of them. After this unit a v3
+package may instead carry `run.submission_id` with no `fixture_id` key at
+all, and that same unconditional read now `KeyError`s. This is latent, not a
+break: a repo-wide search finds no reader of `run.fixture_id` outside the
+Armarium's own tests, and no real run reaches the Armarium today. A consumer
+that keys on the schema id and then reads the run block must branch on which
+identity key is present (`"submission_id" in run` vs `"fixture_id" in run`)
+before it may read either — the two-shape union is closed, but it is not
+uniform, and the id alone does not say which shape a given package has. A
+fourth schema id would let a consumer learn that from the id instead of by
+opening the block first. Any future schema-versioning ruling belongs to
+Tyrel under the boundary this project's `CLAUDE.md` sets for governed
+change; this paragraph records the reasoned default — and the real risk it
+accepts — rather than presupposing that ruling.
+
 ## Export contract
 
 The export payload contains the aggregate result, the expected-act count, `delivered`
