@@ -3235,6 +3235,10 @@ def _verify_minted_act_rows(
     none, so it passes "the structural pass" instead -- a malformed real-mode
     row must never be told it "extends the denominator beyond the fixture",
     the exact sentence a real run never had a fixture to be measured against.
+    Every refusal here therefore says `beyond` and none names a fixture in its
+    own words: the neither-held-nor-proposed refusal used to open "is not
+    declared in the sealed fixture", which told a real operator to go and look
+    at a declaration their run does not have.
 
     Two units the Designator may add beyond what the fixture declares, and no
     others. Both exist for GOALS 1's "a missed act is worse than a poorly read
@@ -3247,6 +3251,16 @@ def _verify_minted_act_rows(
     nothing read it, so it may not carry a continuation either, and its identity
     must recompute from facts a reviewer can check against the conservation
     record that found it.
+
+    That identity binds page, class and rectangle alone (`act_bindings`), so
+    re-deriving it proves nothing about the `page_ordinal` and `act_key` the
+    seal row *names* -- the same gap `_verify_structural_act_row` closes for a
+    structural row, and stages 3-7 index and join by those named fields rather
+    than by identity. A residual row naming another page's ordinal would file
+    its review item under a page whose ink it is not. `hold_residual_act`
+    records both beside the rectangle, so both are recomputable, and both are
+    held to the row here. The two page-wide classes below already do the same
+    against their own records.
 
     A **page-fallback** act is the predetermined crop grid cut over a page the
     structure pass found no ink on (Tyrel, 2026-08-11: "If the designator sees
@@ -3288,9 +3302,10 @@ def _verify_minted_act_rows(
             continue
         if row["outcome"] != "held":
             raise FatalAccounting(
-                f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
-                f"'proposed'; the only units that may extend the denominator beyond {beyond} "
-                "are a conservation residual, a page-residual hold, and a page-fallback act"
+                f"act {act_id} extends the denominator beyond {beyond} and is neither 'held' "
+                f"nor 'proposed'; the only units that may extend the denominator beyond "
+                f"{beyond} are a conservation residual, a page-residual hold, and a "
+                "page-fallback act"
             )
         hold = holds_by_subject.get(act_id)
         if hold is None:
@@ -3319,6 +3334,17 @@ def _verify_minted_act_rows(
                 f"act {act_id} does not verify against the residual class and bounds its own "
                 f"hold record names: {error}"
             ) from error
+        if payload.get("page_ordinal") != row["page_ordinal"]:
+            raise FatalAccounting(
+                f"act {act_id}'s seal row names page_ordinal {row['page_ordinal']!r}, but its "
+                f"own hold record names page_ordinal {payload.get('page_ordinal')!r}; the two "
+                "must agree"
+            )
+        if payload.get("act_key") != row["act_key"]:
+            raise FatalAccounting(
+                f"act {act_id}'s seal row names act_key {row['act_key']!r}, but its own hold "
+                f"record names act_key {payload.get('act_key')!r}; the two must agree"
+            )
         _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
 
 

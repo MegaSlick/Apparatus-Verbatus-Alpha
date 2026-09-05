@@ -817,6 +817,67 @@ def test_a_malformed_real_minted_row_never_mentions_the_fixture(real_root):
     assert "beyond the structural pass" in str(refusal.value)
 
 
+def test_a_residual_row_naming_the_wrong_page_ordinal_is_refused_by_name(real_root):
+    """A residual's identity binds page, class and rectangle -- not its ordinal.
+
+    `act_bindings` puts nothing about `page_ordinal` into the act id, so a
+    residual row could name any page's ordinal and still re-derive perfectly
+    against the rectangle its own hold names. Stages 3-7 index and join by the
+    named field, so the review item would arrive filed under a page whose ink
+    it is not. `hold_residual_act` records the ordinal beside the rectangle;
+    the two must agree.
+    """
+    designator = _Designator(real_root)
+    designator.propose(1, designator.rectangle(1))
+    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
+    designator.rows[-1]["page_ordinal"] = 1
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="own hold record names page_ordinal 2"):
+        expected_acts(context)
+
+
+def test_a_residual_row_naming_a_foreign_act_key_is_refused_by_name(real_root):
+    """The other field the identity does not bind, and the one a reviewer reads.
+
+    The same hole as the ordinal above: `act_key` is what a reviewer and every
+    downstream join see, and a row is free to name one its own hold never
+    recorded.
+    """
+    designator = _Designator(real_root)
+    designator.propose(1, designator.rectangle(1))
+    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
+    designator.rows[-1]["act_key"] = "residual:2:41"
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="own hold record names act_key 'residual:2:0'"):
+        expected_acts(context)
+
+
+def test_a_real_minted_row_in_no_admitted_outcome_is_told_about_the_structural_pass(real_root):
+    """The third refusal in the minted-row check said "the sealed fixture" too.
+
+    A minted row whose outcome is neither 'held' nor 'proposed' -- `excluded`
+    here, which is in the Designator's own vocabulary -- was told it "is not
+    declared in the sealed fixture", naming a declaration a real run does not
+    have and sending an operator to look for it. The other two refusals in this
+    function already say `beyond`; this one now does as well.
+    """
+    designator = _Designator(real_root)
+    designator.propose(1, designator.rectangle(1))
+    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
+    designator.rows[-1]["outcome"] = "excluded"
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting) as refusal:
+        expected_acts(context)
+    assert "extends the denominator beyond the structural pass and is neither" in str(refusal.value)
+    assert "fixture" not in str(refusal.value)
+
+
 # --- the binding recheck ----------------------------------------------------------
 
 
