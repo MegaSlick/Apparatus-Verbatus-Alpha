@@ -179,11 +179,10 @@ def churro_layout_prompt() -> dict[str, str]:
     report, or which way to resolve anything it finds (GOVERNANCE 10).
     """
     carried = churro_prompt()
-    system = (
-        "You are an expert in diplomatic transcription of historical documents from various "
-        "languages. Your task is to extract the full text from a given page. Report the "
-        "transcription as the JSON object described in the instructions, and output nothing "
-        "outside it."
+    replaced_sentence = " Only output the transcribed text between <output> and </output> tags."
+    layout_sentence = (
+        " Report the transcription as the JSON object described in the instructions, and "
+        "output nothing outside it."
     )
     replaced_clause = (
         "6. Output the OCR result in the following format:\n\n"
@@ -201,17 +200,33 @@ def churro_layout_prompt() -> dict[str, str]:
         '[{"box_1000": [x0, y0, x1, y1], "text": "..."}]}\n\n'
         "If the page holds no text, report an empty blocks list.\n\n"
     )
-    if replaced_clause not in carried["user"]:
-        # The carried bytes are the thing being modified. If the clause this
-        # function replaces is not in them, the carry moved and this is no
-        # longer the modified-carry it documents: refuse rather than send a
-        # prompt whose provenance the docstring above describes wrongly.
-        raise SchemaRefusal(
-            "the carried Churro prompt no longer contains the output-format clause "
-            "churro_layout_prompt replaces; re-derive the modified carry against "
-            "churro_prompt before sending it"
-        )
-    return {"system": system, "user": carried["user"].replace(replaced_clause, layout_clause)}
+    # Both halves are derived from the carry by the same replace-and-refuse, and
+    # neither is spelled out again here. The system message used to be written
+    # as a whole new string beside the carried one: the guard below then proved
+    # the provenance of the user clause and asserted it for the system sentence,
+    # so an edit to `churro_prompt`'s system string -- a different transcription
+    # instruction, a reworded role -- would have left the live prompt silently
+    # carrying the old one while this function's docstring went on calling it a
+    # modified carry of the current bytes. One rule, applied twice, and each
+    # half refuses by name if the sentence it replaces has moved.
+    for what, clause, source in (
+        ("system message's output-format sentence", replaced_sentence, carried["system"]),
+        ("output-format clause", replaced_clause, carried["user"]),
+    ):
+        if clause not in source:
+            # The carried bytes are the thing being modified. If the text this
+            # function replaces is not in them, the carry moved and this is no
+            # longer the modified-carry it documents: refuse rather than send a
+            # prompt whose provenance the docstring above describes wrongly.
+            raise SchemaRefusal(
+                f"the carried Churro prompt no longer contains the {what} "
+                "churro_layout_prompt replaces; re-derive the modified carry against "
+                "churro_prompt before sending it"
+            )
+    return {
+        "system": carried["system"].replace(replaced_sentence, layout_sentence),
+        "user": carried["user"].replace(replaced_clause, layout_clause),
+    }
 
 
 def churro_generation() -> dict[str, int]:

@@ -235,6 +235,19 @@ def test_the_live_layout_prompt_is_the_trained_carry_with_only_its_format_replac
     assert live["user"].endswith(tail)
     assert "ſ" in live["user"] and "а" in live["user"]
 
+    # The system message is the same modified carry as the user message: the two
+    # sentences before the format sentence are the carried bytes, character for
+    # character, and only the third is this repository's. Pinned so that an edit
+    # to `churro_prompt`'s system string cannot leave the live prompt quietly
+    # carrying yesterday's role description.
+    system_head = carried["system"][: carried["system"].index(" Only output the transcribed")]
+    assert system_head
+    assert live["system"].startswith(system_head)
+    assert live["system"] == system_head + (
+        " Report the transcription as the JSON object described in the instructions, and "
+        "output nothing outside it."
+    )
+
     # The two replaced instructions are gone from the live bytes, and the shape
     # this repository declares is what stands in their place.
     assert "<output>" not in live["user"]
@@ -255,15 +268,31 @@ def test_the_live_prompt_keeps_the_two_message_framing_the_serving_seam_dispatch
     assert all(value.strip() for value in churro_layout_prompt().values())
 
 
-def test_the_layout_prompt_refuses_to_send_if_the_carry_it_modifies_has_moved(monkeypatch):
-    """The docstring's provenance claim is checked, not asserted.
+@pytest.mark.parametrize(
+    ("moved", "expected"),
+    [
+        ("system", "no longer contains the system message's output-format sentence"),
+        ("user", "no longer contains the output-format clause"),
+    ],
+)
+def test_the_layout_prompt_refuses_to_send_if_the_carry_it_modifies_has_moved(
+    monkeypatch, moved, expected
+):
+    """The docstring's provenance claim is checked, not asserted -- for both halves.
 
-    If the clause this function replaces is not in the carried bytes, the carry
+    If the text this function replaces is not in the carried bytes, the carry
     moved and this is no longer the modified carry it documents -- so it refuses
-    rather than sending a prompt whose provenance reads false.
+    rather than sending a prompt whose provenance reads false. Both messages are
+    derived by that one rule, so both are checked here: the system half used to
+    be written out as a whole new string, which asserted a provenance it never
+    verified and would have gone on sending the old wording after an edit to
+    `churro_prompt`.
     """
-    monkeypatch.setattr(feeding, "churro_prompt", lambda: {"system": "s", "user": "no such clause"})
-    with pytest.raises(SchemaRefusal, match="no longer contains the output-format clause"):
+    carried = feeding.churro_prompt()
+    monkeypatch.setattr(
+        feeding, "churro_prompt", lambda: {**carried, moved: "nothing this function replaces"}
+    )
+    with pytest.raises(SchemaRefusal, match=expected):
         feeding.churro_layout_prompt()
 
 
