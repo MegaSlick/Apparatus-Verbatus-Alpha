@@ -1,5 +1,7 @@
 #!/bin/sh
 # Full local/CI gate. CI supplies its own ref-aware history scan once.
+# `--parallel` hands the suite to four xdist workers, one file at a time per
+# worker. The local gate stays serial unless the caller asks.
 
 set -eu
 [ -x /usr/bin/git ] || {
@@ -10,13 +12,31 @@ root=$(/usr/bin/git rev-parse --show-toplevel 2>/dev/null) ||
   { echo "check-all: not inside a Git repository" >&2; exit 1; }
 cd "$root"
 
-mode=local
-if [ "${1:-}" = "--ci" ] && [ "$#" -eq 1 ]; then
-  mode=ci
-elif [ "$#" -ne 0 ]; then
-  echo "usage: sh .githooks/check-all.sh [--ci]" >&2
+check_all_usage() {
+  echo "usage: sh .githooks/check-all.sh [--ci] [--parallel]" >&2
   exit 2
-fi
+}
+
+# Each flag at most once, in either order. Anything else is a usage error: a
+# gate that silently ignores a misspelled flag runs a different check than the
+# caller asked for and still reports green.
+mode=local
+parallel=no
+for check_all_argument in "$@"; do
+  case "$check_all_argument" in
+    --ci)
+      [ "$mode" = local ] || check_all_usage
+      mode=ci
+      ;;
+    --parallel)
+      [ "$parallel" = no ] || check_all_usage
+      parallel=yes
+      ;;
+    *)
+      check_all_usage
+      ;;
+  esac
+done
 
 # The gate defines its Python and uv environment. Inherited overrides can
 # remove assertions, inject import roots or pytest plugins, redirect uv to a
@@ -170,7 +190,20 @@ if [ "$mode" = local ]; then
   "$frozen_python" .githooks/check_ingress.py --worktree
 fi
 
-"$frozen_python" -m pytest
+# The suite, serially by default. `--parallel` names the plugin, the worker
+# count, and the distribution on the command line and takes nothing from the
+# environment: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 is exported above and
+# PYTEST_ADDOPTS/PYTEST_PLUGINS are unset, so xdist is inert in every run that
+# does not ask for it here, and no caller can widen or narrow this one.
+# Four workers, fixed rather than derived from the machine: the census this
+# gate reports must not depend on how many cores the runner happens to have.
+# `--dist loadfile` keeps every test in a file on one worker, so a module-level
+# fixture is built once per file exactly as it is serially.
+if [ "$parallel" = yes ]; then
+  "$frozen_python" -m pytest -p xdist -n 4 --dist loadfile
+else
+  "$frozen_python" -m pytest
+fi
 
 # `--strict` makes an unreachable advisory service or unresolvable requirement
 # fail; an audit that could not run is not evidence of clean dependencies.
