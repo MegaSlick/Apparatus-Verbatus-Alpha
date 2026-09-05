@@ -710,13 +710,19 @@ def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(wh
 def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     """Every stage after the Designator reads a tree whose acts a model drew.
 
-    The export is **held for review, not delivered**, and the shortfall is the
-    one the live-seam suite measures over declared acts: Churro publishes no
-    native layout, so it never attaches by geometry live, and two witnesses of
-    a floor of three count. Nothing about that is a fact about the structure
-    chair — every act it proposed was read — which is the point of asserting it
-    here as well: replacing declared acts with proposed ones moved the
-    denominator, not the coverage.
+    The export is **held for review, not delivered**, and nothing about the
+    shortfall is a fact about the structure chair — every act it proposed was
+    read — which is the point of asserting it here as well: replacing declared
+    acts with proposed ones moved the denominator, not the coverage.
+
+    The shortfall itself is the scripted Churro body, not the Churro chair. This
+    module answers it in the trained `<output>` envelope, which carries no
+    geometry, so it never attaches and two witnesses of a floor of three count.
+    Since Unit 12 the chair can be asked for block geometry and attach by its
+    own boxes; the live-seam suite over declared acts does that and delivers.
+    Keeping the envelope here is deliberate: this suite is about which acts
+    exist, and a witness floor pinned to a shape it does not vary keeps that
+    question separate from how many witnesses reach them.
     """
     assert whole_run.tail == {
         "pipeline/5_recensor/run.py": EXIT_HELD,
