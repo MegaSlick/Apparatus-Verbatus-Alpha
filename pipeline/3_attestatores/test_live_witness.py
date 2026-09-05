@@ -1050,7 +1050,15 @@ def test_captured_page_attempt_refuses_an_unsupported_adapter_name(tmp_path: Pat
 
 
 def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
-    """One integration point through the real churro.v1 adapter, not a stub."""
+    """One integration point through the real churro.v1 adapter, not a stub.
+
+    The trained `<output>` envelope, which stays fully legal on the live path:
+    the live parser is `"churro"` and reads both of this chair's shapes, so a
+    model that ignores the layout clause still reads and retains exactly as
+    before. The bytes ride along as `observation_payload` for both page-scoped
+    adapters now -- `run.py` derives the page's block geometry from them, and
+    withholding them would hand `churro.observe` the joined page text instead.
+    """
     response, _, blob_store = _read_one(
         tmp_path,
         script=ScriptedAnswer(content="<output>real churro text</output>", finish_reason="stop"),
@@ -1064,7 +1072,68 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     assert attempt.outcome == "read"
     assert attempt.native_payload == "real churro text"
     assert attempt.native_capture["adapter"] == "churro.v1"
-    assert attempt.observation_payload is None  # Chandra-only; run.py never reads it for Churro
+    assert attempt.native_capture["parse"]["parser"] == "churro"
+    assert attempt.observation_payload == b"<output>real churro text</output>"
+    assert blob_store.has(response.response_sha256)
+
+
+def test_captured_page_attempt_real_churro_adapter_reads_the_wire_contract(tmp_path: Path):
+    """Churro live: the shape `feeding.churro_layout_prompt` asks for is a reading.
+
+    The page text is the block texts joined, and the bytes ride along as
+    `observation_payload` so `run.py` can derive this chair's own block geometry
+    from the response it actually returned -- which is what lets Churro attach to
+    an act at all.
+    """
+    body = (
+        '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
+        '{"box_1000": [110, 85, 890, 375], "text": "ACT ONE"}, '
+        '{"box_1000": [110, 470, 890, 835], "text": "ACT TWO"}]}'
+    )
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop"))
+    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == "ACT ONE\nACT TWO"
+    assert attempt.native_capture["parse"] == {
+        "state": "parsed",
+        "parser": "churro",
+        "text": "ACT ONE\nACT TWO",
+    }
+    assert attempt.observation_payload == body.encode("utf-8")
+
+
+def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(tmp_path: Path):
+    """A JSON body nobody asked this chair for is a named surprise, not a failure.
+
+    The state Chandra has had since it was written, now reachable for Churro:
+    the parser ran, read the whole response and could name no shape it knows.
+    The bytes are retained before the parse, so the refusal loses nothing.
+    """
+    response, _, blob_store = _read_one(
+        tmp_path,
+        script=ScriptedAnswer(
+            content='{"schema": "some-other-contract.v9", "pages": []}', finish_reason="stop"
+        ),
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+    )
+
+    assert attempt.outcome == "failed"
+    assert attempt.native_capture["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "churro",
+        "outcome": "unverified-response-schema",
+    }
+    assert attempt.native_capture["stop_reason"] == "partial-parse-unrecognized-shape"
+    assert "unverified-response-schema" in attempt.reason
     assert blob_store.has(response.response_sha256)
 
 

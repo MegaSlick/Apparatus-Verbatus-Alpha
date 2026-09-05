@@ -2404,12 +2404,13 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
     assert all(row["span"] is None for row in page_attachments)
 
 
-def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
+def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     """One sealed-page read per act view's own derivations (CodeRabbit round 1, T8).
 
-    `publish_attempt` needs the sealed page's size twice for a Chandra act
+    `publish_attempt` needs the sealed page's size twice for a page-scoped act
     view: once to convert the wire contract's normalized boxes
-    (`chandra.observe`), and once for the page-edge overshoot split. It called
+    (`chandra.observe`, `churro.observe`), and once for the page-edge overshoot
+    split. It called
     `_sealed_source_page` at both, and that function reads the whole page blob
     and re-digests it every time -- two full reads and two SHA-256 passes per
     act view, for one number that cannot change between them. The size is now
@@ -2470,8 +2471,13 @@ def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     )
 
     assert attestatores.main() == 0
-    # Six act views: two acts times three chairs. `attestator_1` is the
-    # fixture's Chandra chair, so exactly its two views need the sealed size at
-    # all, and each needs it once. A ceiling alone would pass vacuously if no
-    # view had reached the derivation.
-    assert sorted(reads_per_view) == [0, 0, 0, 0, 1, 1]
+    # Six act views: two acts times three chairs. Both PAGE-SCOPED chairs need
+    # the sealed size -- `attestator_1` (Chandra) and, since Unit 12,
+    # `attestator_3` (Churro), whose adapter now reports geometry and whose
+    # declared fixture observations therefore get the same page-edge check
+    # Chandra's have always had. The act-scoped chair needs it for neither
+    # derivation. What this test protects is unchanged and is the reason it
+    # counts rather than asserts a ceiling: ONE read per view that needs it,
+    # never one per derivation, and never zero because no view reached the
+    # derivation at all.
+    assert sorted(reads_per_view) == [0, 0, 1, 1, 1, 1]

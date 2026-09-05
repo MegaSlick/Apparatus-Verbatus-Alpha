@@ -98,10 +98,35 @@ CHANDRA_BODY = CHANDRA_PAGE_ONE
 # mode rather than the asked-for contract would look like on the wire. It is
 # retained and refused by name, never read.
 CHANDRA_UNRECOGNIZED_BODY = '{"pages": [{"markdown": "a real Chandra body, not the contract"}]}'
+# Churro's trained `<output>` envelope, which stays fully legal after Unit 12:
+# a model that ignores the layout clause reads, retains and aligns exactly as it
+# did, and lands unattached. Most of this module still scripts it for that
+# reason -- it is the likely first real outcome, not a retired shape.
 CHURRO_PAGE_ONE = (
     "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 )
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+# Churro's answer in the shape `feeding.churro_layout_prompt` asks for. The
+# boxes are DERIVED here rather than copied from `CHANDRA_PAGE_ONE`: Churro's
+# blocks are Churro's own testimony, and two chairs reporting identical
+# rectangles would make the geometry look like one reading counted twice. They
+# convert, on this fixture's 200x260 pages, to {22,22 156x76} and
+# {22,122 156x96}, which sit inside a1's sealed (20,20 160x80) and a2's sealed
+# (20,120 160x100) with positive area -- so each block overlaps the act it
+# transcribes and nothing else.
+CHURRO_WIRE_PAGE_ONE = (
+    '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
+    '{"box_1000": [110, 85, 890, 375], "text": "SYNTHETIC ACT ONE alpha beta"}, '
+    '{"box_1000": [110, 470, 890, 835], "text": "SYNTHETIC ACT TWO delta epsiIon zeta eta"}]}'
+)
+# The continuation page: a2's tail alone, at (20,20 160x60) sealed, and
+# {22,22 156x60} derived from [110, 85, 890, 300] on a 200x260 page.
+CHURRO_WIRE_PAGE_TWO = (
+    '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
+    '{"box_1000": [110, 85, 890, 300], "text": "SYNTHETIC ACT TWO delta epsiIon zeta eta"}]}'
+)
+# A JSON body in no shape this chair was asked for.
+CHURRO_UNRECOGNIZED_BODY = '{"transcription": "a native Churro mode, not the contract"}'
 # DAI is act-scoped and its parser is plain UTF-8 text
 # (`feeding.validate_dai_text`), so its answers are one per act.
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta"
@@ -1685,6 +1710,165 @@ def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tm
 
 
 # =========================== the derived anchor (R4) ==========================
+
+
+def test_a_served_churro_answering_the_wire_contract_attaches_by_its_own_geometry(
+    live_run, tmp_path
+):
+    """Unit 12's one claim, at this stage's own boundary.
+
+    Churro is asked for block geometry and answers with it. Its blocks are its
+    own -- derived boxes, not Chandra's rectangles restated -- and each overlaps
+    the sealed proposal of the act it transcribes, so `attached` becomes true on
+    the same rule Chandra's does and the basis is `geometric-overlap`. Nothing
+    selects among witnesses: two chairs independently overlap the same rectangle
+    and both say so (GOVERNANCE 3, hard rule 8).
+
+    `comparable` needs `attached` and an aligned status, and Churro's alignment
+    is still computed against the anchor derived from Chandra's response. That
+    dependency is real and is recorded in the HANDOFF: from here on the floor is
+    met with Chandra's anchor inside it. What this test pins is that the
+    GEOMETRY is Churro's own.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"] = [
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    page_one = page_records(tree)[(1, "attestator_3")]["payload"]
+    # The retained page text is the block texts joined, and the geometry is
+    # `native` -- not the `presented` echo routing and coverage exclude.
+    assert page_one["payload"] == (
+        "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+    )
+    assert [box["bounds_source"] for box in page_one["observed"]] == ["native", "native"]
+    assert [box["bounds"] for box in page_one["observed"]] == [
+        {"x": 22, "y": 22, "w": 156, "h": 76},
+        {"x": 22, "y": 122, "w": 156, "h": 96},
+    ]
+    # Churro's own rectangles, not Chandra's restated.
+    chandra_boxes = [
+        box["bounds"] for box in page_records(tree)[(1, "attestator_1")]["payload"]["observed"]
+    ]
+    assert [box["bounds"] for box in page_one["observed"]] != chandra_boxes
+    assert page_one["native_capture"]["parse"]["parser"] == "churro"
+
+    entries = attachment_entries(tree)
+    [churro_a1] = entries["a1"]["attestator_3"]
+    assert churro_a1["attached"] is True
+    assert churro_a1["attachment_basis"] == "geometric-overlap"
+    assert churro_a1["alignment"]["status"] == "aligned"
+    assert churro_a1["comparable"] is True
+    assert churro_a1["span"] is not None
+
+
+def test_a_churro_continuation_page_wire_body_attaches_and_carries_no_act_anchor(
+    live_run, tmp_path
+):
+    """The boundary §6 of the design note declines to take through the whole run.
+
+    The same question already pinned for Chandra, one page witness later: a
+    wire body on a continuation page attaches by geometry and must record
+    exactly `{"status": "unaligned", "reason": "continuation-page-no-act-anchor"}`
+    -- the anchor is derived from the act's own primary page, so no comparison
+    view exists here even when the geometry attaches.
+
+    Checked while writing this, because the note left it open: the Perlector and
+    the Recensor *do* model a chair with entries on two pages.
+    `5_recensor/run.py::act_attachment_facts` folds them with
+    `_merge_page_attachment_fact`, keeping the strongest single page's row
+    rather than OR-ing booleans across pages, and Chandra already exercises that
+    fold. So the offline e2e keeping Churro's page 2 in the trained envelope is
+    more conservative than it needs to be, not a gap that hides a defect -- and
+    this test is where the wire body on a continuation page is measured.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"] = [
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    primary, continuation = sorted(
+        attachment_entries(tree)["a2"]["attestator_3"], key=lambda entry: entry["page_ordinal"]
+    )
+    assert primary["page_ordinal"] == 1 and continuation["page_ordinal"] == 2
+    assert primary["attached"] is True and primary["alignment"]["status"] == "aligned"
+    assert continuation["attached"] is True
+    assert continuation["attachment_basis"] == "geometric-overlap"
+    assert continuation["alignment"] == {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    assert continuation["comparable"] is False and continuation["span"] is None
+
+
+def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
+    live_run, tmp_path
+):
+    """A named surprise, not a parse failure and not a silent reading.
+
+    Before Unit 12 a Churro body could reach only `parsed` or `failed`; a JSON
+    answer in the chair's own native mode would have been filed as unparseable
+    XML. It is now the state Chandra has: the parser ran, read the whole
+    response and could name no shape it knows, and the bytes were retained
+    before it ran.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"] = [
+        ScriptedAnswer(content=CHURRO_UNRECOGNIZED_BODY, finish_reason="stop"),
+        ScriptedAnswer(content=CHURRO_UNRECOGNIZED_BODY, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    record = page_records(tree)[(1, "attestator_3")]
+    payload = record["payload"]
+    assert record["outcome"] == "failed"
+    assert payload["native_capture"]["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "churro",
+        "outcome": "unverified-response-schema",
+    }
+    assert payload["native_capture"]["stop_reason"] == "partial-parse-unrecognized-shape"
+    assert (
+        tree.read_bytes(payload["native_capture"]["raw_response_ref"]["relative_path"]).decode()
+        == CHURRO_UNRECOGNIZED_BODY
+    )
+
+
+def test_the_trained_envelope_still_reads_and_still_does_not_attach(live_run, tmp_path):
+    """Risk 8.1's likely first real outcome, measured rather than assumed.
+
+    A model that ignores the new clause answers in the shape it was fine-tuned
+    on. That body still parses, still retains, still aligns to the anchor, and
+    still lands unattached -- today's state, reached honestly. Nothing in
+    Unit 12 can make the transcription worse except the prompt bytes themselves.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    payload = page_records(tree)[(1, "attestator_3")]["payload"]
+    assert payload["payload"] == (
+        "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+    )
+    assert [box["bounds_source"] for box in payload["observed"]] == ["presented"]
+    [churro_a1] = attachment_entries(tree)["a1"]["attestator_3"]
+    assert churro_a1["attached"] is False
+    assert churro_a1["attachment_basis"] == "unattached"
+    assert churro_a1["alignment"]["status"] == "aligned"
 
 
 def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_response(

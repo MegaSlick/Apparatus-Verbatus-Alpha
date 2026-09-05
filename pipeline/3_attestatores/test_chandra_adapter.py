@@ -572,7 +572,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
         "sha256": digest_bytes(raw),
     }
-    surviving, overshoots = attestatores.chandra_page_partition_entries(
+    surviving, overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert surviving == [
@@ -648,7 +648,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
 def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
     """Two acts on one page legitimately re-derive the same chair's response.
 
-    `publish_page_testimonia_and_attachments` calls `chandra_page_partition_entries`
+    `publish_page_testimonia_and_attachments` calls `page_partition_entries`
     once per act on a page for a page-scoped Chandra chair, and two acts commonly
     share one raw response (the page record already dedupes `raw_response_refs` for
     exactly this reason). Re-deriving an out-of-page block from that same response
@@ -667,10 +667,10 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     }
 
     # Two acts on the page independently re-derive the identical response.
-    first_survivors, first_overshoots = attestatores.chandra_page_partition_entries(
+    first_survivors, first_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
-    second_survivors, second_overshoots = attestatores.chandra_page_partition_entries(
+    second_survivors, second_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert first_overshoots == second_overshoots
@@ -756,7 +756,7 @@ def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, mess
     observed[0][field] = value
 
     with pytest.raises(SchemaRefusal, match=message):
-        attestatores.chandra_page_partition_entries(
+        attestatores.page_partition_entries(
             observed,
             page_size=(200, 260),
             raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
@@ -775,7 +775,7 @@ def test_an_in_page_observation_keeps_its_supported_text_span():
         }
     ]
 
-    survivors, findings = attestatores.chandra_page_partition_entries(
+    survivors, findings = attestatores.page_partition_entries(
         observed,
         page_size=(200, 260),
         raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},

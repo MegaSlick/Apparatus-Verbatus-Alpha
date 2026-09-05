@@ -602,15 +602,17 @@ def validate_page_testimonium_payload(
                     )
             else:
                 if payload["payload"] is not None:
-                    raise SchemaRefusal(
-                        "an unparseable Churro page capture claims retained page text"
-                    )
+                    raise SchemaRefusal("an unread Churro page capture claims retained page text")
                 cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                # `failed` names its refusal in `reason`; `unrecognized-shape`
+                # names the shape in `outcome`. One helper, so the record and
+                # this check cannot describe the same capture differently.
+                parse_refusal = native_parse_refusal(parse)
                 basis = (
                     "response cut off by the provider "
-                    f"({capture['transport_stop_reason']!r}); {parse['reason']}"
+                    f"({capture['transport_stop_reason']!r}); {parse_refusal}"
                     if cut_off
-                    else parse["reason"]
+                    else parse_refusal
                 )
                 expected_health = {
                     "native_type": "unrecordable",
@@ -627,11 +629,7 @@ def validate_page_testimonium_payload(
                         "an unparseable Churro page Testimonium health differs from its capture"
                     )
                 reason = payload.get("reason")
-                if (
-                    not isinstance(reason, str)
-                    or not reason.strip()
-                    or parse["reason"] not in reason
-                ):
+                if not isinstance(reason, str) or not reason.strip() or parse_refusal not in reason:
                     raise SchemaRefusal(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
@@ -1086,6 +1084,23 @@ def parse_churro_response(raw: bytes) -> dict[str, Any]:
         return {"state": "parsed", "text": validate_churro_xml(raw)}
     except SchemaRefusal as error:
         return {"state": "failed", "reason": str(error)}
+
+
+def native_parse_refusal(parse: dict[str, Any]) -> str:
+    """The one sentence a non-parsed native capture is described by.
+
+    Two readers have to agree on it, or a record refuses itself: the live
+    boundary composes an attempt's `reason` and unrecordable `truncation_basis`
+    from it (`pipeline/3_attestatores/live_witness.py`), and this module's page
+    validator re-derives both and compares. It was one inline expression in each
+    place, identical by coincidence, and the second state Unit 12 admits --
+    `unrecognized-shape`, whose evidence is `outcome` and not `reason` -- is
+    where the coincidence would have ended in a `KeyError` from inside a
+    contract check.
+    """
+    if parse["state"] == "failed":
+        return parse["reason"]
+    return f"the response shape was not recognized: {parse['outcome']}"
 
 
 def validate_churro_xml(raw: bytes) -> str:
