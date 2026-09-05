@@ -1169,8 +1169,9 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop"))
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
 
+    tree = _FakeTree()
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_3", "chandra.v1", adapter, response
+        SimpleNamespace(tree=tree), 1, "attestator_3", "chandra.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -1179,8 +1180,12 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
         "parser": "json",
         "outcome": "unverified-response-schema",
     }
-    # The bytes stay beside the record that could not read them.
+    # The bytes stay beside the record that could not read them: read the
+    # referenced blob back rather than trusting that a reference exists
+    # (CodeRabbit round 2), so a retention that returns a plausible reference
+    # without storing the body fails here.
     assert attempt.raw_response_ref
+    assert tree.read_bytes(attempt.raw_response_ref) == body.encode("utf-8")
     assert attempt.raw_response_kind == "model-output"
     # The same body still parses on the offline posture, where the fixture's
     # pinned bytes depend on it: one flag, one difference.
