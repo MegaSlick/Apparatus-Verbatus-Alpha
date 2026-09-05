@@ -2333,7 +2333,15 @@ def captured_churro_page_attempt(
     # relabel-proof seam accepts no adapter argument at all.
     capture = adapter.retain(
         context.tree,
-        view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
+        # The fixture's frozen declaration, not `adapter.prompt()` -- the move
+        # `chandra.FIXTURE_PROMPT` already makes at this stage's other page
+        # witness. This view is sealed into the fixture's pinned bytes, the
+        # fixture never asks a chair anything, and the live instruction
+        # (`feeding.churro_layout_prompt`) must be free to change without moving
+        # them. `parser="xml"` for the same reason and one more: it reaches
+        # `validate_churro_xml` alone, so a fixture body could not take the JSON
+        # branch even if someone wrote one.
+        view={"prompt": feeding.churro_prompt(), "generation": feeding.churro_generation()},
         raw_response=raw,
         transport_stop_reason=stop,
         parser="xml",

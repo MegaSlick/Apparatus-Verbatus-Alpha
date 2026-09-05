@@ -46,13 +46,28 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
+    # The LIVE instruction, and it keeps the trained two-message framing so
+    # `live_witness.page_chair_request`'s dispatch on the prompt shape is
+    # untouched. The fixture's own declaration is `feeding.churro_prompt`, named
+    # explicitly at `run.py::captured_churro_page_attempt` and not reached here.
     assert set(spec.prompt()) == {"system", "user"}
+    assert spec.prompt() == adapters.feeding.churro_layout_prompt()
+    assert spec.prompt() != adapters.feeding.churro_prompt()
+    # Both of this chair's legal shapes parse to text through the one dispatcher:
+    # the trained envelope and the wire contract Unit 12 asks for.
     assert spec.parse(b"<output>text</output>") == "text"
+    assert (
+        spec.parse(
+            b'{"schema": "verbatus-churro-page-response.v1", "blocks": '
+            b'[{"box_1000": [0, 0, 500, 500], "text": "wire text"}]}'
+        )
+        == "wire text"
+    )
     # Bound by identity, not by "is not None": the point of the slot is which
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently. Churro's slot binds
     # the relabel-proof wrapper the test below proves out.
-    assert spec.retain is adapters._retain_churro_model_view
+    assert spec.retain is adapters.churro.retain
     chandra = adapters.resolve_runnable_adapter("chandra.v1")
     assert set(chandra.prompt()) == {"instruction"}
     # Both declared shapes parse to text: the wire contract the prompt asks for
@@ -275,14 +290,36 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Quantization is data beside the five operations; no-layout adapters must
-    # explicitly remain without a conversion rule.
-    assert fields == {"prompt", "parse", "retain", "present", "observe", "quantization"}
-    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
+    # Quantization is data beside the five operations, and `takes_page_size`
+    # says whether this adapter's `observe` accepts the sealed page's own size --
+    # both read off the registry entry rather than off the adapter's name.
+    assert fields == {
+        "prompt",
+        "parse",
+        "retain",
+        "present",
+        "observe",
+        "quantization",
+        "takes_page_size",
+    }
+    # Each page witness declares its OWN rule; neither inherits the other's, even
+    # though the two currently spell the same arithmetic.
+    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization == adapters.churro.QUANTIZATION_RULE
     assert (
         adapters.RUNNABLE_ADAPTERS["chandra.v1"].quantization == adapters.chandra.QUANTIZATION_RULE
     )
-    assert adapters.declared_quantization_rules() == {adapters.chandra.QUANTIZATION_RULE}
+    assert adapters.churro.QUANTIZATION_RULE != adapters.chandra.QUANTIZATION_RULE
+    assert adapters.RUNNABLE_ADAPTERS["dai.v1"].quantization is None
+    assert adapters.declared_quantization_rules() == {
+        adapters.chandra.QUANTIZATION_RULE,
+        adapters.churro.QUANTIZATION_RULE,
+    }
+    # The page-scoped adapters take it; the act-scoped one does not.
+    assert {name: entry.takes_page_size for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
+        "chandra.v1": True,
+        "churro.v1": True,
+        "dai.v1": False,
+    }
     presented = {
         "kind": "page",
         "source_page_id": "page-1",
@@ -297,7 +334,10 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         },
     }
     assert adapters.resolve_runnable_adapter("churro.v1").present(object(), presented) is presented
-    assert adapters.resolve_runnable_adapter("churro.v1").observe(presented, "retained text") == [
+    # A body carrying no layout -- the trained envelope, or anything that is not
+    # this contract's JSON object -- still derives the honest presented echo that
+    # routing and coverage exclude, with no page size needed.
+    echo = [
         {
             "ordinal": 0,
             "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
@@ -305,6 +345,9 @@ def test_the_registry_binds_the_native_intake_contract_seams():
             "span": None,
         }
     ]
+    churro_spec = adapters.resolve_runnable_adapter("churro.v1")
+    assert churro_spec.observe(presented, "retained text") == echo
+    assert churro_spec.observe(presented, b"<output>retained text</output>") == echo
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
@@ -318,7 +361,11 @@ def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(
     exploding.__getattr__ = broken_binding
     monkeypatch.setitem(sys.modules, "feeding", exploding)
 
-    with pytest.raises(RuntimeError, match="fixture callable import failed at churro_prompt"):
+    # `dai_prompt`, not `churro_prompt`: since Unit 12 the Churro slots bind
+    # `churro.py`'s own callables, which reach `feeding` lazily, so DAI's is now
+    # the first eager attribute this module takes off `feeding`. What is pinned
+    # is unchanged -- a broken binding propagates out of import with no fallback.
+    with pytest.raises(RuntimeError, match="fixture callable import failed at dai_prompt"):
         _load_local_adapters()
 
 

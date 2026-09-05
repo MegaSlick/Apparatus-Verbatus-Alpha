@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import feeding
 import pytest
 from feeding import (
+    CHURRO_LAYOUT_PROMPT_VERSION,
     CHURRO_OUTPUT_TOKENS,
     DAI_MAX_HEIGHT_PX,
     DAI_MAX_TOTAL_PIXELS,
@@ -18,6 +19,7 @@ from feeding import (
     SCHEDULING_POLICY,
     SingleChairResidency,
     churro_generation,
+    churro_layout_prompt,
     churro_prompt,
     dai_generation,
     dai_model_view,
@@ -31,6 +33,7 @@ from feeding import (
     validate_dai_text,
 )
 
+from common import churro_response
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
@@ -209,6 +212,93 @@ def test_churro_prompt_retains_the_trained_two_message_xml_bytes():
     )
     assert "<output>\nextracted text here\n</output>" in prompt["user"]
     assert "ſ" in prompt["user"] and "а" in prompt["user"]
+
+
+def test_the_live_layout_prompt_is_the_trained_carry_with_only_its_format_replaced():
+    """A modified carry, and what moved is exactly the two format instructions.
+
+    Clauses 1 through 5 -- every instruction about *how* to transcribe -- and
+    the closing reading-order paragraph are the carried bytes, character for
+    character. Only the system message's format sentence and clause 6 are this
+    repository's own wording, and neither states a preference, a severity floor
+    or a confidence budget (GOVERNANCE 10).
+    """
+    carried, live = churro_prompt(), churro_layout_prompt()
+    assert set(live) == set(carried) == {"system", "user"}
+    assert live != carried
+
+    # The transcription clauses, byte for byte out of the carried prompt.
+    head = carried["user"][: carried["user"].index("6. Output the OCR result")]
+    tail = carried["user"][carried["user"].index("Remember, your goal is") :]
+    assert head and tail
+    assert live["user"].startswith(head)
+    assert live["user"].endswith(tail)
+    assert "ſ" in live["user"] and "а" in live["user"]
+
+    # The two replaced instructions are gone from the live bytes, and the shape
+    # this repository declares is what stands in their place.
+    assert "<output>" not in live["user"]
+    assert "<output>" not in live["system"]
+    assert "Only output the transcribed text" not in live["system"]
+    assert churro_response.PAGE_RESPONSE_SCHEMA in live["user"]
+    assert "box_1000" in live["user"] and "blocks" in live["user"]
+
+    # Nothing that would report the instruction rather than the finding.
+    lowered = (live["system"] + live["user"]).lower()
+    for banned in ("confiden", "at least", "severity", "prefer", "if in doubt", "be sure"):
+        assert banned not in lowered
+
+
+def test_the_live_prompt_keeps_the_two_message_framing_the_serving_seam_dispatches_on():
+    """`live_witness.page_chair_request` splits on `{"system", "user"}`; untouched."""
+    assert set(churro_layout_prompt()) == {"system", "user"}
+    assert all(value.strip() for value in churro_layout_prompt().values())
+
+
+def test_the_layout_prompt_refuses_to_send_if_the_carry_it_modifies_has_moved(monkeypatch):
+    """The docstring's provenance claim is checked, not asserted.
+
+    If the clause this function replaces is not in the carried bytes, the carry
+    moved and this is no longer the modified carry it documents -- so it refuses
+    rather than sending a prompt whose provenance reads false.
+    """
+    monkeypatch.setattr(feeding, "churro_prompt", lambda: {"system": "s", "user": "no such clause"})
+    with pytest.raises(SchemaRefusal, match="no longer contains the output-format clause"):
+        feeding.churro_layout_prompt()
+
+
+def test_the_layout_prompt_version_names_the_wording_and_is_not_in_the_record():
+    """The version is source, read by a human; `view.prompt` is the record.
+
+    A digest of bytes sitting beside those bytes is a third spelling of one
+    fact, and the retained view already carries the sent instruction verbatim.
+    """
+    assert CHURRO_LAYOUT_PROMPT_VERSION == "churro-layout-prompt.v1"
+    assert CHURRO_LAYOUT_PROMPT_VERSION not in churro_layout_prompt()["user"]
+    assert CHURRO_LAYOUT_PROMPT_VERSION not in churro_layout_prompt()["system"]
+
+
+def test_both_churro_parser_names_run_and_no_third_one_does():
+    tree = _Tree()
+    for parser in ("xml", "churro"):
+        record = retain_model_view(
+            tree,
+            adapter="churro.v1",
+            view={"prompt": churro_prompt(), "generation": churro_generation()},
+            raw_response=b"<output>read</output>",
+            transport_stop_reason="eos",
+            parser=parser,
+        )
+        assert record["parse"] == {"state": "parsed", "parser": parser, "text": "read"}
+    with pytest.raises(SchemaRefusal, match="does not run for adapter"):
+        retain_model_view(
+            tree,
+            adapter="churro.v1",
+            view={"prompt": churro_prompt(), "generation": churro_generation()},
+            raw_response=b"<output>read</output>",
+            transport_stop_reason="eos",
+            parser="json",
+        )
 
 
 def test_churro_validates_xml_without_discarding_the_raw_response():
