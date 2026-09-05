@@ -634,19 +634,47 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
 
     Iterative on purpose: the value is untrusted input, and a deeply nested
     payload must exhaust the walk's own list, never the interpreter stack.
+
+    A cycle is refused rather than looped on, by the same enter/exit bookkeeping
+    `dossier.assert_no_order_bearing_field` carries. The recursive form this
+    replaced ended a self-referential payload by exhausting itself; a worklist
+    has no stack to exhaust, so without this a value that is its own ancestor
+    hangs the caller and reports nothing at all -- strictly less than the
+    `RecursionError` the conversion removed. Reachable because most callers hand
+    this an in-memory structure rather than something it parsed from bytes: a
+    Testimonium payload, an audit draft, a partition proposal, a triage queue.
+
+    Only the containers *open on the current path* are tracked, so a value
+    shared between siblings -- the ordinary shape of a record assembled by
+    reference -- is still walked wherever it appears. What is refused is an
+    ancestor reached again, which is the only shape that cannot terminate.
     """
-    pending = [value]
+    pending: list[tuple[str, Any]] = [("value", value)]
+    open_path: set[int] = set()
     while pending:
-        current = pending.pop()
+        kind, current = pending.pop()
+        if kind == "exit":
+            open_path.discard(current)
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in open_path:
+                raise SchemaRefusal(
+                    f"{what} contains itself, so no sweep of it can terminate and a "
+                    "preference field below the loop could never be found. Rebuild the "
+                    "record from values that are not their own ancestors."
+                )
+            open_path.add(marker)
+            pending.append(("exit", marker))
         if isinstance(current, dict):
             forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
             if forbidden:
                 raise SchemaRefusal(
                     f"{what} may not express capture preference: {sorted(forbidden)}"
                 )
-            pending.extend(current.values())
+            pending.extend(("value", item) for item in current.values())
         elif isinstance(current, list):
-            pending.extend(current)
+            pending.extend(("value", item) for item in current)
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:

@@ -972,3 +972,52 @@ def test_a_policy_too_deep_to_canonicalize_refuses_in_the_gate_vocabulary():
 
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound"):
         DataGateAuthority.scope_digest(policy_content=policy)
+
+
+def test_pathologically_nested_approval_evidence_is_refused_by_name():
+    """`_deep_freeze` recurses, so its depth is the interpreter's stack.
+
+    What it walks is repository-internal -- approval records and the policy file
+    at `config/data_handling_policy.json` -- so the depth is small by
+    construction, and a bound is the proportionate answer rather than an
+    explicit-stack rewrite. But "small by construction" is a claim about
+    today's files, and a damaged or hand-edited policy is precisely what this
+    module exists to refuse: answering one with a `RecursionError` names
+    neither the record nor the field, and this gate stands in front of real
+    material leaving the machine.
+    """
+    deep: object = {"leaf": 1}
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH + 5):
+        deep = {"nested": deep}
+
+    with pytest.raises(DisclosureRefusal, match="nests deeper than 64 levels"):
+        gates_module._deep_freeze(deep)
+
+    # The bound is a bound, not a ceiling that ordinary evidence trips: one
+    # level inside it freezes exactly as before.
+    inside: object = {"leaf": 1}
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH - 1):
+        inside = {"nested": inside}
+    assert gates_module._deep_freeze(inside)["nested"] is not None
+
+
+def test_the_evidence_bound_is_exact_at_the_level_it_names():
+    """`-1` inside and `+5` past it leave the bound itself untested.
+
+    `_deep_freeze` compares its own `depth` argument, and the value that reaches
+    depth `n` is the one `n` wrappings down -- so this freezes a value at
+    exactly `MAX_EVIDENCE_DEPTH` and refuses the same structure one level
+    deeper. Either half alone would still pass if the walk refused a level early
+    or accepted a level late, and refusing a level early refuses a record this
+    gate is meant to freeze.
+    """
+    at_the_bound: object = 1
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH):
+        at_the_bound = {"nested": at_the_bound}
+    assert gates_module._deep_freeze(at_the_bound)["nested"] is not None
+
+    past_the_bound: object = 1
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH + 1):
+        past_the_bound = {"nested": past_the_bound}
+    with pytest.raises(DisclosureRefusal, match="nests deeper than 64 levels"):
+        gates_module._deep_freeze(past_the_bound)
