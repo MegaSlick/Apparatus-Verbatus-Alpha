@@ -125,12 +125,26 @@ def test_a_pathological_payload_is_refused_by_this_module_not_by_the_interpreter
 def test_the_canonical_depth_bound_is_a_bound_and_not_a_ceiling_real_records_meet():
     """One level inside it serializes exactly as before; one level past it is
     refused by name. The deepest record this pipeline builds is a handful of
-    levels, so nothing real is anywhere near either side of this."""
+    levels, so nothing real is anywhere near either side of this.
+
+    The exact bound is asserted between them, because a bound is a claim about
+    one number and `-1` and `+1` alone do not pin it: a walk that refused at
+    `_MAX_CANONICAL_DEPTH` containers -- one level early, and one level of real
+    record short of what this module promises to hash -- would satisfy both
+    ends and fail only here.
+    """
     inside: object = "leaf"
     for _ in range(_MAX_CANONICAL_DEPTH - 1):
         inside = [inside]
     assert canonical_bytes(inside) == b"[" * (_MAX_CANONICAL_DEPTH - 1) + b'"leaf"' + b"]" * (
         _MAX_CANONICAL_DEPTH - 1
+    )
+
+    at_the_bound: object = "leaf"
+    for _ in range(_MAX_CANONICAL_DEPTH):
+        at_the_bound = [at_the_bound]
+    assert canonical_bytes(at_the_bound) == b"[" * _MAX_CANONICAL_DEPTH + b'"leaf"' + b"]" * (
+        _MAX_CANONICAL_DEPTH
     )
 
     outside: object = "leaf"

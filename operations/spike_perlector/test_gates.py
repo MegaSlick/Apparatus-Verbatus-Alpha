@@ -999,3 +999,25 @@ def test_pathologically_nested_approval_evidence_is_refused_by_name():
     for _ in range(gates_module.MAX_EVIDENCE_DEPTH - 1):
         inside = {"nested": inside}
     assert gates_module._deep_freeze(inside)["nested"] is not None
+
+
+def test_the_evidence_bound_is_exact_at_the_level_it_names():
+    """`-1` inside and `+5` past it leave the bound itself untested.
+
+    `_deep_freeze` compares its own `depth` argument, and the value that reaches
+    depth `n` is the one `n` wrappings down -- so this freezes a value at
+    exactly `MAX_EVIDENCE_DEPTH` and refuses the same structure one level
+    deeper. Either half alone would still pass if the walk refused a level early
+    or accepted a level late, and refusing a level early refuses a record this
+    gate is meant to freeze.
+    """
+    at_the_bound: object = 1
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH):
+        at_the_bound = {"nested": at_the_bound}
+    assert gates_module._deep_freeze(at_the_bound)["nested"] is not None
+
+    past_the_bound: object = 1
+    for _ in range(gates_module.MAX_EVIDENCE_DEPTH + 1):
+        past_the_bound = {"nested": past_the_bound}
+    with pytest.raises(DisclosureRefusal, match="nests deeper than 64 levels"):
+        gates_module._deep_freeze(past_the_bound)
