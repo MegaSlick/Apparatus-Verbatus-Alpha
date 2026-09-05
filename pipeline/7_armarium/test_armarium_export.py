@@ -1132,11 +1132,21 @@ def _resealed_manifest(mutate):
 def _real_resealed_manifest(mutate):
     """`_resealed_manifest`'s twin over the `submission_id`-shaped real projection.
 
-    `_resealed_manifest` builds from the fixture-shaped `_projection()` only, so
-    every case run through it exercises `_verify_manifest_field_closure`'s
-    fixture branch and never its real one. This is the real-shape equivalent,
-    so the real branch's exact-field closure and non-blank refusal are proven
-    the same adversarial way the fixture shape already is.
+    **Adapted from `_resealed_manifest` directly above, and deliberately still a
+    second copy of it.** The two bodies are the same four steps -- build, read
+    the manifest out of the members, drop the self-hash so `mutate` can rewrite
+    the binding, reseal -- and differ in one line: the projection this one
+    builds from carries `fixture_id=None` and a `submission_id`, because
+    `_projection()` is fixture-shaped and every case run through the original
+    therefore exercises `_verify_manifest_field_closure`'s fixture branch and
+    never its real one. Naming that here is what keeps the duplication visible
+    to whoever next changes either: a change to the resealing steps belongs in
+    both.
+
+    Nothing crossed a boundary to get here. This is a sibling helper in this
+    same module, adapted within the repository, not code carried from the old
+    pipeline or from a third party -- the quarantine rule (CLAUDE.md) governs
+    that crossing and has nothing to say about this one.
     """
     projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
     bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)

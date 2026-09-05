@@ -22,6 +22,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
+from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -324,15 +325,16 @@ def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
-def test_a_submission_id_shaped_export_payload_publishes(tmp_path, happy_run):
-    """The publisher's run binding must accept the real-ingress shape, not only fixture's.
+def test_a_fixture_run_relabelled_as_a_submission_is_never_published(tmp_path, happy_run):
+    """A fixture package may not leave the pipeline wearing a submission identity.
 
-    `_expected_run_binding` reads whichever key the sealed `export` payload
-    carries rather than hardcoding `fixture_id`, which is the only key a real
-    run's payload names (`run.py::export_run_identity`). Relabels the sealed
-    export artifact's payload and the package manifest to the `submission_id`
-    shape in place, consistently on both sides, then publishes for real through
-    the same clean-verification path an operator's publish takes.
+    `_expected_run_binding` read whichever identity key the sealed `export`
+    payload carried and compared the package's manifest against that, so this
+    exact tree -- a fixture run, relabelled consistently on both sides to the
+    real-ingress shape -- published cleanly under a `submission_id` no filename
+    ledger ever admitted. `config_digest` beside it was checked against
+    `run.json`; the identity saying whose pages these are was checked against
+    nothing. The run authority decides the shape now.
     """
     root = tmp_path / "runs"
     shutil.copytree(happy_run / "r", root / "r")
@@ -362,8 +364,64 @@ def test_a_submission_id_shaped_export_payload_publishes(tmp_path, happy_run):
     out = tmp_path / "delivery"
     result = _publish(root, "r", out)
 
-    assert result.returncode == 0, result.stderr
-    assert (out / "armarium-export.zip").is_file()
+    assert result.returncode != 0
+    assert "this run's authority names no real submission" in result.stderr
+    assert not out.exists()
+
+
+def _real_run_authority(submission_id: str) -> dict:
+    """The two fields `submission_identity` reads, on the real route.
+
+    Hand-built rather than orchestrated: no real Designator exists to carry a
+    submission as far as an export, and what is under test is the publisher's
+    binding of one identity to the other, not the production of either.
+    """
+    return {
+        "ingress": real_ingress_record(),
+        "source_manifest": [{"ordinal": 1, "ledger_sha256": submission_id}],
+        "config_digest": "c" * 64,
+    }
+
+
+def test_a_real_runs_submission_identifier_must_be_that_runs_own_ledger():
+    """The real route's binding: the payload's submission id is not its own to name."""
+    import bundle as bundle_module
+
+    submission_id = "a" * 64
+    run = _real_run_authority(submission_id)
+    payload = {"submission_id": submission_id, "scenario": "real"}
+
+    assert bundle_module._expected_run_binding(payload, run) == {
+        "submission_id": submission_id,
+        "scenario": "real",
+        "config_digest": run["config_digest"],
+    }
+
+    foreign = {"submission_id": "b" * 64, "scenario": "real"}
+    with pytest.raises(ContractError, match="is not this run's own filename-ledger identity"):
+        bundle_module._expected_run_binding(foreign, run)
+
+
+def test_a_real_run_may_not_publish_under_a_fixture_identity():
+    """The same refusal in the other direction, so neither route can borrow the other's."""
+    import bundle as bundle_module
+
+    run = _real_run_authority("a" * 64)
+    with pytest.raises(ContractError, match="names a fixture identifier, but this run's"):
+        bundle_module._expected_run_binding({"fixture_id": "synthetic-two-page-v0"}, run)
+
+
+def test_a_fixture_runs_own_identity_still_binds_as_it_did():
+    """The unchanged path: a fixture run's fixture id and this run's config digest."""
+    import bundle as bundle_module
+
+    run = {"config_digest": "c" * 64}
+    payload = {"fixture_id": "synthetic-two-page-v0", "scenario": "happy"}
+    assert bundle_module._expected_run_binding(payload, run) == {
+        "fixture_id": "synthetic-two-page-v0",
+        "scenario": "happy",
+        "config_digest": "c" * 64,
+    }
 
 
 def test_an_export_payload_naming_both_identities_is_refused_by_name(tmp_path, happy_run):
