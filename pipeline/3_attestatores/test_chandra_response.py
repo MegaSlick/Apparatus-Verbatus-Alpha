@@ -22,6 +22,7 @@ if str(STAGE) not in sys.path:
 import chandra  # noqa: E402
 import chandra_response  # noqa: E402
 
+from common import structure_answer  # noqa: E402
 from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.structure_answer import to_page_bounds  # noqa: E402
 
@@ -175,12 +176,74 @@ def test_the_byte_and_block_ceilings_refuse_by_name(monkeypatch):
     assert chandra_response.parse(two) == {"parse_outcome": "too-many-blocks"}
 
 
-def test_excessive_nesting_is_named_rather_than_raised(monkeypatch):
-    def _exhausts_the_stack(_text, **_kwargs):
-        raise RecursionError("maximum recursion depth exceeded while decoding")
+def test_excessive_nesting_is_named_rather_than_raised():
+    """A real deeply nested body, not a patched `json.loads` (CodeRabbit round
+    1, T9). Patching the decoder proved only that the `except RecursionError`
+    clause exists; it could not tell whether the stdlib scanner actually raises
+    `RecursionError` here rather than something this module does not catch, and
+    it went on passing after the decode moved to
+    `common.structure_answer.decode_json_body`. Pinned at the same depth
+    `common/test_structure_answer.py` and `common/corpus_register.py` pin their
+    own version of this refusal at, and for the same reason: 10,000 exhausted
+    CPython's C recursion allowance on macOS but not on Linux CI, so the depth
+    has to beat the parser's allowance on every platform this runs on."""
+    depth = 1_000_000
+    raw = b'{"schema":"' + SCHEMA.encode() + b'","blocks":' + b"[" * depth + b"]" * depth + b"}"
+    assert chandra_response.parse(raw) == {"parse_outcome": "excessive-json-nesting"}
+    assert chandra.parse(raw) == {"parse_outcome": "excessive-json-nesting"}
 
-    monkeypatch.setattr(chandra_response.json, "loads", _exhausts_the_stack)
-    assert chandra_response.parse(_body(blocks=[])) == {"parse_outcome": "excessive-json-nesting"}
+
+def test_the_shared_wire_rules_are_the_common_modules_own_not_a_second_copy():
+    """CodeRabbit round 1, T6. The decode with its duplicate-member guard, the
+    `box_1000` check, and the page-text join were duplicated here from
+    `common/structure_answer.py`. Identity, not equality: a copy reintroduced
+    under the same name would satisfy any behavioural comparison written on the
+    day it was made, and drift afterwards -- which is the whole defect."""
+    assert chandra_response.decode_json_body is structure_answer.decode_json_body
+    assert chandra_response.validate_box_1000 is structure_answer.validate_box_1000
+    assert chandra_response.join_delivered_texts is structure_answer.join_delivered_texts
+
+
+def test_the_two_chandra_readings_of_one_page_agree_on_geometry_and_on_the_join():
+    """The consequence a divergence would have, pinned as behaviour (T6).
+
+    The Designator's structure answer and this page witness read the same chair
+    on the same page. If their geometry rules parted, one reading would refuse
+    a box the other placed; if their join rules parted, this module's spans
+    would index offsets the other's `page_text` does not have. Both bodies
+    carry the same rectangles and the same texts -- including an empty one,
+    where the join rule is at its least obvious -- and both are asserted to
+    come out with the same quantized boxes, the same page text, and the same
+    spans."""
+    boxes = [[100.4, 77.0, 900.0, 385.6], [0, 0, 1000, 1000], [1, 1, 2, 2]]
+    texts = ["first", "", "second"]
+    page = chandra_response.parse(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "blocks": [
+                    {"box_1000": box, "text": text} for box, text in zip(boxes, texts, strict=True)
+                ],
+            }
+        ).encode("utf-8")
+    )
+    structure = structure_answer.parse(
+        json.dumps(
+            {
+                "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+                "acts": [
+                    {"box_1000": box, "text": text} for box, text in zip(boxes, texts, strict=True)
+                ],
+            }
+        ).encode("utf-8"),
+        page_w=PAGE_SIZE[0],
+        page_h=PAGE_SIZE[1],
+    )
+    assert [block["box_1000"] for block in page["blocks"]] == [
+        act["box_1000"] for act in structure["acts"]
+    ]
+    assert page["page_text"] == structure["page_text"] == "first\nsecond"
+    assert page["spans"] == structure["spans"]
 
 
 def test_a_refusal_outside_the_closed_set_cannot_be_minted():

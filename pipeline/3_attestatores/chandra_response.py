@@ -26,32 +26,49 @@ though it were understood. Nothing here repairs, reorders, trims, or defaults a
 malformed answer (GOVERNANCE 7); the first malformed block refuses the whole
 response.
 
+**What is shared, and why it is imported rather than restated.** The bounded
+JSON decode with its duplicate-member guard, the `box_1000` check and its
+quantization, and the page-text join all come from
+`common/structure_answer.py` as public names -- `decode_json_body`,
+`unique_json_object`, `validate_box_1000`, `join_delivered_texts`. This module
+carried its own copy of each until CodeRabbit round 1 (T6) named the
+duplication. The two contracts are separate readings of one page by one chair,
+and a rule that drifted between the copies would mean one reading refusing a
+body the other accepted, or placing spans at offsets the other's page text
+does not have. What stays here is what is genuinely this contract's own: its
+outcome names, its two page forms, and its block schema.
+
 **Geometry.** `box_1000` entries are JSON numbers in `[0, 1000]`, finite, with
 `x1 > x0` and `y1 > y0`. Normalized coordinates, not page pixels, so the
 inference engine's internal resize (`min_pixels`/`max_pixels`) cannot corrupt
 them -- the same tripwire `pipeline/2_designator/structure_prompt.py` names.
-A box that passes is quantized by the low-edges-floor / far-edges-ceil rule and
-converted to sealed-page pixels by `common.structure_answer.to_page_bounds`,
-the one conversion the Designator's own Chandra reading uses, so the two
-Chandra readings of one page share one page-pixel mapping. That conversion
-clamps to the page, so a normalized box can never overshoot the sealed page.
+A box that passes `validate_box_1000` is quantized by that function's
+low-edges-floor / far-edges-ceil rule and converted to sealed-page pixels by
+`common.structure_answer.to_page_bounds`, the one conversion the Designator's
+own Chandra reading uses, so the two Chandra readings of one page share one
+page-pixel mapping. That conversion clamps to the page, so a normalized box
+can never overshoot the sealed page.
 
 **Page text and spans.** `page_text` is `common/structure_answer.py`'s own
-join rule restated for blocks: a newline between delivered (non-empty) block
-texts and nowhere else. `spans` locates every block's `[start, end)` in that
-string, empty blocks as a zero-width span where their text would have sat.
-Those spans are what the Attestatores publish as each observed box's span into
-the retained page text, and what the derived alignment anchor is built from.
+join rule -- `join_delivered_texts`, called here over the block texts: a
+newline between delivered (non-empty) block texts and nowhere else. `spans`
+locates every block's `[start, end)` in that string, empty blocks as a
+zero-width span where their text would have sat. Those spans are what the
+Attestatores publish as each observed box's span into the retained page text,
+and what the derived alignment anchor is built from.
 """
 
 from __future__ import annotations
 
-import json
-import math
 from typing import Any, Final, TypedDict
 
 from common.imaging import Bounds
-from common.structure_answer import to_page_bounds
+from common.structure_answer import (
+    decode_json_body,
+    join_delivered_texts,
+    to_page_bounds,
+    validate_box_1000,
+)
 
 PAGE_RESPONSE_SCHEMA: Final = "verbatus-chandra-page-response.v1"
 # The same operational ceilings `chandra.py` applies to every body that crosses
@@ -107,71 +124,6 @@ def _refuse(outcome: str) -> dict[str, str]:
     return {"parse_outcome": outcome}
 
 
-class _DuplicateMember(ValueError):
-    """Raised by `_unique_object` -- caught in `_decode`, never let past it."""
-
-
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Materialize one JSON object only when every member name occurs once.
-
-    The stdlib default resolves a duplicate key last-wins, silently: two values
-    for one field and only one survives. `common/structure_answer.py` closes the
-    same defect for the structure answer; this is that guard for the page
-    witness's answer.
-    """
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateMember(key)
-        result[key] = value
-    return result
-
-
-def _decode(raw: Any) -> tuple[Any, str | None]:
-    """Bounded bytes to a JSON value, or one named outcome. Never recurses itself."""
-    if not isinstance(raw, bytes):
-        return None, "raw-response-not-bytes"
-    if len(raw) > MAX_RESPONSE_BYTES:
-        return None, "response-too-large"
-    try:
-        return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object), None
-    except RecursionError:
-        return None, "excessive-json-nesting"
-    except _DuplicateMember:
-        # Two values for one field decodes fine under the stdlib's own default;
-        # it is an answer this module does not understand, so it gets the same
-        # code an unknown key gets.
-        return None, "unverified-response-schema"
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, "invalid-json"
-
-
-def _validate_geometry(value: Any) -> list[int] | None:
-    """The raw `box_1000`, quantized -- or `None` if the raw values are malformed.
-
-    Low edges floor, far edges ceil: a rectangle may only ever grow. The same
-    rule `common/structure_answer.py` and `chandra.py::_quantize_box` apply,
-    here in normalized space.
-    """
-    if not isinstance(value, list) or len(value) != 4:
-        return None
-    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
-        return None
-    try:
-        x0, y0, x1, y1 = (float(item) for item in value)
-    except OverflowError:
-        # JSON integers have arbitrary precision; a coordinate too large for
-        # float quantization is malformed geometry, not a crash.
-        return None
-    if not all(math.isfinite(item) for item in (x0, y0, x1, y1)):
-        return None
-    if not all(0 <= item <= 1000 for item in (x0, y0, x1, y1)):
-        return None
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return [math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1)]
-
-
 def _parse_block(value: Any, ordinal: int) -> ParsedBlock | str:
     """One block, fully resolved -- or the `PARSE_OUTCOMES` code that refuses it."""
     if not isinstance(value, dict):
@@ -180,7 +132,7 @@ def _parse_block(value: Any, ordinal: int) -> ParsedBlock | str:
         return "unverified-response-schema"
     if set(value) != _BLOCK_FIELDS:
         return "malformed-block"
-    box = _validate_geometry(value["box_1000"])
+    box = validate_box_1000(value["box_1000"])
     if box is None:
         return "malformed-block-geometry"
     if not isinstance(value["text"], str):
@@ -188,30 +140,9 @@ def _parse_block(value: Any, ordinal: int) -> ParsedBlock | str:
     return {"ordinal": ordinal, "box_1000": box, "text": value["text"]}
 
 
-def _join(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
-    """Newline only between delivered (non-empty) texts; a zero-width span for an empty one."""
-    parts: list[str] = []
-    spans: list[dict[str, int]] = []
-    cursor = 0
-    wrote_any = False
-    for text in texts:
-        if text == "":
-            spans.append({"start": cursor, "end": cursor})
-            continue
-        if wrote_any:
-            parts.append("\n")
-            cursor += 1
-        start = cursor
-        parts.append(text)
-        cursor += len(text)
-        spans.append({"start": start, "end": cursor})
-        wrote_any = True
-    return "".join(parts), spans
-
-
 def parse(raw: Any) -> ParsedPage | dict[str, str]:
     """The page witness's answer, validated whole -- or one named refusal."""
-    decoded, problem = _decode(raw)
+    decoded, problem = decode_json_body(raw, max_bytes=MAX_RESPONSE_BYTES)
     if problem is not None:
         return _refuse(problem)
     if not isinstance(decoded, dict):
@@ -247,7 +178,7 @@ def parse(raw: Any) -> ParsedPage | dict[str, str]:
         if isinstance(result, str):
             return _refuse(result)
         blocks.append(result)
-    page_text, spans = _join([block["text"] for block in blocks])
+    page_text, spans = join_delivered_texts([block["text"] for block in blocks])
     return {
         "schema": PAGE_RESPONSE_SCHEMA,
         "geometry": True,

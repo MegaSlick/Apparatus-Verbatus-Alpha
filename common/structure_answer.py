@@ -133,40 +133,52 @@ def _refuse(outcome: str) -> dict[str, str]:
     return {"parse_outcome": outcome}
 
 
-class _DuplicateMember(ValueError):
-    """Raised by `_unique_object` -- caught here, never let past `_decode`."""
+class DuplicateJsonMember(ValueError):
+    """Raised by `unique_json_object` -- caught in `decode_json_body`, never let past it."""
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """Materialize one JSON object only when every member name occurs once.
 
     The stdlib's default resolves a duplicate key last-wins, silently: two
     values for one field and only one survives, with nothing reporting the
     loss. `pipeline/1_exemplar/door.py::_unique_json_object` closes the same
-    defect for the triage recipe; this is that same guard for the wire answer.
+    defect for the triage recipe; this is that same guard for a wire answer.
+
+    Public, and imported by `pipeline/3_attestatores/chandra_response.py`
+    rather than copied there: the two closed wire contracts read the same
+    normalized answer shape from the same chair on the same page, and a
+    duplicate-member rule that drifted between them would mean one reading
+    refusing a body the other accepted (CodeRabbit round 1, T6).
     """
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise _DuplicateMember(key)
+            raise DuplicateJsonMember(key)
         result[key] = value
     return result
 
 
-def _decode(raw: bytes) -> tuple[Any, str | None]:
-    """Bounded bytes to a JSON value, or one named outcome. Never recurses itself."""
+def decode_json_body(raw: Any, *, max_bytes: int) -> tuple[Any, str | None]:
+    """Bounded bytes to a JSON value, or one named outcome. Never recurses itself.
+
+    `max_bytes` is the caller's own ceiling rather than this module's constant,
+    so each contract keeps -- and each contract's tests can still move -- the
+    finite intake it declares. Every outcome named here is in both callers'
+    `PARSE_OUTCOMES`.
+    """
     if not isinstance(raw, bytes):
         return None, "raw-response-not-bytes"
-    if len(raw) > MAX_RESPONSE_BYTES:
+    if len(raw) > max_bytes:
         return None, "response-too-large"
     try:
-        return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object), None
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object), None
     except RecursionError:
         # The stdlib scanner raises this separately from JSONDecodeError for a
         # sufficiently deep but otherwise valid value -- one bad response, not
         # permission to crash the stage that reads it.
         return None, "excessive-json-nesting"
-    except _DuplicateMember:
+    except DuplicateJsonMember:
         # Two values for one field is not malformed JSON -- it decodes fine
         # under the stdlib's own last-wins default. It is an answer this
         # module does not understand: the same code an unknown key gets.
@@ -180,12 +192,19 @@ def _quantize(x0: float, y0: float, x1: float, y1: float) -> list[int]:
     return [math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1)]
 
 
-def _validate_geometry(value: Any) -> list[int] | None:
+def validate_box_1000(value: Any) -> list[int] | None:
     """The raw `box_1000`, quantized -- or `None` if the raw values are malformed.
 
-    `None` here means `malformed-act-geometry`, decided by the caller: this
-    function names no outcome itself so it stays a pure geometry check, the
-    same split `chandra.py::_quantize_box` keeps.
+    `None` means malformed geometry, and the *caller* names the outcome
+    (`malformed-act-geometry` here, `malformed-block-geometry` for the page
+    witness): this function names none itself so it stays a pure geometry
+    check, the same split `chandra.py::_quantize_box` keeps.
+
+    Public and shared with `pipeline/3_attestatores/chandra_response.py`
+    (CodeRabbit round 1, T6). One normalized coordinate space, one bound, one
+    quantization rule: if the two contracts disagreed about what a legal
+    `box_1000` is, the Designator's and the page witness's readings of the same
+    page would land in different geometry.
     """
     if not isinstance(value, list) or len(value) != 4:
         return None
@@ -256,7 +275,7 @@ def _parse_act(value: Any, ordinal: int, page_w: int, page_h: int) -> ParsedAct 
     # other non-string label.
     if "label" in value and not isinstance(label, str):
         return "malformed-act"
-    box = _validate_geometry(value["box_1000"])
+    box = validate_box_1000(value["box_1000"])
     if box is None:
         return "malformed-act-geometry"
     text = value["text"]
@@ -271,14 +290,21 @@ def _parse_act(value: Any, ordinal: int, page_w: int, page_h: int) -> ParsedAct 
     }
 
 
-def _join(acts: list[ParsedAct]) -> tuple[str, list[dict[str, int]]]:
-    """`PAGE_TEXT_RULE`: newline only between delivered (non-empty) act texts."""
+def join_delivered_texts(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
+    """`PAGE_TEXT_RULE`: newline only between delivered (non-empty) texts.
+
+    Takes plain strings rather than this module's own `ParsedAct` so the page
+    witness's blocks join by the same rule, from the same code
+    (`pipeline/3_attestatores/chandra_response.py`, CodeRabbit round 1, T6).
+    Both readings publish spans into their retained page text, and a join rule
+    that drifted would put one reading's spans at offsets the other's page text
+    does not have.
+    """
     parts: list[str] = []
     spans: list[dict[str, int]] = []
     cursor = 0
     wrote_any = False
-    for act in acts:
-        text = act["text"]
+    for text in texts:
         if text == "":
             spans.append({"start": cursor, "end": cursor})
             continue
@@ -300,7 +326,7 @@ def parse(raw: bytes, *, page_w: int, page_h: int) -> ParsedAnswer | dict[str, s
     describes. Nothing is repaired, reordered, trimmed, or defaulted: the first
     malformed act refuses the whole response (GOVERNANCE 7).
     """
-    decoded, problem = _decode(raw)
+    decoded, problem = decode_json_body(raw, max_bytes=MAX_RESPONSE_BYTES)
     if problem is not None:
         return _refuse(problem)
     if not isinstance(decoded, dict):
@@ -323,7 +349,7 @@ def parse(raw: bytes, *, page_w: int, page_h: int) -> ParsedAnswer | dict[str, s
             return _refuse(result)
         acts.append(result)
 
-    page_text, spans = _join(acts)
+    page_text, spans = join_delivered_texts([act["text"] for act in acts])
     return {
         "schema": STRUCTURE_ANSWER_SCHEMA,
         "acts": acts,
