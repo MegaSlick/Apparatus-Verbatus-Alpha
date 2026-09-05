@@ -30,8 +30,10 @@ nothing. That is the half worth automating.
 """
 
 import ast
+import contextlib
 import importlib.util
 import re
+import signal
 import sys
 from pathlib import Path
 
@@ -171,10 +173,11 @@ def test_the_reference_screen_walks_a_pathological_payload_to_the_bottom():
         refuse_capture_preference(buried)
 
 
-# The family driven at depth, one entry per row of PREFERENCE_SCREENS: the
-# screen's supported entry point, a key it must refuse, and the refusal it must
-# raise. The static guard above proves no screen calls itself; only running one
-# proves it reaches the bottom of a payload and still names the field.
+# The family driven at run time, one entry per row of PREFERENCE_SCREENS: the
+# screen's supported entry point, a key it must refuse and the refusal that must
+# name it, then the refusal a payload containing itself must raise. The static
+# guard above proves no screen calls itself; only running one proves it reaches
+# the bottom of a payload, still screens down there, and stops at a loop.
 DRIVEN_SCREENS = (
     (
         "refuse_capture_preference",
@@ -182,6 +185,8 @@ DRIVEN_SCREENS = (
         {"preferred": "one of them"},
         SchemaRefusal,
         "may not express capture preference",
+        SchemaRefusal,
+        "corpus register contains itself",
     ),
     (
         "physical_act_partition._refuse_preference",
@@ -189,6 +194,8 @@ DRIVEN_SCREENS = (
         {"preferred": "one of them"},
         SchemaRefusal,
         "physical-act partition may not express capture preference",
+        SchemaRefusal,
+        "physical-act partition contains itself",
     ),
     (
         "physical_act_partition._refuse_textual",
@@ -196,6 +203,8 @@ DRIVEN_SCREENS = (
         {"text": "L'an mil sept cent"},
         SchemaRefusal,
         "textual evidence cannot match physical acts",
+        SchemaRefusal,
+        "correspondence proposal: a proposal contains itself",
     ),
     (
         "cross_capture_autopsia._reject_preference",
@@ -203,6 +212,8 @@ DRIVEN_SCREENS = (
         {"witness_rank": 1},
         SchemaRefusal,
         "forbidden preference field",
+        SchemaRefusal,
+        "cross-capture autopsia: a presentation contains itself",
     ),
     (
         "cross_capture_dissent._refuse_scalar_claim_keys",
@@ -210,6 +221,8 @@ DRIVEN_SCREENS = (
         {"confidence": 0.9},
         SchemaRefusal,
         "forbidden scalar-claim field",
+        SchemaRefusal,
+        "cross-capture dissent: the record contains itself",
     ),
     (
         "triage._refuse_preference_named",
@@ -217,6 +230,8 @@ DRIVEN_SCREENS = (
         {"preferred": "one of them"},
         TriageRefusal,
         "triage refusal queue-expresses-preference",
+        TriageRefusal,
+        "triage refusal queue-expresses-preference: queue contains itself",
     ),
     (
         "dossier.assert_no_order_bearing_field",
@@ -224,8 +239,48 @@ DRIVEN_SCREENS = (
         {"trust_score": 100},
         ContractError,
         "names a preference",
+        ContractError,
+        "contains itself",
     ),
 )
+
+# A cyclic payload is walked forever by a screen without the bookkeeping, so
+# every case below runs under a wall-clock guard: a regression must fail this
+# file rather than hang the suite that runs it. Generous on purpose -- the
+# payloads are three objects each, so anything approaching this is a loop and
+# not a slow machine.
+CYCLE_TIME_LIMIT_SECONDS = 20.0
+
+
+@contextlib.contextmanager
+def _within(seconds: float, what: str):
+    """Fail, rather than hang, if `what` does not return inside `seconds`.
+
+    `SIGALRM` is delivered to the main thread between bytecodes, which is where
+    these walks spend their time, so a screen appending to its worklist forever
+    is interrupted and reported as the failure it is. Where the signal does not
+    exist the body still runs: a guard that cannot arm must not silently skip
+    the assertion it was guarding, and the platforms this build runs on have it.
+    """
+    if not hasattr(signal, "SIGALRM"):  # pragma: no cover - not a platform we run on
+        yield
+        return
+
+    def fire(signum, frame):
+        raise AssertionError(
+            f"{what} did not return within {seconds}s on a payload that contains itself. "
+            "A no-picker screen walks an explicit worklist, so a cycle has no stack to "
+            "exhaust: without on-path bookkeeping it appends forever and the caller hangs "
+            "instead of being refused by name."
+        )
+
+    previous = signal.signal(signal.SIGALRM, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _deep(leaf: object, depth: int = FAMILY_DEPTH) -> object:
@@ -241,12 +296,12 @@ def _deep(leaf: object, depth: int = FAMILY_DEPTH) -> object:
 
 
 @pytest.mark.parametrize(
-    ("label", "screen", "forbidden", "refusal", "match"),
+    ("label", "screen", "forbidden", "refusal", "match", "cycle_refusal", "cycle_match"),
     DRIVEN_SCREENS,
     ids=[row[0] for row in DRIVEN_SCREENS],
 )
 def test_every_preference_screen_walks_a_pathological_payload_to_the_bottom(
-    label, screen, forbidden, refusal, match
+    label, screen, forbidden, refusal, match, cycle_refusal, cycle_match
 ):
     """The static guard is a guard on shape; this is the behaviour it stands for.
 
@@ -271,27 +326,94 @@ def test_every_preference_screen_walks_a_pathological_payload_to_the_bottom(
         screen(buried)
 
 
-def test_a_dossier_that_contains_itself_is_named_rather_than_swept_forever():
-    """The cycle half, for the one screen whose structure allows a cycle.
+@pytest.mark.parametrize(
+    ("label", "screen", "forbidden", "refusal", "match", "cycle_refusal", "cycle_match"),
+    DRIVEN_SCREENS,
+    ids=[row[0] for row in DRIVEN_SCREENS],
+)
+def test_every_preference_screen_names_a_payload_that_contains_itself(
+    label, screen, forbidden, refusal, match, cycle_refusal, cycle_match
+):
+    """Depth is not the only way a worklist walk fails to answer.
 
-    `assert_no_order_bearing_field` sweeps a dossier assembled in memory, so a
-    value that is its own ancestor can reach it, and an explicit worklist has no
-    stack to exhaust: it must name the cycle or hang, and a hang reports less
-    than the `RecursionError` it replaced. It names it.
+    Converting these screens from recursion removed the interpreter stack from
+    the walk, and with it the accident that used to stop a self-referential
+    payload: the recursive form ended a cycle by exhausting itself and raising
+    `RecursionError`, which at least returned. A worklist has nothing to
+    exhaust, so a value that is its own ancestor is appended forever and the
+    caller hangs -- strictly less than the crash the conversion replaced, and
+    from a guard whose entire job is to refuse by name.
 
-    The other six screens are *not* given a cycle case, and that is a statement
-    about them rather than an omission. None of them tracks the containers it has
-    open, so a self-referential payload would hang instead of failing -- and a
-    test that hangs is worse than no test. What keeps that unreachable today is
-    the shape of their inputs, not a check inside them: each is fed values parsed
-    from JSON bytes or built by this repository, and neither can be cyclic.
-    Recorded here because it is a live property of the family, not a defect this
-    thread is closing: making them cycle-safe means giving five walks the
-    enter/exit bookkeeping the dossier sweep carries, which is a change to what
-    they refuse and belongs in its own work.
+    Only `assert_no_order_bearing_field` tracked the containers it had open.
+    The round that converted the others recorded that as a live property rather
+    than fixing it, on the argument that every remaining screen is fed values
+    parsed from JSON bytes and JSON cannot be cyclic. That argument does not
+    hold: `build_autopsia`, `build_cross_capture_dissent`, the partition
+    builders, `native_witness` and `perlector_audit` are all called with
+    in-memory structures the caller assembled, and each screen runs before any
+    shape check closes what it walks. So all seven carry the same enter/exit
+    bookkeeping now, and each is tested here through the same entry point the
+    depth case uses -- under a wall-clock guard, because the failure this
+    closes is a hang and a test that hangs is worse than no test.
     """
-    looped: dict = {"testimonia": []}
-    looped["testimonia"].append(looped)
+    looped: dict = {"nested": []}
+    looped["nested"].append(looped)
 
-    with pytest.raises(ContractError, match="contains itself"):
-        _dossier().assert_no_order_bearing_field(looped)
+    with _within(CYCLE_TIME_LIMIT_SECONDS, label):
+        with pytest.raises(cycle_refusal, match=re.escape(cycle_match)):
+            screen(looped)
+
+
+@pytest.mark.parametrize(
+    ("label", "screen", "forbidden", "refusal", "match", "cycle_refusal", "cycle_match"),
+    DRIVEN_SCREENS,
+    ids=[row[0] for row in DRIVEN_SCREENS],
+)
+def test_a_value_shared_between_siblings_is_not_a_cycle(
+    label, screen, forbidden, refusal, match, cycle_refusal, cycle_match
+):
+    """The other half of the bookkeeping: what it must *not* refuse.
+
+    Tracking every container ever seen would be simpler and wrong. A record
+    assembled by reference -- the same condition dict under two views, one
+    findings list named twice -- is a directed graph, not a loop, and refusing
+    it would turn a screen written to catch a picker into a screen that rejects
+    ordinary well-formed input. Only ancestors on the current path are tracked,
+    so the shared value is walked at each of its positions.
+
+    Walked, not skipped: the forbidden field is buried inside the shared value,
+    and reaching it proves the second visit screened rather than short-circuited.
+    """
+    shared: dict = {"leaf": 1}
+    screen({"left": shared, "right": [shared, {"deeper": shared}]})
+
+    offending: dict = dict(forbidden)
+    with pytest.raises(refusal, match=re.escape(match)):
+        screen({"left": {"clean": 1}, "right": [{"clean": 2}, offending]})
+
+
+def test_the_supported_autopsia_path_names_a_cyclic_views_mapping():
+    """The thread's own case, through the public entry point rather than the screen.
+
+    `_reject_preference` is private; `build_autopsia` is what callers have, and
+    it hands the screen `views` *before* `_view` proves any of it is a view --
+    which is the whole reason the screen sees arbitrary caller input. The
+    argument that saved the six screens from needing this was that their input
+    is parsed JSON; `build_autopsia`'s callers pass in-memory lists, so the
+    cyclic case reaches the walk through the supported path and not only through
+    a test poking at a private name.
+
+    Under the wall-clock guard for the same reason as the family case above: on
+    the pre-fix screen this call does not raise, it never returns.
+    """
+    views: list = []
+    views.append({"view_id": "v_1", "page_ids": views})
+
+    with _within(CYCLE_TIME_LIMIT_SECONDS, "build_autopsia"):
+        with pytest.raises(SchemaRefusal, match="a presentation contains itself"):
+            cross_capture_autopsia.build_autopsia(
+                logical_act_id="la_cyclic",
+                partition_ref={"artifact_id": "pa_1", "sha256": "0" * 64},
+                required_capture_sha256s=["a" * 64],
+                views=views,
+            )
