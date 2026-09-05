@@ -380,6 +380,55 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
         )
 
 
+def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary(
+    tmp_path, monkeypatch
+):
+    """The retain recipe inside that branch is Chandra's, and now it says so.
+
+    `FIXTURE_NATIVE_RESPONSE_ADAPTERS` decides whose fixture rows may declare
+    `raw_response` bytes; the branch it opens retains them through Chandra's own
+    registry entry, `chandra.FIXTURE_PROMPT` and the `json` parser. Widening the
+    set without writing the new adapter's own branch would therefore publish a
+    Testimonium whose retained view and parser name a chair that never produced
+    those bytes -- the resolved identity and the record disagreeing, which
+    GOVERNANCE 6 does not permit. A comment said so and nothing checked it; this
+    is the check, and it fires where the set widens rather than at whatever
+    later reads the misfiled record.
+    """
+    attestatores = _load_stage_module("run")
+    monkeypatch.setattr(
+        attestatores, "FIXTURE_NATIVE_RESPONSE_ADAPTERS", frozenset({"chandra.v1", "churro.v1"})
+    )
+    resolved = replace(
+        load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"],
+        witness_adapter="churro.v1",
+    )
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-raw",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared text",
+                    "raw_response": "<output>declared text</output>",
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="would be retained through Chandra's recipe"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+        )
+
+
 def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]

@@ -980,6 +980,55 @@ def test_a_resumed_live_pass_recovers_a_page_response_from_the_act_layer_it_seal
     assert published[(2, "attestator_3")]["outcome"] == "read"
 
 
+def test_a_resumed_churro_page_republishes_the_geometry_the_chair_itself_reported(
+    live_run, tmp_path
+):
+    """A resume rebuilds Churro's page from its own retained bytes, not from its text.
+
+    `captured_page_attempt` carries the response bytes forward as
+    `observation_payload` for **both** page-scoped adapters, because `run.py`
+    derives a page's block geometry from those bytes rather than from the parsed
+    text. `_page_capture_from_record` rebuilds that same fact on a resume, and it
+    asked which adapter it was holding by name -- so a resumed Churro page got no
+    bytes back, `observe` was handed the joined page text instead, and the page
+    was republished with the `presented` echo routing and coverage exclude
+    (GOVERNANCE 4: the republished geometry has to be the geometry the
+    interrupted pass sealed, not a weaker restatement of the crop).
+
+    The counterfactual is the last two assertions. With the name comparison in
+    place the resumed pass rebuilds page 1 from the parsed page text, `observe`
+    answers with the `presented` echo, and the republished record carries
+    `["presented"]` and the crop's own rectangle where the sealed one carries
+    Churro's two native blocks. The registry gate (`takes_page_size`, the same
+    property `_derives_partition_from_response` reads) makes the resumed record
+    byte-identical to the sealed one.
+
+    The resume runs against a `refusing_factory`: a live chair cannot reproduce
+    immutable bytes, so a resume that started one would already be wrong, and
+    the factory is itself part of the assertion.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"] = [
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHURRO_WIRE_PAGE_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    sealed = page_records(RunTree(run_root, RUN_ID))
+
+    assert run_attestatores(live_run, run_root, factory=refusing_factory) == 0
+    republished = page_records(RunTree(run_root, RUN_ID))
+
+    assert republished == sealed
+    page_one = republished[(1, "attestator_3")]["payload"]
+    assert [box["bounds_source"] for box in page_one["observed"]] == ["native", "native"]
+    assert [box["bounds"] for box in page_one["observed"]] == [
+        {"x": 22, "y": 22, "w": 156, "h": 76},
+        {"x": 22, "y": 122, "w": 156, "h": 96},
+    ]
+
+
 def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
     """GOVERNANCE 10: an unmeasured boundary is never recorded as a measured one."""
     run_root = fresh_tree(live_run, tmp_path)
@@ -1657,6 +1706,62 @@ def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_paylo
     context = open_live_context(live_run, run_root)
     raw_response_ref = attestatores.retained_blob_ref(
         context, CHANDRA_UNRECOGNIZED_BODY.encode("utf-8")
+    )
+    record = {
+        "outcome": "failed",
+        "payload": {
+            "payload": None,
+            "witness_reported": None,
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "content_health": {
+                "native_type": "unrecordable",
+                "encoding": "invalid-or-unrecordable",
+                "recordable": False,
+                "empty": None,
+                "blank": None,
+                "truncated": None,
+                "characters": None,
+                "truncation_basis": "unverified-response-schema",
+            },
+            "reason": "unverified-response-schema",
+            "raw_response_ref": raw_response_ref,
+            "serving_call_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/call",
+                "sha256": "c" * 64,
+            },
+            "native_capture": None,
+            "provenance": {"receipt_ref": None},
+        },
+    }
+
+    attempt = attestatores._attempt_from_retained_testimonium(context.tree, record)
+
+    assert attempt.observation_payload is None
+
+
+def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payload(
+    live_run, tmp_path
+):
+    """The Chandra guard above, pinned for the second page-scoped chair.
+
+    Unit 12 gave Churro a live wire contract and made its bytes reach `observe`
+    as geometry, so the rule that guard states is now load-bearing for two
+    adapters rather than one: a body no parser recognized must never be
+    rehydrated as geometry, whichever page chair produced it. The branch is
+    adapter-agnostic already (`serving_call_ref` and `content_health.recordable`
+    are the only things it reads), and this is what says so -- without it the
+    claim rests on one chair's record and reads as Chandra's rule.
+
+    The blob is still read and digest-checked either way: the retained response
+    has to be present and still itself before this record may stand in for a
+    chair answer at all. Only whether it is offered as geometry depends on the
+    branch (GOVERNANCE 10 -- geometry from bytes nobody parsed is a measurement
+    nobody made).
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    context = open_live_context(live_run, run_root)
+    raw_response_ref = attestatores.retained_blob_ref(
+        context, CHURRO_UNRECOGNIZED_BODY.encode("utf-8")
     )
     record = {
         "outcome": "failed",

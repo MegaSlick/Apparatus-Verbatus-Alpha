@@ -2660,10 +2660,24 @@ def resolve_attempt(
                 raw_response = response["raw_response"].encode("utf-8")
                 # `FIXTURE_NATIVE_RESPONSE_ADAPTERS` is a one-member set and this
                 # block is Chandra's own: the retained view below is
-                # `chandra.FIXTURE_PROMPT`, the fixture's frozen declaration.
-                # Adding a second adapter to that set means writing that
-                # adapter's own branch here first, or its bytes would be filed
-                # under Chandra's model boundary (GOVERNANCE 6).
+                # `chandra.FIXTURE_PROMPT`, the fixture's frozen declaration, and
+                # the retain recipe is Chandra's `json` parser. Adding a second
+                # adapter to that set means writing that adapter's own branch
+                # here first, or its bytes would be filed under Chandra's model
+                # boundary (GOVERNANCE 6) -- a Testimonium whose retained view
+                # and parser name a chair that never produced it. The comment
+                # said so and nothing enforced it, so the refusal is written
+                # down: the coupling is between this set and this one recipe,
+                # and it fails closed at the moment the set widens rather than
+                # at whatever later reads the misfiled record.
+                if resolved.witness_adapter != "chandra.v1":
+                    raise SchemaRefusal(
+                        f"fixture raw_response for adapter {resolved.witness_adapter!r} would be "
+                        "retained through Chandra's recipe -- its own retained view, prompt and "
+                        "parser -- and filed under Chandra's model boundary; write that "
+                        "adapter's own fixture retain branch before adding it to "
+                        "FIXTURE_NATIVE_RESPONSE_ADAPTERS"
+                    )
                 adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
                 retained = adapter.retain(
                     context.tree,
@@ -4527,7 +4541,17 @@ def _page_capture_from_record(
     observation_payload = None
     if (
         capture is not None
-        and capture.get("adapter") == "chandra.v1"
+        # A property of the ADAPTER, read off its registry entry, exactly as
+        # `_derives_partition_from_response` reads it, and never a comparison
+        # against one adapter's name. `captured_page_attempt` carries the
+        # response bytes forward as `observation_payload` for every page-scoped
+        # adapter; a name comparison here answered that question for one of them
+        # and silently answered `False` for Churro, so a resumed live pass
+        # rebuilt Churro's page from the presented echo instead of its own boxes
+        # and the republished geometry disagreed with the sealed record
+        # (GOVERNANCE 4). An adapter with no runnable binding is refused loudly
+        # by `resolve_runnable_adapter` rather than answered `False` here.
+        and witness_adapters.resolve_runnable_adapter(capture["adapter"]).takes_page_size
         and capture["parse"]["state"] == "parsed"
         and record["outcome"] in WITNESS_READING_OUTCOMES
     ):
