@@ -1,7 +1,10 @@
 """Fixtures shared by tests that cross pipeline stage directories."""
 
+import hashlib
 import json
+import os
 import shutil
+import stat
 import tomllib
 from pathlib import Path
 
@@ -11,6 +14,85 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parent
+
+
+def tree_snapshot(root: Path) -> dict[str, str]:
+    """Every entry under `root`, described -- not only its regular files.
+
+    A refusal that tells the operator "Nothing was written" is a claim about a
+    directory, and the suites that check that claim compare a snapshot taken
+    before against one taken after. Filtering that snapshot by `is_file()` made
+    it unable to see most of what a half-finished refusal leaves behind: an
+    empty directory, a dangling symlink, a symlink to a directory, a fifo. Two
+    trees that differ by any of those compared equal, so the check passed by not
+    looking -- the shape GOVERNANCE 10 refuses, in the very test written to stop
+    a claim being taken on trust.
+
+    So every entry is described rather than skipped:
+
+    * a regular file, by the digest of its bytes -- names alone would miss an
+      overwrite of a file that already existed
+    * a directory, as a directory: a run root created and then disowned is a run
+      id claimed under inputs that were never accepted
+    * a symlink, by its target, **recorded without following it**. The link is
+      the thing that was left behind; where it points is somebody else's tree,
+      and a symlink to a directory read as a directory would report files this
+      run never wrote while hiding the link that reported them.
+    * anything else -- fifo, socket, device -- by a marker. What it is matters
+      less than that it appeared.
+
+    `os.walk` rather than `rglob`, and with `followlinks` left at its default:
+    the walk must not descend through a symlinked directory it has just recorded
+    as a symlink.
+
+    **`root` itself is described, under `"."`.** Describing only what is *under*
+    it left one blindness of exactly the shape above: `os.walk` of a path that
+    does not exist yields nothing, so a refusal that created the root and wrote
+    nothing into it produced the same empty snapshot as a refusal that created
+    nothing at all. That is not a detail -- the root is usually the run root,
+    and a run root that exists is a run id claimed under inputs that were
+    refused. A missing root is `{}` and an empty one is `{".": "directory"}`, so
+    the two can no longer compare equal, and every before/after probe that uses
+    this helper now also sees a root deleted, replaced, or swapped for a link
+    between its two snapshots.
+
+    A symlinked root is described and not walked, for the reason a symlinked
+    entry is: the link is what was left behind, and following it would report a
+    tree that lives somewhere else.
+    """
+
+    root = Path(root)
+    if not root.is_symlink() and not root.exists():
+        return {}
+    snapshot: dict[str, str] = {".": _describe(root)}
+    if root.is_symlink():
+        return snapshot
+    # A descendant the walk cannot read is not an absent descendant: `os.walk`'s
+    # default `onerror=None` drops the subtree in silence, and a refusal probe
+    # would then report "no tree change" over entries it never examined. The
+    # snapshot fails loudly instead (CodeRabbit round 3 on PR #91).
+    for parent, directory_names, file_names in os.walk(root, onerror=_raise_walk_error):
+        for name in (*directory_names, *file_names):
+            path = Path(parent) / name
+            snapshot[str(path.relative_to(root))] = _describe(path)
+    return dict(sorted(snapshot.items()))
+
+
+def _raise_walk_error(error: OSError) -> None:
+    """`os.walk` swallows scan errors by default; a snapshot may not."""
+    raise error
+
+
+def _describe(path: Path) -> str:
+    """One entry, as the snapshot records it -- the root included."""
+    if path.is_symlink():
+        return f"symlink -> {os.readlink(path)}"
+    mode = path.lstat().st_mode
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
+    return "irregular entry"
 
 
 def rebind_stage_seal_artifact(tree, stage: str, *, rewrite_manifest: bool = True) -> None:

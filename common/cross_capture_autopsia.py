@@ -92,10 +92,39 @@ def _reject_preference(value: Any) -> None:
     named refusal; the payload that reached the guard then left no record of
     what was wrong with it. Depth is the walk's own list here, so a deep payload
     is screened to the bottom exactly like a shallow one.
+
+    Depth was only half of it. The screen runs *before* `_view` proves any
+    shape, so the `views` it walks is arbitrary caller input, and
+    `build_autopsia` is called with in-memory lists rather than a document this
+    module parsed -- so a view that is its own ancestor reaches this walk. The
+    recursion this replaced ended such a payload by exhausting itself; a
+    worklist has none to exhaust, so it appended forever and hung the caller
+    instead of returning a named refusal. The enter/exit bookkeeping below is
+    the dossier sweep's, and it refuses through this screen's own
+    `SchemaRefusal`.
+
+    Only the containers open on the current path are tracked. A view object
+    genuinely shared between two entries is not a cycle and stays permitted --
+    it is refused later, by name, as a duplicate capture rather than here as a
+    loop.
     """
-    pending = [value]
+    pending: list[tuple[str, Any]] = [("value", value)]
+    open_path: set[int] = set()
     while pending:
-        current = pending.pop()
+        kind, current = pending.pop()
+        if kind == "exit":
+            open_path.discard(current)
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in open_path:
+                raise SchemaRefusal(
+                    "cross-capture autopsia: a presentation contains itself, so no sweep "
+                    "of it can terminate and a preference field below the loop could "
+                    "never be found; the presentation is refused"
+                )
+            open_path.add(marker)
+            pending.append(("exit", marker))
         if isinstance(current, dict):
             for key, item in current.items():
                 lowered = str(key).lower()
@@ -103,9 +132,9 @@ def _reject_preference(value: Any) -> None:
                     raise SchemaRefusal(
                         f"cross-capture autopsia: forbidden preference field {key!r}"
                     )
-                pending.append(item)
+                pending.append(("value", item))
         elif isinstance(current, list):
-            pending.extend(current)
+            pending.extend(("value", item) for item in current)
 
 
 def _view(row: Any) -> dict[str, Any]:

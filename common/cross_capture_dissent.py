@@ -115,9 +115,30 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
     # Iterative like its sibling screens (corpus_register, autopsia,
     # partition): the value is untrusted caller input, and depth must be this
     # walk's own list, never the interpreter stack.
-    pending = [value]
+    #
+    # And cycle-aware like all of them, by the same on-path bookkeeping: the
+    # record reaching `build_cross_capture_dissent` is the caller's own keyword
+    # structure, so a value that is its own ancestor gets here, and a worklist
+    # with no stack to exhaust would append forever rather than refuse. Only
+    # containers open on the current path are tracked, so a shared, non-cyclic
+    # sub-record is still screened wherever it appears.
+    pending: list[tuple[str, Any]] = [("value", value)]
+    open_path: set[int] = set()
     while pending:
-        current = pending.pop()
+        kind, current = pending.pop()
+        if kind == "exit":
+            open_path.discard(current)
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in open_path:
+                raise SchemaRefusal(
+                    "cross-capture dissent: the record contains itself, so no sweep of it can "
+                    "terminate and a forbidden field below the loop could never be found; the "
+                    "dissent record is refused"
+                )
+            open_path.add(marker)
+            pending.append(("exit", marker))
         if isinstance(current, dict):
             for key, item in current.items():
                 lowered = str(key).lower()
@@ -133,9 +154,9 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
                         "carries structural observations and image anchors, never a score, a rank, "
                         "or a variance number"
                     )
-                pending.append(item)
+                pending.append(("value", item))
         elif isinstance(current, list):
-            pending.extend(current)
+            pending.extend(("value", item) for item in current)
 
 
 def _span_or_gap_ref(value: Any) -> Any:
