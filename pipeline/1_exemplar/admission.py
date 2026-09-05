@@ -142,10 +142,15 @@ def inspect_source(
 ) -> AdmissionOutcome:
     """Decode one single-raster source and compare its declared digest.
 
-    A page container reaching here is a caller error rather than an outcome: the
-    door fans it out before this is ever called, so it raises instead of filing a
-    refusal the door would record as an artifact.  Everything else is decoded into
-    pixels before admission; extension spelling is never read.
+    The order below is the contract, and the container check is not first.  Empty
+    input, a digest mismatch and an oversized source are refused ahead of any
+    look at byte structure, so bytes failing one of those are refused as an
+    outcome whatever they would have sniffed as -- a page container included.
+    The caller-error raise applies only to what survives those three: a container
+    that gets that far was never fanned out by the door, and raising says so
+    rather than filing a refusal the door would record as an artifact.  A source
+    that is neither refused earlier nor a container is decoded into pixels before
+    admission; extension spelling is never read.
     """
     if not data:
         return AdmissionOutcome(
