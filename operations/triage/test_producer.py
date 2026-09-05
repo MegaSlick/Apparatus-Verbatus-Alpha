@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import copy
+import errno
+import hashlib
 import json
 import os
 from io import BytesIO
@@ -32,6 +35,29 @@ from operations.triage.producer import (
     routes_to_review,
     triage_manifest,
 )
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every byte under `root`, so a refusal's own claim can be checked.
+
+    The confirmation and destination guards tell the operator that nothing was
+    written. That is a statement about this directory, and until it is compared
+    against the directory it is a statement the suite takes on trust -- exactly the
+    shape GOVERNANCE 10 refuses, since a commit that retained the authority record
+    and then refused would still print it.
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
 
 
 def frame(
@@ -796,6 +822,124 @@ def test_confirmed_commit_refuses_case_collisions_and_authority_symlinks(tmp_pat
         )
     assert target.read_bytes() == canonical_bytes(confirmed)
     assert not (tmp_path / "register.json").exists()
+
+
+def _no_designation(_fresh, confirmed, _monkeypatch):
+    confirmed["clusters"][0]["pages"] = []
+    return {}
+
+
+def _not_a_filesystem_path(_fresh, _confirmed, _monkeypatch):
+    return {"manifest_path": 7}
+
+
+def _unresolvable_destination(fresh, _confirmed, monkeypatch):
+    """The only destination guard with no filesystem shape of its own to build."""
+    doomed = fresh / "unresolvable"
+    original = Path.resolve
+
+    def refuse(self, strict=False):
+        if self == doomed:
+            raise OSError(errno.EIO, "simulated resolution failure")
+        return original(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", refuse)
+    return {"manifest_path": doomed / "manifest.json"}
+
+
+def _colliding_spellings(fresh, _confirmed, _monkeypatch):
+    return {"manifest_path": fresh / "Door.json", "clusters_path": fresh / "door.json"}
+
+
+def _linked_authority(fresh, confirmed, _monkeypatch):
+    target = fresh / "outside-authority.json"
+    target.write_bytes(canonical_bytes(confirmed))
+    (fresh / "authority.json").symlink_to(target)
+    return {}
+
+
+def _irregular_destination(fresh, _confirmed, _monkeypatch):
+    os.mkfifo(fresh / "clusters.json")
+    return {}
+
+
+def _one_file_under_two_names(fresh, _confirmed, _monkeypatch):
+    (fresh / "manifest.json").write_bytes(b"{}\n")
+    os.link(fresh / "manifest.json", fresh / "clusters.json")
+    return {}
+
+
+@pytest.mark.parametrize(
+    ("build", "named"),
+    (
+        pytest.param(_no_designation, "no physical-page designation", id="no-designation"),
+        pytest.param(_not_a_filesystem_path, "is not a filesystem path", id="not-a-path"),
+        pytest.param(_unresolvable_destination, "could not be resolved", id="unresolvable"),
+        pytest.param(_colliding_spellings, "case-insensitive filesystem", id="case-collision"),
+        pytest.param(_linked_authority, "is a symbolic link", id="symlink"),
+        pytest.param(_irregular_destination, "is not a regular file", id="irregular"),
+        pytest.param(_one_file_under_two_names, "name one file", id="one-inode"),
+    ),
+)
+def test_a_refused_confirmed_commit_wrote_nothing_it_disowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build, named: str
+):
+    """Every "nothing was written" on the commit path, measured against the tree.
+
+    The tests above check the named cause and, where the directory happens to be
+    empty, that it stayed empty. Neither reaches the sentence an operator acts on:
+    the advice is to correct the path and retry, and a retry is only safe while the
+    refused attempt left the corpus exactly as it found it. `commit_confirmed_production`
+    retains the authority record *before* it appends to the register, so a guard that
+    slipped below that write would leave an immutable confirmation record claiming a
+    membership the register never received -- and the message would still print.
+
+    A committed production is laid down first so the comparison has real bytes to
+    disturb: an empty-directory assertion cannot see an overwrite, and the register
+    is the file whose loss would be least recoverable. The assertion names the paths
+    that moved, because "one file changed" does not say which.
+    """
+    frames = [frame("63"), frame("64")]
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    confirmed, recipe, evidence_manifest, evidence = confirmation(frames)
+    common = {
+        "corpus_id": "synthetic",
+        "mode": "auto",
+        "instrument_recipe": recipe,
+        "evidence_manifest": evidence_manifest,
+        "evidence_records": evidence,
+    }
+    commit_confirmed_production(
+        frames,
+        confirmation=confirmed,
+        register_path=prior / "register.json",
+        manifest_path=prior / "manifest.json",
+        clusters_path=prior / "clusters.json",
+        authority_path=prior / "authority.json",
+        **common,
+    )
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    attempt = copy.deepcopy(confirmed)
+    destinations = {
+        "register_path": fresh / "register.json",
+        "manifest_path": fresh / "manifest.json",
+        "clusters_path": fresh / "clusters.json",
+        "authority_path": fresh / "authority.json",
+    }
+    destinations.update(build(fresh, attempt, monkeypatch))
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ProducerRefusal) as refusal:
+        commit_confirmed_production(frames, confirmation=attempt, **destinations, **common)
+
+    assert named in str(refusal.value)
+    assert "nothing was written" in str(refusal.value)
+    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the tree it disowned"
+    )
 
 
 def test_temporary_cleanup_failure_does_not_mask_a_producer_refusal(

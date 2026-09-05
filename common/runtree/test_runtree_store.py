@@ -12,6 +12,7 @@ filesystem behaviour.
 """
 
 import errno
+import hashlib
 import inspect
 import json
 import os
@@ -42,12 +43,20 @@ from common.runtree.store import (
     RunTree,
     _default_corpus_frame_membership,
 )
+from conftest import tree_snapshot
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
 CONFIG_DIGEST = "c" * 64
 RECIPES = {"designator": "fake-designator-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths a refusal moved, named -- a count would not say which file to look at."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
 
 
 def make_run(tmp_path, run_id="r1", **overrides):
@@ -479,13 +488,125 @@ def test_reusing_a_run_id_with_changed_ingress_evidence_is_refused(tmp_path):
         make_run(tmp_path, ingress={"mode": "real"})
 
 
-def test_an_incompatible_reuse_writes_nothing(tmp_path):
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    (
+        ({"config_digest": "d" * 64}, "config_digest"),
+        ({"adapter_recipes": {"designator": "fake-designator-v1"}}, "adapter_recipes"),
+        ({"witness_chairs": ["attestator_1", "attestator_2"]}, "witness_chairs"),
+    ),
+)
+def test_an_incompatible_reuse_writes_nothing(tmp_path, overrides, field):
+    """The refusal's own sentence, measured against the tree rather than read.
+
+    "this is a different run wearing an old name. Nothing was written" is advice as
+    much as a diagnosis: an operator who believes it re-runs under a fresh id and
+    expects the old tree to be exactly what the earlier run left. A reuse that
+    rewrote `run.json` under the new bindings before refusing would make the
+    existing artifacts describe a configuration no longer recorded beside them,
+    and the message would still print.
+
+    Names alone are not enough -- the defect this closes overwrites a file that
+    already exists, so the comparison is over content. Each parameter changes one
+    bound field, so the refusal can only be about that field, and the assertion
+    names the paths that moved rather than only counting them.
+    """
     tree = make_run(tmp_path)
     tree.publish_artifact(make_envelope())
-    before = sorted(path.name for path in (tmp_path / "r1").rglob("*"))
-    with pytest.raises(IncompatibleReuse):
-        make_run(tmp_path, config_digest="d" * 64)
-    assert sorted(path.name for path in (tmp_path / "r1").rglob("*")) == before
+    before = tree_snapshot(tmp_path)
+
+    with pytest.raises(IncompatibleReuse) as caught:
+        make_run(tmp_path, **overrides)
+
+    assert field in str(caught.value)
+    assert "Nothing was written" in str(caught.value)
+    assert _stray_writes(before, tree_snapshot(tmp_path)) == [], (
+        "the refusal wrote to the run tree it disowned"
+    )
+
+
+def test_the_shared_snapshot_reports_what_a_refusal_leaves_that_is_not_a_file(tmp_path):
+    """The comparison above is only as strong as what the snapshot can see.
+
+    Filtered by `is_file()`, it saw regular files and nothing else, so a refusal
+    that created a directory and stopped -- the ordinary shape of a half-done
+    write -- left a tree that compared equal to one where nothing happened. Each
+    case here is something a store can leave behind on the way to refusing, and
+    each is asserted to move the snapshot.
+    """
+    root = tmp_path / "run"
+    (root / "artifacts").mkdir(parents=True)
+    (root / "artifacts" / "kept.json").write_bytes(b"{}")
+    before = tree_snapshot(root)
+
+    # The case CodeRabbit named: a refusal that created a stage directory and
+    # wrote nothing into it. Invisible to a file-only snapshot.
+    (root / "blobs").mkdir()
+    after = tree_snapshot(root)
+    assert _stray_writes(before, after) == ["blobs"]
+    assert after["blobs"] == "directory"
+
+    # A dangling symlink: `is_file()` is False because the target is absent, so
+    # a file-only snapshot could not report the name that was claimed.
+    (root / "dangling").symlink_to(root / "never-written")
+    assert _stray_writes(after, tree_snapshot(root)) == ["dangling"]
+
+    # A symlink to a directory, recorded as the link rather than walked as the
+    # directory: what matters is that a name inside the run tree now points out
+    # of it, not what the target happens to contain today.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "not-ours.json").write_bytes(b"{}")
+    (root / "escape").symlink_to(outside)
+    escaped = tree_snapshot(root)
+    assert escaped["escape"] == f"symlink -> {outside}"
+    assert "escape/not-ours.json" not in escaped
+
+    # An irregular entry -- a fifo left by an interrupted write -- is reported as
+    # one rather than skipped for not being a regular file.
+    os.mkfifo(root / "half-written.fifo")
+    fifos = tree_snapshot(root)
+    assert fifos["half-written.fifo"] == "irregular entry"
+
+    # The file that was there all along is still reported by content, so nothing
+    # above was bought by loosening the original check.
+    assert fifos["artifacts/kept.json"] == f"file {hashlib.sha256(b'{}').hexdigest()}"
+
+
+def test_the_shared_snapshot_tells_a_missing_root_from_an_empty_one(tmp_path):
+    """The blindness one level up from the ones above: the root itself.
+
+    Describing only what was *under* the root meant `os.walk` of a path that
+    does not exist yielded nothing, and an existing but empty root yielded
+    nothing either -- so the two compared equal. A probe asserting that a
+    refusal "wrote nothing" then passed on the state it was written to catch: a
+    run root created, claimed, and left behind under inputs that were refused.
+
+    `pipeline/test_decoding_seal.py` carried exactly that assertion, and this is
+    the property that lets it be tightened to require absence rather than
+    emptiness.
+    """
+    missing = tmp_path / "never-created"
+    assert tree_snapshot(missing) == {}
+
+    missing.mkdir()
+    assert tree_snapshot(missing) == {".": "directory"}
+
+    # The root is described the way any other entry is, so a root replaced by a
+    # link out of the tree is reported as the link and not walked as what it
+    # points at.
+    outside = tmp_path / "elsewhere"
+    (outside / "not-ours").mkdir(parents=True)
+    linked = tmp_path / "linked-root"
+    linked.symlink_to(outside)
+    assert tree_snapshot(linked) == {".": f"symlink -> {outside}"}
+
+    # And the entries under a real root are still reported beside it.
+    (missing / "kept.json").write_bytes(b"{}")
+    assert tree_snapshot(missing) == {
+        ".": "directory",
+        "kept.json": f"file {hashlib.sha256(b'{}').hexdigest()}",
+    }
 
 
 def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
@@ -2194,3 +2315,22 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
 
     with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         tree.build_manifest(DESIGNATOR)
+
+
+def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_path):
+    """A subtree the walk cannot open is reported, never silently omitted.
+
+    `os.walk`'s default drops an unreadable descendant and moves on, so a
+    refusal probe comparing two snapshots would see "no change" over entries
+    it never examined (CodeRabbit round 3 on PR #91).
+    """
+    root = tmp_path / "root"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    (locked / "inside").write_bytes(b"x")
+    locked.chmod(0)
+    try:
+        with pytest.raises(OSError):
+            tree_snapshot(root)
+    finally:
+        locked.chmod(0o700)
