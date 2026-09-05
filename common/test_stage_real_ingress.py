@@ -870,9 +870,15 @@ def test_a_residual_row_naming_the_wrong_page_ordinal_is_refused_by_name(real_ro
     named field, so the review item would arrive filed under a page whose ink
     it is not. `hold_residual_act` records the ordinal beside the rectangle;
     the two must agree.
+
+    The proposal beside it is served (`propose_served`) because a real-ingress
+    proposal-class row owes `expected_acts` the chair call its seal provenance
+    names, and every row is classified before any minted row is recomputed. An
+    unserved proposal here would refuse for its own missing `engine_call`, and
+    this test would never reach the residual it is about.
     """
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
     designator.rows[-1]["page_ordinal"] = 1
     designator.seal()
@@ -887,10 +893,10 @@ def test_a_residual_row_naming_a_foreign_act_key_is_refused_by_name(real_root):
 
     The same hole as the ordinal above: `act_key` is what a reviewer and every
     downstream join see, and a row is free to name one its own hold never
-    recorded.
+    recorded. The proposal beside it is served for the reason given above.
     """
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
     designator.rows[-1]["act_key"] = "residual:2:41"
     designator.seal()
@@ -907,10 +913,12 @@ def test_a_real_minted_row_in_no_admitted_outcome_is_told_about_the_structural_p
     here, which is in the Designator's own vocabulary -- was told it "is not
     declared in the sealed fixture", naming a declaration a real run does not
     have and sending an operator to look for it. The other two refusals in this
-    function already say `beyond`; this one now does as well.
+    function already say `beyond`; this one now does as well. The proposal
+    beside the minted row is served, so the row under test is the one that
+    refuses.
     """
     designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
+    designator.propose_served(1, designator.rectangle(1))
     designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
     designator.rows[-1]["outcome"] = "excluded"
     designator.seal()
