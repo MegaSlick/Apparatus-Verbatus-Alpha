@@ -33,6 +33,11 @@ RUN_PLAN_APPROVAL_SUBJECT = "spec05-run-plan-approval.v1"
 DATA_GATE_POLICY_IDENTITY = "verbatus-data-handling-policy"
 DATA_GATE_POLICY_REPOSITORY_PATH = "config/data_handling_policy.json"
 
+# How deep approval evidence may nest before `_deep_freeze` refuses it. Real
+# evidence is a handful of levels; the bound exists so a damaged policy or
+# approval record is named rather than exhausting the interpreter stack.
+MAX_EVIDENCE_DEPTH = 64
+
 
 def _resolve_authoritative_data_gate_policy() -> Mapping[str, Any]:
     """Read the one repository policy home; callers cannot substitute a snapshot."""
@@ -44,13 +49,26 @@ def _resolve_authoritative_data_gate_policy() -> Mapping[str, Any]:
     return load_policy(DEFAULT_POLICY_PATH)
 
 
-def _deep_freeze(value: Any) -> Any:
-    """Detach and recursively freeze JSON-shaped approval evidence."""
+def _deep_freeze(value: Any, depth: int = 0) -> Any:
+    """Detach and recursively freeze JSON-shaped approval evidence.
 
+    Bounded rather than rewritten with an explicit stack. This walks approval
+    records and a policy file read from the repository, so the depth is small
+    and repository-internal -- but a damaged or hand-edited policy is exactly
+    the case this module exists to refuse by name, and an unbounded recursive
+    freeze would answer it with a `RecursionError` naming neither the record nor
+    the field. The bound follows `operations/submit/inventory.py::_walk`.
+    """
+
+    if depth > MAX_EVIDENCE_DEPTH:
+        raise DisclosureRefusal(
+            f"approval evidence nests deeper than {MAX_EVIDENCE_DEPTH} levels; a record "
+            "that deep cannot be frozen or digested, and nothing may be approved against it"
+        )
     if isinstance(value, Mapping):
-        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+        return MappingProxyType({key: _deep_freeze(item, depth + 1) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
-        return tuple(_deep_freeze(item) for item in value)
+        return tuple(_deep_freeze(item, depth + 1) for item in value)
     return value
 
 

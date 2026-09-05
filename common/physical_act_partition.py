@@ -67,18 +67,42 @@ def _refuse_textual(value: Any) -> None:
     walked recursively exhausted the interpreter stack and raised
     ``RecursionError`` -- a crash naming nothing, where this module's whole
     purpose is to refuse by name. Depth is this walk's own list now.
+
+    A cycle is refused rather than looped on, for the same reason and with the
+    same on-path bookkeeping every screen in the family now carries: the
+    recursion this replaced ended a self-referential payload by exhausting
+    itself, and a worklist has no stack to exhaust. The proposal components
+    reaching `_refuse_textual` are the caller's own objects, not something this
+    module parsed, so the shape is reachable. Only containers open on the
+    current path are tracked, so a component shared between siblings is still
+    walked wherever it appears.
     """
-    pending = [value]
+    pending: list[tuple[str, Any]] = [("value", value)]
+    open_path: set[int] = set()
     while pending:
-        current = pending.pop()
+        kind, current = pending.pop()
+        if kind == "exit":
+            open_path.discard(current)
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in open_path:
+                raise SchemaRefusal(
+                    "correspondence proposal: a proposal contains itself, so no sweep of "
+                    "it can terminate and textual evidence below the loop could never be "
+                    "found. Rebuild the proposal from values that are not their own "
+                    "ancestors."
+                )
+            open_path.add(marker)
+            pending.append(("exit", marker))
         if isinstance(current, dict):
             if set(current) & _TEXTUAL_FIELDS:
                 raise SchemaRefusal(
                     "correspondence proposal: textual evidence cannot match physical acts"
                 )
-            pending.extend(current.values())
+            pending.extend(("value", item) for item in current.values())
         elif isinstance(current, list):
-            pending.extend(current)
+            pending.extend(("value", item) for item in current)
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
