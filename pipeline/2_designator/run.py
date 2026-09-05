@@ -2719,7 +2719,17 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         tiled = {
             **analysis,
             "structure_evidence": "fallback-tiles",
-            "groups": grouping.fallback_tiles(analysis["width"], analysis["height"]),
+            # The page's own resolved sealed grouping policy, exactly as the
+            # fixture path passes it (`_analyze_page`): the live path decides
+            # *when* a page is tiled from the chair's answer, never under what
+            # thresholds, and a grid cut under numbers nobody sealed for this
+            # run would be a crop policy the run authority does not cover.
+            "groups": grouping.fallback_tiles(
+                analysis["width"],
+                analysis["height"],
+                bands=analysis["thresholds"].fallback_bands,
+                overlap_px=analysis["thresholds"].fallback_overlap_px,
+            ),
         }
         row = _publish_page_fallback(
             context,

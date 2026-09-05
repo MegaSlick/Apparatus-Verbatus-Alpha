@@ -1414,10 +1414,36 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # canonical run id "r", through this module's own `orchestrate` and
 # `semantic_snapshot_digest`; happy exited 0 and review exited 3 in both
 # roots, and the two roots agreed exactly.
+# Section D re-pin, and the cause is one line of configuration.
+# `config/decoding.toml` gained a `[structure]` section: the Designator's
+# structure pass runs under its own sealed decoding posture and never under
+# `reading_of_record` (Tyrel, 2026-09-02), and `common/decoding.py` requires the
+# section rather than treating it as optional, so the shipped file carries it.
+# Every run seals that file's bytes, so its digest moved
+# (aafb4c8bec41e46ed8d1af8f3e9ec4545e8a2a32c6787999327f6068dcdeb0e3 ->
+# 6d44e38e9ea95e0f4c71ec6b7821504a1b62dc8a37d16fd911b2c602cfd8c883), which moves
+# `run.json`'s `sealed_config_digests.decoding`, its `config_digest`
+# (0d82d625... -> e8c854ee...) and its `self_hash`, and every digest computed
+# over those downstream. Nothing else in Section D reaches a fixture run: the
+# structure pass itself runs only under a served `vllm` row for
+# `designator_structure`, which neither scenario seals.
+#
+# Checked, not assumed. Both trees were built and compared leaf by leaf against
+# the pre-Section-D tree: happy 75 changed files / 391 changed JSON leaves,
+# review 87 / 445, and **not one of them is a non-digest field** -- every changed
+# leaf is a 64-hex digest or a content-addressed blob path, plus one renamed blob
+# per scenario in `4_perlector` and `7_armarium` whose own name is its content
+# digest. In `run.json` exactly three leaves differ, and they are the three named
+# above. The snapshot counts and exit codes are unmoved: happy 96 files at exit
+# 0, review 107 at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
+# roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "2a6d2373b486ecb0e0810f54655266bf28452c3162b09dd9b5e9923fe132972d"
-REVIEW_RUN_TREE_DIGEST = "6432086b117cfc0b58b3e9636a046a0e0e8007eec4de8f603102bb074454754f"
+HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
+REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
 
 
 def orchestrate(
@@ -1434,6 +1460,7 @@ def orchestrate(
     submission_folder: Path | None = None,
     submission_manifest: Path | None = None,
     data_gate_policy: Path | None = None,
+    placement_tier: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
@@ -1483,6 +1510,8 @@ def orchestrate(
         command.extend(("--submission-manifest", str(submission_manifest)))
     if data_gate_policy is not None:
         command.extend(("--data-gate-policy", str(data_gate_policy)))
+    if placement_tier is not None:
+        command.extend(("--placement-tier", placement_tier))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -1517,9 +1546,12 @@ def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path)
         data_gate_policy=policy,
     )
 
-    # This unit ends at the Door; real Designator work remains an explicit refusal.
+    # This unit ends at the Door. The Designator now has a live structural pass
+    # (`structure_pass.py`), but this orchestration seals the fixture catalogue,
+    # and a real submission under it is refused by name rather than marked out
+    # by an ink scan standing in for a model.
     assert result.returncode != 0
-    assert "real structural proposal/model work is outside System 03" in result.stderr
+    assert "a real submission may not be marked out by the fixture structure chair" in result.stderr
     run_record = RunTree(approved / "runs", "real-ingress").read_run()
     assert run_record["ingress"] == {"mode": "real"}
 
@@ -1544,7 +1576,7 @@ def test_real_designator_refuses_a_missing_ink_map_boundary(tmp_path):
         submission_manifest=manifest,
         data_gate_policy=policy,
     )
-    assert "real structural proposal/model work is outside System 03" in first.stderr
+    assert "a real submission may not be marked out by the fixture structure chair" in first.stderr
 
     tree = RunTree(root, "real-ink-map-boundary")
     _stage_seal_path(tree, INK_MAP).unlink()
@@ -1716,12 +1748,17 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
     recipes = ROOT / "config" / "serving_recipes_real.toml"
     run_root = tmp_path / "runs"
 
+    # The tier is what the real catalogue's live rows require to resolve at all:
+    # without it the Designator now refuses for the missing tier
+    # (`serving_mode_for`) and never reaches the roster's own materialization
+    # sentinel, which is the refusal this test is about.
     result = orchestrate(
         run_root,
         "r",
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
+        placement_tier="generic-48gb",
     )
 
     assert result.returncode == 2
@@ -1924,7 +1961,7 @@ def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
         submission_manifest=manifest,
         data_gate_policy=policy,
     )
-    assert "real structural proposal/model work is outside System 03" in first.stderr
+    assert "a real submission may not be marked out by the fixture structure chair" in first.stderr
     sealed = RunTree(approved / "runs", "seam").read_run()
 
     resumed = orchestrate(approved / "runs", "seam", "happy")

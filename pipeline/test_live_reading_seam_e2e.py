@@ -242,9 +242,10 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator keeps its fixture rows: it has no live reader, and writing
-    launch figures beside a chair nothing will start would put a serving claim
-    in a catalogue for a stage that cannot honour it. Every other configured
+    The Designator keeps its fixture rows: this module's subject is the reading
+    seam, and a live row for `designator_structure` would start its structure
+    pass instead (`pipeline/2_designator/structure_pass.py`, exercised end to end
+    in `pipeline/test_structure_chair_e2e.py`). Every other configured
     chair is live at all three tiers, which is also what
     `verify_recipes_cover_chairs` requires of any catalogue a real run seals.
     """

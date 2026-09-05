@@ -146,7 +146,6 @@ PAGE_TWO_ACTS = (({"x": 20, "y": 20, "w": 160, "h": 60}, "SYNTHETIC ACT THREE th
 ACTS_BY_PAGE = {1: PAGE_ONE_ACTS, 2: PAGE_TWO_ACTS}
 ACT_KEYS = ("proposal:1:0", "proposal:1:1", "proposal:2:0")
 SCRIPTED_TEXTS = tuple(text for page in ACTS_BY_PAGE.values() for _bounds, text in page)
-READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
 # ------------------------------ the tmp catalogue -----------------------------
@@ -424,10 +423,14 @@ def whole_run(designated, marked_out) -> SimpleNamespace:
         )
         == EXIT_COMPLETE
     )
+    # `finish_reason` only: `ReaderWorld` scripts its own answer per request,
+    # derived from the pixels the reading actually carried
+    # (`test_live_reading_seam_e2e.VaryingReadingEndpoint`), so a fixed answer
+    # cannot be handed to it and nothing here asserts the reading's text.
     reader = ReaderWorld(
         designated.catalogue,
         designated.work / "reader",
-        ScriptedAnswer(content=READING, finish_reason="stop"),
+        finish_reason="stop",
     )
     assert (
         run_in_process(
