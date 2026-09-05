@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any, Final
 
+from common import churro_response
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
@@ -67,7 +68,11 @@ PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 # beyond an OCR transcription -- while giving the XML parser and the post-hoc
 # repetition scan a hard ceiling when a provider ignores that request bound.
 CHURRO_OUTPUT_TOKENS: Final = 24_000
-CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+# One name, so the chair's two legal shapes cannot acquire two intake bounds.
+# The number is declared beside the wire contract that also has to enforce it
+# (`common/churro_response.py`), and re-exported here because this module is
+# where `validate_churro_xml` and `derive_churro_capture` read it.
+CHURRO_MAX_RESPONSE_BYTES: Final = churro_response.MAX_RESPONSE_BYTES
 _CHURRO_REPETITION_WINDOW: Final = 24
 _CHURRO_REPETITION_MIN_REPEATS: Final = 3
 
