@@ -278,6 +278,21 @@ def test_the_layout_prompt_version_names_the_wording_and_is_not_in_the_record():
     assert CHURRO_LAYOUT_PROMPT_VERSION not in churro_layout_prompt()["system"]
 
 
+def test_the_runnable_parser_names_are_exactly_the_ones_the_capture_contract_admits():
+    """Two modules name this chair's parsers; a drift would strand one posture.
+
+    `feeding` decides which `(adapter, parser)` pairs may be asked for, and
+    `common/native_witness.py::CHURRO_PARSERS` decides which a retained capture
+    may carry. A name in one and not the other is either a parse this boundary
+    can ask for and no record may hold, or a record shape nothing can produce.
+    """
+    from common.native_witness import CHURRO_PARSERS
+
+    assert {
+        parser for adapter, parser in feeding._RUNNABLE_PARSERS if adapter == "churro.v1"
+    } == set(CHURRO_PARSERS)
+
+
 def test_both_churro_parser_names_run_and_no_third_one_does():
     tree = _Tree()
     for parser in ("xml", "churro"):

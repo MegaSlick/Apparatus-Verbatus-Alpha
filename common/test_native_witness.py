@@ -1582,3 +1582,16 @@ def test_a_live_capture_cannot_be_re_derived_under_the_fixture_parser_name():
     capture["parse"] = {**capture["parse"], "parser": "xml"}
     with pytest.raises(SchemaRefusal, match="differs from its retained raw response"):
         verify_native_capture_bytes(capture, _WIRE)
+
+
+def test_a_parse_state_that_names_no_refusal_is_refused_rather_than_raising_a_key_error():
+    """The failure mode this helper was extracted to remove, pinned in both directions."""
+    from common.native_witness import native_parse_refusal
+
+    assert native_parse_refusal({"state": "failed", "reason": "unparseable"}) == "unparseable"
+    assert native_parse_refusal({"state": "unrecognized-shape", "outcome": "invalid-json"}) == (
+        "the response shape was not recognized: invalid-json"
+    )
+    for state in ("parsed", "pending", "not-requested"):
+        with pytest.raises(SchemaRefusal, match="carries no refusal to name"):
+            native_parse_refusal({"state": state, "text": "x"})

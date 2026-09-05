@@ -1100,7 +1100,16 @@ def native_parse_refusal(parse: dict[str, Any]) -> str:
     """
     if parse["state"] == "failed":
         return parse["reason"]
-    return f"the response shape was not recognized: {parse['outcome']}"
+    if parse["state"] == "unrecognized-shape":
+        return f"the response shape was not recognized: {parse['outcome']}"
+    # Never reached by either caller -- both take this path only after their
+    # `parsed` branches have returned -- and stated rather than left to a
+    # `KeyError` from inside a contract check, which is the failure mode this
+    # helper exists to have removed once already.
+    raise SchemaRefusal(
+        f"a {parse['state']!r} native parse record carries no refusal to name; "
+        "only a failed or unrecognized-shape parse describes one"
+    )
 
 
 def validate_churro_xml(raw: bytes) -> str:

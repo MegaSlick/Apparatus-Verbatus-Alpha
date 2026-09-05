@@ -454,31 +454,37 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
     )
 
 
-def _reported_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep only what a page-edge finding may be made of, re-densifying ordinals.
+def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reported boxes a page partition may be derived from, or a named refusal.
 
     `split_page_edge_overshoots` admits `native` and `derived` boxes and refuses
     a `presented` echo by name: an echo restates the image the chair was shown,
     so turning one into a page-edge finding would report as witness geometry
     something no witness reported. Chandra's `observe` returns an empty list for
     a body with no layout and so never handed one over; Churro's returns the
-    honest echo instead, and generalizing this branch off the adapter's name made
-    that difference reachable rather than created it.
+    honest echo instead, and generalizing the partition branch off the adapter's
+    name made that difference reachable rather than created it.
 
-    Dropping the echo here loses nothing and hides nothing. The partition of a
-    response that reported no geometry is empty, which is what the branch below
-    already detects (`captured_geometry and not observed`), and it then puts the
-    presentation echo back through `observed_from_presentation` -- the one path
-    that owns "a page with no reported geometry" for every adapter. Ordinals are
-    rebuilt dense and 0-based because the page-edge check requires that and
-    reads them as the response's own order.
+    Three cases, and the third is the point. All reported: the list, unchanged.
+    None reported: empty, which is what the caller already detects as "this
+    response reported no geometry" and answers by putting the presentation echo
+    back through `observed_from_presentation` -- the one path that owns that
+    fact for every adapter, so nothing is dropped and nothing is invented.
+    **A mix is refused**, not filtered: no adapter today returns one, and an
+    adapter that began to would be saying something this partition has no rule
+    for. Silently keeping half of it would publish a page geometry nobody
+    designed and no reader could tell from a complete one (GOVERNANCE 2).
     """
-    return [
-        {**item, "ordinal": ordinal}
-        for ordinal, item in enumerate(
-            item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES
+    reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
+    if reported and len(reported) != len(observed):
+        raise SchemaRefusal(
+            "a page witness reported geometry and a presentation echo in one response. "
+            "A partition derived from half of that record would look complete. "
+            "Return reported geometry or the no-geometry echo, not both."
         )
-    ]
+    # Ordinals stay dense and 0-based, which the page-edge check requires and
+    # reads as the response's own order. Untouched when nothing was filtered.
+    return reported
 
 
 def page_partition_entries(
@@ -2987,24 +2993,19 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
-    if (
-        presented
-        and takes_page_size
-        and all(item["bounds_source"] in REPORTED_BOUNDS_SOURCES for item in observed)
-    ):
+    # Reported geometry only, through the same helper the page partition uses, so
+    # the two seams cannot come to disagree about what a mixed response means:
+    # all reported passes through, none reported is empty, a mix is refused by
+    # name rather than half-kept. Chandra never reached this at all -- its
+    # `observe` returns an empty list for a body with no layout -- while Churro's
+    # returns the honest `presented` echo, so generalizing this branch to the
+    # adapter made the case visible. An echo needs no split: it restates the
+    # presentation, which is inside its own page by construction, and routing and
+    # coverage exclude it anyway.
+    if presented and takes_page_size and (reported := _partition_geometry(observed)):
         # The act view cannot retain partition findings, but it must exclude an
         # overshoot so one bad block does not prevent the page record retaining it.
-        #
-        # Reported geometry only, because the page-edge check admits only that
-        # and refuses a presentation echo by name. Chandra never reached the
-        # refusal -- its `observe` returns an empty list for a body with no
-        # geometry, and an empty list vacuously satisfies the guard. Churro's
-        # returns the honest `presented` echo instead, so generalizing this
-        # branch to the adapter made the difference visible. Skipping the split
-        # for an echo loses nothing: an echo restates the presentation, which is
-        # inside its own page by construction, and it is excluded from routing
-        # and coverage anyway.
-        observed, _ = split_page_edge_overshoots(observed, page_size=sealed_page_size)
+        observed, _ = split_page_edge_overshoots(reported, page_size=sealed_page_size)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -3680,7 +3681,7 @@ def publish_page_testimonia_and_attachments(
                     ):
                         page_response_refs.append(reference)
                     source_observed, overshoots = page_partition_entries(
-                        _reported_geometry(adapter.observe(presented, raw, page_size=page_size)),
+                        _partition_geometry(adapter.observe(presented, raw, page_size=page_size)),
                         page_size=page_size,
                         raw_response_ref=reference,
                     )

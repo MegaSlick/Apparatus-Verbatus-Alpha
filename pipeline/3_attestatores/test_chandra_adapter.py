@@ -1094,3 +1094,33 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
     )
     assert out_of_order.returncode == 2
     assert not list((held_root / "r" / ATTESTATORES / "artifacts" / "stage-seal").glob("*.json"))
+
+
+def test_a_page_witness_that_mixed_reported_geometry_with_an_echo_is_refused_by_name():
+    """The partition seam fails closed on a shape no adapter has a rule for.
+
+    Both page adapters return either reported geometry or the no-geometry echo,
+    never both, so this is unreachable today. Filtering a mix instead of refusing
+    it would publish a page geometry derived from half a record and
+    indistinguishable from a complete one (GOVERNANCE 2), which is why the
+    behaviour is pinned rather than left to the adapters' current manners.
+    """
+    attestatores = _load_stage_module("run")
+    echo = {
+        "ordinal": 0,
+        "bounds": {"x": 0, "y": 0, "w": 4, "h": 4},
+        "bounds_source": "presented",
+        "span": None,
+    }
+    native = {
+        "ordinal": 1,
+        "bounds": {"x": 1, "y": 1, "w": 2, "h": 2},
+        "bounds_source": "native",
+        "span": None,
+    }
+
+    assert attestatores._partition_geometry([]) == []
+    assert attestatores._partition_geometry([echo]) == []
+    assert attestatores._partition_geometry([native]) == [native]
+    with pytest.raises(SchemaRefusal, match="reported geometry and a presentation echo"):
+        attestatores._partition_geometry([echo, native])
