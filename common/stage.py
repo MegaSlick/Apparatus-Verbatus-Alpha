@@ -115,6 +115,11 @@ DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" 
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
 )
+# The `source` value a chair carries when it is a local fixture snapshot rather
+# than a published model repository. Named here because the witness-context
+# binding asks exactly that question of every witness chair: the shipped
+# declaration's sentence is true only of chairs that really are fixtures.
+FIXTURE_CHAIR_SOURCE: Final = "local-repository"
 DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "perlector_protocol.toml"
 )
@@ -1889,6 +1894,50 @@ def validate_witness_context_bindings(
             f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
             "configured witness chair; a misspelt chair here would silently lose its witness"
         )
+    # The declaration and the roster select one reading together. The shipped
+    # declaration at DEFAULT_WITNESS_CONTEXT_CONFIG_PATH says of every chair that
+    # it is "a synthetic fixture witness; no real training domain applies", and
+    # under the `named` regime that sentence is handed to the Perlector as fact
+    # about the witness whose testimony it is reading
+    # (`pipeline/4_perlector/prompts.py`). Left at that default beside
+    # `config/models-real.toml`, it tells the reader that Chandra-2,
+    # DAI-RecordGold and Churro-3B are fixtures -- the exact opposite of
+    # GOVERNANCE 7's "feed it completely and honestly", on the first real call.
+    # `config/witness_context-real.toml` is the declaration that roster is read
+    # under, named on `--witness-context-config` exactly as the roster is named
+    # on `--models-config`; no new configuration key exists for this.
+    #
+    # The test is what the roster says the chair IS, not which file it came from.
+    # The fixture roster's witnesses are `source = "local-repository"` -- a few
+    # deterministic bytes standing in for a model repository, which is precisely
+    # the fact the default declaration asserts -- while a witness resolved from a
+    # published model repository is a real model whatever path its roster sits
+    # at. A filename comparison would both miss a real chair written into a
+    # differently named roster and refuse an ordinary moved copy of the fixture
+    # one.
+    #
+    # Refused whatever the regime: under `blinded` the sentence is withheld from
+    # the dossier, but the run still seals a declaration saying its real chairs
+    # are synthetic, and that record outlives the regime it was sealed under
+    # (GOVERNANCE 6).
+    if Path(witness_context_config_path).resolve() == (
+        DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.resolve()
+    ):
+        published = sorted(
+            chair
+            for chair in models.witness_chairs
+            if getattr(models.chairs.get(chair), "source", FIXTURE_CHAIR_SOURCE)
+            != FIXTURE_CHAIR_SOURCE
+        )
+        if published:
+            raise ContractError(
+                f"witness chair(s) {published} resolve to a published model repository, and "
+                f"--witness-context-config was left at {DEFAULT_WITNESS_CONTEXT_CONFIG_PATH}, "
+                "which describes every witness as a synthetic fixture with no real training "
+                "domain. Sealing that beside real chairs tells the Perlector its real "
+                "witnesses are fixtures. Name the declaration this roster is read under, for "
+                "example config/witness_context-real.toml with config/models-real.toml"
+            )
     return witness_context_config_digest
 
 

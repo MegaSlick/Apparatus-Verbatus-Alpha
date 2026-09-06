@@ -1007,6 +1007,7 @@ class OperatorSurface:
         data_gate_policy: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
+        witness_context_config: str | Path | None = None,
     ) -> RunOutcome:
         if submission_folder is None:
             if submission_manifest is not None:
@@ -1019,12 +1020,15 @@ class OperatorSurface:
                     ErrorCode.INVALID_COMMAND,
                     detail="--data-gate-policy is meaningful only with --submission-folder",
                 )
-        # The roster's two halves travel together or not at all: the
-        # orchestrator seals both into `config_digest`, and forwarding one
-        # would let the real roster resolve against the fixture catalogue.
+        # The roster's three halves travel together or not at all: the
+        # orchestrator seals all of them into `config_digest`, and forwarding
+        # one would let the real roster resolve against the fixture catalogue,
+        # or be described to the Perlector by the fixture declaration.
         # Resolved here, before the fault drill or any child starts.
         roster_argv = _roster_argv(
-            models_config=models_config, serving_recipes_config=serving_recipes_config
+            models_config=models_config,
+            serving_recipes_config=serving_recipes_config,
+            witness_context_config=witness_context_config,
         )
 
         run_root = self.state_root / "runs"
@@ -3019,16 +3023,34 @@ def _real_ingress_argv(
 
 
 def _roster_argv(
-    *, models_config: str | Path | None, serving_recipes_config: str | Path | None
+    *,
+    models_config: str | Path | None,
+    serving_recipes_config: str | Path | None,
+    witness_context_config: str | Path | None,
 ) -> list[str]:
-    """The real-roster pair, forwarded together; one without the other is refused."""
+    """The real-roster trio, forwarded together; a partial selection is refused.
 
-    if (models_config is None) != (serving_recipes_config is None):
+    The witness-context declaration joined the pair for the same reason the
+    catalogue was in it: the shipped declaration
+    (`config/witness_context.toml`) says of every chair that it is a synthetic
+    fixture with no real training domain, and under the `named` regime that
+    sentence is handed to the Perlector as fact about the witness whose
+    testimony it is reading. Forwarding a real roster without it seals a run
+    whose own record calls its real witnesses fixtures --
+    `common/stage.py::validate_witness_context_bindings` refuses that at the
+    Door, and refusing it here keeps the console's message about the console's
+    own flags.
+    """
+
+    selected = (models_config, serving_recipes_config, witness_context_config)
+    if any(value is None for value in selected) and any(value is not None for value in selected):
         raise OperatorError(
             ErrorCode.INVALID_COMMAND,
             detail=(
-                "--models-config and --serving-recipes-config select one roster together "
-                "(the chairs and the catalogue they are served under); supply both or neither"
+                "--models-config, --serving-recipes-config and --witness-context-config "
+                "select one roster together (the chairs, the catalogue they are served "
+                "under, and the factual witness context the Perlector is told about them); "
+                "supply all three or none"
             ),
         )
     if models_config is None:
@@ -3038,6 +3060,8 @@ def _roster_argv(
         str(Path(models_config).absolute()),
         "--serving-recipes-config",
         str(Path(serving_recipes_config).absolute()),  # type: ignore[arg-type]
+        "--witness-context-config",
+        str(Path(witness_context_config).absolute()),  # type: ignore[arg-type]
     ]
 
 

@@ -851,21 +851,62 @@ def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
     assert "fixture-only catalogue" in err
 
 
-def test_the_real_roster_is_accepted_when_its_catalogue_is_named(tmp_path: Path) -> None:
-    """Naming both halves is the way through; the pairing rule refuses neither."""
+def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
+    tmp_path: Path,
+) -> None:
+    """Naming every part is the way through; the pairing rule refuses none."""
 
     from .bootstrap_main import build_parser, resolve_plan
 
     ws = _workspace(tmp_path)
     ws.models_config = ws.repository / "config" / "models-real.toml"
     catalogue = ws.repository / "config" / "serving_recipes_real.toml"
+    witness_context = ws.repository / "config" / "witness_context-real.toml"
     clock = Clock()
-    argv = _argv(ws, extra=("--serving-recipes-config", str(catalogue)))
+    argv = _argv(
+        ws,
+        extra=(
+            "--serving-recipes-config",
+            str(catalogue),
+            "--witness-context-config",
+            str(witness_context),
+        ),
+    )
 
     plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
 
     assert plan.models_config == ws.models_config.resolve()
     assert plan.serving_recipes_config == catalogue.resolve()
+    assert plan.witness_context_config == witness_context.resolve()
+
+
+def test_the_real_roster_is_refused_when_only_the_witness_context_is_left_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The declaration is the third part of the same selection.
+
+    Left defaulted, the run seals `config/witness_context.toml`, which says of
+    every chair that it is a synthetic fixture with no real training domain --
+    and under the `named` regime the Perlector is handed that sentence as fact
+    about Chandra-2, DAI-RecordGold and Churro-3B. Refused at plan time, before
+    the pod bills for a boot and a model fetch.
+    """
+
+    ws = _workspace(tmp_path)
+    ws.models_config = ws.repository / "config" / "models-real.toml"
+    catalogue = ws.repository / "config" / "serving_recipes_real.toml"
+    clock = Clock()
+
+    exit_code = main(
+        _argv(ws, extra=("--serving-recipes-config", str(catalogue))),
+        environ=_environ(clock),
+        actions_factory=_never_called,
+    )
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--witness-context-config was not supplied" in err
+    assert "synthetic fixture" in err
 
 
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---

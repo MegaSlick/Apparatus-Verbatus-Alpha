@@ -4,6 +4,7 @@ closed refusal for any recipe with no registered builder.
 
 from pathlib import Path
 
+import dossier
 import prompts
 import protocol
 import pytest
@@ -269,3 +270,54 @@ def test_the_default_protocols_policy_literal_agrees_with_the_protocol_pin():
     assert (
         prompts._DEFAULT_PROTOCOL["page_shared_prefix_policy"] == protocol.PAGE_SHARED_PREFIX_POLICY
     )
+
+
+# --- The real roster's factual witness context reaches the real prompt --------
+#
+# `config/witness_context.toml` says of every chair that it is "a synthetic
+# fixture witness; no real training domain applies", and the dossier renders
+# `training_domain` inline beside each testimonium above. On a real run sealed
+# under the default declaration, that sentence is what the Perlector is told
+# about Chandra-2, DAI-RecordGold and Churro-3B. These two assert the other
+# half of the fix: the real declaration's own sentences are what the real
+# recipe's prompt actually carries.
+
+
+def _real_witness_context():
+    return dossier.load_witness_context(ROOT / "config" / "witness_context-real.toml")
+
+
+def _real_dossier():
+    context = _real_witness_context()
+    return {
+        "act_key": "a1",
+        "witness_regime": "named",
+        "testimonia": [
+            {
+                "witness_label": chair,
+                "model_name": f"fixture/{chair}",
+                "resolved_provenance": {"resolved_revision": "r1"},
+                "training_domain": context[chair]["training_domain"],
+                "outcome": "read",
+                "reported": "alpha beta gamma",
+            }
+            for chair in sorted(context)
+        ],
+    }
+
+
+def test_the_real_prompt_carries_each_real_witnesss_own_declared_domain():
+    built = prompts.build_prompt(
+        "unproven-real-perlector", "perlector", _real_dossier(), _sealed_protocol_config()
+    )
+
+    for chair, entry in sorted(_real_witness_context().items()):
+        assert f"{chair} ({entry['training_domain']})" in built
+
+
+def test_the_real_prompt_never_calls_a_real_witness_a_synthetic_fixture():
+    built = prompts.build_prompt(
+        "unproven-real-perlector", "perlector", _real_dossier(), _sealed_protocol_config()
+    )
+
+    assert "synthetic fixture" not in built

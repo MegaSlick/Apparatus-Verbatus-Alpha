@@ -22,6 +22,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected only with `--models-config config/models-real.toml --witness-context-config config/witness_context-real.toml`, and a non-fixture roster that leaves the declaration defaulted is refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | temperature-zero record readings and the labelled variance experiment's seed and pass count |
 

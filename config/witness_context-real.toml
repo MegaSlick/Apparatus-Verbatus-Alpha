@@ -1,0 +1,36 @@
+# The real roster's factual witness context, selected explicitly with
+# `--witness-context-config config/witness_context-real.toml` -- the same way
+# `config/models-real.toml` is selected with `--models-config`, and paired with it
+# for the same reason the serving catalogue is: the fixture declaration at
+# `config/witness_context.toml` describes every chair as a synthetic fixture, and
+# under the `named` regime that sentence is what the Perlector is told about the
+# witness whose testimony it is reading (GOVERNANCE 7: feed it completely and
+# honestly). `common/stage.py::validate_witness_context_bindings` refuses a
+# non-fixture roster that leaves this file at the fixture default.
+#
+# Same closed schema as the fixture file: one table per configured witness chair,
+# holding `training_domain` and nothing else. No trust weight, no ranking, no
+# preferred order -- spec_08's "witness identity and factual context only... never
+# pipeline-asserted worth."
+#
+# **Every sentence below is what this repository can actually cite, and says so
+# where it can cite nothing.** None of the three pinned repositories has been
+# fetched, so no training corpus has been inspected here; what is known is the
+# vendor's own published framing (Chandra's README, read 2026-08-22, recorded in
+# `pipeline/3_attestatores/chandra.py`), the trained prompt bytes each fine-tune
+# carries in its own repository (`pipeline/3_attestatores/feeding.py::dai_prompt`
+# and `::churro_prompt`), and the base models named on the cards
+# (`operations/pod/README.md`). A domain we do not know is written as not known,
+# never filled in with a plausible one.
+
+# datalab-to/chandra-ocr-2 (config/models-real.toml).
+[attestator_1]
+training_domain = "Chandra-2, a general document-OCR model that converts page images to structured text with block identification and layout; its vendor publishes no statement of what it was trained on, so no more specific training domain is known to this project."
+
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR (config/models-real.toml).
+[attestator_2]
+training_domain = "A Qwen2.5-VL-7B fine-tune whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries; the corpus behind that framing is not published, so the framing is all this project knows of its training."
+
+# stanford-oval/churro-3B (config/models-real.toml).
+[attestator_3]
+training_domain = "A Qwen2.5-VL-3B-Instruct fine-tune whose own trained system prompt frames it as diplomatic transcription of historical documents in various languages; its training dataset is declared research-use-only and has not been inspected here, so nothing more specific about it is known."

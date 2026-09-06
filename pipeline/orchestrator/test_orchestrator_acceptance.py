@@ -1453,6 +1453,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
+    witness_context_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
@@ -1496,6 +1497,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
+    if witness_context_config is not None:
+        command.extend(("--witness-context-config", str(witness_context_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
@@ -1746,6 +1749,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier is what the real catalogue's live rows require to resolve at all:
@@ -1758,6 +1762,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
+        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -1770,6 +1775,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
+        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(

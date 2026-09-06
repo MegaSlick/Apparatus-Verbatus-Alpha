@@ -163,6 +163,7 @@ _PLAN_ONLY_FLAGS = (
     "fixture",
     "page_witness_file",
     "serving_recipes_config",
+    "witness_context_config",
     "submission_manifest",
     "transfer_source_root",
     "transfer_prefix",
@@ -214,6 +215,7 @@ class Plan:
     fixture: Path | None = None
     page_witness_file: Path | None = None
     serving_recipes_config: Path | None = None
+    witness_context_config: Path | None = None
     submission_manifest: Path | None = None
     transfer_source_root: Path | None = None
     transfer_prefix: str = "pod-transfer"
@@ -246,6 +248,9 @@ class Plan:
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
             "serving_recipes_config": str(self.serving_recipes_config)
             if self.serving_recipes_config
+            else None,
+            "witness_context_config": str(self.witness_context_config)
+            if self.witness_context_config
             else None,
             "submission_manifest": str(self.submission_manifest)
             if self.submission_manifest
@@ -431,6 +436,16 @@ def build_parser() -> argparse.ArgumentParser:
         "(config/serving_recipes_real.toml for the real roster) or the plan is refused",
     )
     parser.add_argument(
+        "--witness-context-config",
+        type=Path,
+        help="the Perlector-owned factual witness-context declaration the run seals; defaults "
+        "to <repository>/config/witness_context.toml, which describes every chair as a "
+        "synthetic fixture, and may be defaulted only when --models-config is the shipped "
+        "fixture roster config/models.toml -- any other roster must name its declaration "
+        "explicitly (config/witness_context-real.toml for the real roster) or the plan is "
+        "refused",
+    )
+    parser.add_argument(
         "--submission-manifest",
         type=Path,
         help="defaults to <volume-mount-path>/submission/manifest.json",
@@ -599,6 +614,31 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
+    # The same rule, one file further along the same selection. The shipped
+    # declaration says of every chair that it is "a synthetic fixture witness;
+    # no real training domain applies", and under the `named` regime the
+    # Perlector is handed that sentence as fact about the witness it is reading
+    # (`common/stage.py::validate_witness_context_bindings` refuses the pairing
+    # for exactly this reason). Refused at plan time rather than at the Door, so
+    # a boot that would tell the reader its real witnesses are fixtures costs no
+    # card time to discover.
+    if args.witness_context_config is None and models_config != default_roster:
+        raise PlanRefusal(
+            f"--models-config {models_config} is not the shipped fixture roster "
+            f"{default_roster}, and --witness-context-config was not supplied; the shipped "
+            "declaration describes every witness as a synthetic fixture with no real "
+            "training domain, and sealing it beside another roster tells the Perlector its "
+            "real witnesses are fixtures. Name both "
+            "(config/witness_context-real.toml with config/models-real.toml)",
+            report_path=report_path,
+        )
+    witness_context_config = _require_contained(
+        args.witness_context_config or (repository / "config" / "witness_context.toml"),
+        repository,
+        "--witness-context-config",
+        base_label="the checked-out repository",
+        report_path=report_path,
+    )
     submission_manifest = args.submission_manifest or (
         volume_mount_path / "submission" / "manifest.json"
     )
@@ -622,6 +662,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         fixture=fixture,
         page_witness_file=page_witness_file,
         serving_recipes_config=serving_recipes_config,
+        witness_context_config=witness_context_config,
         submission_manifest=submission_manifest,
         transfer_source_root=transfer_source_root,
         transfer_prefix=args.transfer_prefix or "pod-transfer",
