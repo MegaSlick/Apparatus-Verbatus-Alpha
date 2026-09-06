@@ -11,15 +11,19 @@ with it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity
 from common.imaging import encode_grayscale_png
 from common.request_capacity import (
     MEASURED_ACT_ANSWER_TOKENS,
     MEASURED_DENSE_PAGE_ANSWER_TOKENS,
     MEASURED_PROMPT_TOKENS,
+    PERLECTOR_MEASURED_TOKENIZER,
     PERLECTOR_PROMPT_FLOOR_TOKENS,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     PROMPT_TOKENS_MEASURED_FLOOR,
@@ -53,6 +57,8 @@ QWEN25_VL = {"patch_size": 14, "merge_size": 2}
 
 A4_300DPI = (2480, 3508)
 FIXTURE_PAGE = (200, 260)
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _row(**overrides):
@@ -372,3 +378,114 @@ def test_dais_ordinary_act_stays_admissible_at_the_smallest_row():
     fallback = request_fits(row, [(1291, 1826)], 84, act_answer_budget("attestator_2"))
     assert fallback["image_prompt_tokens"] == 2280
     assert fallback["fits"] is False
+
+
+# ===================== what the measurements are bound to ====================
+
+
+def test_every_measured_prompt_names_the_tokenizer_the_real_roster_pins():
+    """A measurement expires when its chair is repointed, not only when its prompt is.
+
+    The same reconciliation `common/chairs/test_model_store.py` runs between
+    the materialization inventory and `config/models.toml`, for the same
+    reason: two lists of pinned repositories that agree only by coincidence
+    will eventually stop agreeing, and nothing would notice. Here the drift is
+    quieter still -- a chair repointed at a new revision keeps its prompt
+    digest, so `sealed_prompt_tokens` would go on returning a count taken with
+    a tokenizer that model no longer has.
+
+    The Perlector is checked with the rest. It has no fixed prompt to digest,
+    which makes the pinned revision the *only* thing that can expire its floor
+    and its tokens-per-word rate.
+    """
+
+    roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    measured = {
+        chair: (entry.repo, entry.revision) for chair, entry in MEASURED_PROMPT_TOKENS.items()
+    }
+    measured["perlector"] = PERLECTOR_MEASURED_TOKENIZER
+
+    disagreements = []
+    for chair, (repo, revision) in sorted(measured.items()):
+        identity = roster.get(chair)
+        if not isinstance(identity, ChairIdentity):
+            disagreements.append(f"{chair}: measured against {repo}@{revision}, roster has none")
+            continue
+        if (identity.repo, identity.revision) != (repo, revision):
+            disagreements.append(
+                f"{chair}: measured against {repo}@{revision}, "
+                f"roster says {identity.repo}@{identity.revision}"
+            )
+    assert disagreements == []
+
+
+def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement():
+    """The reconciliation in the other direction: no chair measured by nobody.
+
+    A chair added to the real roster that some seam then asks a request for
+    would be refused at run time by `sealed_prompt_tokens` for want of a
+    measurement. That is the right refusal and the wrong moment -- it happens
+    on a pod. The roster's own configured reading chairs are checked here
+    instead. `secondary_proposer` and `annotator` are absent from the roster by
+    ruling, and an absent chair sends nothing.
+    """
+
+    roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    configured = {
+        chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
+    }
+    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector"}
+    assert configured == measured
+
+
+# ============================ the rounding mode ==============================
+
+
+@pytest.mark.parametrize(
+    "family, size, expected_resized, expected_tokens",
+    [
+        # Both sides land on an exact .5 of the chair's own factor: 70/28 and
+        # 98/28 are 2.5 and 3.5, 80/32 and 112/32 are 2.5 and 3.5. `round` is
+        # Python's banker's rounding in the library and in this rewrite alike,
+        # so 2.5 goes DOWN to 2 and 3.5 goes UP to 4 -- half-to-even, not
+        # half-up. Under half-up both would round up and the image would cost
+        # 12 tokens instead of 8.
+        (QWEN25_VL, (98, 70), (112, 56), 8),
+        (QWEN3_VL, (112, 80), (128, 64), 8),
+    ],
+    ids=["qwen2.5-vl-factor-28", "qwen3-vl-factor-32"],
+)
+def test_an_exact_half_rounds_to_even_exactly_as_the_library_does(
+    family, size, expected_resized, expected_tokens
+):
+    """The one arithmetic difference a rewrite is most likely to get wrong.
+
+    Every other pinned case in this module rounds a value nowhere near .5, so
+    a rewrite that used half-up rounding would pass all of them. These two are
+    computed with the library's own `smart_resize`, lifted verbatim by `ast`
+    out of the installed `transformers` 5.16.1 and executed (the study script
+    beside `TOKEN_COST_REPORT.md`, section 3), and pinned here as its results
+    rather than as this module's.
+    """
+
+    width, height = size
+    assert (
+        resized_dimensions(
+            width,
+            height,
+            min_pixels=MIN_PIXELS,
+            max_pixels=TIER_MAX_PIXELS["generic-24gb"],
+            **family,
+        )
+        == expected_resized
+    )
+    assert (
+        image_prompt_tokens(
+            width,
+            height,
+            min_pixels=MIN_PIXELS,
+            max_pixels=TIER_MAX_PIXELS["generic-24gb"],
+            **family,
+        )
+        == expected_tokens
+    )

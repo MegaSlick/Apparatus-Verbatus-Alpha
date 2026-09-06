@@ -17,9 +17,12 @@ measured is named as such).
 Where the arithmetic comes from
 -------------------------------
 :func:`image_prompt_tokens` is a rewrite of ``smart_resize`` from
-``transformers/models/qwen2_vl/image_processing_qwen2_vl.py`` (measured against
-the installed ``transformers`` 5.16.1; the recipes pin 5.14.1 and the function
-is unchanged between them).  **It is a rewrite of a published formula, not
+``transformers/models/qwen2_vl/image_processing_qwen2_vl.py``, read at the
+``transformers`` 5.16.1 installed on the measuring host.  The recipes pin
+5.14.1; that source has never been on this disk, so nothing here claims the
+function is unchanged between the two -- what is claimed is the version that
+was actually read, and a pod running 5.14.1 is where the two could first be
+compared.  **It is a rewrite of a published formula, not
 carried code** -- eleven lines of integer arithmetic, retyped here so this
 repository owns what it runs, with the source named so a reader can check it
 line for line.  The token count is then the processor's own formula from
@@ -58,6 +61,16 @@ register prose.  :func:`perlector_prompt_tokens` takes the larger of the two,
 and the capacity record says which basis it used.  A rate applied to text it was
 not measured over is an extrapolation, and the record names it as one.
 
+**Both are floors, and so is the number they produce.**  The 790 was measured
+over a pass-A dossier with no fed prior draft and no reproof instrument, and a
+real pass-B prompt is strictly larger (``TOKEN_COST_REPORT.md`` section 5).  The
+1.644 tokens per word was measured over plain register prose, and a dossier is
+prose plus JSON scaffolding, which costs more per word rather than less.  So
+this chair's counted prompt is a lower bound on its real one: where the row has
+little headroom, a request that passes this check can still be the one vLLM
+refuses.  The remedy is a tokenizer on a pod, not a larger guess here -- a
+padded constant would report a margin nobody measured.
+
 **What only a pod can settle**: whether vLLM's own prompt assembly agrees with
 these counts token for token.  vLLM's OpenAI server applies the same chat
 template from the same repository files, so they should; that agreement has
@@ -81,7 +94,9 @@ SCHEMA: Final = "verbatus-request-capacity.v1"
 # check the rewrite rather than take its word for it.
 SMART_RESIZE_SOURCE: Final = (
     "transformers/models/qwen2_vl/image_processing_qwen2_vl.py::smart_resize "
-    "(transformers 5.16.1; unchanged from the 5.14.1 the recipes pin)"
+    "(read at transformers 5.16.1, the version installed on the measuring host; "
+    "the recipes pin 5.14.1, whose source has never been on this disk and has "
+    "not been compared)"
 )
 
 # ``smart_resize`` refuses an image this far from square before it resizes it.
@@ -252,6 +267,31 @@ def row_image_geometry(profile: Any) -> RowImageGeometry:
             f"{values['min_pixels']} above max_pixels {values['max_pixels']}"
         )
     return RowImageGeometry(**values)
+
+
+def image_token_costs(row: Any, images: Sequence[tuple[int, int]]) -> list[int]:
+    """What each image costs this sealed row, in the order it was given.
+
+    The same arithmetic :func:`request_fits` totals, exposed one image at a
+    time for a caller that must decide something *about* an image before the
+    record is built -- the Perlector's answer reserve is decided by whether the
+    act's own crop costs what a whole-page render costs, and that comparison
+    has to happen before ``answer_budget`` is passed in.  Reads the row's
+    geometry once, through the same refusal :func:`row_image_geometry` gives.
+    """
+
+    geometry = row_image_geometry(row)
+    return [
+        image_prompt_tokens(
+            width,
+            height,
+            min_pixels=geometry.min_pixels,
+            max_pixels=geometry.max_pixels,
+            patch_size=geometry.patch_size,
+            merge_size=geometry.merge_size,
+        )
+        for width, height in images
+    ]
 
 
 def row_context_length(profile: Any) -> int:
@@ -466,11 +506,26 @@ class SealedPromptTokens:
     texts at the moment of measurement.  It is what makes the constant expire:
     edit the prompt and :func:`sealed_prompt_tokens` refuses rather than
     carrying a number that describes text nobody sends any more.
+
+    ``repo`` and ``revision`` are the tokenizer the count was taken with, as
+    two structured fields rather than one sentence, because they are
+    reconciled against ``config/models-real.toml``'s own pins by a test --
+    the way ``common/chairs/model_store.py``'s inventory is reconciled against
+    ``config/models.toml``.  A repointed chair invalidates its measurement
+    exactly as an edited prompt does: the tokenizer that produced the number
+    is no longer the tokenizer the chair would use.
     """
 
     tokens: int
     prompt_digest: str
-    measured_by: str
+    repo: str
+    revision: str
+
+    @property
+    def measured_by(self) -> str:
+        """The pair as one sentence, for a refusal message to quote."""
+
+        return f"the tokenizer of {self.repo} at {self.revision}"
 
 
 def prompt_digest(*texts: str) -> str:
@@ -489,22 +544,26 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyTy
         "designator_structure": SealedPromptTokens(
             tokens=329,
             prompt_digest="9e1a536bf5cdfda66e50e1d2f39df04de5130812c716f2e5b251092ee5973082",
-            measured_by="chandra-ocr-2 tokenizer at af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            repo="datalab-to/chandra-ocr-2",
+            revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
         ),
         "attestator_1": SealedPromptTokens(
             tokens=256,
             prompt_digest="97cfb7ba5143687c0f61784026d37268cd18d60c053f99ab49e4079ccb9d629a",
-            measured_by="chandra-ocr-2 tokenizer at af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            repo="datalab-to/chandra-ocr-2",
+            revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
         ),
         "attestator_2": SealedPromptTokens(
             tokens=84,
             prompt_digest="9601ebe46918c76ac3f8d094b602ffd6303cc5bf51d5973e5eff2ad93cff964a",
-            measured_by="DAI-RecordGold tokenizer at e371095d4ffe585f31f4974462931ddbac61ff64",
+            repo="Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
+            revision="e371095d4ffe585f31f4974462931ddbac61ff64",
         ),
         "attestator_3": SealedPromptTokens(
             tokens=281,
             prompt_digest="b6289913d017e07fe66a0124ccf64c391b73e11821c4c83d0d732dbe2112336d",
-            measured_by="churro-3B tokenizer at ca2150ea465d5a3d67818c50e234b9422619c75d",
+            repo="stanford-oval/churro-3B",
+            revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
         ),
     }
 )
@@ -518,6 +577,15 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyTy
 # measured integer pair rather than a rounded rate so the arithmetic stays exact.
 PERLECTOR_PROMPT_FLOOR_TOKENS: Final = 790
 PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
+# The tokenizer both of the Perlector's two numbers were measured with, in the
+# same two structured fields a sealed prompt carries, and reconciled against
+# `config/models-real.toml` by the same test: this chair has no fixed prompt to
+# digest, so the pinned revision is the only thing that can expire its
+# measurement.
+PERLECTOR_MEASURED_TOKENIZER: Final = (
+    "Qwen/Qwen3.8-27B",
+    "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+)
 
 
 def sealed_prompt_tokens(chair: str, *texts: str) -> int:
@@ -541,7 +609,7 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
         raise RequestCapacityRefusal(
             f"chair {chair!r} sends a prompt whose digest is {digest}, but its measured "
             f"prompt-token count of {entry.tokens} was taken over {entry.prompt_digest} "
-            f"({entry.measured_by}); the prompt changed after it was measured, and a request "
+            f"with {entry.measured_by}; the prompt changed after it was measured, and a request "
             "is never checked against the token cost of text nobody sends. Re-measure the "
             "prompt and update common/request_capacity.py"
         )
@@ -549,13 +617,21 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
 
 
 def perlector_prompt_tokens(text: str) -> tuple[int, str]:
-    """``(tokens, basis)`` for one rendered Perlector prompt.
+    """``(tokens, basis)`` for one rendered Perlector prompt: a floor, not a count.
 
     The larger of the measured floor and the measured tokens-per-word ratio
     applied to this prompt's own word count.  The ratio was measured over
     French register prose rather than over this dossier, so a count that rests
     on it is named an extrapolation in the record it lands in; the floor is a
     measurement of this prompt shape and is named as such.
+
+    **Both inputs are lower bounds, so the result is one too.**  The floor was
+    measured over a pass-A dossier with no fed prior draft and no appended
+    reproof prompts, and every richer dossier is larger; the rate was measured
+    over prose, and the JSON scaffolding a dossier carries costs more per word.
+    A request this returns a number for is not thereby proved to fit -- it is
+    proved not to fit when even the floor overruns the row.  Nothing pads it:
+    a margin nobody measured is not a measurement (GOVERNANCE 10).
     """
 
     words = len(text.split())

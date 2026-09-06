@@ -19,9 +19,10 @@ Nothing else in this module ever inspects it.
 
 **A request that cannot fit the sealed row is refused before it is sent.**
 ``read`` computes ``common.request_capacity``'s record for the images it is
-about to carry, the prompt it just rendered, and this chair's measured
-single-act answer budget -- one act's reading is what this request asks for --
-and raises
+about to carry, the prompt it just rendered, and the answer budget
+``_reserved_answer_budget`` decides -- one act's reading ordinarily, a dense
+page's wherever the act's own crop is as expensive as a whole-page render, and
+never below the ``max_tokens`` this reader would put on the wire -- and raises
 ``common.request_capacity.RequestCapacityRefusal`` -- carrying that record --
 when the row's ``max_model_len`` cannot hold them. That is a refusal rather
 than a hold because a Perlector reading has no ``failed`` shape (see
@@ -53,7 +54,9 @@ from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.request_capacity import (
     act_answer_budget,
+    dense_page_answer_budget,
     image_sizes,
+    image_token_costs,
     perlector_prompt_tokens,
     refuse_unless_it_fits,
 )
@@ -108,6 +111,54 @@ def _mapped_stop_reason(
         f"are retained at {dict(raw_response_ref)!r}",
         raw_response_ref=raw_response_ref,
     )
+
+
+def _reserved_answer_budget(
+    role: str,
+    *,
+    profile: Any,
+    region_sizes: list[tuple[int, int]],
+    page_render_sizes: list[tuple[int, int]],
+    max_tokens: int | None,
+) -> int:
+    """How much room this request reserves for the reading it asks for.
+
+    Three facts, and the largest of them wins.
+
+    **One act's reading** is the floor, because that is what a Perlector
+    request asks for and reserving a whole page's answer for an ordinary act
+    would refuse crops that measurably work.
+
+    **A dense page's reading** replaces it whenever the act's own crop is
+    page-sized -- a *page-fallback act*, an act whose bounds are the whole
+    page, whose reading is a page of text and costs 1,318 tokens rather than
+    216 (`TOKEN_COST_REPORT.md` section 8).  "Page-sized" is decided from the
+    same arithmetic the capacity record is built from, and against this
+    request's own evidence: a region crop is page-sized when it costs at least
+    as much as the cheapest whole-page render delivered beside it.  The two
+    other definitions available were both worse.  Comparing against a modelled
+    page at the row's ``max_pixels`` would compare the act with a page nobody
+    sent; and reading "page-fallback" off a label upstream would let the
+    reserve depend on a word rather than on the pixels the chair is charged
+    for.  A request that delivers no page render at all has no threshold to
+    compare against, so every region counts as page-sized there: reserving
+    more can only refuse a request the row could barely have held, and
+    reserving less would send one the engine answers with HTTP 400.
+
+    **The wire bound**, ``max_tokens``, when this reader was given one: the
+    engine may generate that many tokens, so a reserve below it would admit a
+    request whose own permitted answer does not fit.  Taking the maximum here
+    is what keeps the bound and the reserve from drifting apart as either
+    moves.
+    """
+
+    budget = act_answer_budget(role)
+    page_render_costs = image_token_costs(profile, page_render_sizes)
+    region_costs = image_token_costs(profile, region_sizes)
+    page_sized_cost = min(page_render_costs, default=0)
+    if any(cost >= page_sized_cost for cost in region_costs):
+        budget = max(budget, dense_page_answer_budget(role))
+    return max(budget, max_tokens or 0)
 
 
 class VLLMReader:
@@ -232,15 +283,22 @@ class VLLMReader:
         # never sees. Refusing here is what turns that into a laptop refusal
         # naming the arithmetic rather than a stack trace on a billing card.
         prompt_tokens, basis = perlector_prompt_tokens(text)
+        region_sizes = image_sizes(region_images)
+        page_render_sizes = image_sizes(page_render_images)
         capacity = refuse_unless_it_fits(
             self._client.handle.profile,
-            image_sizes(region_images + page_render_images),
+            region_sizes + page_render_sizes,
             prompt_tokens,
-            # One act's reading, which is what this request asks for. A
-            # page-fallback act -- an act whose bounds are the whole page --
-            # carries a page-sized crop and is caught by its image cost, which
-            # dwarfs the difference between the two measured answer budgets.
-            act_answer_budget(self._chair.role),
+            # One act's reading, a whole page's where the act's own crop is
+            # page-sized, and never less than the bound this reader would let
+            # the engine generate (`_reserved_answer_budget`).
+            _reserved_answer_budget(
+                self._chair.role,
+                profile=self._client.handle.profile,
+                region_sizes=region_sizes,
+                page_render_sizes=page_render_sizes,
+                max_tokens=self._max_tokens,
+            ),
             # The pass label is deliberately absent from this message: this
             # module may read it in exactly two places (the closed membership
             # check and the audit hand-off) so that nothing about a request can
