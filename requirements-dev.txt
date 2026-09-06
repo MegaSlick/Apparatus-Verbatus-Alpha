@@ -1,4 +1,5 @@
 pytest==9.1.1
+pytest-xdist==3.8.0
 ruff==0.15.4
 # The gate's own suite parses .github/workflows/ci.yml with a real YAML
 # parser rather than by searching the file's text, so what it reports is
