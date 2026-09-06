@@ -35,7 +35,7 @@ from operations.serving.config import (
     parse_serving_recipes,
     profile_preflight_digest,
 )
-from operations.serving.errors import ChairRequestRefusal
+from operations.serving.errors import ChairRequestRefusal, ChairResponseRefusal
 from operations.serving.fakes import (
     ABSENT,
     FakeBlobStore,
@@ -45,6 +45,7 @@ from operations.serving.fakes import (
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
 )
 from operations.serving.manager import ServingManager
 from operations.serving.residency import FileResidencyLease
@@ -696,6 +697,47 @@ def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_rec
         "measured-tokens-per-word-extrapolation",
     }
     assert result["stop_reason"] == "stop"
+
+
+def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop(
+    tmp_path: Path,
+) -> None:
+    """The Perlector's own reason for caring which of the two this is.
+
+    This reader sends no `max_tokens` on purpose, so that an engine `"length"`
+    honestly means the context itself was exhausted rather than that the
+    harness cut the reading short (`truncation.py`). The cost of that honesty
+    is that a *prompt*-side overrun cannot arrive as `"length"` at all: it
+    arrives as an HTTP 400 with no choices, before generation, and
+    `EngineSignalRefusal` never runs. It must therefore surface as the client's
+    own named response refusal with the bytes retained, not as a truncated
+    reading.
+    """
+
+    client, endpoint, blob_store, chair = _built(tmp_path)
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048,
+        requested_tokens=4125,
+        prompt_tokens=3909,
+        completion_tokens=216,
+    )
+    endpoint.script(refusal)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        with pytest.raises(ChairResponseRefusal) as error:
+            _reader(client, chair).read(
+                _dossier(region_image=region_image, page_image=page_image),
+                pass_kind="perlectio",
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+    assert error.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
+    assert "maximum context length is 2048" in error.value.detail
+    assert blob_store.has(hashlib.sha256(refusal.body).hexdigest())
+    # Not an EngineSignalRefusal, and no LectioResult: nothing here reads a 400
+    # as a stop reason of any kind.
+    assert not isinstance(error.value, EngineSignalRefusal)
 
 
 # --- audit re-proof: delivered instrument appended verbatim ------------------

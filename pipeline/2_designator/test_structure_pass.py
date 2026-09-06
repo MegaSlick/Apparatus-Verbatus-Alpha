@@ -63,6 +63,7 @@ from operations.serving.fakes import (
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
     structure_answer_body,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
@@ -971,6 +972,53 @@ def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path,
             [_answer(PAGE_ONE_ACTS, finish_reason="abort"), _answer(PAGE_TWO_ACTS)],
         )
     assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+
+
+def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
+    live_run, tmp_path, monkeypatch
+):
+    """The failure SPEC_D 7 names, in the shape vLLM actually gives it.
+
+    `scripted_structure_cut_off` scripts the *answer*-side truncation: HTTP 200,
+    `finish_reason="length"`, a body cut mid-object. A prompt too long for the
+    context is a different wire event -- HTTP 400, no choices at all -- and the
+    two must not be read as one thing: a 400 read as a length stop would hold
+    the page as `structure-answer-cut-off`, asserting that a chair answered and
+    was cut off when no chair answered at all.
+
+    The pass refuses the run rather than holding the page, which is the
+    contract for a serving refusal here (a transport failure is not one page's
+    outcome), and the engine's own sentence survives -- retained by the client
+    before the refusal, and quoted in the refusal itself.
+    """
+
+    root, catalogue = live_run
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048,
+        requested_tokens=3619,
+        prompt_tokens=2044,
+        completion_tokens=1575,
+    )
+    with pytest.raises(ContractError) as error:
+        _run_designator(
+            root,
+            catalogue,
+            tmp_path,
+            monkeypatch,
+            [_answer(PAGE_ONE_ACTS), refusal],
+        )
+    message = str(error.value)
+    assert "HTTP 400" in message
+    assert "maximum context length is 2048" in message
+    # Not a hold, and specifically not a cut-off hold: nothing was published.
+    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    assert "cut-off" not in message
+    # The bytes reached disk before the refusal was raised: the engine's own
+    # account of why it refused is the artefact a rented card exists to
+    # produce, and it used to be discarded here.
+    tree = RunTree(root, RUN_ID)
+    retained = tree.read_bytes(tree.blob_path(DESIGNATOR, digest_bytes(refusal.body)))
+    assert b"maximum context length is 2048" in retained
 
 
 # --- the refusals before any chair starts ---------------------------------------------
