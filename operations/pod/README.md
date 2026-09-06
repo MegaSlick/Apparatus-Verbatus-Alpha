@@ -571,7 +571,10 @@ The local command surface is `python -m operations.pod.cli`, with three verbs: `
 controller-armer factories plus a request file, so this repository contains neither a
 credential, a personal provider default, nor an implicit controller process. They print
 the previewed current price and ceilings before prompting for the exact typed
-confirmation; EOF is a refusal.
+confirmation; EOF is a refusal. A `create` or `adopt` run without
+`--controller-armer-factory` refuses in this surface's own record shape — one JSON object
+naming the missing flag, exit 2 — rather than in argparse's usage text, so nothing reading
+these records meets a second shape.
 
 **`close --lease <id>` closes one live lease on purpose**, through
 `supervise.close_lease_now`, which drives the same `_close_lease` a supervisor tick drives
@@ -581,10 +584,32 @@ independent pod-list absence, non-empty exact-pod billing through the cutoff, an
 0. It writes the lease's terminal phase, and with `--notify` sends the same close line a
 create sends when it closes its own pod. It arms nothing, so it needs no
 `--controller-armer-factory`; it previews nothing and asks for no typed phrase, because it
-stops spending rather than starting it. It refuses, before any provider call, a lease this
-account does not hold — absent from the lease root, or armed under a different
-`--provider-name` — and a lease some live supervisor still holds, since two closers over
-one pod is what the lease's kernel lock exists to prevent. A configured `--spend` policy is
+stops spending rather than starting it. It refuses, before any terminate, a `--lease` that is not 32
+lowercase hexadecimal characters — checked before the id is interpolated into the lease,
+lock, identity or record path; a lease this account does not hold, absent from the lease
+root or armed under a different `--provider-name`; a lease file whose own recorded
+`lease_id` is not the one asked for, which is a renamed or hand-edited file and would
+close a pod under another lease's identity; and a lease some live supervisor still holds,
+since two closers over one pod is what the lease's kernel lock exists to prevent. A lease
+file that exists and **cannot be read** is exit 3, not 2: it is the durable record of a
+paid action, the pod it names may be billing, and the refusal prints the exact path to go
+and look at.
+
+**`--provider-name` is a label, not a proof of account**, and one refusal exists because of
+that. It is the string the operator typed, recorded in the lease; nothing reconciles it
+against the credentials behind `--provider-factory`. So a factory pointing at the wrong
+account passes every holding check above, and the close would then terminate nothing,
+observe a perfectly genuine absence and no billing on an account that never held the pod,
+and write `close-unverified` — which is not an active lease, so `run_supervisor` would stop
+guarding a pod still running and still billing on the real account. A close whose provider
+reports the pod **absent before any terminate was issued** therefore refuses with exit 3,
+names that possibility, and leaves the lease exactly as it was for the supervisor to keep
+guarding. Only a close that actually issued a terminate may reach `close-unverified`, and
+`UNVERIFIED CLOSE` prefixes the detail on both branches that report one — the close just
+attempted, and the already-terminal lease a returning operator asks about. Every outcome,
+refusals included, also leaves the same durable per-run record beside the lease that
+`supervise.py` writes, so a refusal read into a terminal that is about to be closed is not
+the only copy. A configured `--spend` policy is
 required and is not a spend gate here: the shutdown controller's poll interval, deadline
 and billing-cutoff margin are reviewed values, and a close driven on invented timings is
 not the close this repository verifies. Before this verb existed a live pod could be closed
@@ -602,8 +627,11 @@ numbers, and the record says `verbatim: false` and names every scrubbed path; th
 token is scrubbed too, by the name predicate, with no exemption. The flag is duck-typed on a provider's
 `record_exchanges` method so the CLI names no vendor; the RunPod adapter wraps its REST
 transport and its own balance observer's transport, and a provider without the method —
-the fake — refuses the flag by name before any preview rather than recording nothing.
-The result record names the fixture path.
+the fake — refuses the flag by name before any preview rather than recording nothing. The
+exception is `close`: that verb exists for the moment a pod is billing and something has
+already gone wrong, so an unhonoured flag is written into its record and the meter is
+still stopped, rather than trading a live pod for a fixture nobody asked for in that
+moment. The result record names the fixture path.
 
 **The Boot A request is a tracked module, not a note.** `python -m
 operations.pod.boot_a_request --spend config/spend.toml --placement
@@ -655,7 +683,8 @@ laptop/restart machinery rather than infer it from the pod process. If `pod_time
 own startup fails **before a provider-backed timer exists** (a missing environment value,
 a deadline already passed) it can terminate nothing; the pod goes `EXITED`, which bills
 volume disk at double the running rate, and the laptop supervisor above (`supervise.py`)
-is the only backstop for that case. A refusal raised *after* the timer is built now
+is the only *automatic* backstop for that case — the operator's own backstop is the `close`
+verb below. A refusal raised *after* the timer is built now
 spends that capability on an immediate close and files a receipt. A non-green close at
 the hard deadline is re-attempted a small fixed number of times before the timer exits;
 the durable report records the attempt count and the final close's evidence (not each

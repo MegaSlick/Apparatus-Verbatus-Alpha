@@ -20,12 +20,14 @@ Nothing here reaches a network, a provider account, or money.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Callable, Iterator
 
 import pytest
 
 from . import cli, notify_hooks, supervise
+from .fake_provider import FakeProvider
 from .launch import LaunchState
 from .notify_bridge import NotifyOutcome
 from .shutdown import CloseState, VerifiedShutdown
@@ -77,6 +79,8 @@ def run_close(
     provider_name: str = "fake",
     spend: Path | None = None,
     notify: bool = False,
+    provider: object | None = None,
+    record_fixture: Path | None = None,
 ) -> tuple[int, dict[str, object]]:
     """Drive the real `cli.main` close, with the provider factory and clock replaced.
 
@@ -92,7 +96,8 @@ def run_close(
     poll and billing-retry tails from costing real seconds.
     """
 
-    monkeypatch.setattr(cli, "_provider", lambda _reference: drill.provider)
+    acting = provider if provider is not None else drill.provider
+    monkeypatch.setattr(cli, "_provider", lambda _reference: acting)
 
     def on_the_drills_clock(provider: object, **timings: object) -> VerifiedShutdown:
         return VerifiedShutdown(
@@ -116,6 +121,8 @@ def run_close(
     ]
     if notify:
         argv.append("--notify")
+    if record_fixture is not None:
+        argv += ["--record-fixture", str(record_fixture)]
     argv += ["close", "--lease", lease]
     exit_code = cli.main(argv)
     return exit_code, json.loads(capsys.readouterr().out)
@@ -219,6 +226,10 @@ def test_an_unverified_close_keeps_the_lease_a_live_liability(
 
     lease = drill.store.load()
     assert lease is not None and lease.phase == "close-unverified"
+    # The other half of `_absence_before_any_terminate`'s rule: a lease reaches
+    # `close-unverified` only when a terminate was actually issued against the
+    # pod. Here one was, repeatedly, and the phase is earned.
+    assert drill.provider.terminate_calls == [pod_id]
 
     # Still a liability: the next create refuses on it. Through the balance
     # floor rather than the single-live-pod check, because an unverified close
@@ -372,3 +383,270 @@ def test_close_refuses_an_unconfigured_spend_policy(
     assert record["state"] == "refused"
     assert "unconfigured" in str(record["detail"])
     assert drill.provider.terminate_calls == []
+
+
+def final_records(lease_root: Path) -> list[dict[str, object]]:
+    """Every durable per-run record this lease root holds, oldest name first."""
+
+    directory = lease_root / "supervisors"
+    if not directory.is_dir():
+        return []
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.glob("supervisor-*final*.json"))
+    ]
+
+
+def test_a_lease_file_that_cannot_be_read_is_go_and_look_not_nothing_paid(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A damaged lease is exit 3, and it names the file.
+
+    Exit 2 on this path said "refused, and nothing was paid" about a lease
+    record that exists, was written by a paid action, and could not be opened --
+    the pod it names may be billing at this moment. The only honest status is
+    "go and look", and the only useful detail is the exact path to look at.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+    drill.store.path.write_text("{ this is not a lease", encoding="utf-8")
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys)
+
+    assert exit_code == 3, "an unreadable lease is not 'nothing was paid'"
+    assert record["state"] == "refused"
+    assert str(drill.store.path) in str(record["detail"])
+    assert "go and look" in str(record["detail"])
+    assert drill.provider.terminate_calls == []
+
+
+def test_a_lease_file_that_names_another_lease_is_refused(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`<root>/<id>.json` holding a different `lease_id` closes nothing.
+
+    The drill is the literal one: the lease file is copied to a second name, so
+    the root holds one live pod's record under two ids. Closing on the copy
+    would terminate the pod under the id the operator typed while
+    `LeaseStore.record_close` wrote the outcome into the identity the file
+    actually carries -- two lease identities over one pod, and no way to tell
+    afterwards which was which. Exit 3, because a live pod is involved.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+    renamed = "c" * 32
+    shutil.copyfile(drill.store.path, drill.lease_root / f"{renamed}.json")
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, lease=renamed)
+
+    assert exit_code == 3
+    assert record["state"] == "refused"
+    assert renamed in str(record["detail"]) and LEASE_ID in str(record["detail"])
+    assert drill.provider.terminate_calls == []
+    # The original is untouched, and still active for its supervisor.
+    lease = drill.store.load()
+    assert lease is not None and lease.active
+
+
+def test_a_lease_id_that_is_not_a_lease_id_builds_no_path_at_all(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--lease ../../elsewhere` is refused before a path is built from it.
+
+    The id is interpolated into four paths -- the lease file, the kernel lock,
+    the identity file and the durable final record -- so it is checked before
+    the first of them exists. The record this refusal files is the anonymous
+    one, which is the assertion that the traversal reached no filename.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, lease="../../etc/passwd")
+
+    assert exit_code == 2
+    assert record["state"] == "refused"
+    assert "32 lowercase hexadecimal" in str(record["detail"])
+    assert drill.provider.terminate_calls == []
+    written = Path(str(record["final_record"]))
+    assert written.parent == drill.lease_root / "supervisors"
+    assert written.name.startswith("supervisor-final-"), "the bad id reached a filename"
+    assert not (drill.lease_root.parent.parent / "etc").exists()
+    # The real lease is untouched and still guarded.
+    lease = drill.store.load()
+    assert lease is not None and lease.active
+
+
+def test_a_pod_absent_before_any_terminate_refuses_and_leaves_the_lease_armed(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The wrong `--provider-factory`, and why it must not write a terminal phase.
+
+    `--provider-name` is a label recorded in the lease; nothing reconciles it
+    against the credentials behind `--provider-factory`. So a factory pointing
+    at another account passes every holding check, and the close would then
+    terminate nothing, observe a genuine absence and no billing there, and
+    write `close-unverified` -- which is not `PodLease.active`, so
+    `run_supervisor` would stop guarding a pod that is still running and still
+    billing on the real account.
+
+    The provider here is a second fake that never saw this pod, which is
+    exactly what a wrong account looks like from this side.
+    """
+
+    drill = live_drill(build_drill)
+    pod_id = drill.pod_id()
+    drill.starter.stop_all()
+    stranger = FakeProvider()
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, provider=stranger)
+
+    assert exit_code == 3, "a pod that may be billing elsewhere is not 'nothing was paid'"
+    assert record["state"] == supervise.POD_ABSENT_UNCLOSED
+    assert record["green"] is False
+    assert record["close"] is None
+    assert "--provider-factory" in str(record["detail"])
+    assert pod_id in str(record["detail"])
+    # Nothing was terminated, on either account.
+    assert stranger.terminate_calls == []
+    assert drill.provider.terminate_calls == []
+    # And the lease is exactly as it was: still active, so a supervisor started
+    # now takes it back and keeps guarding the pod.
+    lease = drill.store.load()
+    assert lease is not None and lease.active and lease.phase == "active"
+
+
+def test_a_second_close_on_an_unverified_lease_still_says_unverified(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The already-terminal branch carries the word too.
+
+    This is the operator coming back to ask whether the earlier close finished.
+    It makes no provider call, so it has no close report to be judged by -- and
+    a record that merely said "lease already reached terminal phase" would read
+    as done.
+    """
+
+    drill = live_drill(build_drill)
+    pod_id = drill.pod_id()
+    drill.starter.stop_all()
+    drill.provider._billing.pop(pod_id)
+    first_code, first = run_close(drill, tmp_path, monkeypatch, capsys)
+    assert first_code == 3 and first["lease_phase"] == "close-unverified"
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys)
+
+    assert exit_code == 3
+    assert record["state"] == "close-unverified"
+    assert str(record["detail"]).startswith("UNVERIFIED CLOSE: ")
+    assert record["close"] is None
+    assert "no provider call was made" in str(record["detail"])
+
+
+def test_every_close_refusal_leaves_a_durable_record(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """GOVERNANCE 2, on the verb most likely to be run into a closing terminal.
+
+    `supervise.main` has filed one record per run since it landed; this is the
+    same file, from the same function, for the other driver of the same close
+    path. The refusal drilled here is the unconfigured spend policy, which
+    reaches no provider at all -- so the record is the *only* trace it left.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+    unconfigured = tmp_path / "unconfigured.toml"
+    unconfigured.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, spend=unconfigured)
+
+    assert exit_code == 2
+    filed = final_records(drill.lease_root)
+    assert len(filed) == 1, filed
+    assert filed[0]["lease_id"] == LEASE_ID
+    assert filed[0]["exit_code"] == 2
+    assert filed[0]["state"] == "refused"
+    assert "unconfigured" in str(filed[0]["detail"])
+    assert record["final_record"] == str(
+        drill.lease_root / "supervisors" / Path(str(record["final_record"])).name
+    )
+
+
+def test_the_close_record_says_what_the_phone_hook_did(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--notify` wires balance notifications for a close too, and says so.
+
+    A close consults no ceiling, but the hook is attached to the provider
+    before this verb is dispatched, and a vendor adapter that observes its
+    account balance while terminating or capturing cost pages the phone through
+    it. Whether that wiring took, and what each ping did, is a fact about this
+    close and belongs in its record rather than in a return value nobody reads.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+    monkeypatch.setattr(
+        notify_hooks,
+        "notify_close",
+        lambda **_: NotifyOutcome(True, True, "test sink"),
+    )
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, notify=True)
+
+    assert exit_code == 0
+    wiring = record["balance_notification"]
+    assert isinstance(wiring, dict)
+    assert "wired" in str(wiring["wiring"])
+    assert wiring["sent"] == []
+
+
+def test_close_is_not_refused_by_a_provider_that_cannot_record_its_exchanges(
+    build_drill: Callable[..., Drill],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`create` refuses the flag it cannot honour; `close` files the fact and closes.
+
+    The verb exists for the moment a pod is billing and something has already
+    gone wrong. Trading a stopped meter for a fixture nobody asked for in that
+    moment is the wrong way round -- so the unhonoured flag is recorded in the
+    close record (GOVERNANCE 2) rather than raised as a refusal.
+    """
+
+    drill = live_drill(build_drill)
+    drill.starter.stop_all()
+    fixture_path = tmp_path / "never-written.jsonl"
+
+    exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, record_fixture=fixture_path)
+
+    assert exit_code == 0, "a close was refused over an evidence recorder"
+    assert record["lease_phase"] == "closed-verified"
+    assert "--record-fixture was not honoured" in str(record["record_fixture"])
+    assert type(drill.provider).__name__ in str(record["record_fixture"])
+    assert not fixture_path.exists()

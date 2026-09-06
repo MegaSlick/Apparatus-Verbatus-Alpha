@@ -22,7 +22,7 @@ from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .lease import LeaseStore
-from .models import PodCreateRequest, require_utc
+from .models import PodCreateRequest, require_utc, utc_now
 from .notify_bridge import Notifier, shell_notifier, silent
 from .preflight import PlacementRefusal, load_placement_table
 from .provider import PodProvider
@@ -114,28 +114,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.command in {"create", "adopt"} and not args.controller_armer_factory:
-        parser.error(f"{args.command} requires --controller-armer-factory")
+        # A printed refusal record, not `parser.error`'s usage text on stderr.
+        # Every other refusal this surface makes is one JSON object on stdout
+        # with a state, a green flag and a detail, and exit 2 for "nothing was
+        # paid"; a caller or a log that reads those records should not have to
+        # learn a second, unparseable shape for one of them (GOVERNANCE 2 --
+        # a refusal that only argparse can explain is a refusal half lost).
+        return _refused(
+            f"{args.command} arms two controllers and requires --controller-armer-factory; "
+            "no provider factory was loaded and no paid action occurred"
+        )
 
     recorder: FixtureRecorder | None = None
+    fixture_note: str | None = None
     try:
         provider = _provider(args.provider_factory)
-        if args.record_fixture is not None:
-            recorder = _record_fixture(provider, args.record_fixture)
     except (TypeError, ValueError) as error:
-        # The named refusal this command promises instead of a traceback:
-        # `operations/pod/README.md` says a provider that cannot record its own
-        # exchanges "refuses the flag by name before any preview", and an
-        # unusable factory reference is the same shape of mistake. Exit 2 is
-        # this command's "refused, nothing paid" status.
-        print(
-            json.dumps(
-                {"state": "refused", "green": False, "detail": str(error)},
-                sort_keys=True,
-                indent=2,
-            ),
-            flush=True,
-        )
-        return 2
+        # The named refusal this command promises instead of a traceback: an
+        # unusable factory reference leaves nothing to act with at all. Exit 2
+        # is this command's "refused, nothing paid" status.
+        return _refused(str(error))
+    if args.record_fixture is not None:
+        try:
+            recorder = _record_fixture(provider, args.record_fixture)
+        except ValueError as error:
+            if args.command != "close":
+                # `operations/pod/README.md`: a provider that cannot record its
+                # own exchanges "refuses the flag by name before any preview".
+                return _refused(str(error))
+            # ...but not for `close`. That verb exists for the moment a pod is
+            # billing and something has already gone wrong, and refusing to
+            # stop the meter because the evidence recorder could not be
+            # attached would trade money and a live pod for a fixture nobody
+            # asked for in that moment. The fact is recorded in the close
+            # record instead of raised (GOVERNANCE 2).
+            fixture_note = f"--record-fixture was not honoured: {error}"
     # Wired before the preview, because the preview itself observes a balance:
     # a launch run with --notify should page the phone for the reading its own
     # spend gate made, not only for later ones.
@@ -146,28 +159,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             # seam: this verb stops spending rather than starting it, and it
             # exists for the moment when a pod is billing and something has
             # already gone wrong.
-            return _close_command(args, provider)
+            return _close_command(
+                args, provider, balance_wiring=balance_wiring, fixture_note=fixture_note
+            )
         try:
             placement = load_placement_table(args.placement)
         except PlacementRefusal as error:
             # The card allowlist is a gate, so an unreadable table refuses the
             # launch rather than quietly turning the gate off.
-            print(
-                json.dumps(
-                    {
-                        "state": "refused",
-                        "green": False,
-                        "detail": (
-                            f"the reviewed card table {args.placement} could not be read: "
-                            f"{error}; no paid action occurred"
-                        ),
-                    },
-                    sort_keys=True,
-                    indent=2,
-                ),
-                flush=True,
+            return _refused(
+                f"the reviewed card table {args.placement} could not be read: "
+                f"{error}; no paid action occurred"
             )
-            return 2
         runtime = PodRuntime(
             provider,
             provider_name=args.provider_name,
@@ -259,7 +262,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             recorder.close()
 
 
-def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
+def _refused(detail: str) -> int:
+    """This surface's one refusal shape: a JSON record on stdout, exit 2.
+
+    Exit 2 is "refused, and nothing was paid". Every refusal that reaches a
+    caller before a provider is asked for anything prints through here, so a
+    log or a script reading these records never meets a second shape.
+    """
+
+    print(
+        json.dumps(
+            {"state": "refused", "green": False, "detail": detail},
+            sort_keys=True,
+            indent=2,
+        ),
+        flush=True,
+    )
+    return 2
+
+
+def _close_command(
+    args: argparse.Namespace,
+    provider: PodProvider,
+    *,
+    balance_wiring: "_BalanceWiring",
+    fixture_note: str | None = None,
+) -> int:
     """`close --lease <id>`: the supervisor's own close path, asked for on purpose.
 
     Until this verb existed a live pod could be closed only by its sealed hard
@@ -274,10 +302,42 @@ def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
     values, and a close driven on invented timings is not the close this
     repository verifies. It is not a spend gate here -- no ceiling is consulted,
     because stopping a meter is not a paid action.
+
+    Every outcome, refusals included, leaves a durable record beside the lease
+    through `supervise._write_final_record` (GOVERNANCE 2): the operator who
+    reaches for this verb is usually looking at a terminal that is about to be
+    closed, and a refusal that existed only in that scrollback would be lost.
+    `supervise.main` has written one per run since it landed; this is the same
+    record, from the same function, for the other driver of the same close.
+
+    ``balance_wiring`` is carried into the record rather than dropped. A close
+    consults no ceiling, but a vendor adapter that observes its account balance
+    while terminating or capturing cost still pages the phone through the hook
+    `main` attached before dispatching here, and a ping that was sent, refused,
+    or never wired is a fact about this close.
     """
 
     leases_root: Path = args.leases
     lease_id: str = args.lease
+    try:
+        # Before `LeaseStore` is handed a path built from it. `--lease
+        # ../../somewhere` names no lease this root can hold, and neither does
+        # the id of a lease file someone renamed; both are refused here rather
+        # than interpolated into a path and discovered afterwards. The durable
+        # record is filed under no lease id, since there is no valid one.
+        supervise.require_lease_id(lease_id)
+    except supervise.SuperviseRefusal as refusal:
+        return _print_close_record(
+            {
+                "state": "refused",
+                "green": False,
+                "lease_id": lease_id,
+                "detail": refusal.detail,
+            },
+            refusal.exit_code,
+            leases_root=leases_root,
+            lease_id=None,
+        )
     try:
         policy = load_spend_policy(args.spend)
     except Exception as error:  # noqa: BLE001 -- a named refusal, never a traceback
@@ -289,6 +349,8 @@ def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
                 "detail": f"spend policy {args.spend} could not be read: {error}",
             },
             2,
+            leases_root=leases_root,
+            lease_id=lease_id,
         )
     if not policy.configured:
         return _print_close_record(
@@ -303,6 +365,8 @@ def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
                 ),
             },
             2,
+            leases_root=leases_root,
+            lease_id=lease_id,
         )
     # Narrowing, not a check: a configured policy carries every one of these
     # (`SpendPolicy.__post_init__` refuses one that does not).
@@ -333,13 +397,23 @@ def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
                 "detail": refusal.detail,
             },
             refusal.exit_code,
+            leases_root=leases_root,
+            lease_id=lease_id,
         )
     close = result.close_report
     detail = result.detail
-    if close is not None and not close.verified:
+    if (close is not None and not close.verified) or result.state == "close-unverified":
         # The one word the operator surface reserves for this, in the record
         # and in the exit status alike: an unverified close never reads as
         # zero, and never reads as "nothing more to do".
+        #
+        # The second half of that test is the lease that *already* sits in
+        # `close-unverified` when this verb is run again. That path makes no
+        # provider call, so it carries no close report of its own -- and it is
+        # reached by exactly the operator checking whether an earlier close
+        # finished. A bare "lease already reached terminal phase", with the
+        # word UNVERIFIED nowhere in the record, is how an unverified close
+        # gets read as a finished one.
         detail = f"UNVERIFIED CLOSE: {detail}"
     record: dict[str, object] = {
         "state": result.state,
@@ -349,9 +423,13 @@ def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
         "close": close.to_record() if close is not None else None,
         "lease_phase": result.lease.phase if result.lease is not None else None,
     }
-    if args.notify and close is not None:
-        record["close_notification"] = _notify_close_line(lease_id, result)
-    return _print_close_record(record, exit_code)
+    if fixture_note is not None:
+        record["record_fixture"] = fixture_note
+    if args.notify:
+        record["balance_notification"] = balance_wiring.to_record()
+        if close is not None:
+            record["close_notification"] = _notify_close_line(lease_id, result)
+    return _print_close_record(record, exit_code, leases_root=leases_root, lease_id=lease_id)
 
 
 def _notify_close_line(lease_id: str, result: "supervise.SuperviseResult") -> str:
@@ -373,7 +451,38 @@ def _notify_close_line(lease_id: str, result: "supervise.SuperviseResult") -> st
         return detail if len(detail) <= 160 else f"{detail[:160]} (reason truncated)"
 
 
-def _print_close_record(record: dict[str, object], exit_code: int) -> int:
+def _print_close_record(
+    record: dict[str, object],
+    exit_code: int,
+    *,
+    leases_root: Path,
+    lease_id: str | None,
+) -> int:
+    """Print the close record, and leave the same outcome on disk.
+
+    GOVERNANCE 2: a refusal that exists only in a terminal has been lost. The
+    durable copy is `supervise._write_final_record`, the same per-run file the
+    supervisor driver writes, so both drivers of this one close path file their
+    outcome in one place and one format.
+
+    A record that cannot be written is said out loud in the printed record and
+    never raised: the printed record naming the lease and the close is the
+    artifact that matters most in this moment, and losing it to a failing
+    durable write would be the worse of the two failures.
+    """
+
+    try:
+        path = supervise._write_final_record(
+            leases_root,
+            lease_id,
+            exit_code=exit_code,
+            state=str(record.get("state", "unknown")),
+            detail=str(record.get("detail", "")),
+            now=utc_now(),
+        )
+        record["final_record"] = str(path)
+    except Exception as error:  # noqa: BLE001 -- contained so the record below still prints
+        record["final_record"] = f"could not be written: {error}"
     print(json.dumps(record, sort_keys=True, indent=2), flush=True)
     return exit_code
 
