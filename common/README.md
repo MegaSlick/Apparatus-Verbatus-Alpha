@@ -16,7 +16,7 @@ still cross.
 | `chairs/` | a named role resolved to one pinned model artifact, verified by digest |
 | `stage.py` | argument shape, opening a run, publishing with the envelope filled in |
 | `imaging.py` | decoding and cropping, with bounds refused rather than clamped |
-| `request_capacity.py` | whether one reading request fits the sealed serving row it would be sent to: the chair's own image-token arithmetic, the measured prompt and answer costs, and a closed record naming the headroom. Three stages ask it the same question before they send |
+| `request_capacity.py` | whether one reading request fits the sealed serving row it would be sent to: the chair's own image-token arithmetic, the measured prompt and answer costs, and a closed record naming the headroom. Three stages ask it the same question before they send. A request is admitted on a measured constant or a measured **upper** bound and never on a floor; where a chair has both, the record carries both with their bases named |
 | `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
 | `chandra_custody.py` | one-receipt Chandra custody: the Designator's live structure pass writes it; the read half has no served caller since the capture intake was removed (Tyrel, 2026-09-02) and is the half that defines what the binding admits. It deliberately names the Designator's blob root and serving chair — those constants come from `contracts/`, `runtree/` and `stage.py`, never from a stage module, so the import boundary above holds |
 

@@ -31,6 +31,22 @@ read. On the admitted path the record travels on the request and the client
 copies it onto the retained call record, so the arithmetic sits beside the
 reading it allowed. Nothing is ever downscaled to make a request fit.
 
+**Admission is on an upper bound; the floor travels beside it.** This chair's
+prompt is dossier-built, so it has no fixed text to seal a constant against, and
+it used to be admitted on ``perlector_prompt_tokens`` -- a *lower* bound,
+measured over a 73-word pass-A dossier and over plain prose. A check that admits
+on a lower bound admits exactly the requests it should have refused: a dossier
+carrying five witnesses' full act texts, or a pass-B prompt with reproof
+instruments appended, would pass it and then be answered with the HTTP 400 the
+check exists to prevent. ``perlector_prompt_bound`` is the measured upper bound
+this reader now admits on -- the maximum tokens-per-character ratio over 168
+rendered prompts, with a stated margin, over the measured chat-template overhead
+-- and it is sealed against ``prompts.py``'s own module digest, so editing the
+prompt builder expires the measurement rather than leaving a stale rate in
+force. The floor is still computed, and is recorded on the capacity record
+beside the bound with both bases named, because it is what says a refused
+request was refused by a measurement and not by a margin.
+
 **The stop-reason mapping is where an unrecognized engine answer becomes a
 loud stop, not a silent guess.** ``truncation.py:77-93`` documents the rule
 this implements: an engine's own word is authoritative for ``length``, but a
@@ -44,12 +60,14 @@ nothing this pass.
 from __future__ import annotations
 
 import base64
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Final, Mapping
 
 import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
 from common.chairs.models import ChairIdentity
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.request_capacity import (
@@ -57,10 +75,20 @@ from common.request_capacity import (
     dense_page_answer_budget,
     image_sizes,
     image_token_costs,
+    perlector_prompt_bound,
     perlector_prompt_tokens,
     refuse_unless_it_fits,
 )
 from operations.serving.client import ChairClient, ChairRequest
+
+# The prompt builder this reader renders through, by its own module bytes: the
+# same digest `prompts.prompt_evidence` records as `builder_sha256`, computed
+# here rather than read off that module's private name, and reconciled against
+# it by `test_live_reader.py`. It is what expires the sealed tokens-per-
+# character bound when the template is edited -- read once at import, as
+# `prompts.py` reads its own, so a deployment missing its source files fails
+# when the module loads rather than per act mid-run.
+_PROMPT_TEMPLATE_DIGEST: Final[str] = digest_bytes(Path(prompts.__file__).resolve().read_bytes())
 
 
 class EngineSignalRefusal(ContractError):
@@ -282,13 +310,19 @@ class VLLMReader:
         # the engine answers before generating, which `EngineSignalRefusal`
         # never sees. Refusing here is what turns that into a laptop refusal
         # naming the arithmetic rather than a stack trace on a billing card.
-        prompt_tokens, basis = perlector_prompt_tokens(text)
+        # Admitted on the measured upper bound, with the measured floor recorded
+        # beside it: a request is never let through on a number that says only
+        # what it costs *at least*.
+        prompt_bound, bound_basis = perlector_prompt_bound(
+            text, template_digest=_PROMPT_TEMPLATE_DIGEST
+        )
+        prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)
         page_render_sizes = image_sizes(page_render_images)
         capacity = refuse_unless_it_fits(
             self._client.handle.profile,
             region_sizes + page_render_sizes,
-            prompt_tokens,
+            prompt_bound,
             # One act's reading, a whole page's where the act's own crop is
             # page-sized, and never less than the bound this reader would let
             # the engine generate (`_reserved_answer_budget`).
@@ -304,7 +338,9 @@ class VLLMReader:
             # check and the audit hand-off) so that nothing about a request can
             # vary with which pass it is. A refusal message is no exception.
             what=f"the Perlector request for act {dossier.get('act_key')!r}",
-            prompt_tokens_basis=basis,
+            prompt_tokens_basis=bound_basis,
+            prompt_tokens_floor=prompt_floor,
+            prompt_tokens_floor_basis=floor_basis,
         )
 
         request = ChairRequest(

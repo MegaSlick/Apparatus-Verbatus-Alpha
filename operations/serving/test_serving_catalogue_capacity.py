@@ -18,7 +18,7 @@ import pytest
 
 from common.request_capacity import (
     MEASURED_PROMPT_TOKENS,
-    PERLECTOR_PROMPT_FLOOR_TOKENS,
+    PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
     act_answer_budget,
     dense_page_answer_budget,
     request_fits,
@@ -54,11 +54,15 @@ PAGE_AS_PRESENTED = {
 # The Perlector's region crop, modelled as `TOKEN_COST_REPORT.md` section 7
 # models it: full page width by one sixth of page height.
 ACT_REGION_CROP = (2480, 584)
-# The Perlector's prompt has no fixed text to seal, so its floor stands in for
-# a measured constant here exactly as it does at the call site.
+# The Perlector's prompt has no fixed text to seal, so what stands in for a
+# measured constant here is what the seam actually admits on: the sealed
+# tokens-per-character bound over the representative dossier of
+# `TOKEN_COST_REPORT.md` section 5. Weighing the shipped rows against the floor
+# would ask whether they can serve a request smaller than any the reader lets
+# through.
 PROMPT_TOKENS = {
     **{chair: entry.tokens for chair, entry in MEASURED_PROMPT_TOKENS.items()},
-    "perlector": PERLECTOR_PROMPT_FLOOR_TOKENS,
+    "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
 }
 
 
@@ -135,7 +139,10 @@ def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_
     An act whose bounds are the whole page, seen from two captures, sends four
     page-sized images.  At 24 GB and 48 GB the raised 16,384 holds them; at
     80 GB+ the same four images cost 20,400 tokens on their own, and no context
-    this catalogue ships can hold the request.  Pinned rather than passed over:
+    this catalogue ships can hold the request.  The prompt charged here is the
+    1,100 the seam admits on over the representative dossier, not the 790 floor
+    it used to be weighed against; the verdicts are unchanged by the difference
+    and the three needs move by 310 each.  Pinned rather than passed over:
     the pipeline refuses it on this laptop with the arithmetic
     (`pipeline/4_perlector/live_reader.py`), and a later edit that quietly
     changes which tiers can serve it changes this test.
@@ -154,12 +161,12 @@ def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_
         )
         needs[row.tier] = (record["need"], record["fits"])
     assert needs == {
-        # 4x1,715 + 790 + 1,318
-        "generic-24gb": (8968, True),
-        # 4x3,102 + 790 + 1,318
-        "generic-48gb": (14516, True),
-        # 4x5,100 + 790 + 1,318, against 16,384
-        "generic-80gb-plus": (22508, False),
+        # 4x1,715 + 1,100 + 1,318
+        "generic-24gb": (9278, True),
+        # 4x3,102 + 1,100 + 1,318
+        "generic-48gb": (14826, True),
+        # 4x5,100 + 1,100 + 1,318, against 16,384
+        "generic-80gb-plus": (22818, False),
     }
 
 

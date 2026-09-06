@@ -54,22 +54,44 @@ differs, so **editing a prompt invalidates its measurement** instead of leaving
 a stale number in force.
 
 The Perlector's prompt is built from run-time dossier content and has no fixed
-text to digest, so it carries two measured facts instead of one constant: the
-measured floor for a representative dossier at this prompt shape, and the
-measured tokens-per-word ratio of its own tokenizer on 18th-century French
-register prose.  :func:`perlector_prompt_tokens` takes the larger of the two,
-and the capacity record says which basis it used.  A rate applied to text it was
-not measured over is an extrapolation, and the record names it as one.
+text to digest, so it carries measured facts rather than one constant.  Two of
+them describe a **floor**: the measured cost of a representative dossier at this
+prompt shape, and the measured tokens-per-word ratio of its own tokenizer on
+18th-century French register prose.  :func:`perlector_prompt_tokens` takes the
+larger of those two and is a lower bound on any real prompt -- the 790 was
+measured over a pass-A dossier with no fed prior draft and no reproof
+instrument, and the 1.644 tokens per word over plain prose, where a dossier is
+prose plus JSON scaffolding and costs more per word.
 
-**Both are floors, and so is the number they produce.**  The 790 was measured
-over a pass-A dossier with no fed prior draft and no reproof instrument, and a
-real pass-B prompt is strictly larger (``TOKEN_COST_REPORT.md`` section 5).  The
-1.644 tokens per word was measured over plain register prose, and a dossier is
-prose plus JSON scaffolding, which costs more per word rather than less.  So
-this chair's counted prompt is a lower bound on its real one: where the row has
-little headroom, a request that passes this check can still be the one vLLM
-refuses.  The remedy is a tokenizer on a pod, not a larger guess here -- a
-padded constant would report a margin nobody measured.
+**A floor cannot decide admission, and it no longer does.**  A check that admits
+on a lower bound admits exactly the requests it should have refused: a real
+dossier carrying five witnesses' full act texts, or a pass-B prompt with reproof
+instruments appended, passes a check measured over a 73-word pass-A dossier and
+is then answered with the HTTP 400 the check exists to prevent.  So a second,
+**upper** bound was measured, and it is the one
+:func:`refuse_unless_it_fits` admits on: :func:`perlector_prompt_bound`.  The
+floor is still computed and still travels on the capacity record beside it, with
+both bases named, because it is what says the request was refused by a
+measurement rather than by a margin.
+
+The bound is measured, not padded.  168 Perlector prompts were rendered through
+this repository's own builder -- one, three and five testimonia; 0, 5, 25, 100,
+400, 800 and 1,200 words of register French per testimonium; with and without a
+fed prior draft; with and without five appended reproof prompts; at one and two
+capture views -- tokenized with the chair's pinned tokenizer through its own
+chat template, and measured for tokens per character.  The ratio falls
+monotonically with dossier size (0.4126 at the densest scaffolding, 0.2641 over
+1,200-word acts), so the **maximum observed** ratio is the one sealed, with a
+stated 5% margin over it: see :data:`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS`.
+It is sealed the way a fixed prompt's constant is -- digested against the
+template it was measured over, so an edit to the prompt builder invalidates the
+measurement rather than leaving a stale rate in force -- and reconciled against
+the pinned revision by the same test as the rest.
+
+**What the bound is not.**  It bounds this repository's rendering of the prompt.
+Whether vLLM's own assembly agrees with these counts token for token has never
+been observed, here or anywhere in this tree, so the bound is an upper bound on
+a measurement rather than a guarantee of admission (GOVERNANCE 10).
 
 **What only a pod can settle**: whether vLLM's own prompt assembly agrees with
 these counts token for token.  vLLM's OpenAI server applies the same chat
@@ -337,6 +359,8 @@ CAPACITY_RECORD_FIELDS: Final = frozenset(
         "image_prompt_tokens",
         "prompt_tokens",
         "prompt_tokens_basis",
+        "prompt_tokens_floor",
+        "prompt_tokens_floor_basis",
         "answer_budget",
         "need",
         "headroom",
@@ -351,12 +375,27 @@ CAPACITY_RECORD_FIELDS: Final = frozenset(
 PROMPT_TOKENS_MEASURED_CONSTANT: Final = "measured-constant-for-this-prompt-version"
 PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
+# The one basis a *dossier-built* prompt may be admitted on: the maximum
+# tokens-per-character ratio measured over this prompt shape, plus a stated
+# margin, over the measured chat-template overhead.  Named apart from the two
+# floors above so a receipt can never be read as though a lower bound had been
+# treated as an admission.
+PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_MEASURED_FLOOR,
         PROMPT_TOKENS_MEASURED_RATE,
+        PROMPT_TOKENS_MEASURED_BOUND,
     }
+)
+
+# The bases a capacity record may admit a request on.  A floor names how a
+# request was *refused*; it may never be the number a request was let through
+# on.  `request_fits` holds this, so a call site cannot admit on a floor by
+# passing one in.
+PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
+    {PROMPT_TOKENS_MEASURED_CONSTANT, PROMPT_TOKENS_MEASURED_BOUND}
 )
 
 
@@ -367,6 +406,8 @@ def request_fits(
     answer_budget: int,
     *,
     prompt_tokens_basis: str = PROMPT_TOKENS_MEASURED_CONSTANT,
+    prompt_tokens_floor: int | None = None,
+    prompt_tokens_floor_basis: str | None = None,
 ) -> dict[str, Any]:
     """The closed capacity record for one request against one sealed row.
 
@@ -376,6 +417,25 @@ def request_fits(
     tokens the answer must be able to occupy -- both are the caller's to
     supply, because only the caller knows which prompt and which answer shape
     this call is.
+
+    ``prompt_tokens`` is the number admission is decided on, so it must rest on
+    a basis in :data:`PROMPT_TOKENS_ADMITTING_BASES` -- a measured constant for
+    a fixed prompt, or a measured upper bound for a dossier-built one.  A floor
+    is refused here rather than accepted quietly: a check that admits on a lower
+    bound admits exactly the requests it should have refused.
+
+    ``prompt_tokens_floor``/``prompt_tokens_floor_basis`` are the *other* number
+    a chair with no fixed prompt has -- what this repository has measured of the
+    prompt from below.  They are recorded, never used to decide anything, so a
+    receipt shows both what the request was admitted on and what was measured of
+    it, each with its basis named.
+
+    The two are independent measurements and are not cross-checked here.  The
+    Perlector's floor is the larger of a rate over this prompt's own words and
+    the measured cost of a *representative* dossier, and that second term is a
+    claim about real dossiers rather than about arbitrarily short text -- so a
+    prompt smaller than that dossier can record a floor above its own bound.
+    Nothing turns on it either way: admission is the bound and only the bound.
 
     Never raises on a request that simply does not fit: that is a ``fits:
     False`` record with a reason, which the caller publishes and then acts on.
@@ -393,6 +453,27 @@ def request_fits(
             f"{sorted(PROMPT_TOKENS_BASES)}; a capacity record says how its prompt count was "
             "arrived at, and an unnamed basis would let an estimate read as a measurement"
         )
+    if prompt_tokens_basis not in PROMPT_TOKENS_ADMITTING_BASES:
+        raise RequestCapacityRefusal(
+            f"prompt_tokens_basis {prompt_tokens_basis!r} is a lower bound on this prompt, and "
+            "a request is never admitted on one: it says only that a request costs at least "
+            f"this much. Admission rests on {sorted(PROMPT_TOKENS_ADMITTING_BASES)}; a floor "
+            "travels beside it on prompt_tokens_floor"
+        )
+    if prompt_tokens_floor is None:
+        if prompt_tokens_floor_basis is not None:
+            raise RequestCapacityRefusal(
+                f"a capacity record names a prompt-floor basis {prompt_tokens_floor_basis!r} "
+                "with no floor to attach it to"
+            )
+    else:
+        prompt_tokens_floor = _nonnegative(prompt_tokens_floor, "prompt_tokens_floor")
+        if prompt_tokens_floor_basis not in PROMPT_TOKENS_BASES:
+            raise RequestCapacityRefusal(
+                f"prompt_tokens_floor_basis {prompt_tokens_floor_basis!r} is not one of "
+                f"{sorted(PROMPT_TOKENS_BASES)}; a recorded floor says how it was arrived at "
+                "exactly as the admitted count does"
+            )
 
     image_records: list[dict[str, Any]] = []
     for width, height in images:
@@ -438,6 +519,8 @@ def request_fits(
         "image_prompt_tokens": image_total,
         "prompt_tokens": prompt_tokens,
         "prompt_tokens_basis": prompt_tokens_basis,
+        "prompt_tokens_floor": prompt_tokens_floor,
+        "prompt_tokens_floor_basis": prompt_tokens_floor_basis,
         "answer_budget": answer_budget,
         "need": need,
         "headroom": headroom,
@@ -465,16 +548,29 @@ def refuse_unless_it_fits(
     *,
     what: str,
     prompt_tokens_basis: str = PROMPT_TOKENS_MEASURED_CONSTANT,
+    prompt_tokens_floor: int | None = None,
+    prompt_tokens_floor_basis: str | None = None,
 ) -> dict[str, Any]:
     """The capacity record, or :class:`RequestCapacityRefusal` carrying it.
 
     The one-line form for a call site whose contract is a refusal rather than a
     hold.  A site that holds instead reads ``record["fits"]`` and publishes the
     record either way.
+
+    Admits on ``prompt_tokens`` and on nothing else, and :func:`request_fits`
+    refuses a ``prompt_tokens_basis`` that names a floor, so the number a
+    request gets through on is always a measured constant or a measured upper
+    bound.
     """
 
     record = request_fits(
-        row, images, prompt_tokens, answer_budget, prompt_tokens_basis=prompt_tokens_basis
+        row,
+        images,
+        prompt_tokens,
+        answer_budget,
+        prompt_tokens_basis=prompt_tokens_basis,
+        prompt_tokens_floor=prompt_tokens_floor,
+        prompt_tokens_floor_basis=prompt_tokens_floor_basis,
     )
     if not record["fits"]:
         raise RequestCapacityRefusal(
@@ -577,7 +673,57 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyTy
 # measured integer pair rather than a rounded rate so the arithmetic stays exact.
 PERLECTOR_PROMPT_FLOOR_TOKENS: Final = 790
 PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
-# The tokenizer both of the Perlector's two numbers were measured with, in the
+
+# --- and the upper bound admission actually rests on ---------------------------
+#
+# Measured 2026-09-06 on the session host, offline, with the pinned Perlector
+# tokenizer and its own chat template: 168 prompts rendered through
+# `pipeline/4_perlector/prompts.py::build_prompt` for recipe
+# `unproven-real-perlector` -- 1/3/5 testimonia x 0/5/25/100/400/800/1,200 words
+# of 18th-century register French per testimonium x fed and withheld prior draft
+# x zero and five appended reproof prompts x one and two capture views -- and
+# measured for tokens per character of the rendered text.
+#
+# The harness reproduces `TOKEN_COST_REPORT.md` section 5 exactly on that
+# section's own dossier (790 text tokens at one capture view, 794 at two), which
+# is what says it is measuring the same thing the floor was measured with.
+#
+# The ratio falls monotonically as the dossier grows -- 0.4126 where the acts are
+# empty and the JSON scaffolding is all there is, 0.2641 over 1,200-word acts --
+# so the maximum is at the *small* end and it is the maximum that is sealed:
+# 0.4126394 tokens per character, rounded up at the fourth decimal.
+PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
+# Over the maximum, not over a mean: 5%, stated rather than folded into the
+# ratio so a reader can see the measurement and the margin apart. The tightest
+# measured case clears its own bound by 13.7% with it.
+PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
+# The chat template's own cost, which no per-character rate can carry: 52 tokens
+# for the turn plus 2 for each image in it, both measured exactly (the per-image
+# cost is 2 at every count from 0 to 8 images). Charged at
+# `config/perlector_protocol.toml`'s `max_images` ceiling of 32 rather than at
+# the images this request happens to carry, so the constant is an upper bound
+# for any request this seam can build; `test_live_reader.py` reconciles the 32
+# against that file, so raising the ceiling expires this number.
+PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * 32
+PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
+# The builder the ratio was measured through, as `prompts.py`'s own module
+# digest -- the same value `prompts.prompt_evidence` records as
+# `builder_sha256`. `perlector_prompt_bound` refuses when the caller's builder
+# does not match it, so an edited prompt template expires this measurement
+# exactly as an edited fixed prompt expires its sealed constant.
+PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
+    "ad623c7d0fd379816c471f21bda00cd7dbf1f0ecfabed00ccc2e8f8a29dbf783"
+)
+# The representative dossier of `TOKEN_COST_REPORT.md` section 5 -- three
+# testimonia, one 73-word act each, pass A, no reproof -- as its measured
+# character count and the bound over it. Sealed so the shipped-row check
+# (`operations/serving/test_serving_catalogue_capacity.py`) can weigh the rows
+# against the number the seam admits on rather than against the floor it no
+# longer admits on; `test_request_capacity.py` re-derives the second from the
+# first, so the pair cannot drift from the arithmetic.
+PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2269
+PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1100
+# The tokenizer all of the Perlector's measured numbers were taken with, in the
 # same two structured fields a sealed prompt carries, and reconciled against
 # `config/models-real.toml` by the same test: this chair has no fixed prompt to
 # digest, so the pinned revision is the only thing that can expire its
@@ -640,6 +786,58 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
     if by_rate > PERLECTOR_PROMPT_FLOOR_TOKENS:
         return by_rate, PROMPT_TOKENS_MEASURED_RATE
     return PERLECTOR_PROMPT_FLOOR_TOKENS, PROMPT_TOKENS_MEASURED_FLOOR
+
+
+def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
+    """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
+
+    The number this chair's requests are admitted on.  The measured chat-template
+    overhead at the protocol's own image ceiling, plus the maximum measured
+    tokens-per-character ratio with its stated margin, applied to this prompt's
+    own characters.  Every one of the 168 measured prompts is below what this
+    returns for it, the tightest by 13.7%.
+
+    Characters rather than words, deliberately.  A dossier is prose *and* JSON
+    scaffolding, and the scaffolding has few whitespace words for the tokens it
+    costs: the same measurement gives 1.65 tokens per word over 1,200-word acts
+    and 8.16 over a dossier whose acts are empty, a five-fold spread, against
+    0.264 and 0.413 per character.  A per-word rate would need a margin five
+    times the size to cover the same set, which is a margin standing in for a
+    measurement nobody took.
+
+    ``template_digest`` is the builder the caller is rendering through --
+    ``prompts.py``'s module digest, the same value ``prompt_evidence`` records
+    as ``builder_sha256``.  It is checked rather than trusted: the ratio
+    describes the bytes that builder produces, and an edited builder produces
+    other bytes.  This is :func:`sealed_prompt_tokens`'s discipline for a prompt
+    that has no fixed text to digest -- what expires the measurement is the
+    template rather than the rendering.
+
+    **An upper bound on a measurement, not a guarantee of admission.**  vLLM's
+    own prompt assembly has never been observed by this repository.  What this
+    closes is the failure of admitting on a *floor*: a real five-witness dossier
+    or a pass-B prompt with reproofs appended no longer passes a check that was
+    measured over a 73-word pass-A dossier.
+    """
+
+    if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
+        raise RequestCapacityRefusal(
+            f"the Perlector prompt builder digests to {template_digest}, but the measured "
+            f"tokens-per-character bound this chair is admitted on was taken over "
+            f"{PERLECTOR_PROMPT_TEMPLATE_DIGEST} with "
+            f"{PERLECTOR_MEASURED_TOKENIZER[0]} at {PERLECTOR_MEASURED_TOKENIZER[1]}; the "
+            "prompt template changed after it was measured, and a request is never admitted "
+            "against the token cost of text nobody renders any more. Re-measure the rate and "
+            "update common/request_capacity.py"
+        )
+    margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
+    body = -(
+        -len(text)
+        * PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS
+        * margin_numerator
+        // (10_000 * margin_denominator)
+    )
+    return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
 
 
 # What an answer costs on a dense page, per chair, in that chair's own declared

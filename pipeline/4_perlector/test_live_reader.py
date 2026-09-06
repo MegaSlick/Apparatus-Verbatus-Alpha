@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import base64
 import hashlib
+import tomllib
 from pathlib import Path
 from typing import Mapping
 
@@ -27,7 +28,16 @@ from common.contracts.errors import ContractError
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import audit_request as build_audit_request
-from common.request_capacity import RequestCapacityRefusal
+from common.request_capacity import (
+    PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS,
+    PERLECTOR_PROMPT_OVERHEAD_TOKENS,
+    PERLECTOR_PROMPT_TEMPLATE_DIGEST,
+    PROMPT_TOKENS_MEASURED_CONSTANT,
+    RequestCapacityRefusal,
+    perlector_prompt_bound,
+    perlector_prompt_tokens,
+    request_fits,
+)
 from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,
@@ -704,9 +714,9 @@ def test_an_act_whose_images_overrun_the_sealed_row_is_refused_before_the_wire(
 
     A page-fallback act carries a full-page region crop and a full-page render.
     At 2,480 pixels wide against this row's `max_pixels` the two cost 1,404 and
-    1,715 image tokens; with the Perlector's measured prompt floor and even its
-    smaller single-act answer budget that is 4,125 against the 2,048 this row
-    states. Before this check the request went out and vLLM answered HTTP 400
+    1,715 image tokens; with the sealed upper bound on this dossier's prompt and
+    even the smaller single-act answer budget that is well past the 2,048 this
+    row states. Before this check the request went out and vLLM answered HTTP 400
     with a body the client discarded; now nothing is built, the endpoint sees
     nothing, and the refusal carries the whole arithmetic.
     """
@@ -826,10 +836,17 @@ def test_a_two_view_page_fallback_act_needs_the_raised_perlector_row(
 
     Two capture views of a page-fallback act send four page-sized images: two
     region crops that are whole pages and two page renders. At the 24 GB tier's
-    `max_pixels` each costs 1,715 tokens, the Perlector's measured prompt floor
-    is 790 and a page-fallback act's reading is 1,318 -- 4x1,715 + 790 + 1,318 =
-    8,968. At 8,192 that is over by 776 and refused on this laptop; at the
-    16,384 the shipped row now states it fits with 7,416 to spare.
+    `max_pixels` each costs 1,715 tokens and a page-fallback act's reading is
+    1,318. The prompt is this suite's own small dossier, which the sealed
+    tokens-per-character bound puts at 237 -- 4x1,715 + 237 + 1,318 = 8,415. At
+    8,192 that is over by 223 and refused on this laptop; at the 16,384 the
+    shipped row now states it fits with 7,969 to spare.
+
+    The shipped catalogue is weighed against a real dossier's 1,100 rather than
+    against this one's 237
+    (`operations/serving/test_serving_catalogue_capacity.py`); what is pinned
+    here is the row boundary and the four image costs, which the prompt does not
+    move.
     """
 
     client, endpoint, blob_store, chair = _built(
@@ -857,11 +874,182 @@ def test_a_two_view_page_fallback_act_needs_the_raised_perlector_row(
             _reader(client, chair).read(dossier, pass_kind="perlectio", delivered_pixels=pixels)
     record = error.value.capacity
     assert [entry["image_prompt_tokens"] for entry in record["images"]] == [1715] * 4
-    assert record["prompt_tokens"] == 790
+    assert record["prompt_tokens"] == 237
+    assert record["prompt_tokens_basis"] == "measured-upper-bound-for-this-prompt-shape"
     assert record["answer_budget"] == 1318
-    assert (record["need"], record["headroom"]) == (8968, -776)
+    assert (record["need"], record["headroom"]) == (8415, -223)
     assert endpoint.requests == []
     assert len(blob_store) == 0
+
+
+# --- admission is on the upper bound, not on the floor -----------------------
+
+# One 73-word 18th-century French baptism act, the register prose the sealed
+# tokens-per-character bound was measured over. Retyped here rather than
+# imported: what a testimonium reports is a stage's own evidence, and what is
+# being proved is that a dossier carrying real act text is weighed by its real
+# size.
+_REGISTER_ACT = (
+    "L'an mil sept cent quarante et un, le douziesme jour du mois de septembre, a este "
+    "baptisee par nous soussigne prestre cure de cette paroisse Marie Anne fille legitime "
+    "de Jean Baptiste Dubois laboureur et de Francoise Lemoine son espouse, nee du jour "
+    "precedent ; le parrain a este Pierre Dubois oncle paternel de l'enfant, et la marraine "
+    "Anne Lemoine tante maternelle, lesquels ont declare ne scavoir signer de ce enquis "
+    "suivant l'ordonnance."
+)
+
+
+def _dossier_with_testimonia(*, region_image: bytes, page_image: bytes, witnesses: int, acts: int):
+    """The same dossier, carrying `witnesses` testimonia of `acts` acts each."""
+
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    dossier["testimonia"] = [
+        {
+            "witness_label": f"attestator_{index + 1}",
+            "training_domain": "general-ocr",
+            "reported": " ".join([_REGISTER_ACT] * acts),
+            "model_name": "a witness",
+            "resolved_provenance": {
+                "repo": "example/witness",
+                "revision": "0" * 40,
+                "adapter": "witness.v1",
+                "scope": "page",
+            },
+        }
+        for index in range(witnesses)
+    ]
+    return dossier
+
+
+def test_a_real_dossier_the_floor_admits_and_the_bound_refuses_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The defect: a lower bound was deciding admission.
+
+    Five witnesses reporting four acts each is an ordinary page's testimony, not
+    a pathological input. Its prompt costs at least 2,512 tokens by the measured
+    floor and at most 4,466 by the measured bound. At a row stating 6,144, with
+    a 1,404-token region crop, a 1,715-token page render and one act's
+    216-token reading beside it, the floor's 5,847 fits with 297 to spare and
+    the bound's 7,801 is over by 1,657.
+
+    The floor admitted it, the engine would not have: `prompt_tokens +
+    max_tokens > max_model_len` is answered with HTTP 400 before generation, the
+    Perlector has no `failed` shape to publish for an act nothing read, and the
+    pass stops. It is refused here instead, on this laptop, with the arithmetic
+    on the exception.
+    """
+
+    client, endpoint, blob_store, chair = _built(tmp_path, max_pixels=1806336, max_model_len=6144)
+    region_image = _image_bytes(b"REGION", width=2480, height=584)
+    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    dossier = _dossier_with_testimonia(
+        region_image=region_image, page_image=page_image, witnesses=5, acts=4
+    )
+    with client:
+        row = client.handle.profile
+        with pytest.raises(RequestCapacityRefusal) as error:
+            _reader(client, chair).read(
+                dossier,
+                pass_kind="perlectio",
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+    record = error.value.capacity
+    assert [entry["image_prompt_tokens"] for entry in record["images"]] == [1404, 1715]
+    assert record["prompt_tokens"] == 4466
+    assert record["prompt_tokens_basis"] == "measured-upper-bound-for-this-prompt-shape"
+    assert record["prompt_tokens_floor"] == 2512
+    assert record["prompt_tokens_floor_basis"] == "measured-tokens-per-word-extrapolation"
+    assert record["answer_budget"] == 216
+    assert (record["need"], record["headroom"]) == (7801, -1657)
+    assert record["fits"] is False
+    # Nothing was sent, so nothing could have been answered with a 400.
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+    # The counterfactual, executed against the same row and the same request:
+    # the floor this seam used to admit on says the request fits.
+    rendered = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
+    floor, floor_basis = perlector_prompt_tokens(rendered)
+    admitted_by_the_floor = request_fits(
+        row,
+        [(2480, 584), (2480, 3508)],
+        floor,
+        216,
+        prompt_tokens_basis=PROMPT_TOKENS_MEASURED_CONSTANT,
+    )
+    assert (floor, floor_basis) == (2512, "measured-tokens-per-word-extrapolation")
+    assert admitted_by_the_floor["need"] == 5847
+    assert admitted_by_the_floor["headroom"] == 297
+    assert admitted_by_the_floor["fits"] is True
+
+
+def test_the_same_dossier_is_admitted_where_its_bound_really_fits(tmp_path: Path) -> None:
+    """Not a refusal that fires on everything: one more token of context admits it."""
+
+    client, endpoint, _blobs, chair = _built(tmp_path, max_pixels=1806336, max_model_len=7801)
+    region_image = _image_bytes(b"REGION", width=2480, height=584)
+    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    dossier = _dossier_with_testimonia(
+        region_image=region_image, page_image=page_image, witnesses=5, acts=4
+    )
+    endpoint.script(ScriptedAnswer(content="a reading", finish_reason="stop"))
+    with client:
+        result = _reader(client, chair).read(
+            dossier,
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    assert result["stop_reason"] == "stop"
+    assert len(endpoint.requests) == 1
+
+
+def test_the_sealed_bound_is_bound_to_the_prompt_builder_this_reader_renders_through():
+    """The digest that expires the measurement, reconciled where both are visible.
+
+    `prompts.py` is the Perlector's prompt template: the rendered bytes are the
+    module's own f-strings, which is why `prompt_evidence` already records the
+    whole module's digest as `builder_sha256`. The sealed tokens-per-character
+    bound is measured over those bytes, so it is bound to that same digest --
+    edit the builder and the measurement expires rather than describing text
+    nobody renders any more.
+    """
+
+    chair = _chair()
+    dossier = _dossier(region_image=_image_bytes(b"r"), page_image=_image_bytes(b"p"))
+    dossier["dossier_digest"] = "0" * 64
+    evidence = prompts.prompt_evidence(chair, dossier)
+    assert live_reader._PROMPT_TEMPLATE_DIGEST == evidence["builder_sha256"]
+    assert PERLECTOR_PROMPT_TEMPLATE_DIGEST == evidence["builder_sha256"]
+
+
+def test_an_edited_prompt_template_expires_the_measured_bound():
+    with pytest.raises(RequestCapacityRefusal) as refusal:
+        perlector_prompt_bound("a rendered prompt", template_digest="f" * 64)
+    message = str(refusal.value)
+    assert "prompt template changed after it was measured" in message
+    assert PERLECTOR_PROMPT_TEMPLATE_DIGEST in message
+
+
+def test_the_measured_overhead_covers_the_protocols_own_image_ceiling():
+    """The one config number the sealed overhead is charged at.
+
+    `PERLECTOR_PROMPT_OVERHEAD_TOKENS` is the chat template's measured 52 tokens
+    for the turn plus 2 for each image, charged at
+    `config/perlector_protocol.toml`'s `max_images` rather than at the images a
+    given request carries -- so it is an upper bound for anything this seam can
+    build. Raising that ceiling expires the constant, and this is what fails
+    when it moves.
+    """
+
+    protocol = tomllib.loads(
+        (Path(__file__).resolve().parents[2] / "config/perlector_protocol.toml").read_text()
+    )
+    max_images = protocol["max_images"]
+    assert max_images == PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS
+    assert PERLECTOR_PROMPT_OVERHEAD_TOKENS == 52 + 2 * max_images
 
 
 def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_record(
@@ -893,10 +1081,14 @@ def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_rec
     assert capacity["schema"] == "verbatus-request-capacity.v1"
     assert capacity["fits"] is True
     assert capacity["chair"] == "perlector"
-    assert capacity["prompt_tokens_basis"] in {
+    # Admitted on the measured upper bound, with the measured floor recorded
+    # beside it and its own basis named.
+    assert capacity["prompt_tokens_basis"] == "measured-upper-bound-for-this-prompt-shape"
+    assert capacity["prompt_tokens_floor_basis"] in {
         "measured-floor-for-this-prompt-shape",
         "measured-tokens-per-word-extrapolation",
     }
+    assert isinstance(capacity["prompt_tokens_floor"], int)
     assert result["stop_reason"] == "stop"
 
 
