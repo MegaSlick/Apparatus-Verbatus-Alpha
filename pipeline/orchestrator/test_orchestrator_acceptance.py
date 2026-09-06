@@ -1440,10 +1440,37 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+#
+# Request-capacity re-pin: `config/pod_placement.toml`'s `context_cap` moved
+# with the serving rows -- 2,048/4,096/8,192 to 8,192/16,384/16,384 -- because a
+# 300-dpi page costs a Qwen-VL chair between 1,715 and 6,693 prompt tokens and
+# the old caps admitted no row that could serve one. Unit 17 seals that file
+# byte-for-byte into every run's `config_digest`, so both scenario trees legally
+# move without gaining an artifact, exactly as its own ledger entry above
+# records for this file.
+#
+# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
+# the preceding commit's bytes and every other change on this branch in place,
+# the happy tree reproduced 6dadabc8... at 96 files and exit 0 -- so the whole
+# move is those bytes, and nothing else on this branch reaches a fixture run.
+# (It does not: the capacity check runs only on the live path, and the real
+# serving catalogue these rows live beside is never sealed into either
+# scenario.)
+#
+# Checked leaf by leaf against that same reverted tree: happy 75 changed files
+# and 397 changed JSON leaves, **not one of them a non-digest field** -- every
+# changed leaf is a 64-hex digest or a content-addressed blob path, plus one
+# renamed blob each in `4_perlector` and `7_armarium` whose own name is its
+# content digest. Counts and exits are unmoved: happy 96 at exit 0, review 107
+# at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
-REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
+HAPPY_RUN_TREE_DIGEST = "ef81b27f9972d9024c0892fa87a70cb22c2fc68cc58a3e3190fde6215b60d1c0"
+REVIEW_RUN_TREE_DIGEST = "6c3f5a42ac0368200da011fb05d8aafdcebfcfde44f746e6d107fd6b4fc367f7"
 
 
 def orchestrate(

@@ -74,7 +74,8 @@ every request and in the retained model view exactly as before: it is the
 record of what Churro would have been asked for. What goes on the wire is a
 different question, and only the sealed serving row the chair actually runs
 under can answer it. Every Churro row in ``config/serving_recipes_real.toml``
-caps ``max_model_len`` at 2,048/4,096/8,192, and vLLM refuses a request whose
+caps ``max_model_len`` well below it -- 8,192 and 16,384 since the capacity
+unit raised them, 2,048/4,096/8,192 before that -- and vLLM refuses a request whose
 prompt plus ``max_tokens`` exceeds that -- so sending 24,000 made the first
 real call a 400 on a card that bills by the hour. ``churro_generation_sent``
 therefore renames the declared key to vLLM's ``max_tokens`` only when the row's
@@ -347,7 +348,7 @@ def act_chair_request(
     (``ChairClient.handle.profile``).  A page-fallback act -- an act whose
     bounds are the whole page -- is the case this check exists for: its crop is
     a whole 300-dpi page and costs the same 2,280 image tokens a page request
-    does, which no 2,048-token row can hold.
+    does, which the 2,048-token rows this catalogue shipped could not hold.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -450,8 +451,9 @@ def page_chair_request(
     (`churro_generation_sent`). Whether the request **fits** is asked for both
     page chairs alike, before either is built: a whole 300-dpi page costs 1,715
     image tokens on Chandra and 2,280 on Churro at the smallest tier's
-    `max_pixels`, and neither fits a 2,048-token row with a prompt and an
-    answer beside it. Chandra sending no generation bound does not make its
+    `max_pixels`, and neither fitted the 2,048-token rows this catalogue
+    shipped before the contexts were raised, with a prompt and an answer
+    beside them. Chandra sending no generation bound does not make its
     request short enough; it only means nothing here could have shortened it.
     """
 

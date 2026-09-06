@@ -18,6 +18,7 @@ a test specifically wants to prove real wiring, not a stub's promise.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import sys
 from pathlib import Path
@@ -287,7 +288,9 @@ def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row()
     rows = _sealed_churro_rows()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
     assert over == [row.tier for row in rows]
-    assert [row.max_model_len for row in rows] == [2048, 4096, 8192]
+    # Raised from 2,048/4,096/8,192 by the capacity unit so a whole page fits;
+    # still an order of magnitude under the 24,000 the old flat bound sent.
+    assert [row.max_model_len for row in rows] == [8192, 8192, 16384]
 
 
 def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it():
@@ -382,16 +385,20 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
 
 
 def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
-    """The counterfactual this unit exists for.
+    """The counterfactual this unit exists for, at the context the tree shipped.
 
-    A 300-dpi A4 page is 2,480x3,508.  Against the shipped 24 GB Churro row it
-    costs 2,280 image tokens; with the measured 281-token prompt and a
-    1,433-token dense-page answer that is 3,994 against a `max_model_len` of
-    2,048.  Before this check the request went to the endpoint and the engine
-    answered HTTP 400; now nothing is built.
+    A 300-dpi A4 page is 2,480x3,508.  Against the 24 GB Churro row's
+    `max_pixels` it costs 2,280 image tokens; with the measured 281-token
+    prompt and a 1,433-token dense-page answer that is 3,994 -- against the
+    `max_model_len = 2048` this catalogue carried until this branch.  The
+    request went to the endpoint and the engine answered HTTP 400; now nothing
+    is built.  The shipped row is 8,192 and admits the same page, which is what
+    `operations/serving/test_serving_catalogue_capacity.py` asserts; the row is
+    reconstructed here because the drill is about the refusal, not the row.
     """
 
-    row = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
+    shipped = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
+    row = dataclasses.replace(shipped, max_model_len=2048)
     with pytest.raises(RequestCapacityRefusal) as error:
         _page_request_of_size(2480, 3508, row)
     record = error.value.capacity
@@ -400,6 +407,10 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
     assert record["headroom"] == 2048 - 3994
     assert record["fits"] is False
     assert "downscaled" in str(error.value)
+    # And the row the catalogue actually ships admits it.
+    assert shipped.max_model_len == 8192
+    admitted = _page_request_of_size(2480, 3508, shipped)
+    assert admitted.capacity["fits"] is True
 
 
 def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
@@ -418,15 +429,17 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
+    # At the context this catalogue shipped until this branch. The shipped row
+    # is 8,192 now and holds it.
+    row = dataclasses.replace(_dai_row("generic-24gb"), max_model_len=2048)
 
     with pytest.raises(RequestCapacityRefusal) as error:
-        live_witness.act_chair_request(
-            context, adapter, presentation, profile=_dai_row("generic-24gb")
-        )
+        live_witness.act_chair_request(context, adapter, presentation, profile=row)
     record = error.value.capacity
     assert record["image_prompt_tokens"] == 2280
     assert record["need"] == 2280 + 84 + 230
     assert record["fits"] is False
+    assert _dai_row("generic-24gb").max_model_len == 8192
 
 
 def test_an_ordinary_act_crop_still_fits_the_smallest_row():

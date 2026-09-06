@@ -372,8 +372,9 @@ say.
 request.** `common/native_witness.py::CHURRO_OUTPUT_TOKENS` is Churro's carried
 HuggingFace-generate `max_new_tokens`, and the live seam used to rename it
 straight onto the wire as vLLM's `max_tokens`. Every Churro row in
-`config/serving_recipes_real.toml` caps `max_model_len` at 2,048, 4,096 and
-8,192, and vLLM refuses a request whose prompt plus `max_tokens` exceeds the
+`config/serving_recipes_real.toml` caps `max_model_len` far below it (2,048,
+4,096 and 8,192 when this was written; 8,192 and 16,384 since the capacity unit
+raised them), and vLLM refuses a request whose prompt plus `max_tokens` exceeds the
 row's context — so the very first call on a real pod was a refusal, on a card
 billing by the hour, from the one chair in the pass that sent a bound at all.
 `live_witness.churro_generation_sent` now asks the sealed row the chair is

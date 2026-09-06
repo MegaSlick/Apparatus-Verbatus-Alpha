@@ -33,6 +33,17 @@
 # where the old pipeline's proven values were 3136 (56x56) and 2359296
 # (1536x1536).  The two must never be compared directly; the sound relation is
 # that a longest edge of L admits at most L*L pixels.
+#
+# `context_cap` is the ceiling `operations/serving/preflight.py` holds every
+# serving row at that tier to, and all three moved with the rows.  They were
+# 2,048 / 4,096 / 8,192, and at those caps no row that could actually serve a
+# whole page was admissible: a 300-dpi A4 page costs a Qwen-VL chair between
+# 1,715 and 6,693 prompt tokens depending on the tier's `max_pixels`, before a
+# word of prompt is counted.  `config/serving_recipes_real.toml` carries that
+# arithmetic and the reasoning; the caps here are 8,192 at 24 GB and 16,384 at
+# 48 GB and above, which is the largest `max_model_len` any row at that tier
+# now declares.  A cap is a ceiling, not a plan: what a card can hold at these
+# contexts is unmeasured, and stays unmeasured until a pod runs.
 schema = "pod-placement.v1"
 
 [dtype_floor]
@@ -52,7 +63,7 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.58"
-context_cap = 2048
+context_cap = 8192
 pixel_cap = 1344
 batch_size = 1
 
@@ -65,7 +76,7 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.78"
-context_cap = 4096
+context_cap = 16384
 pixel_cap = 1792
 batch_size = 2
 
@@ -84,7 +95,7 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.88"
-context_cap = 8192
+context_cap = 16384
 pixel_cap = 2304
 batch_size = 4
 
