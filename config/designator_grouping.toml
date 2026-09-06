@@ -39,6 +39,37 @@
 # provenance caveat below. It is the one field in this file this build cannot
 # honestly set.
 #
+# `[grouping.surround]` holds the shape test that tells a photographed page from
+# a genuinely dark one, and it is the only block in this file measured against
+# real material -- so it carries a provenance block of its own, with
+# `calibrated_for_this_corpus = true` and `sample_count = 7`, rather than sitting
+# under the file-level provenance whose `sample_count` is 0. One block could not
+# describe both truthfully.
+#
+#   band_bp                the border frame this test measures, as a fraction of
+#                          the page. The ONLY length in this file that resolves
+#                          against BOTH dimensions -- band_bp of the width on the
+#                          left and right, band_bp of the height on top and
+#                          bottom -- because the band is a frame, not an extent.
+#                          That is exactly why it cannot live in
+#                          page_fraction_bp, whose contract is one declared basis
+#                          per field, and why grouping_config resolves it in its
+#                          own function
+#   min_border_dark_bp     how much of that band must be at or below the page's
+#                          own modal value for the dark to count as a surround
+#   max_interior_dark_bp   and how little of the complementary interior may be,
+#                          so that a page which is dark all over is still refused
+#
+# The last two are fractions of a pixel *population*, not of a page, so they
+# never resolve to pixels. All three are read only where `infer_background` would
+# otherwise have refused: an ordinary scan whose modal pixel is its paper never
+# reaches them. **The surround this test identifies is never removed from the
+# page** -- it stays below the ink threshold and is counted as ink by the
+# structure scan and by conservation alike, and what is recorded instead is a
+# measurement of how much of that counted ink is bezel. See
+# pipeline/2_designator/structure.py::_dark_surround for why a measurement and
+# not a region.
+#
 # Three bare integer counts live at the top of `[grouping]` (not basis points,
 # not sub-table fields), because none of them is a length and none has a page
 # dimension to be a fraction of:

@@ -483,7 +483,15 @@ def _read_checked_page_bytes(context, page_record: dict) -> bytes:
 def page_pixels(
     context, page_record: dict, *, grouping_policy: dict
 ) -> tuple[int, int, list, structure.BackgroundEvidence]:
-    """Decode one sealed page and infer its own background value.
+    """Decode one sealed page and infer its own background, with the evidence.
+
+    Returns `structure.BackgroundEvidence` rather than a bare integer: a page
+    whose paper was inferred from its interior under a dark photographic
+    surround has a measurement to publish, and dropping it on the way back would
+    be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    grouping config, resolved to *this* page's own dark-surround band here
+    through `grouping_config.resolve_surround_policy` -- the one resolver for
+    that policy, so this call site and any other cannot come to disagree.
 
     `common.imaging.grayscale_rows`, not `decode_grayscale_png`: the latter
     refuses by design anything this project's own encoder did not write, so

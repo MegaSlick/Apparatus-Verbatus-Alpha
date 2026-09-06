@@ -568,7 +568,7 @@ def test_the_row_run_labeller_matches_the_reference_on_randomised_pages(density,
 
     width, height = 70, 55
     for seed in range(6):
-        generator = random.Random((seed, density, gap_tolerance_px).__hash__())
+        generator = random.Random(f"{seed}-{density}-{gap_tolerance_px}")
         pixels = {
             (x, y)
             for y in range(height)
@@ -690,10 +690,14 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     # them. That is the safe direction (GOALS 1) and this is the number that
     # keeps a reader from taking the resulting ink fraction for writing.
     assert surround["dark_pixel_count"] == sum(1 for row in rows for value in row if value == 0)
-    assert (
-        len(ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN))
-        > surround["dark_pixel_count"]
-    )
+    ink = ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN)
+    assert (0, 0) in ink, "a corner of the surround must still be counted as ink"
+    assert (width - 1, height - 1) in ink
+    assert len(ink) > surround["dark_pixel_count"], "and the writing on top of it"
+    # Every surround pixel, not merely most of them: the count above and the
+    # threshold together are what make that true, and an inequality alone would
+    # not have caught a test that dropped a strip.
+    assert all((x, y) in ink for y in range(height) for x in range(width) if rows[y][x] == 0)
 
 
 def test_the_thin_wrapper_returns_the_same_value_as_the_evidence_function():

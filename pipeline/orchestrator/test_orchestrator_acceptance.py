@@ -1479,10 +1479,19 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # comparison confirms: happy 75 changed files / 385 changed leaves, review 87 /
 # 445, **zero non-digest changed leaves**, baseline built from a worktree pinned
 # at the preceding commit with its own venv. Counts and exit codes unmoved.
+#
+# And a third time the same day, for a *comment*: `config/designator_grouping.toml`
+# documents every one of its fields in its header and said nothing at all about
+# the `[grouping.surround]` block added above, which is the defect class that
+# header exists to prevent. Sealed bytes are sealed bytes, so the header now
+# describes the block and the digest moved again
+# (968b72aeaca9... -> c9a7607b04122b0238d9907afb72cba1a5845cb90712a38dc4f3bcc793073043).
+# Same proof: happy 75 changed files / 385 changed leaves, review 87 / 445,
+# **zero non-digest changed leaves**, counts and exit codes unmoved.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "91dc46adbde887e4771a99253cd643b20b70fd2bd0a3a0264a97cc9b816e38a1"
-REVIEW_RUN_TREE_DIGEST = "ebbc1fee31020e5ca8e92610337a390713e612b5d25140e4b1677adb431aacbe"
+HAPPY_RUN_TREE_DIGEST = "d4cc2c304a998d3dc92b10a4f87d61e04c6fa4c036dc1ba9414d4193e0e61e6e"
+REVIEW_RUN_TREE_DIGEST = "f7d8c8de98f405fc1364752d98830cdd487354fbda1d7f90ea7537cbd67ad8ee"
 
 
 def orchestrate(

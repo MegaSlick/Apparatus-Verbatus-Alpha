@@ -120,9 +120,13 @@ class SurroundPolicy(TypedDict):
     """The sealed shape test that tells a photographed page from a dark page.
 
     Resolved per page from `config/designator_grouping.toml`'s
-    `[grouping.surround]` sub-table by `grouping_config.resolve_thresholds`,
-    and passed in whole rather than as four loose integers so a caller cannot
-    supply three of the four. Every field is an integer; `band_px_x` and
+    `[grouping.surround]` sub-table by `grouping_config.resolve_surround_policy`
+    -- *not* by `resolve_thresholds`, and deliberately not a field of
+    `GroupingThresholds`: that dataclass is published verbatim as a page's
+    `resolved_thresholds`, and this policy is an input to the background
+    inference that runs before any threshold touches any geometry. Passed in
+    whole rather than as four loose integers so a caller cannot supply three of
+    the four. Every field is an integer; `band_px_x` and
     `band_px_y` are already resolved to this page's own pixels, and the two
     `_bp` fields are basis points (1/10000) of a *population*, not of a page
     dimension.
@@ -183,10 +187,13 @@ def _dark_surround(
     black bezel around a lit page from an inverted scan, because both are "most
     of the page is dark". What separates them is *where* the dark is. On a
     photographed register page the dark is a frame: measured over the seven real
-    proxies, 79-86% of a 5%-wide border band is at or below the modal value while
-    only 2-12% of the interior is. On the inverted scan this module's own test
-    uses the relation reverses (border 66%, interior 83%), and on a uniformly
-    dark page both are 100%.
+    proxies at the sealed 500 bp band, 7864-8637 basis points of the border band
+    are at or below the modal value while only 156-1190 bp of the interior are.
+    On the inverted scan this module's own test uses the relation reverses
+    (border 6578, interior 8333), and on a light-bordered dark-cored page the
+    border measures 0. A uniformly dark page never reaches this function at all:
+    its mode equals its mean, so the majority-ink branch does not fire and it is
+    refused one branch later by the `PRIMARY_MARGIN` guard.
 
     **This test never removes a pixel from anything.** It decides only which
     value is reported as paper. The surround stays in the page, stays below the
@@ -219,7 +226,15 @@ def _dark_surround(
     table = bytes(1 if value <= level else 0 for value in range(256))
     interior_dark = 0
     for y in range(band_y, height - band_y):
-        interior_dark += rows[y][band_x : width - band_x].translate(table).count(1)
+        row = rows[y]
+        # Named here rather than left to an `AttributeError` from inside
+        # `translate`. The histogram loop above iterates any sequence of ints,
+        # so a caller handing this module a list-of-lists page gets that far and
+        # then dies with a message naming neither the scanline nor the reason.
+        # `conservation._unit_ink_runs` guards the same assumption the same way.
+        if not isinstance(row, (bytes, bytearray)):
+            raise ContractError(f"scanline {y} is not grayscale bytes")
+        interior_dark += row[band_x : width - band_x].translate(table).count(1)
     interior_pixels = (width - 2 * band_x) * (height - 2 * band_y)
     border_pixels = width * height - interior_pixels
     border_dark = dark_pixel_count - interior_dark
@@ -655,6 +670,12 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     for group in groups.values():
         x0 = min(run_x0[index] for index in group)
         x1 = max(run_x1[index] for index in group)
+        # `y0`/`y1` read the group's first and last run rather than scanning it,
+        # which is only correct because run indices ascend with `y`: the table
+        # above is built in `sorted(runs_by_row)` order and this group was
+        # appended to in ascending index order. Reordering either loop would
+        # silently give every multi-row component the wrong vertical bounds, so
+        # the invariant is stated where it is relied on.
         y0 = run_y[group[0]]
         y1 = run_y[group[-1]] + 1
         entries.append(

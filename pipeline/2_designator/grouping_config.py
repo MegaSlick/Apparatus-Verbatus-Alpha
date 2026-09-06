@@ -8,12 +8,16 @@ into `common/stage.py` or `run.py` (that is units C and D's own work); a page
 that wants resolved pixel thresholds calls `resolve_thresholds` itself, once
 it has this module's config and its own page dimensions.
 
-Two closed sub-tables, not one flat table, because the *basis* a threshold
+Three closed sub-tables, not one flat table, because the *basis* a threshold
 resolves against is structural, not a naming convention: `page_fraction_bp`
 values are basis points of the page's own WIDTH (`margin_bp`) or HEIGHT
 (every other field) as declared in the config file's header comment, while
 `absolute` values are raw pixel counts that must never be scaled by page
-size at all. Putting a field in the wrong sub-table is refused by the closed
+size at all. `surround` is the third and it carries its own provenance block:
+its `band_bp` is the one length in this file that resolves against *both*
+dimensions, because the band it describes is a frame, and its other two fields
+are fractions of a pixel population rather than of a page and never resolve to
+pixels at all. Putting a field in the wrong sub-table is refused by the closed
 schema rather than caught by a comment nobody reads.
 
 `primary_margin` and `secondary_margin` are refused by name wherever they
