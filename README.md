@@ -58,7 +58,7 @@ reach a phone (`operations/notify/README.md`); the gate fails closed if it canno
 constant. **To switch that guard off, delete the `NTFY_TOPIC` block above the pytest line
 in `.githooks/check-all.sh`** and the autouse fixture in the root `conftest.py` — two
 lines, nothing else — and the notifier behaves as before under tests, which is how nine
-fake-balance pushes reached a phone on 2026-09-05. GitHub's own rules on `main`, listed above, are outside this repository's reach
+fake-balance pushes once reached a phone (the dated record is in the standing findings). GitHub's own rules on `main`, listed above, are outside this repository's reach
 and no local change affects them.
 
 ## Scope
