@@ -3,19 +3,19 @@ r"""Derived search-fold normalization for Armarium projections.
 This module deliberately has one small job: make a lossy search key from an
 established text, deterministic **for a given Unicode database** and not across
 them -- this line claimed determinism outright until it was measured.  Python
-ships a different UCD per version: 15.0 on 3.12 (CI), 15.1 on 3.13 (the
-chambers), 16.0 on 3.14 (the maintainer's machine), and characters assigned
-between them fold differently.  It never establishes, replaces, compares, or
+ships a different UCD per version: 15.0 on 3.12 and 16.0 on 3.14 (CI runs both),
+15.1 on 3.13 (the chambers), and characters assigned between them fold
+differently.  It never establishes, replaces, compares, or
 selects a reading.  Callers must retain the literal Archetypus text beside any
 value returned here and label the value as derived.  GOVERNANCE 5's one-text rule
 is untouched by it: the Archetypus ``text`` field is never written from here and
 nothing this function returns may round-trip back into one.
 
 **The substitution table and the apostrophe set are carried from the window, and
-named as carried** (CLAUDE.md, Quarantine: "a line carried across is the exception
-and is never silent ... adapted, renamed and reformatted are the same act as
-copied").  Source: ``local/textnorm.py`` in the old repository, read through the
-window.  What is carried is the *data* in ``_SUBSTITUTIONS`` and ``_APOSTROPHES``,
+named as carried** — CLAUDE.md's Quarantine section lets bytes cross only when
+they are the best option, understood line by line, and named as carried in the
+commit and report.  Source: ``local/textnorm.py`` in the old repository, read
+through the window.  What is carried is the *data* in ``_SUBSTITUTIONS`` and ``_APOSTROPHES``,
 because each entry records a fact about this project's actual source material that
 cannot be re-derived from Unicode or from inside this container:
 

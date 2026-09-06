@@ -94,7 +94,12 @@ def _stop_reason_signal(stop_reason: str | None) -> str | None:
 
 
 def has_unclosed_structure(text: str) -> bool:
-    """True when an opening mark in `text` has no matching close."""
+    """True when an opening and closing mark are unbalanced in `text`.
+
+    A count comparison, not an opener-without-close scan, so a surplus closer
+    ("a reading)") is flagged too. That is the right shape for a truncation
+    signal: either imbalance says the reading did not come out whole.
+    """
     return any(text.count(opener) != text.count(closer) for opener, closer in _STRUCTURE_PAIRS)
 
 
@@ -115,26 +120,13 @@ def is_length_suspicious(text: str, region_pixels: int) -> bool:
 def ends_abruptly(text: str) -> bool:
     """True when `text` looks cut off mid-token.
 
-    The same rubric `pipeline/3_attestatores/run.py::content_health` already
-    uses for a witness's own report ("a report ending mid-token is the shape of
-    a truncation"), extended here to the Perlector's own reading.
+    Trailing whitespace is stripped before the hyphen is read, so `"word-   "`
+    is abrupt: whitespace must not hide a truncation.
 
-    **The two do not agree exactly, and this is the honest statement of where.**
-    This function strips trailing whitespace before looking for the hyphen;
-    `content_health` on `main` does not, so it reads `"word-   "` as complete
-    where this reads it as abrupt. Stripping is the better rubric — trailing
-    whitespace should not hide a truncation — so the divergence is left standing
-    rather than made consistent by adopting the weaker one. Aligning
-    `content_health` belongs with the Attestatores, not here, and is carried as a
-    cross-stage item. The docstring previously claimed the two stages judged this
-    the same way, which was simply false. Found by CodeRabbit, whose report had
-    the two functions the other way round.
-
-    Deliberately not "does the
-    reading end in terminal punctuation": a genuine parish-register act
-    routinely ends on a name or a signature, not a period, and requiring
-    punctuation would misclassify most honest complete readings in this
-    project's own domain as abrupt.
+    Deliberately not "does the reading end in terminal punctuation": a genuine
+    parish-register act routinely ends on a name or a signature, not a period,
+    and requiring punctuation would misclassify most honest complete readings in
+    this project's own domain as abrupt.
     """
     stripped = text.rstrip()
     return bool(stripped) and stripped.endswith("-")

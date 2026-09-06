@@ -58,6 +58,7 @@ sys.path.insert(0, str(ROOT))
 from common.contracts.canonical import (  # noqa: E402
     canonical_bytes,
     digest_bytes,
+    is_sha256,
     self_hash,
     verify_self_hash,
 )
@@ -74,7 +75,7 @@ REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 #
 # This replaces a `MAX_RETAINED_BYTES = 64 MiB` that was a second, independent copy
 # of `image_formats.MAX_SOURCE_BYTES` — the same number kept by hand in two places,
-# which is the shape of drift this spec exists to kill, and which two seats flagged.
+# which is the shape of drift this spec exists to kill.
 # `operations/submit/` may not import the pipeline (the dependency points one way),
 # so the copy could not simply be shared; retaining nothing removes the need for it.
 RETAIN_NO_BYTES: Final = 0
@@ -205,7 +206,7 @@ def validate_manifest(record: Any) -> dict[str, Any]:
         path, digest, size = entry["relative_path"], entry["sha256"], entry["bytes"]
         if not isinstance(path, str) or not path or path.startswith("/") or ".." in path.split("/"):
             raise SubmitRefusal("submission manifest has an unsafe declared path")
-        if not _is_sha256(digest):
+        if not is_sha256(digest):
             raise SubmitRefusal("submission manifest has a file row without a lowercase sha256")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise SubmitRefusal(
@@ -402,14 +403,6 @@ def _existing_record_state(path: Path, expected: bytes) -> Literal["matches", "d
     finally:
         if descriptor is not None:
             os.close(descriptor)
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def submit(

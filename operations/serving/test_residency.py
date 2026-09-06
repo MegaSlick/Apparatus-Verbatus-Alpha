@@ -1,10 +1,10 @@
 """Direct coverage for the cross-process single-resident lease.
 
-``test_manager.py`` exercises :class:`FileResidencyLease` only indirectly,
-through a manager's full start/stop lifecycle. This file pins the one
-property that lifecycle can't isolate: what ``release()`` reports, and what
-state it leaves behind, when unlocking succeeds but closing the descriptor
-afterward does not.
+``test_manager.py`` constructs :class:`FileResidencyLease` directly as well as
+through a manager's start/stop lifecycle, and its direct uses cover acquisition
+and descriptor inheritance. This file pins what those do not isolate: what
+``release()`` reports, and what state it leaves behind, when unlocking succeeds
+but closing the descriptor afterward does not.
 """
 
 from __future__ import annotations

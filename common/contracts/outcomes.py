@@ -834,7 +834,7 @@ def run_aggregate(
             # Deliberately raw indexing, not `.get(..., default)`: a record
             # claiming `under_witnessed` without the fields that justify it is
             # not a zero to report, it is malformed evidence, and
-            # `pipeline/7_armarium/armarium_export.py::_run_aggregate` already
+            # `pipeline/7_armarium/armarium_export.py::_aggregate_from_basis` already
             # converts exactly that `KeyError` into a named refusal rather than
             # let a fabricated count stand in for one nothing measured.
             # Keyed on the recorded basis, not on key presence: `witness_coverage`

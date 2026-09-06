@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.canonical import self_hash, verify_self_hash
+from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
 from common.contracts.outcomes import (
     INTERIM_GRANULARITY_BASIS,
@@ -87,7 +87,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     if (
         not isinstance(record["run_id"], str)
         or not record["run_id"]
-        or not _is_sha256(record["config_digest"])
+        or not is_sha256(record["config_digest"])
         or record["scope"] != RECENSOR_PARTITION_RECEIPT_SCOPE
         or not isinstance(record["expected_act_count"], int)
         or isinstance(record["expected_act_count"], bool)
@@ -387,7 +387,7 @@ def _validate_reference(reference: Any, what: str) -> None:
         or not reference["relative_path"]
         or reference["relative_path"].startswith("/")
         or ".." in reference["relative_path"].split("/")
-        or not _is_sha256(reference["sha256"])
+        or not is_sha256(reference["sha256"])
     ):
         raise SchemaRefusal(f"Recensor partition receipt has malformed {what}")
 
@@ -435,11 +435,3 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
                 f"act {act_id} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
             )
     return reasons
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )

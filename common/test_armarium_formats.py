@@ -40,7 +40,7 @@ def test_unknown_format_is_refused_instead_of_becoming_an_implicit_product(tmp_p
 
 def test_direct_format_construction_cannot_bypass_the_closed_parser():
     with pytest.raises(SchemaRefusal, match="unknown"):
-        ArmariumFormats(("text-bundle", "witness-picker"), False)
+        ArmariumFormats(("text-bundle", "obsidian-vault"), False)
     with pytest.raises(SchemaRefusal, match="more than once"):
         ArmariumFormats(("jsonl", "jsonl"), False)
 
@@ -50,7 +50,7 @@ def test_sealed_format_record_refuses_fields_outside_its_exact_key_set():
         "schema": "armarium-formats.v1",
         "formats": ["jsonl"],
         "embed_pixels": False,
-        "undeclared_projection": "witness-picker",
+        "undeclared_projection": "obsidian-vault",
     }
 
     with pytest.raises(SchemaRefusal, match="must contain exactly"):

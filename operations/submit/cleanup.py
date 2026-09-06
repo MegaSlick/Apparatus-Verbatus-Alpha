@@ -26,9 +26,7 @@ class CleanupDrillResult:
     ``volume_objects_seen`` is ``None``, not ``0``, when no volume applied to this
     drill. Zero for both would mean "there was no volume to check" and "a volume was
     checked and found empty" produce identical records, and a reader could not tell
-    them apart — a cleanup drill must keep unknown distinct from zero. It is harmless
-    today because no pod volume exists; it would misreport from the moment spec 04
-    provisions one.
+    them apart — a cleanup drill must keep unknown distinct from zero.
     """
 
     target_paths_checked: int

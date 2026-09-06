@@ -53,7 +53,10 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     Plain text is NFC-normalized and whitespace-collapsed. `offset_map` indexes
     the input character that supplied each normalized character; `None` marks a
     collapsed separator synthesized from a run of whitespace.  Markup, entity
-    spelling, and collapsed whitespace are all visible in `loss`.
+    spelling, and collapsed whitespace are all visible in `loss`, though not
+    separably: `markup_characters` is the whole raw-minus-stripped difference,
+    so an entity that collapses to one character (`&amp;` to `&`) is counted
+    there beside the tags rather than under a name of its own.
     """
     if not isinstance(raw, str):
         raise SchemaRefusal("alignment input is not text")

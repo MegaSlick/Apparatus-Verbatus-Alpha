@@ -51,9 +51,10 @@ _REQUIRED: Final = (
 
 _OPTIONAL: Final = ("approval_ref",)
 
-# These names belong to producer branches that have not yet defined their
-# payloads.  Refuse them at the envelope boundary rather than relying on their
-# current absence from a run tree (which would be a vacuous promise).
+# Kind names whose producing branch has not yet defined a payload.  The set is
+# empty because every kind reserved for R5b has since graduated; the refusal
+# below is kept, and test-pinned, so the next deferred kind is refused at the
+# envelope boundary rather than by its absence from a run tree.
 _RESERVED_KINDS: Final = frozenset()
 
 

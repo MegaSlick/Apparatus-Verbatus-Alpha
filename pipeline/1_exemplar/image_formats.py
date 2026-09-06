@@ -1097,16 +1097,14 @@ VALIDATORS: Final = {
     "tiff": validate_tiff,
 }
 
-# Both derived from what this module can actually do, never written out a second
-# time: `SNIFFABLE_FORMATS` from the table `sniff()` walks (plus HEIC, whose
-# detection is a brand check rather than a prefix), and `STRUCTURALLY_VALIDATED`
-# from the dispatch table `validate()` uses. `admission.py` reads these to check
-# the policy's coverage, and a hand-kept copy there would only ever agree with
-# another hand-kept copy.
+# Derived from what this module can actually do, never written out a second
+# time: from the table `sniff()` walks, plus HEIC, whose detection is a brand
+# check rather than a prefix. `admission.py` re-exports it to check the policy's
+# coverage, and a hand-kept copy there would only ever agree with another
+# hand-kept copy.
 SNIFFABLE_FORMATS: Final = frozenset(
     {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
 )
-STRUCTURALLY_VALIDATED: Final = frozenset(VALIDATORS)
 
 
 def validate(format_name: str, data: bytes) -> ImageGeometry:

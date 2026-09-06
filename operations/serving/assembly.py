@@ -204,8 +204,9 @@ def _load_bound_configuration(
     # `ServingConfigurationError` while malformed TOML and a non-UTF-8 file
     # refused as `PlacementRefusal`, which is a `ValueError` and not a
     # `ServingError` — so a handler written for this boundary caught one of the
-    # three and missed two. `preflight.py:86-89` already translates this same
-    # refusal the same way, and `load_serving_recipes` on the line above
+    # three and missed two. `operations/pod/preflight.py::load_placement_table`
+    # already translates this same refusal the same way, and
+    # `load_serving_recipes` on the line above
     # translates all three of its own. This is the second site of one rule rather
     # than a new rule, which is the shape this branch keeps finding.
     try:

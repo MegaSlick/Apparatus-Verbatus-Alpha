@@ -30,6 +30,9 @@ from common.stage import (
     verify_predecessor_seal,
 )
 
+# The one copy of the fstat identity this package checks custody against lives
+# in backup.py, which is where the custody boundary it guards is built.
+from .backup import _descriptor_identity
 from .custody import (
     python_module_command,
     run_confined,
@@ -149,11 +152,6 @@ def _refuse_case_variant(parent: int, name: str, label: str) -> None:
         raise ApprovalRefusal(
             f"the {label} collides by case with {variants}; the path is ambiguous on default APFS"
         )
-
-
-def _descriptor_identity(descriptor: int) -> tuple[int, int]:
-    observed = os.fstat(descriptor)
-    return observed.st_dev, observed.st_ino
 
 
 def validate_advance_reason(reason: Any) -> str:

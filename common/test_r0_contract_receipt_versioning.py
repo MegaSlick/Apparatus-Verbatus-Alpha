@@ -1,8 +1,9 @@
-"""R0 falsification tests: receipt versioning (D9, brief priority 2/3).
+"""R0 contract tests: receipt versioning (D9, brief priority 2/3).
 
-Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber runs.
-Must fail RED on the chamber's base commit (main 176b09e) because the versioning
-behaviour it checks is not yet built.
+Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber ran, so
+these failed red on the chamber's base commit. The versioning has since landed --
+`RECENSOR_PARTITION_RECEIPT_SCHEMA_V2` and `ReceiptVersionMismatch`, both wired into
+`_validate_coverage` -- and the file now guards it.
 
 D9: the receipt schema constant versions (v1 -> v2) when coverage grows granularity
 fields; the old constant is refused with a named error, not silently accepted.
@@ -44,16 +45,12 @@ def test_a_receipt_still_declaring_the_v1_schema_is_refused_once_coverage_carrie
     schema label plus granularity-shaped coverage -- must be a NAMED refusal: a v1
     receipt was never supposed to describe page-granularity accounting at all.
 
-    On the base commit `validate_recensor_partition_receipt` refuses this record
-    anyway, but for the wrong reason (its coverage validator's field set is closed
-    and rejects the extra key outright, exactly as
-    test_r0_contract_floor_honesty.py's `test_coverage_schema_has_no_room_for_a_
-    page_granularity_only_contribution` already proves) -- not because a version
-    mismatch was detected and named as one. This test fails red for the same
-    underlying reason, recorded here under D9 specifically because a build that
-    fixes it by only widening the v1 coverage schema, without introducing a v2
-    schema label and a version-mismatch refusal, satisfies floor honesty but not
-    D9's versioning half.
+    On the base commit this record was refused anyway, but for the wrong reason:
+    the coverage validator's field set was closed and rejected the extra key
+    outright, rather than detecting and naming a version mismatch. Widening the v1
+    coverage schema alone would have satisfied floor honesty and not D9, so the
+    refusal this test requires is the dedicated one `_validate_coverage` now
+    raises, `ReceiptVersionMismatch`, asserted below.
     """
     proposal_seal_ref = {
         "relative_path": "designator/proposal-seal/art_seal.json",
