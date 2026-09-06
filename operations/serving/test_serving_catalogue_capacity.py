@@ -19,6 +19,7 @@ import pytest
 from common.request_capacity import (
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_PROMPT_FLOOR_TOKENS,
+    act_answer_budget,
     dense_page_answer_budget,
     request_fits,
     row_image_geometry,
@@ -50,6 +51,9 @@ PAGE_AS_PRESENTED = {
     "attestator_3": A4_300DPI,
     "perlector": A4_300DPI,
 }
+# The Perlector's region crop, modelled as `TOKEN_COST_REPORT.md` section 7
+# models it: full page width by one sixth of page height.
+ACT_REGION_CROP = (2480, 584)
 # The Perlector's prompt has no fixed text to seal, so its floor stands in for
 # a measured constant here exactly as it does at the call site.
 PROMPT_TOKENS = {
@@ -68,26 +72,95 @@ def _shipped_rows():
     return rows
 
 
-@pytest.mark.parametrize("row", _shipped_rows(), ids=lambda row: f"{row.chair}@{row.tier}")
-def test_every_shipped_real_row_can_serve_a_dense_a4_page(row):
+def _request_shapes(row):
+    """Every request shape this row must be able to serve, as the seam sends it.
+
+    The four page chairs send one image and reserve a dense page's answer.  The
+    Perlector is the one chair whose request is not one image: it sends every
+    region crop and then every page render, one pair per capture view
+    (`pipeline/4_perlector/live_reader.py`), and reserves one act's reading
+    unless the act's own crop is page-sized -- a page-fallback act, whose
+    reading is a page of text.  Testing it at one image and one act's answer
+    would have described a request this pipeline never sends.
+
+    The two-capture-view page-fallback act is deliberately absent here and
+    pinned on its own below: it is the one measured shape a shipped row cannot
+    serve, and asserting it fits would be false.
+    """
+
+    chair = row.chair
+    page = PAGE_AS_PRESENTED[chair]
+    if chair != "perlector":
+        return [("a dense A4 page", [page], dense_page_answer_budget(chair))]
+    act = act_answer_budget(chair)
+    fallback = dense_page_answer_budget(chair)
+    return [
+        ("one capture view, ordinary act", [ACT_REGION_CROP, page], act),
+        (
+            "two capture views, ordinary act",
+            [ACT_REGION_CROP, ACT_REGION_CROP, page, page],
+            act,
+        ),
+        ("one capture view, page-fallback act", [page, page], fallback),
+    ]
+
+
+@pytest.mark.parametrize(
+    "row,case",
+    [(row, case) for row in _shipped_rows() for case in _request_shapes(row)],
+    ids=lambda item: (
+        f"{item.chair}@{item.tier}" if hasattr(item, "chair") else item[0].replace(" ", "-")
+    ),
+)
+def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case):
     """The catalogue's own claim, checked against the arithmetic that falsified it.
 
-    Every row must hold a whole 300-dpi A4 page at its own `max_pixels`, plus
-    that chair's measured prompt, plus that chair's measured answer over a
-    dense 800-word page.  Before this branch none of the 24 GB rows could, two
+    Every row must hold the images its chair really sends at its own
+    `max_pixels`, plus that chair's measured prompt, plus the answer that
+    request reserves.  Before this branch none of the 24 GB rows could, two
     of the 48 GB rows could not fit the prompt alone, and Churro at 80 GB+ left
     1,218 tokens for a 1,433-token answer.  A row that provably cannot answer
     is not unproven; it is wrong, and the catalogue is not allowed to ship one.
     """
 
-    record = request_fits(
-        row,
-        [PAGE_AS_PRESENTED[row.chair]],
-        PROMPT_TOKENS[row.chair],
-        dense_page_answer_budget(row.chair),
-    )
+    _label, images, answer_budget = case
+    record = request_fits(row, images, PROMPT_TOKENS[row.chair], answer_budget)
     assert record["fits"] is True, record["reason"]
     assert record["headroom"] >= 0
+
+
+def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_third():
+    """The one measured Perlector shape a shipped row cannot serve.
+
+    An act whose bounds are the whole page, seen from two captures, sends four
+    page-sized images.  At 24 GB and 48 GB the raised 16,384 holds them; at
+    80 GB+ the same four images cost 20,400 tokens on their own, and no context
+    this catalogue ships can hold the request.  Pinned rather than passed over:
+    the pipeline refuses it on this laptop with the arithmetic
+    (`pipeline/4_perlector/live_reader.py`), and a later edit that quietly
+    changes which tiers can serve it changes this test.
+    """
+
+    needs = {}
+    for row in _shipped_rows():
+        if row.chair != "perlector":
+            continue
+        page = PAGE_AS_PRESENTED["perlector"]
+        record = request_fits(
+            row,
+            [page, page, page, page],
+            PROMPT_TOKENS["perlector"],
+            dense_page_answer_budget("perlector"),
+        )
+        needs[row.tier] = (record["need"], record["fits"])
+    assert needs == {
+        # 4x1,715 + 790 + 1,318
+        "generic-24gb": (8968, True),
+        # 4x3,102 + 790 + 1,318
+        "generic-48gb": (14516, True),
+        # 4x5,100 + 790 + 1,318, against 16,384
+        "generic-80gb-plus": (22508, False),
+    }
 
 
 @pytest.mark.parametrize("row", _shipped_rows(), ids=lambda row: f"{row.chair}@{row.tier}")

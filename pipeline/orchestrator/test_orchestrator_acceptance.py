@@ -1467,10 +1467,38 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
+# Reviewer re-pin, and the cause is again `config/pod_placement.toml` alone.
+# An independent reader of the capacity unit found that the Perlector's own
+# request -- a region crop and a page render per capture view -- costs 14,014
+# tokens at an ordinary two-view act even at the 24 GB tier's `max_pixels`, so
+# the 8,192 that row stated could not serve it. The row moved to 16,384 and the
+# tier's `context_cap` moved with it, or preflight would refuse the row. That
+# file is sealed byte-for-byte into every run's `config_digest` (Unit 17), so
+# both scenario trees move again without gaining an artifact.
+#
+# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
+# the branch tip's bytes and every other change in place, happy reproduced
+# ef81b27f... at 96 files and exit 0 and review reproduced 6c3f5a42... at 107
+# files and exit 3 -- the two pins this entry replaces -- so the whole move is
+# those bytes. Nothing else applied here reaches a fixture run: the per-attempt
+# capacity refusal in the Attestatores and the Perlector's answer reserve are
+# both on the live path, which no scenario takes, and the real serving
+# catalogue is never sealed into either.
+#
+# Checked leaf by leaf against that same reverted tree: happy 75 changed files
+# and 397 changed JSON leaves, review 87 and 444, and not one of them a
+# non-digest field -- every changed leaf is a 64-hex digest or a
+# content-addressed blob path, plus one renamed blob per scenario in
+# `4_perlector` and `7_armarium` whose own name is its content digest. Counts
+# and exits are unmoved: happy 96 at exit 0, review 107 at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "ef81b27f9972d9024c0892fa87a70cb22c2fc68cc58a3e3190fde6215b60d1c0"
-REVIEW_RUN_TREE_DIGEST = "6c3f5a42ac0368200da011fb05d8aafdcebfcfde44f746e6d107fd6b4fc367f7"
+HAPPY_RUN_TREE_DIGEST = "ea0651138240e5d3a4dca781bb2846c95723ee89a2e150e4244ba5fa9c96afc6"
+REVIEW_RUN_TREE_DIGEST = "8a1027f3bc7a542c13f86bd25dd9d1e6c4207c8f358d571c7dd81332fcda2fab"
 
 
 def orchestrate(

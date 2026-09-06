@@ -40,10 +40,13 @@
 # whole page was admissible: a 300-dpi A4 page costs a Qwen-VL chair between
 # 1,715 and 6,693 prompt tokens depending on the tier's `max_pixels`, before a
 # word of prompt is counted.  `config/serving_recipes_real.toml` carries that
-# arithmetic and the reasoning; the caps here are 8,192 at 24 GB and 16,384 at
-# 48 GB and above, which is the largest `max_model_len` any row at that tier
-# now declares.  A cap is a ceiling, not a plan: what a card can hold at these
-# contexts is unmeasured, and stays unmeasured until a pod runs.
+# arithmetic and the reasoning; the caps here are 16,384 at every tier, which
+# is the largest `max_model_len` any row at that tier now declares -- the
+# Perlector needs it everywhere, because its act request carries a region crop
+# and a page render per capture view, and an ordinary two-view act costs 14,014
+# tokens even at the smallest tier's `max_pixels`.  A cap is a ceiling, not a
+# plan: what a card can hold at these contexts is unmeasured, and stays
+# unmeasured until a pod runs.
 schema = "pod-placement.v1"
 
 [dtype_floor]
@@ -63,7 +66,7 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.58"
-context_cap = 8192
+context_cap = 16384
 pixel_cap = 1344
 batch_size = 1
 

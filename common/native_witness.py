@@ -66,8 +66,11 @@ PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 # `max_new_tokens`, retained on every request's `generation_declared` and in
 # every retained Churro model view as the record of what Churro would have been
 # asked for.  It is no longer, by itself, what goes on the wire.  Every sealed
-# Churro serving row caps `max_model_len` well below it (2,048/4,096/8,192 in
-# `config/serving_recipes_real.toml`), and vLLM refuses a request whose prompt
+# Churro serving row caps `max_model_len` well below it (8,192 at 24 GB and
+# 48 GB and 16,384 at 80 GB+ in `config/serving_recipes_real.toml`, since the
+# request-capacity unit raised them from 2,048/4,096/8,192; every one of the
+# six numbers is far under 24,000, which is what this comment turns on), and
+# vLLM refuses a request whose prompt
 # plus `max_tokens` exceeds the row's context, so
 # `pipeline/3_attestatores/live_witness.py::churro_generation_sent` sends this
 # value only where the sealed row is strictly longer than it and otherwise
