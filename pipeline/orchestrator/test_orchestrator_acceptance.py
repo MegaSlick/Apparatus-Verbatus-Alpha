@@ -1470,10 +1470,19 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `4_perlector` and `7_armarium` whose own name is its content digest. Snapshot
 # counts and exit codes are unmoved: happy 96 files at exit 0, review 107 at
 # exit 3.
+#
+# And once more, same day, for `config/alignment.toml` alone: `timeout_seconds`
+# 5 -> 25, on the measurement in that file's own header. Its bytes are sealed at
+# run creation like every other config's, so the same digest cascade follows.
+# The value has no effect on a fixture run's *content* -- no fixture alignment
+# comes within two orders of magnitude of either deadline -- which the leaf
+# comparison confirms: happy 75 changed files / 385 changed leaves, review 87 /
+# 445, **zero non-digest changed leaves**, baseline built from a worktree pinned
+# at the preceding commit with its own venv. Counts and exit codes unmoved.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "a5da790b65e7af60c73412f18fff6947ebb12855c84dadaddece85cadd809997"
-REVIEW_RUN_TREE_DIGEST = "faabdd9a7675e78a5f5ec18c670a3efca8ca4bef5f49841a82401931a87514c7"
+HAPPY_RUN_TREE_DIGEST = "91dc46adbde887e4771a99253cd643b20b70fd2bd0a3a0264a97cc9b816e38a1"
+REVIEW_RUN_TREE_DIGEST = "ebbc1fee31020e5ca8e92610337a390713e612b5d25140e4b1677adb431aacbe"
 
 
 def orchestrate(
