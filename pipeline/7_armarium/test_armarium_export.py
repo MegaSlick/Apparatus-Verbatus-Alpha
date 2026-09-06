@@ -15,6 +15,9 @@ import pytest
 from armarium_export import (
     CANONICAL_TEXT_FIELD,
     EXPORT_MANIFEST_NAME,
+    NOT_MEASURED_BASIS_SCHEMA,
+    NOT_MEASURED_INSTRUMENTS,
+    NOT_MEASURED_SCHEMA,
     ArmariumProjection,
     _page_ledger_category,
     _terminal_ledger,
@@ -73,6 +76,53 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
     }
 
 
+def _test_not_measured_basis(**overrides):
+    """A minimal, valid not-measured basis for a hand-built projection.
+
+    The production basis is derived from a run's own records
+    (`pipeline/7_armarium/run.py::not_measured_basis`, proven against a real run
+    in `test_export.py`); these projections have no run behind them, so they
+    declare the shape, and a test about the block's content overrides the one
+    sub-record it is about.
+    """
+    basis = {
+        "schema": NOT_MEASURED_BASIS_SCHEMA,
+        "page-testimony-content-coverage": {
+            "acts_total": 2,
+            "acts_unmeasured": [],
+            "reasons": [],
+        },
+        "page-ink-conservation": {
+            "pages_sealed": 1,
+            "pages_not_reconciled": [],
+            "reasons": [],
+        },
+        "act-visibility-survey": {
+            "acts_total": 2,
+            "acts_with_capture_presentation": 0,
+            "capture_rows": 0,
+            "rows_with_named_absence": 0,
+            "absence_codes": [],
+        },
+        "perlector-uncertain-spans": {
+            "sealed_audit_round_cap": 1,
+            "acts_delivered": 1,
+            "acts_with_uncertain_spans": 0,
+        },
+        "designator-geometry-calibration": {
+            "configurations": [
+                {
+                    "configuration": "designator-padding",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 4572,
+                }
+            ]
+        },
+    }
+    basis.update(overrides)
+    return basis
+
+
 def _projection(*, salvage_items=()) -> ArmariumProjection:
     page = _source_bytes("1_exemplar/blobs/sha256/page")
     crop = _source_bytes("2_designator/blobs/sha256/crop")
@@ -92,6 +142,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
         },
     }
     return ArmariumProjection(
+        not_measured_basis=_test_not_measured_basis(),
         fixture_id="armarium-export-test-v1",
         scenario="happy",
         config_digest="a" * 64,
@@ -318,11 +369,14 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
     assert manifest["claims"]["ink_map"]["held_pages"] == []
 
 
-def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
-    """A v2 identity may not describe the new closed claim set.
+def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
+    """An older identity may not describe a newer closed claim set.
 
-    ``claims.ink_map`` is required, so old and new closed shapes need different
-    identities rather than two incompatible meanings of v2.
+    ``claims.ink_map`` took the manifest from v2 to v3 and ``claims.not_measured``
+    took it from v3 to v5, each for the same reason: a required claim a stale
+    reader has no field for would be presented as a bundle that does not carry
+    it. Old and new closed shapes need different identities rather than two
+    incompatible meanings of one.
     """
     members = _members(
         build_armarium_bundle(
@@ -330,12 +384,13 @@ def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v3"
+    assert manifest["schema"] == "armarium-export-manifest.v5"
 
-    manifest["schema"] = "armarium-export-manifest.v2"
-    _refresh_manifest(members, manifest)
-    with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "stale-v2")
+    for stale in ("armarium-export-manifest.v2", "armarium-export-manifest.v3"):
+        manifest["schema"] = stale
+        _refresh_manifest(members, manifest)
+        with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
+            verify_export_bundle(_zip_bytes(members), tmp_path / f"stale-{stale[-2:]}")
 
 
 def test_an_unreleased_edge_finding_forces_a_partial_export_and_rejects_complete(tmp_path):
@@ -2761,7 +2816,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v3"
+    assert manifest["schema"] == "armarium-export-manifest.v5"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3454,6 +3509,7 @@ def _logical_conservation_projection(attribution) -> ArmariumProjection:
         },
     }
     return ArmariumProjection(
+        not_measured_basis=_test_not_measured_basis(),
         fixture_id="armarium-logical-attribution-v1",
         scenario="adversarial",
         config_digest="a" * 64,
@@ -3503,3 +3559,242 @@ def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_i
             {"pac_aaaaaaaaaaaaaaaa"},
             {"logical:pac_aaaaaaaaaaaaaaaa"},
         )
+
+
+# --- `claims.not_measured`: what this run did not measure ---------------------
+#
+# `DELIVERED` and `aggregate.status == "complete"` are reachable over four
+# things nothing measured -- a page whose testimony content coverage was
+# recorded unmeasured, a page whose ink was never reconciled, two instruments
+# with no producer, and geometry thresholds no sample was taken for. All four
+# are recorded somewhere; none of them qualified the word on the deliverable.
+# These prove the block is present, closed, and derived rather than constant.
+
+
+def _manifest_of(projection) -> dict:
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    return build_armarium_bundle(projection, formats, lambda _path: b"").manifest
+
+
+def _block(projection) -> dict:
+    return _manifest_of(projection)["claims"]["not_measured"]
+
+
+def _entry(block: dict, instrument: str) -> dict:
+    return next(row for row in block["entries"] if row["instrument"] == instrument)
+
+
+def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order():
+    block = _block(_projection())
+
+    assert block["schema"] == NOT_MEASURED_SCHEMA
+    assert [row["instrument"] for row in block["entries"]] == list(NOT_MEASURED_INSTRUMENTS)
+    for row in block["entries"]:
+        assert set(row) == {"instrument", "status", "detail", "recorded_in"}
+        # Where a reader goes to check the row against the evidence (GOALS 5).
+        assert row["recorded_in"].strip()
+
+
+def test_the_count_is_the_number_of_instruments_that_did_not_measure():
+    block = _block(_projection())
+
+    assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
+    assert block["count"] >= 1, "the shipped build has instruments with no producer"
+
+
+def test_an_unmeasured_testimony_coverage_row_reaches_the_block_by_name():
+    """The counterfactual: change the record, and the block changes with it."""
+    clean = _entry(_block(_projection()), "page-testimony-content-coverage")
+    assert clean["status"] == "measured"
+
+    projection = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "page-testimony-content-coverage": {
+                    "acts_total": 2,
+                    "acts_unmeasured": ["two"],
+                    "reasons": ["no page witness supplied comparable page text for this page"],
+                }
+            }
+        ),
+    )
+
+    changed = _entry(_block(projection), "page-testimony-content-coverage")
+    assert changed["status"] == "not-measured"
+    assert changed["detail"]["acts_unmeasured"] == ["two"]
+
+
+def test_a_page_whose_ink_was_never_reconciled_reaches_the_block_by_ordinal():
+    clean = _entry(_block(_projection()), "page-ink-conservation")
+    assert clean["status"] == "measured"
+
+    projection = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "page-ink-conservation": {
+                    "pages_sealed": 2,
+                    "pages_not_reconciled": [2],
+                    "reasons": ["the page's background could not be inferred"],
+                }
+            }
+        ),
+    )
+
+    changed = _entry(_block(projection), "page-ink-conservation")
+    assert changed["status"] == "not-measured"
+    assert changed["detail"]["pages_not_reconciled"] == [2]
+
+
+def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs():
+    """`declared-unproduced` is the contract's word, not a softer `not-measured`.
+
+    No stage publishes the Designator occlusion records the survey reads, so
+    every capture row on every current run carries a named absence code. A row
+    that carried a measured visibility state instead is a different status, and
+    the block must be able to say so rather than always reporting absence.
+    """
+    absent = _entry(_block(_projection()), "act-visibility-survey")
+    assert absent["status"] == "declared-unproduced"
+    assert absent["detail"]["capture_rows"] == 0
+
+    all_absent = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 2,
+                    "absence_codes": ["act-visibility-survey-absent"],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(all_absent), "act-visibility-survey")["status"] == "declared-unproduced"
+
+    surveyed = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 0,
+                    "absence_codes": [],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(surveyed), "act-visibility-survey")["status"] == "measured"
+
+    partial = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 1,
+                    "absence_codes": ["cross-capture-registration-absent"],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(partial), "act-visibility-survey")["status"] == "not-measured"
+
+
+def test_the_uncertainty_instrument_reports_the_sealed_round_cap_that_silenced_it():
+    """An empty `uncertain_spans` under `round_cap = 1` is policy, not confidence.
+
+    `pipeline/4_perlector/audit.py` can only mint a span when the sealed cap
+    leaves no re-proof round to spend, so under any other cap the empty list is
+    arithmetic. Said in the block rather than left for a reader to infer from a
+    `[]` that looks like a reader who was never uncertain.
+    """
+    silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
+    assert silenced["status"] == "declared-unproduced"
+    assert silenced["detail"]["sealed_audit_round_cap"] == 1
+
+    reachable = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "perlector-uncertain-spans": {
+                    "sealed_audit_round_cap": 0,
+                    "acts_delivered": 1,
+                    "acts_with_uncertain_spans": 1,
+                }
+            }
+        ),
+    )
+    assert _entry(_block(reachable), "perlector-uncertain-spans")["status"] == "measured"
+
+
+def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundaries():
+    caveat = _entry(_block(_projection()), "designator-geometry-calibration")
+    assert caveat["status"] == "not-measured"
+    assert caveat["detail"]["configurations"][0]["sample_count"] == 4572
+
+    calibrated = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "designator-geometry-calibration": {
+                    "configurations": [
+                        {
+                            "configuration": "designator-padding",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 4572,
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    assert _entry(_block(calibrated), "designator-geometry-calibration")["status"] == "measured"
+
+
+def test_a_projection_with_no_not_measured_basis_is_refused():
+    """A block derived from nothing is the reassuring silence it exists to break."""
+    with pytest.raises(SchemaRefusal, match="carries no not-measured basis"):
+        build_armarium_bundle(
+            replace(_projection(), not_measured_basis=None),
+            ArmariumFormats(("jsonl",), embed_pixels=False),
+            lambda _path: b"",
+        )
+
+
+def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_written():
+    broken = _test_not_measured_basis()
+    del broken["page-ink-conservation"]
+
+    with pytest.raises(SchemaRefusal, match="not-measured basis has an unrecognized field set"):
+        build_armarium_bundle(
+            replace(_projection(), not_measured_basis=broken),
+            ArmariumFormats(("jsonl",), embed_pixels=False),
+            lambda _path: b"",
+        )
+
+
+def _resealed_without_not_measured(projection) -> bytes:
+    """Rebuild a package whose manifest has had the block removed."""
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    bundle = build_armarium_bundle(projection, formats, lambda _path: b"")
+    with ZipFile(BytesIO(bundle.data)) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME].decode("utf-8"))
+    del manifest["claims"]["not_measured"]
+    manifest["self_hash"] = self_hash({k: v for k, v in manifest.items() if k != "self_hash"})
+    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+    return _zip_bytes(members)
+
+
+def test_the_export_schema_refuses_a_package_that_omits_the_block(tmp_path):
+    """Closed, so a bundle cannot quietly stop carrying its own caveats."""
+    with pytest.raises(SchemaRefusal, match="unrecognized field set"):
+        verify_export_bundle(_resealed_without_not_measured(_projection()), tmp_path / "clean")

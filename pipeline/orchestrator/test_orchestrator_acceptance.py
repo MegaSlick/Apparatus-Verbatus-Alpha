@@ -1440,10 +1440,33 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+# Re-pinned for the export's `claims.not_measured` block, and the cause is one
+# new required manifest claim. Every bundle now names this build's five
+# instruments with what the run actually recorded for each, so
+# `EXPORT_MANIFEST.json` gains 36 leaves and the manifest's schema id moves with
+# its claim shape (v3 -> v5, and the clustered shape v4 -> v6). Nothing else in
+# the run changed: the block is derived at the last stage from records every
+# earlier stage had already written.
+#
+# Checked, not assumed, and checked twice over. Both trees were built and
+# compared leaf by leaf against the pre-block tree: happy 3 changed files / 13
+# changed JSON leaves, review the same, and **not one changed leaf is a
+# non-digest field** outside the Armarium -- the two that are not 64-hex are the
+# export artifact's reference to the bundle blob, whose own name is its content
+# digest, plus one renamed blob per scenario for the same reason. Inside the
+# package, exactly one member changed (`EXPORT_MANIFEST.json`), its 36 added
+# leaves are all under `claims.not_measured`, and its only other moves are the
+# schema id and the self-hash. The snapshot counts and exit codes are unmoved:
+# happy 96 files at exit 0, review 107 at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
+# roots agreed exactly on both scenarios, and the same harness reproduced the
+# previous two digests byte-for-byte on the pre-block tree.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
-REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
+HAPPY_RUN_TREE_DIGEST = "ebb4da9bd23ff2101477986dd7af2f13b04233abb1b5859277836adbf9618608"
+REVIEW_RUN_TREE_DIGEST = "6797ec3cbdbe52855435b6670b62f1278d22b6441f4b448155086af0fdedb594"
 
 
 def orchestrate(
@@ -2292,7 +2315,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v3"
+                or manifest.get("schema") != "armarium-export-manifest.v5"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3146,7 +3169,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v3",
+        "schema": "armarium-export-manifest.v5",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())

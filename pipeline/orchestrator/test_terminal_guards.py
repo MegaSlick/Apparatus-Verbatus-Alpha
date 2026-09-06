@@ -68,6 +68,20 @@ class _RecordingContext:
             False,
         )
         self.blobs: dict[str, bytes] = {}
+        # The sealed configuration paths the export reads for its
+        # `claims.not_measured` block: the three Designator geometry files whose
+        # `provenance` says whether their numbers were ever calibrated, and the
+        # Perlector audit policy whose `round_cap` decides whether an uncertain
+        # span was reachable at all. The shipped files, because this synthetic
+        # context stands in for a run sealed under them -- a stand-in that named
+        # invented paths would make the block's own honesty untestable here.
+        config = ROOT / "config"
+        self.args = SimpleNamespace(
+            designator_padding_config=config / "designator_padding.toml",
+            designator_geometry_config=config / "designator_geometry.toml",
+            designator_grouping_config=config / "designator_grouping.toml",
+        )
+        self.perlector_audit_config_path = config / "perlector_audit.toml"
 
         def read_bytes(relative_path: str) -> bytes:
             if relative_path not in self.blobs:

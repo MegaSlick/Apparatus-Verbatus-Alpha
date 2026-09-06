@@ -24,6 +24,7 @@ the data, which is carried to Tyrel rather than settled here.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import secrets
@@ -81,7 +82,11 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # manifest's id moves with its claims.
 # v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
 # closed shape without an explicit schema boundary.
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
+# v5 adds required `claims.not_measured`: the export's own list of what this
+# run did not measure. A v3 reader has no field for it and would present a
+# bundle that names four unmeasured instruments as one that names none, which
+# is the silent-shape-change under one id these ids exist to prevent.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v5"
 # v4 is the clustered act-partition claim shape: `denominator` names logical
 # acts, and `local_proposal_rows`/`logical_membership` join the claim. A v3
 # reader keying on the schema id must not misread `expected_count` as
@@ -89,7 +94,9 @@ EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
 # exist to prevent -- so an image-local bundle stays v3 byte-for-byte and a
 # clustered bundle declares v4. `verify_export_bundle` accepts both and refuses
 # a schema id that disagrees with its own claim's shape.
-EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v4"
+# v6 is v5's clustered counterpart, moved for the same reason and in the same
+# commit: both shapes gained the same required claim, so both ids move.
+EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v6"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
 # apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
@@ -287,6 +294,12 @@ class ArmariumProjection:
     # counts explicitly". `None` is the ordinary image-local run, where the two
     # numbers are the same number and the claim already says so.
     local_proposal_rows: int | None = None
+    # What this run's own records say about the instruments that did not
+    # measure. `None` is not "nothing was unmeasured": it is a projection built
+    # without the basis, and `_validate_projection` refuses it, because a bundle
+    # whose `not_measured` block was derived from nothing would be exactly the
+    # reassuring silence the block exists to break.
+    not_measured_basis: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -728,6 +741,92 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
                     os.close(parent_fd)
 
 
+# --- What this run did not measure ------------------------------------------
+#
+# `DELIVERED` and `aggregate.status == "complete"` are reachable over four
+# things nothing in this run measured: a page whose testimony content coverage
+# was recorded unmeasured rather than clean, a page whose ink was never
+# reconciled, two instruments with no producer, and geometry thresholds no
+# sample was ever taken for. Every one of them is recorded somewhere in the run
+# tree or in a sealed configuration; none of them qualified the word on the
+# deliverable. This block is where the export says so, in its own voice, on
+# every bundle -- GOVERNANCE 10's "a metric that cannot be measured is a
+# failure, not a pass", carried to the last boundary.
+#
+# Derived, never constant: every entry's `status` and `detail` come from the
+# run's own records through `ArmariumProjection.not_measured_basis`. A row that
+# said "not measured" whatever happened could not distinguish the run that
+# measured something from the run that did not, which is the distinction the
+# block exists to keep.
+NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
+NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
+# The instrument names, fixed and closed. Every one is emitted on every bundle,
+# with its measured status -- never omitted when it happens to have measured
+# something, because an absent row and a measured row would then read alike.
+_TESTIMONY_COVERAGE: Final = "page-testimony-content-coverage"
+_PAGE_INK_CONSERVATION: Final = "page-ink-conservation"
+_ACT_VISIBILITY_SURVEY: Final = "act-visibility-survey"
+_PERLECTOR_UNCERTAIN_SPANS: Final = "perlector-uncertain-spans"
+_GEOMETRY_CALIBRATION: Final = "designator-geometry-calibration"
+NOT_MEASURED_INSTRUMENTS: Final = (
+    _TESTIMONY_COVERAGE,
+    _PAGE_INK_CONSERVATION,
+    _ACT_VISIBILITY_SURVEY,
+    _PERLECTOR_UNCERTAIN_SPANS,
+    _GEOMETRY_CALIBRATION,
+)
+# `declared-unproduced` is not a softer `not-measured`. It is the contract's own
+# word for an instrument no stage in this build publishes at all: the reader was
+# never uncertain and nobody surveyed the page, and a bundle that said only
+# "not measured" there would invite the reading that a measurement was attempted
+# and came back empty.
+_NOT_MEASURED_STATUSES: Final = frozenset({"measured", "not-measured", "declared-unproduced"})
+_NOT_MEASURED_ENTRY_FIELDS: Final = frozenset({"instrument", "status", "detail", "recorded_in"})
+_NOT_MEASURED_FIELDS: Final = frozenset({"schema", "count", "entries"})
+_NOT_MEASURED_DETAIL_FIELDS: Final = {
+    _TESTIMONY_COVERAGE: frozenset({"acts_total", "acts_unmeasured", "reasons"}),
+    _PAGE_INK_CONSERVATION: frozenset({"pages_sealed", "pages_not_reconciled", "reasons"}),
+    _ACT_VISIBILITY_SURVEY: frozenset(
+        {
+            "acts_total",
+            "acts_with_capture_presentation",
+            "capture_rows",
+            "rows_with_named_absence",
+            "absence_codes",
+        }
+    ),
+    _PERLECTOR_UNCERTAIN_SPANS: frozenset(
+        {"sealed_audit_round_cap", "acts_delivered", "acts_with_uncertain_spans"}
+    ),
+    _GEOMETRY_CALIBRATION: frozenset({"configurations"}),
+}
+_GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
+    {"configuration", "calibrated_for_this_corpus", "sample_count"}
+)
+# Where a reader goes to check each row against the evidence itself (GOALS 5).
+_NOT_MEASURED_RECORDED_IN: Final = {
+    _TESTIMONY_COVERAGE: (
+        "each act's Recensor review, field `testimony_content_coverage`, in the retained run"
+    ),
+    _PAGE_INK_CONSERVATION: (
+        "the Designator's per-page conservation records, field `ink_measurable`, in the "
+        "retained run"
+    ),
+    _ACT_VISIBILITY_SURVEY: (
+        "each act's Recensor review, field `cross_capture_coverage`, whose capture rows "
+        "carry the named absence codes, in the retained run"
+    ),
+    _PERLECTOR_UNCERTAIN_SPANS: (
+        "the sealed Perlector audit policy's `round_cap` and each act's uncertainty layer, "
+        "carried beside the act record in this bundle"
+    ),
+    _GEOMETRY_CALIBRATION: (
+        "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
+        "configurations, whose digests this run's `config_digest` binds"
+    ),
+}
+
+
 _MANIFEST_FIELDS: Final = frozenset(
     {
         "schema",
@@ -767,6 +866,7 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "display",
         "salvage",
         "ink_map",
+        "not_measured",
     }
 )
 _ACT_PARTITION_CLAIM_FIELDS: Final = {
@@ -928,6 +1028,59 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
         )
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
+    not_measured = _require_exact_fields(
+        claims["not_measured"], _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
+    )
+    if not_measured["schema"] != NOT_MEASURED_SCHEMA:
+        raise SchemaRefusal("the manifest not_measured block is not this build's schema")
+    rows = not_measured["entries"]
+    if not isinstance(rows, list):
+        raise SchemaRefusal("the manifest not_measured block has no entry rows")
+    named = []
+    for row in rows:
+        entry = _require_exact_fields(
+            row, _NOT_MEASURED_ENTRY_FIELDS, subject="a manifest not_measured entry"
+        )
+        instrument = entry["instrument"]
+        if instrument not in _NOT_MEASURED_DETAIL_FIELDS:
+            raise SchemaRefusal(
+                "the manifest not_measured block names an instrument this build does not produce"
+            )
+        if entry["status"] not in _NOT_MEASURED_STATUSES:
+            raise SchemaRefusal("a manifest not_measured entry carries an unrecognized status")
+        detail = _require_exact_fields(
+            entry["detail"],
+            _NOT_MEASURED_DETAIL_FIELDS[instrument],
+            subject=f"the manifest not_measured detail for {instrument}",
+        )
+        if instrument == _GEOMETRY_CALIBRATION:
+            configurations = detail["configurations"]
+            if not isinstance(configurations, list):
+                raise SchemaRefusal(
+                    "the manifest not_measured geometry-calibration detail has no rows"
+                )
+            for configuration in configurations:
+                _require_exact_fields(
+                    configuration,
+                    _GEOMETRY_CALIBRATION_ROW_FIELDS,
+                    subject="a manifest not_measured geometry-calibration row",
+                )
+        if not isinstance(entry["recorded_in"], str) or not entry["recorded_in"].strip():
+            raise SchemaRefusal("a manifest not_measured entry does not say where its record lives")
+        named.append(instrument)
+    # Every instrument, every time: an omitted row and a measured row would
+    # otherwise read alike, which is the reassuring silence this block exists
+    # to break.
+    if named != list(NOT_MEASURED_INSTRUMENTS):
+        raise SchemaRefusal(
+            "the manifest not_measured block does not name this build's instruments exactly "
+            f"once each, in order: expected {list(NOT_MEASURED_INSTRUMENTS)}, got {named}"
+        )
+    expected_count = sum(1 for row in rows if row["status"] != "measured")
+    if not_measured["count"] != expected_count:
+        raise SchemaRefusal(
+            "the manifest not_measured count does not reconcile with its own entries"
+        )
 
 
 def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
@@ -1325,6 +1478,94 @@ def _validate_logical_act_conservation(
         )
 
 
+def _validate_not_measured_basis(basis: object) -> dict[str, Any]:
+    """Refuse a not-measured basis that is not this build's closed shape.
+
+    Checked at the projection boundary rather than inside the claim builder so
+    a missing sub-record is named before any product byte is written. The field
+    sets are the claim's own detail sets, so the basis and the block it becomes
+    cannot drift.
+    """
+    if not isinstance(basis, dict):
+        raise SchemaRefusal(
+            "an Armarium projection carries no not-measured basis; the export's "
+            "`not_measured` block is derived from the run's own records and may not be "
+            "built from nothing"
+        )
+    expected = frozenset({"schema", *NOT_MEASURED_INSTRUMENTS})
+    record = _require_exact_fields(basis, expected, subject="an Armarium not-measured basis")
+    if record["schema"] != NOT_MEASURED_BASIS_SCHEMA:
+        raise SchemaRefusal("an Armarium not-measured basis is not this build's schema")
+    for instrument in NOT_MEASURED_INSTRUMENTS:
+        _require_exact_fields(
+            record[instrument],
+            _NOT_MEASURED_DETAIL_FIELDS[instrument],
+            subject=f"the not-measured basis for {instrument}",
+        )
+    for row in record[_GEOMETRY_CALIBRATION]["configurations"]:
+        _require_exact_fields(
+            row,
+            _GEOMETRY_CALIBRATION_ROW_FIELDS,
+            subject="a not-measured geometry-calibration row",
+        )
+    return record
+
+
+def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
+    """One instrument's status, read off what this run actually recorded."""
+    if instrument == _TESTIMONY_COVERAGE:
+        return "not-measured" if detail["acts_unmeasured"] else "measured"
+    if instrument == _PAGE_INK_CONSERVATION:
+        return "not-measured" if detail["pages_not_reconciled"] else "measured"
+    if instrument == _ACT_VISIBILITY_SURVEY:
+        # No capture presentation anywhere means the survey had nothing to run
+        # on; every capture row carrying a named absence code means it ran on
+        # nothing. Both are the instrument declaring itself unproduced, and the
+        # Recensor's own handoff says why: no stage publishes the Designator
+        # occlusion records the survey reads.
+        if detail["capture_rows"] == 0:
+            return "declared-unproduced"
+        if detail["rows_with_named_absence"] == detail["capture_rows"]:
+            return "declared-unproduced"
+        return "not-measured" if detail["rows_with_named_absence"] else "measured"
+    if instrument == _PERLECTOR_UNCERTAIN_SPANS:
+        # A span can only be minted when a sealed `round_cap` of 0 leaves the
+        # audit no re-proof round to spend, so under any other cap the empty
+        # list is the policy's arithmetic and not a reading's confidence. Said
+        # here rather than left for a reader to infer from a `[]`.
+        if detail["sealed_audit_round_cap"] != 0:
+            return "declared-unproduced"
+        return "measured"
+    if instrument == _GEOMETRY_CALIBRATION:
+        return (
+            "measured"
+            if all(row["calibrated_for_this_corpus"] for row in detail["configurations"])
+            else "not-measured"
+        )
+    raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")
+
+
+def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
+    """The export's own account of what this run did not measure."""
+    basis = _validate_not_measured_basis(projection.not_measured_basis)
+    entries = [
+        {
+            "instrument": instrument,
+            "status": _not_measured_status(instrument, basis[instrument]),
+            "detail": copy.deepcopy(basis[instrument]),
+            "recorded_in": _NOT_MEASURED_RECORDED_IN[instrument],
+        }
+        for instrument in NOT_MEASURED_INSTRUMENTS
+    ]
+    return {
+        "schema": NOT_MEASURED_SCHEMA,
+        # The number a reader acts on, beside the rows it counts: how many of
+        # this build's instruments did not measure on this run.
+        "count": sum(1 for entry in entries if entry["status"] != "measured"),
+        "entries": entries,
+    }
+
+
 def _validate_projection(projection: ArmariumProjection) -> None:
     has_fixture = isinstance(projection.fixture_id, str) and bool(projection.fixture_id)
     has_submission = isinstance(projection.submission_id, str) and bool(projection.submission_id)
@@ -1361,6 +1602,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.aggregate_basis,
         projection.acts,
     )
+    _validate_not_measured_basis(projection.not_measured_basis)
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     sealed = {
@@ -3231,6 +3473,10 @@ def _export_manifest(
                 "reason": _DISPLAY_REASON,
             },
             "salvage": salvage_claim,
+            # Last in `claims` and required by the schema: a bundle cannot be
+            # produced, or re-verified on a clean machine, without saying what
+            # this run did not measure.
+            "not_measured": _not_measured_claim(projection),
         },
         "aggregate": projection.aggregate,
         "aggregate_basis": projection.aggregate_basis,

@@ -84,9 +84,9 @@ refused by name.
 
 **The manifest schema id is deliberately not versioned to this shape.** The
 real run identity travels under the existing `EXPORT_MANIFEST_SCHEMA`
-(`armarium-export-manifest.v3`) rather than a new schema id, unlike the
+(`.v5` today) rather than a new schema id, unlike the
 clustered act-partition claim a few lines below, which does get its own id
-(`.v4`) with an id/shape refusal (`_verify_manifest_field_closure`, the
+(`.v6` today) with an id/shape refusal (`_verify_manifest_field_closure`, the
 `expected_schema` check). The two cases differ in what a consumer needs to
 decide first: a clustered manifest changes the *denominator* — a reader must
 know which counting convention a package uses before it can interpret
@@ -170,13 +170,15 @@ projection configuration. The bundle may contain these plainly specified formats
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v3` for
-  an image-local run and `armarium-export-manifest.v4` for a clustered one: v2
-  renamed the annotation claims apart, v3 adds the required `ink_map` claim to
-  the closed claim set, and v4 is the clustered act-partition claim — the
+  reader's question at all. The manifest is `armarium-export-manifest.v5` for
+  an image-local run and `armarium-export-manifest.v6` for a clustered one: v2
+  renamed the annotation claims apart, v3 added the required `ink_map` claim to
+  the closed claim set, v4 was the clustered act-partition claim — the
   denominator names logical acts and `local_proposal_rows`/`logical_membership`
   join the claim, so a v3 reader can never misread `expected_count` as
-  proposal-seal rows. A clustered bundle also carries a `logical_accounting`
+  proposal-seal rows — and v5/v6 add the required `not_measured` claim to both
+  shapes at once, so a stale reader cannot present a bundle that names four
+  unmeasured instruments as one that names none. A clustered bundle also carries a `logical_accounting`
   block in `sources.json`, and `verify_export_bundle` recomputes the clustered
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
@@ -259,6 +261,35 @@ carriage claim, like `claims.uncertainty`). Neither takes the bare word.
 inside the `display:` reading remains Tyrel's choice of convention (spec 11), and
 `claims.display.renders_canonical_uncertainty` still says `false` on the face of every
 bundle. Counting damage is this stage's business; showing it is not.
+
+### `claims.not_measured` — what this run did not measure
+
+Required on every bundle (it is what took the manifest to `.v5`/`.v6`) and
+derived, never constant. `DELIVERED` and `aggregate.status == "complete"` are
+reachable over four things nothing in a run measures, each recorded somewhere
+and none of them, before this, qualifying the word on the deliverable:
+
+| instrument | what is unmeasured | where the record lives |
+|---|---|---|
+| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` |
+| `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
+| `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
+| `perlector-uncertain-spans` | `uncertain_spans` is empty on every reading because the sealed `round_cap` leaves the audit no re-proof round to spend | `config/perlector_audit.toml` and each act's uncertainty layer |
+| `designator-geometry-calibration` | every crop's `calibrated_for_this_corpus = false`, and the grouping thresholds' `sample_count = 0` | the `provenance` blocks of the three sealed Designator configurations |
+
+Every instrument appears on every bundle with its own `status`
+(`measured` | `not-measured` | `declared-unproduced`), because an omitted row and
+a measured row would otherwise read alike. `declared-unproduced` is the
+contract's word for an instrument with no producer at all, and it is
+deliberately not a softer `not-measured`: saying only "not measured" there
+invites the reading that a measurement was attempted and came back empty.
+`count` is how many instruments did not measure, and the verifier recomputes it.
+
+`pipeline/7_armarium/run.py::not_measured_basis` gathers the basis from the run
+tree and the sealed configurations; `armarium_export._not_measured_claim` derives
+each status from that basis alone. A projection with no basis is refused
+(`_validate_not_measured_basis`) — a block derived from nothing would be exactly
+the reassuring silence it exists to break.
 
 ### The terminal ledger
 

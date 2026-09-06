@@ -18,6 +18,15 @@ damaged is visibly partial in the products and in the run's own verdict. The
 separate *semantic* annotation layer remains only a boundary contract pending
 Tyrel's ARCHITECTURE approval.
 
+Every bundle also carries `claims.not_measured`: this build's five instruments,
+each with what this run actually recorded for it. `DELIVERED` is reachable over
+a page whose ink was never reconciled, an act whose page testimony coverage was
+recorded unmeasured, two instruments no stage in this build publishes at all,
+and geometry thresholds no sample was taken for — all recorded somewhere, none
+of them qualifying the word on the deliverable until now. The block is required
+by the export schema and derived from the run's own records, so a bundle can
+neither omit its caveats nor report the same ones whatever happened.
+
 `run.py` seals the bundle into the run tree; `bundle.py` publishes it to a
 destination outside, verifying it again on the way out. Nothing else takes a
 product out of this stage.

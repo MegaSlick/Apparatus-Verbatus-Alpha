@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ from armarium_export import verify_export_bundle, verify_projection_identity
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, DESIGNATOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
@@ -432,6 +433,19 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
 # rechecked here. The retained witness basis beside it was already required.
 
 
+def _stage_module(name: str, path: Path):
+    """Load one stage program under a unique name, its own directory first.
+
+    A stage adds its directory to `sys.path` itself, but only for imports it
+    performs at module scope; loading two stage programs in one process needs
+    distinct module names, which is what `name` is for.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _armarium_module():
     """Load the stage program under a unique name.
 
@@ -563,3 +577,120 @@ def test_an_established_reading_without_its_act_attachment_view_is_refused_at_ex
     }
     with pytest.raises(FatalAccounting, match="no act-attachment evidence"):
         armarium.export_witnesses(None, reading, "act_0000000000000001")
+
+
+# --- `claims.not_measured` is derived from the run, not declared by the build --
+
+
+def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
+    """Every row re-derived here from the run's own evidence, independently.
+
+    The export's job at this boundary is to qualify its own `complete`: to say
+    which pages the run never reconciled, which acts reached no measured
+    testimony coverage, and which instruments published nothing at all. A block
+    that carried constants would say the same words on a run that measured
+    everything, so this rebuilds each number from the run tree and the sealed
+    configurations and compares.
+    """
+    root = tmp_path / "runs"
+    result = _orchestrate(root, "not-measured")
+    assert result.returncode == 0, result.stderr
+
+    tree = RunTree(root, "not-measured")
+    export = _export(tree)
+    manifest = verify_export_bundle(
+        tree.read_bytes(export["payload"]["bundle"]["reference"]["relative_path"]),
+        tmp_path / "clean",
+    )
+    block = manifest["claims"]["not_measured"]
+    rows = {entry["instrument"]: entry for entry in block["entries"]}
+
+    designator = tree.build_manifest(DESIGNATOR)["artifacts"]
+    unreconciled = sorted(
+        tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])["payload"][
+            "page_ordinal"
+        ]
+        for entry in designator
+        if entry["kind"] == "conservation"
+        and tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])["payload"].get(
+            "ink_measurable"
+        )
+        is not True
+    )
+    assert rows["page-ink-conservation"]["detail"]["pages_not_reconciled"] == unreconciled
+
+    reviews = [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
+    ]
+    # One review per attempt; the export reads the act's current one, so the
+    # comparison is over act keys rather than review count.
+    unmeasured = {
+        payload["act_key"]
+        for payload in reviews
+        if (payload.get("testimony_content_coverage") or {}).get("shortfall") is None
+    }
+    assert set(rows["page-testimony-content-coverage"]["detail"]["acts_unmeasured"]) <= unmeasured
+
+    audit = tomllib.loads((ROOT / "config" / "perlector_audit.toml").read_text(encoding="utf-8"))
+    spans = rows["perlector-uncertain-spans"]
+    assert spans["detail"]["sealed_audit_round_cap"] == audit["round_cap"]
+    # The shipped policy cannot mint a span, so the instrument declares itself
+    # unproduced rather than reporting a reader who was never uncertain.
+    assert spans["status"] == "declared-unproduced"
+
+    calibration = rows["designator-geometry-calibration"]["detail"]["configurations"]
+    for row, (name, filename, table) in zip(
+        calibration,
+        (
+            ("designator-padding", "designator_padding.toml", "padding"),
+            ("designator-geometry", "designator_geometry.toml", "geometry"),
+            ("designator-grouping", "designator_grouping.toml", "grouping"),
+        ),
+        strict=True,
+    ):
+        provenance = tomllib.loads((ROOT / "config" / filename).read_text(encoding="utf-8"))[table][
+            "provenance"
+        ]
+        assert row["configuration"] == name
+        assert row["calibrated_for_this_corpus"] == provenance["calibrated_for_this_corpus"]
+        assert row["sample_count"] == provenance.get("sample_count")
+    assert rows["designator-geometry-calibration"]["status"] == "not-measured"
+
+    # No stage publishes the Designator occlusion records the survey reads, so
+    # every capture row the run wrote carries a named absence code. That is the
+    # instrument declaring itself unproduced, and the export must say so rather
+    # than let an unresolved row read as "the act was fully visible".
+    capture_rows = [
+        row
+        for payload in reviews
+        for component in (payload.get("cross_capture_coverage") or {}).get("components", [])
+        for row in component["captures"]
+    ]
+    survey = rows["act-visibility-survey"]
+    assert survey["detail"]["capture_rows"] == len(capture_rows)
+    assert survey["detail"]["rows_with_named_absence"] == sum(
+        1 for row in capture_rows if row["finding_codes"]
+    )
+    assert survey["detail"]["absence_codes"] == sorted(
+        {code for row in capture_rows for code in row["finding_codes"]}
+    )
+    assert capture_rows, "the fixture writes capture rows; an empty list proves nothing here"
+    assert survey["status"] == "declared-unproduced"
+
+    assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
+
+
+def test_the_absence_codes_the_export_reads_are_the_recensors_own(tmp_path):
+    """Two modules spell one closed vocabulary; they may not drift apart.
+
+    `pipeline/7_armarium/run.py` cannot import the Recensor's implementation
+    module, so it keeps its own copy of the named absence codes. A code added
+    there and missed here would be a capture row the export silently counted as
+    a measurement.
+    """
+    recensor = _stage_module("recensor_absence_codes", ROOT / "pipeline" / "5_recensor" / "run.py")
+    armarium = _armarium_module()
+
+    assert armarium._VISIBILITY_ABSENCE_CODES == recensor.INSTRUMENT_ABSENT_CODES
