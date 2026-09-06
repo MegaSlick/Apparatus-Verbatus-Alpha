@@ -408,6 +408,39 @@ built, and the refusal carries the whole record. One that does fit carries the
 record onto the request, and the client copies it onto the retained call
 record. Nothing is ever downscaled to make a request fit.
 
+**A refused request costs its own attempt, not the pass.** The refusal above is
+a fact about one request -- these pixels, at this row's `max_pixels`, against
+this row's `max_model_len` -- and it left `_serve_act_unit` and
+`_serve_page_unit` as an exception nothing between there and `main` caught, so
+one oversized page ended the stage and every other page's testimony went with
+it. The Designator, asked the same question, held the single page and published
+the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
+the refusal as this attempt's own `outcome="failed"`, in the same shape an
+empty or malformed response takes, and the pass moves to the next unit. A
+missed act is worse than a poorly read one (GOALS 1), and one page's arithmetic
+is no reason to lose another page's reading.
+
+What that record says, and what it refuses to say: the **no-response** health,
+because nothing arrived and there is no channel to call unrecordable; no
+`raw_response_ref`, `serving_call_ref` or `native_capture`, because there was
+no call and no bytes; the refusal's own sentence as `reason`, which is the
+capacity record in words -- every image's token cost, the prompt, the reserved
+answer, the need, the row, and by how much it overran; and the chair's real
+serving receipt, because the chair did start and this pass entered its client
+before the arithmetic refused it. `arrived` in the page-record loop is decided
+by retained bytes rather than by the presence of a capture, so a refused page
+cannot borrow the health of a body nobody received. A resumed pass reads that
+pair -- no serving call, no-response health, live receipt -- and lets the record
+stand for the page it already described rather than refusing it as a
+fixture-posture record.
+
+**A wire refusal is still the stage's refusal.** Only the *pre-send* arithmetic
+became a per-attempt failure. An HTTP 400 is the engine refusing a request that
+did leave, from a chair that was asked; its bytes are retained and the stage
+stops and says so, rather than publishing a Testimonium about a response it
+declined to read. `test_attestatores_live_pass.py` drives both through
+`_serve_page_unit` and asserts the two different endings.
+
 Two further seams closed with them:
 
 **A live record says which kind of bytes it retained.** `raw_response_ref` means
