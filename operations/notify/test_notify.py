@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).with_name("notify.sh")
+GATE = SOURCE.parents[2] / ".githooks" / "check-all.sh"
 
 # The real topic is a bearer secret. notify.sh reads the topic and the server
 # from the ambient environment, and its encoder reads the four presentation
@@ -188,6 +189,28 @@ def test_the_test_sink_topic_echoes_the_message_and_spawns_no_curl(notify_repo):
     assert "milestone" in result.stderr
     assert "a message no phone should see" in result.stderr
 
+    # Exit 0 alone was read by every Python bridge over this script as delivery,
+    # so the record said "Phone notification: sent." for a notification that
+    # never left the machine. The marker on stdout is what tells them apart, and
+    # the swallowed message never joins it there: stdout is machine-readable,
+    # the human reason stays on stderr.
+    assert result.stdout == "NOTIFY_SUPPRESSED verbatus-test-sink\n"
+
+
+def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
+    """What makes the suppression marker unambiguous: stdout is otherwise unused.
+
+    A bridge reads a marker line out of stdout and calls that outcome
+    suppressed. That is only safe while nothing else in this script writes
+    there -- every reason, refusal and suppression note goes to stderr -- so
+    the emptiness is asserted rather than assumed.
+    """
+
+    script, env = notify_repo
+    result = run(script, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
 
 def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
     """A near-miss must still notify. A prefix or substring rule would make one
@@ -200,6 +223,9 @@ def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
     assert result.returncode == 0, result.stderr
     body = json.loads(Path(env["FAKE_BODY"]).read_text(encoding="utf-8"))
     assert body["topic"] == "verbatus-test-sink-2"
+    # A near miss must not carry the suppression marker either, or a bridge
+    # would report a delivered notification as swallowed.
+    assert "NOTIFY_SUPPRESSED" not in result.stdout
 
 
 def test_the_conftest_sink_matches_the_topic_the_script_recognises():
@@ -216,64 +242,106 @@ def test_the_conftest_sink_matches_the_topic_the_script_recognises():
     assert f'"$topic" = "{conftest.NOTIFY_TEST_SINK_TOPIC}"' in source
 
 
-def test_the_gate_reads_and_exports_the_same_sink_topic():
-    """`.githooks/check-all.sh` runs the suites in the checkout that holds the
-    real topic. It is the one run that most needs the sink, and it deliberately
-    controls its own environment rather than inheriting one.
+def _gate_sink_block() -> str:
+    """`.githooks/check-all.sh`'s own lines, from reading the sink topic to running pytest.
 
-    It *reads* the constant instead of restating it, for two reasons that point
-    the same way: a fourth copy of a value whose job is to be identical
-    everywhere, and `.githooks/check_ingress.py`, which refuses a literal
-    ``NTFY_TOPIC=<topic-shaped value>`` anywhere in the tree under a ruling that
-    exempts no exact topic. So the extraction is what has to be tested, not the
-    text: it is run here, against the real `conftest.py`, exactly as the gate
-    runs it.
+    The gate is the one run that happens in the checkout holding the real
+    `private/ntfy.conf`, so it is the run that most needs the sink, and it
+    deliberately controls its own environment rather than inheriting one.
+
+    It *reads* the constant out of `conftest.py` instead of restating it, for two
+    reasons that point the same way: a fourth copy of a value whose whole job is
+    to be identical everywhere, and `.githooks/check_ingress.py`, which refuses a
+    literal ``NTFY_TOPIC=<topic-shaped value>`` anywhere in the tree under a
+    ruling that exempts no exact topic.
+
+    So the extraction has to be *run*, not read. Asserting on the script's text
+    said only that some line matching a pattern exists; it would have passed over
+    an extraction that yields the wrong value, an assignment that never reaches a
+    child, and a guard that prints its refusal and carries on into the suite. The
+    block below is lifted verbatim and executed, with `$root` and
+    `$frozen_python` supplied -- the two variables the gate has already set by
+    the time control reaches here.
     """
+
+    lines = GATE.read_text(encoding="utf-8").splitlines()
+    first = next((i for i, line in enumerate(lines) if line.startswith("NTFY_TOPIC=$(sed")), None)
+    assert first is not None, "check-all.sh no longer reads the sink topic from conftest.py"
+    last = next((i for i in range(first, len(lines)) if "-m pytest" in lines[i]), None)
+    assert last is not None, "check-all.sh no longer runs pytest after reading the sink topic"
+    return "\n".join(lines[first : last + 1])
+
+
+def _run_gate_sink_block(tmp_path: Path, root: Path) -> tuple[subprocess.CompletedProcess, Path]:
+    """Run that block with a sentinel standing where the frozen interpreter stands.
+
+    The sentinel records the `NTFY_TOPIC` it inherited and the arguments it was
+    invoked with, so "the child receives the topic" is observed in the child
+    rather than inferred from an `export` line. Nothing here runs pytest: the
+    gate reaches the suite only through `"$frozen_python"`, and that is exactly
+    what the sentinel replaces.
+    """
+
+    record = tmp_path / "sentinel-record"
+    sentinel = tmp_path / "sentinel-python"
+    sentinel.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "${NTFY_TOPIC-<unset>}" "$@" > "$RECORD"\n',
+        encoding="utf-8",
+    )
+    sentinel.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(PREFIX)}
+    env["RECORD"] = str(record)
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            'set -eu\nroot="$1"\nfrozen_python="$2"\n' + _gate_sink_block(),
+            "sh",
+            str(root),
+            str(sentinel),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=30,
+    )
+    return result, record
+
+
+def test_the_gate_hands_the_sink_topic_to_the_process_it_runs_the_suite_with(tmp_path):
+    """Run against the real checkout: the value the child inherits is the constant."""
 
     import conftest
 
-    root = SOURCE.parents[2]
-    gate = root.joinpath(".githooks", "check-all.sh").read_text(encoding="utf-8")
-    extractor = next(
-        (line for line in gate.splitlines() if line.lstrip().startswith("NTFY_TOPIC=$(sed")),
-        None,
-    )
-    assert extractor is not None, "check-all.sh no longer reads the sink topic from conftest.py"
+    result, record = _run_gate_sink_block(tmp_path, SOURCE.parents[2])
 
-    # Run the gate's own line, not a paraphrase of it. `\` continues onto the
-    # next line in the script, so the pair is reassembled before executing.
-    lines = gate.splitlines()
-    index = lines.index(extractor)
-    snippet = extractor
-    while snippet.endswith("\\"):
-        index += 1
-        snippet = snippet[:-1] + lines[index]
-    extracted = subprocess.run(
-        ["sh", "-c", f'set -eu\nroot="$1"\n{snippet}\nprintf "%s" "$NTFY_TOPIC"', "sh", str(root)],
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=10,
-    ).stdout
-    assert extracted == conftest.NOTIFY_TEST_SINK_TOPIC
-
-    # Assigned is not exported, and an unexported assignment reaches no child.
-    assert any(
-        line.startswith("export ") and "NTFY_TOPIC" in line.split() for line in gate.splitlines()
-    ), "check-all.sh reads the sink topic but never exports it"
+    assert result.returncode == 0, result.stderr
+    assert record.exists(), "the gate never reached the process it runs the suite with"
+    inherited, *arguments = record.read_text(encoding="utf-8").splitlines()
+    assert inherited == conftest.NOTIFY_TEST_SINK_TOPIC
+    # The sentinel stands where pytest is invoked, not somewhere earlier.
+    assert arguments == ["-m", "pytest"]
 
 
-def test_the_gate_refuses_to_run_when_the_sink_topic_cannot_be_read():
+def test_the_gate_refuses_to_run_when_the_sink_topic_cannot_be_read(tmp_path):
     """An empty `NTFY_TOPIC` is not "no sink" -- it is `private/ntfy.conf`, the
     real topic, which is the precise failure the sink exists to prevent. So a
-    renamed or reshaped constant must stop the gate, not silently unsink it."""
+    renamed or reshaped constant must stop the gate *before* the suite runs, not
+    print a complaint and run it unsinked. The sentinel proves the difference:
+    a file that was never written is a suite that was never reached."""
 
-    root = SOURCE.parents[2]
-    gate = root.joinpath(".githooks", "check-all.sh").read_text(encoding="utf-8")
-    guard = '[ -n "$NTFY_TOPIC" ] || {'
-    assert guard in gate, "check-all.sh no longer fails closed on an unreadable sink topic"
-    after = gate.split(guard, 1)[1].split("}", 1)[0]
-    assert "exit 1" in after
+    synthetic = tmp_path / "repo"
+    synthetic.mkdir()
+    (synthetic / "conftest.py").write_text(
+        'NOTIFY_TEST_SINK_TOPIC_RENAMED = "verbatus-test-sink"\n', encoding="utf-8"
+    )
+
+    result, record = _run_gate_sink_block(tmp_path, synthetic)
+
+    assert result.returncode == 1
+    assert not record.exists(), "the gate ran the suite after failing to read the sink topic"
+    assert "could not read NOTIFY_TEST_SINK_TOPIC" in result.stderr
 
 
 def test_server_override_is_refused(notify_repo):

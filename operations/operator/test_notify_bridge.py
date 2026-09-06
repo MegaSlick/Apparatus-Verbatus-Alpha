@@ -16,15 +16,16 @@ from .test_surface import START, _launch, _manifest, _spend_policy, _surface
 class RecordingRunner:
     """Stands in for `notify.sh`; nothing in this file may reach the real script."""
 
-    def __init__(self, *, returncode: int = 0, stderr: str = "") -> None:
+    def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.returncode = returncode
+        self.stdout = stdout
         self.stderr = stderr
         self.calls: list[list[str]] = []
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
         self.calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, self.returncode, "", self.stderr)
+        return subprocess.CompletedProcess(argv, self.returncode, self.stdout, self.stderr)
 
 
 @pytest.mark.parametrize("event", ("start", "done", "note", ""))
@@ -201,3 +202,45 @@ def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> No
 
     assert any("Run complete." in line for line in messages)
     assert [event for event, _ in sent] == ["milestone"]
+
+
+def test_the_test_sink_marker_is_reported_as_suppressed_and_never_as_sent() -> None:
+    """The operator surface prints this line to a human; it must not say "sent".
+
+    `notify.sh` exits 0 under the reserved test topic so the guard cannot change
+    what the suites it protects measure. Reading that 0 as delivery made the
+    surface report a notification that never left the machine; the marker on
+    stdout is what tells the two apart.
+    """
+
+    runner = RecordingRunner(stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n")
+
+    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run tyrel-1 finished")
+
+    assert outcome.attempted
+    assert not outcome.delivered
+    assert outcome.suppressed
+    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
+    assert outcome.line() == "Phone notification: suppressed (test sink)."
+    assert "sent" not in outcome.line()
+
+
+def test_a_real_success_is_still_delivered_and_carries_no_suppression() -> None:
+    """The counterfactual: exit 0 without the marker must not become suppressed."""
+
+    for stdout in ("", "\n", "some unrelated chatter\n"):
+        outcome = notify_bridge.shell_notifier(runner=RecordingRunner(stdout=stdout))(
+            "milestone", "run tyrel-1 finished"
+        )
+
+        assert outcome.attempted and outcome.delivered
+        assert not outcome.suppressed
+        assert outcome.line() == "Phone notification: sent."
+
+
+def test_the_marker_word_this_module_reads_is_the_one_the_script_prints() -> None:
+    """Two languages, neither able to import the other, one typo apart from a
+    silent return to "sent." for a notification that never left the machine."""
+
+    source = notify_bridge.NOTIFY_SCRIPT.read_text(encoding="utf-8")
+    assert f"printf '{notify_bridge.NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source

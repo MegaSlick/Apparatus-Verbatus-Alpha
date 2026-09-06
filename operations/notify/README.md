@@ -87,6 +87,21 @@ protects measure — several assert on delivered versus `NOT DELIVERED` — and 
 that constrains its subject is what GOVERNANCE 10 refuses. The swallowed message goes to
 stderr instead, so a leak stays visible without being fatal.
 
+**And exit 0 alone was a second lie.** Every Python bridge over this script —
+`operations/pod/notify_bridge.py`, `operations/pod/notify_hooks.py`,
+`operations/operator/notify_bridge.py` — mapped exit 0 to `delivered=True`, so under the
+sink each of them printed "Phone notification: sent." for a notification that never left
+the machine. The exit code still stays 0, for the reason above; the distinction is carried
+on **stdout**, which nothing else in this script writes to: one stable line,
+
+    NOTIFY_SUPPRESSED verbatus-test-sink
+
+Each bridge reads that marker word and returns a third state — `attempted=True`,
+`delivered=False`, `suppressed=True` — whose printed line is "Phone notification:
+suppressed (test sink)." The bridges match the marker word and never the topic, which is
+normally a bearer secret; the topic is safe to print in that one line because control
+reaches it only when the topic is exactly the reserved public constant.
+
 The sink is a backstop, not the seam. A test that reaches this script at all is still a
 defect: inject a fake runner, or use the `silent` notifier.
 

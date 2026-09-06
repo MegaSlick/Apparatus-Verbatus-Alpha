@@ -91,7 +91,23 @@ fi
 #
 # The value is a literal, not a pattern: a prefix or suffix rule would make a
 # mistyped real topic silently stop notifying him.
+#
+# Exit 0 alone was a second lie in the place built to stop the first one. Every
+# Python bridge over this script (`operations/pod/notify_bridge.py`,
+# `operations/pod/notify_hooks.py`, `operations/operator/notify_bridge.py`) maps
+# exit 0 to `delivered=True`, so the record printed under the sink read "Phone
+# notification: sent." for a notification that never left the machine. The exit
+# code stays 0 -- suites assert on delivered versus NOT DELIVERED outcomes, and a
+# guard must not change what its subject measures -- so the distinction is
+# carried on stdout instead, where nothing else in this script ever writes: one
+# stable line, `NOTIFY_SUPPRESSED <topic>`, which each bridge maps to an explicit
+# suppressed outcome. The human reason still goes to stderr, unchanged.
+#
+# The topic is safe to print here and nowhere else in this script: control only
+# reaches this line when it is exactly the reserved public constant, never the
+# bearer secret.
 if [ "$topic" = "verbatus-test-sink" ]; then
+  printf 'NOTIFY_SUPPRESSED %s\n' "$topic"
   echo "notify: test sink — not sent ($event): $message" >&2
   exit 0
 fi
