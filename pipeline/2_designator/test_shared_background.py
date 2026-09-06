@@ -10,6 +10,7 @@ opening's shape. A stage may import `common/`; the reverse is what
 the proof lives here rather than beside the pin.
 """
 
+import pytest
 import structure
 from grouping_config import load_grouping_config, resolve_background_policy
 
@@ -143,8 +144,6 @@ def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
     exception rather than measure zero residual ink on it, which is what a
     coverage proof taken under a divider that is not paper would be.
     """
-    import pytest
-
     width = height = 100
     rows = [bytearray([30] * width) for _ in range(height)]
     for y in range(80, height):

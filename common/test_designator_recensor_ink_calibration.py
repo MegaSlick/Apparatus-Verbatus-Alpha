@@ -196,7 +196,9 @@ def test_the_containment_is_not_vacuous_on_a_photographed_page():
     the Designator dismissed" was true of nothing.
 
     So this asserts the sets, on the page the failure needed. All three now come
-    from `common.background`'s one inference under the run's own sealed policy.
+    from `common.background`'s one inference under the shipped sealed policy --
+    the file itself, not a hand-built one, so a change to those four values fails
+    here as well as in the Designator.
     """
     width, height, rows = photographed_shaped_page()
     policy = resolve_background_policy(load_background_config(), width, height)

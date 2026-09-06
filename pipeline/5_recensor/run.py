@@ -1639,6 +1639,15 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     capture digests; passing it keeps one pixel-verification pass per run
     rather than one per consumer. Omitting it derives the map here exactly as
     before, so every direct caller and test is unchanged.
+
+    **The paper value every count here is taken below is the Designator's**, from
+    `common.background` under the sealed `[grouping.background]` policy this run
+    bound. Independence lives in the contrast, not in the inference: until
+    2026-09-06 this check inferred its own paper from the page's raw histogram
+    mode, which on a photographed opening is the bezel, and it then measured
+    approximately zero residual ink on every such page. A page whose paper the
+    shared inference refuses gets a finding that carries the refusal and no
+    counts at all, and `page_coverage_for` keeps it out of `checked_pages`.
     """
     regions = regions_by_source_page(context)
     if not regions:

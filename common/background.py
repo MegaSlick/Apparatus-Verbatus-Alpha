@@ -93,11 +93,19 @@ class BackgroundInferenceRefusal(ContractError):
     fall back to cutting predetermined crops instead. A decode error stays fatal;
     this one changes how the page is cut, never whether it is.
 
-    **It also ends this stage's ink measurement for that page, and that is the
-    point.** `pipeline/2_designator/run.py` used to substitute the page's own
+    **Three callers catch it, and each one records it rather than working
+    around it.** The Designator publishes `background_source: "not-inferable"`
+    and `ink_measurable: false` and cuts the predetermined grid; the Ink Map
+    publishes `outcome="ink-not-measurable"` with no counts and no retained runs
+    (`common/residual_ink.py`, `pipeline/1_ink_map/run.py`); the Recensor's
+    residual-ink audit carries the page in `page_coverage.unmeasurable_pages` on
+    every act that touches it and never in `checked_pages`. None of the three
+    removes the page from anything, and none of the three reports a zero.
+
+    **It also ends every ink measurement on that page, and that is the point.** `pipeline/2_designator/run.py` used to substitute the page's own
     mean as a stand-in
     divider so the accounting "had something defensible". It does not: on the
-    inverted scan this module's own tests use — 80% of the page at 30, 20% at
+    inverted scan this project's own tests use — 80% of the page at 30, 20% at
     220 — the mean is 68, so the threshold is 48, and every pixel of the *dark
     paper* is classified as ink. Conservation then reports four fifths of a page
     as unclaimed ink and mints a held act over the background. A substituted
