@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 from conservation import reconcile
-from structure import PRIMARY_MARGIN, SECONDARY_MARGIN, ink_pixels, label_components
+from structure import (
+    PRIMARY_MARGIN,
+    SECONDARY_MARGIN,
+    _label_components_reference,
+    ink_pixels,
+)
 
 from common.contracts.errors import ContractError
 
@@ -71,7 +76,16 @@ def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None
 
 
 def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
-    """The old pixel-set algorithm, kept here solely as a U13 equivalence oracle."""
+    """The old pixel-set algorithm, kept here solely as a U13 equivalence oracle.
+
+    It labels through `structure._label_components_reference`, not through
+    `structure.label_components`. Those were the same function until
+    `label_components` became row-oriented itself; had this oracle followed it,
+    it would have compared `conservation._components`' row runs against another
+    row-run labeller and stopped being the independent pixel-set definition
+    both of them are answerable to. The substitution in `structure.py` is
+    exactly why that function is retained.
+    """
     pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=SECONDARY_MARGIN)
     claimed = {
         pixel
@@ -82,7 +96,7 @@ def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
             for bounds in claimed_bounds
         )
     }
-    components = label_components(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
+    components = _label_components_reference(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
     return {
         "total_ink_pixel_count": len(pixels),
         "claimed_pixel_count": len(claimed),

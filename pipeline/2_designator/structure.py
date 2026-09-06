@@ -24,18 +24,32 @@ of 0 still reaches an immediately adjacent pixel). This is an ordinary
 morphological "close" before labeling, not a fixture-specific hack; it is what
 keeps one word from scanning as a dozen one-pixel islands.
 
-**The substitution boundary for real pages is explicit:** `ink_pixels` and
-`label_components` are simple per-pixel Python/set implementations for the
-walking skeleton's tiny synthetic pages. Before real parish pages or a corpus
-run, replace those two functions as a pair with a measured array-based or
-native implementation that preserves their exact threshold, connectivity,
-ordering, and accounting contracts. Their present form proves mechanism, not
-production scale. `conservation.py` has already crossed that boundary for its
-own accounting (U13, row runs instead of pixel sets); this module has not, and a
-replacement here must still agree with the calibration the two share.
+**The substitution boundary for real pages was explicit, and half of it has
+now been crossed on measurement.** `label_components` is the row-run
+implementation `conservation.py` uses (U13), because the retired per-pixel
+set/union-find version measured **383 s and 2.17 GB for one 8.7-megapixel
+photographed page** at the sealed `gap_tolerance_px = 3`, against 0.41 s for
+`conservation.reconcile` labelling *more* ink on the same page
+(`workbench/active/TIMING_REPORT_2026-09-05.md` §1b, §1e). The retired
+implementation stays here as `_label_components_reference`, the oracle both
+this module's and `conservation.py`'s labelling are checked against.
+
+**`ink_pixels` was deliberately not substituted with it.** The docstring used
+to instruct replacing the two "as a pair", to protect the threshold and
+connectivity contract they share; the measurement says the pair is not the unit
+of the decision. `ink_pixels` is 1.45 s at 8.7 megapixels — 0.37% of the pass —
+and `label_components` was 99.6% of it, so a paired replacement would have given
+up 1.5 s to save 390. The shared contract is honoured by a
+`label_components`-only substitution, which is what this is. What `ink_pixels`
+does still cost is *memory*: it materialises one Python tuple per ink pixel, and
+that is the remaining share of the 2.17 GB. Substituting it is a real piece of
+work, unmeasured here beyond that sentence, and named rather than deferred
+silently.
 """
 
-from typing import Final, TypedDict
+import heapq
+from functools import cmp_to_key
+from typing import Final, Iterator, TypedDict
 
 from geometry import Bounds
 
@@ -203,14 +217,29 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
     return ink
 
 
-def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
-    """Connected-component labeling over an arbitrary set of (x, y) pixels.
+def _label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
+    """The retired per-pixel set/union-find labeller, kept as the oracle.
 
-    `scan_ink_components` labels every ink pixel through here. `conservation.py`
-    labelled its residual subset through here too until U13 moved it to runs;
-    the two definitions of "connected" are now kept from drifting by
-    `test_conservation.py`, which compares the run-oriented labelling against
-    this one directly rather than by sharing the code.
+    This is the implementation `label_components` had until the row-run
+    substitution below replaced it. It is retained, not deleted, for two
+    reasons that are both about what would otherwise stop being checked.
+
+    First, `test_structure.py` compares the two implementations directly on
+    every page shape this module's tests build and on a randomised page with
+    known components, so the equality claim the substitution rests on is
+    re-proved on every run rather than asserted once at the commit that made
+    it. Second — and this is the one that would have gone quiet —
+    `test_conservation.py`'s `_legacy_reference` used `label_components` as
+    the *independent* pixel-set oracle that holds `conservation._components`'
+    row-oriented notion of "connected" to the same meaning. Once
+    `label_components` became row-oriented too, that oracle would have been
+    comparing row runs against row runs and proving nothing. It now calls this
+    function, so the cross-check stays a cross-check.
+
+    Its cost is the reason it is no longer the shipped path: measured 383 s and
+    2.17 GB of peak RSS for one 8.7-megapixel photographed page at the sealed
+    `gap_tolerance_px = 3` (`workbench/active/TIMING_REPORT_2026-09-05.md` §1b).
+    Nothing on the live path calls it.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
@@ -282,6 +311,205 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
         )
     components.sort(key=lambda entry: (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"], entry[1]))
     return [component for component, _members in components]
+
+
+def _ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
+    """The pixel set as maximal horizontal runs, one ascending list per scanline.
+
+    A run is `(x0, x1)`, half-open at `x1`, exactly as `conservation._Run`
+    carries it. Splitting on the first missing x rather than on the first blank
+    *pixel* is the same rule: this function's input is already the ink set, so
+    "absent from the set" is "blank". Duplicates are tolerated by comparing with
+    `>` rather than `!=`, because the declared input is a set but the tests also
+    drive an ordered `dict.keys()` view through here and a caller is not owed a
+    crash for handing the same pixel twice.
+    """
+    by_row: dict[int, list[int]] = {}
+    for x, y in pixels:
+        column = by_row.get(y)
+        if column is None:
+            by_row[y] = [x]
+        else:
+            column.append(x)
+    runs_by_row: dict[int, list[tuple[int, int]]] = {}
+    for y, column in by_row.items():
+        column.sort()
+        runs: list[tuple[int, int]] = []
+        start = previous = column[0]
+        for x in column[1:]:
+            if x > previous + 1:
+                runs.append((start, previous + 1))
+                start = x
+            previous = x
+        runs.append((start, previous + 1))
+        runs_by_row[y] = runs
+    return runs_by_row
+
+
+def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
+    """Connected-component labeling over an arbitrary set of (x, y) pixels.
+
+    `scan_ink_components` labels every ink pixel through here.
+
+    **This is the row-run substitution `structure.py`'s module docstring
+    instructs, made on measurement.** The retired implementation
+    (`_label_components_reference`, kept above as this one's oracle) held a
+    union-find over every ink *pixel* and probed a Chebyshev neighbourhood of
+    `(gap_tolerance_px + 1)` around each one, so its cost was `ink_pixels x
+    radius^2` dictionary operations. On a real photographed register page at
+    300-DPI-equivalent size that measured **383 s and 2.17 GB** for one page at
+    the sealed `gap_tolerance_px = 3`, paid by `run.py`'s `_analyze_page` for
+    every sealed page before the first chair is called
+    (`workbench/active/TIMING_REPORT_2026-09-05.md` §1b, §1e). The union-find
+    here is over ink *runs* instead: real ink is horizontally contiguous, so a
+    page of 5.7 million ink pixels is a few hundred thousand runs, and the
+    per-pixel neighbourhood probe becomes an interval overlap test between two
+    scanlines' run lists.
+
+    **The contract is unchanged and that is proved, not asserted.** Same
+    components, same bounds, same `gap_tolerance_px` semantics (it still counts
+    blank pixels *between* two ink pixels, so a tolerance of 0 still reaches an
+    immediately adjacent pixel and the Chebyshev radius is still one more than
+    the gap), and the same total order: by component origin `(top, left)`, ties
+    broken by the component's own ink compared as the sorted `(x, y)` sequence
+    the retired implementation compared. `test_structure.py` compares the two
+    implementations directly on every page these tests build and on randomised
+    pages.
+
+    **The technique is `conservation._components`', written beside it rather
+    than imported.** `conservation.py` imports `SECONDARY_MARGIN` and
+    `_ink_threshold` from this module, so this module cannot import from
+    `conservation` -- the import would be circular. The two therefore stay two
+    implementations of one rule, held together the way they already were:
+    `test_conservation.py` compares `conservation._components` against
+    `_label_components_reference` above, which is the pixel-set definition both
+    of them are answerable to.
+    """
+    if gap_tolerance_px < 0:
+        raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
+    if not pixels:
+        return []
+
+    runs_by_row = _ink_runs_by_row(pixels)
+    # One flat run table, plus each scanline's runs as indices into it in
+    # ascending x order. The flat table is what union-find indexes; the
+    # per-row index lists are what the sweep below walks.
+    run_x0: list[int] = []
+    run_x1: list[int] = []
+    run_y: list[int] = []
+    indices_by_row: dict[int, list[int]] = {}
+    for y in sorted(runs_by_row):
+        indices = []
+        for x0, x1 in runs_by_row[y]:
+            indices.append(len(run_x0))
+            run_x0.append(x0)
+            run_x1.append(x1)
+            run_y.append(y)
+        indices_by_row[y] = indices
+
+    parent = list(range(len(run_x0)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    radius = gap_tolerance_px + 1
+    for y in sorted(indices_by_row):
+        current = indices_by_row[y]
+        # Same scanline: two maximal runs are separated by at least one blank
+        # pixel, and they join when that blank gap is within tolerance. `x1` is
+        # half-open, so the blank distance between them is `x0 - x1 + 1` and
+        # the legacy Chebyshev test `distance <= radius` is `x0 - x1 <= gap`.
+        for position in range(len(current) - 1):
+            left, right = current[position], current[position + 1]
+            if run_x0[right] - run_x1[left] <= gap_tolerance_px:
+                union(left, right)
+        # Earlier scanlines within the Chebyshev radius. Runs on one scanline
+        # are disjoint and ascending in both x0 and x1, so one forward pointer
+        # per row pair replaces the full cross product: a previous-row run
+        # wholly left of this `left` is wholly left of every later `left` too,
+        # and past that dropped prefix the scan only needs to stop at the first
+        # run wholly right of `left`. Two half-open segments hold ink pixels
+        # within the horizontal Chebyshev radius exactly under the
+        # dropped/stopped inequalities. This is `conservation._components`'
+        # sweep; see this function's docstring for why it is not imported.
+        for previous_y in range(y - radius, y):
+            previous = indices_by_row.get(previous_y)
+            if not previous:
+                continue
+            start = 0
+            for left in current:
+                left_x0, left_x1 = run_x0[left], run_x1[left]
+                while start < len(previous) and run_x1[previous[start]] + radius <= left_x0:
+                    start += 1
+                for offset in range(start, len(previous)):
+                    right = previous[offset]
+                    if run_x0[right] >= left_x1 + radius:
+                        break
+                    union(left, right)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(run_x0)):
+        groups.setdefault(find(index), []).append(index)
+
+    entries: list[tuple[Component, list[int]]] = []
+    for group in groups.values():
+        x0 = min(run_x0[index] for index in group)
+        x1 = max(run_x1[index] for index in group)
+        y0 = run_y[group[0]]
+        y1 = run_y[group[-1]] + 1
+        entries.append(
+            (
+                {
+                    "bounds": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+                    "pixel_count": sum(run_x1[index] - run_x0[index] for index in group),
+                },
+                group,
+            )
+        )
+
+    # Two disjoint components can share a (top, left) origin while differing
+    # everywhere else, so the origin alone is not a total order. The retired
+    # implementation broke that tie on `tuple(sorted(group))` -- the component's
+    # own ink in sorted (x, y) order. Reproduced here without materialising
+    # either side's pixels: a heap merge of a group's runs yields exactly that
+    # sequence, and two distinct components cannot hold identical ink, so the
+    # comparison is decided at the first difference or by the shorter stream
+    # running out (the tuple-prefix rule, which is `pixel_count` order).
+    def origin(entry: tuple[Component, list[int]]) -> tuple[int, int]:
+        return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
+
+    def pixel_stream(group: list[int]) -> Iterator[tuple[int, int]]:
+        return heapq.merge(
+            *(((x, run_y[index]) for x in range(run_x0[index], run_x1[index])) for index in group)
+        )
+
+    def compare_ink(left: tuple[Component, list[int]], right: tuple[Component, list[int]]) -> int:
+        for left_pixel, right_pixel in zip(
+            pixel_stream(left[1]), pixel_stream(right[1]), strict=False
+        ):
+            if left_pixel != right_pixel:
+                return -1 if left_pixel < right_pixel else 1
+        return left[0]["pixel_count"] - right[0]["pixel_count"]
+
+    entries.sort(key=origin)
+    ordered: list[Component] = []
+    span_start = 0
+    for index in range(1, len(entries) + 1):
+        if index == len(entries) or origin(entries[index]) != origin(entries[span_start]):
+            span = entries[span_start:index]
+            if len(span) > 1:
+                span.sort(key=cmp_to_key(compare_ink))
+            ordered.extend(component for component, _group in span)
+            span_start = index
+    return ordered
 
 
 def scan_ink_components(

@@ -1242,8 +1242,8 @@ Named here rather than decided by a guess.
 
 **A conservation residual's reported bounds can span claimed territory.**
 `conservation.reconcile` labels connected components over the *residual*
-pixel set alone, using `structure.label_components`'s ordinary gap-tolerant
-adjacency (a few pixels, meant to bridge a pen stroke's own gaps). That
+ink alone, under the same ordinary gap-tolerant adjacency the full-page scan
+uses (a few pixels, meant to bridge a pen stroke's own gaps). That
 adjacency test knows nothing about `claimed_bounds`: two residual patches
 separated by a claimed rectangle narrower than the gap tolerance are unioned
 into one component, and the resulting `bounds` (the member pixels' own
@@ -1262,7 +1262,12 @@ claimed-aware residual labeling pass rather than a change to the shared
 `label_components` that `structure.py`'s own full-page scan also depends on
 and has no notion of "claimed" to give — a change worth its own design and
 test pass rather than folding into this build's repair commits. Named here
-rather than fixed quietly or left undiscovered.
+rather than fixed quietly or left undiscovered. (Since 2026-09-05 both sides of
+that shared adjacency are run-oriented — `conservation._components` and
+`structure.label_components` — and both are checked against the retired
+pixel-set labeller, `structure._label_components_reference`. The defect
+described above is unchanged by that substitution: it is a property of the
+adjacency rule, not of how the rule is computed.)
 
 **Conservation uses `SECONDARY_MARGIN`, not the primary proposer's threshold.**
 The secondary proposer is optional, but its declared sensitivity is still the
@@ -1344,17 +1349,33 @@ refuses both names wherever they are written.
 **`gap_tolerance_px` stays absolute at 3, and must never be scaled — do not
 "fix" this by reflex.** It is a stroke-connectivity radius, not a page-layout
 proportion: scaled to a 3508-tall page it becomes ~41px, which bridges
-inter-word gaps and changes what "connected" means, and
-`structure.label_components` builds a Chebyshev offset list of radius
-`gap + 1`, so the labeller's cost is quadratic in it and would grow with the
-cube of page scale. Its correct value is a function of scan resolution, not of
-page dimension, and no measurement of that relationship exists here yet. It is
-the one threshold this build cannot honestly set, and it is set by decision
-rather than by oversight. Related and separate: `structure.ink_pixels` builds a
-Python set over every pixel (8.7 million on an A4 page at 300 dpi) before
-labelling starts, which roadmap item 4 replaces rather than optimises.
+inter-word gaps and changes what "connected" means. Its correct value is a
+function of scan resolution, not of page dimension, and no measurement of that
+relationship exists here yet. It is the one threshold this build cannot honestly
+set, and it is set by decision rather than by oversight.
 
-Original finding: review, 2026-08-10.
+**The cost half of that argument was true of the retired labeller and is no
+longer true of the shipped one.** Until 2026-09-05 `structure.label_components`
+built a Chebyshev offset list of radius `gap + 1` and probed it around every ink
+pixel, so its cost really was quadratic in the tolerance: measured on a real
+photographed page at 300-DPI-equivalent size, 250 s at gap 2 and 383 s at gap 3
+(`workbench/active/TIMING_REPORT_2026-09-05.md` §1b). The shipped
+implementation is a union-find over ink *runs*, and the same four-point sweep on
+the same page measures 2.68 / 2.74 / 2.97 / 3.23 s at gaps 2 / 3 / 5 / 8 —
+roughly linear in the radius, not quadratic, because the radius now only widens
+an interval-overlap window between two scanlines' run lists. **Nothing about the
+connectivity argument changes**: raising the tolerance still bridges inter-word
+gaps and still changes what "connected" means, and that, not the runtime, is why
+the number stays at 3. Cost is no longer a reason for anything here.
+
+Related and separate: `structure.ink_pixels` still builds a Python set over every
+ink pixel (5.7 million on the real page above) before labelling starts, and that
+set is now the dominant share of the pass's ~1.9 GB peak RSS. Roadmap item 4
+replaces it rather than optimises it; the measurement that closed the labeller
+deliberately did not close this.
+
+Original finding: review, 2026-08-10. Cost half corrected on measurement,
+2026-09-05.
 
 **This stage builds occlusion geometry and publishes none of it.**
 `geometry_layer.occlusion_envelope` derives an occlusion envelope, and

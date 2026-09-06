@@ -14,7 +14,9 @@ from structure import (
     SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
     _ink_threshold,
+    _label_components_reference,
     infer_background,
+    ink_pixels,
     label_components,
     primary_scan,
     scan_ink_components,
@@ -427,3 +429,140 @@ def test_primary_scan_refuses_a_missing_gap_tolerance_keyword():
 def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
     with pytest.raises(TypeError):
         secondary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)
+
+
+# --- the row-run substitution: equality against the retired implementation ----
+#
+# `label_components` was replaced by a row-run union-find on measurement (383 s
+# and 2.17 GB for one 8.7-megapixel photographed page at the sealed
+# `gap_tolerance_px = 3`; `workbench/active/TIMING_REPORT_2026-09-05.md` §1b).
+# The claim the substitution rests on is that the two implementations return the
+# *same list*: same components, same bounds, same pixel counts, same order. That
+# claim is proved here on every page these tests can build, not asserted once.
+
+
+def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
+    produced = label_components(pixels, gap_tolerance_px=gap_tolerance_px)
+    expected = _label_components_reference(pixels, gap_tolerance_px=gap_tolerance_px)
+    assert produced == expected
+    return produced
+
+
+@pytest.mark.parametrize("gap_tolerance_px", [0, 1, 2, 3, 5, 8])
+@pytest.mark.parametrize("margin", [PRIMARY_MARGIN, SECONDARY_MARGIN])
+def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin, gap_tolerance_px):
+    """Every walking-skeleton fixture page, at both declared sensitivities.
+
+    These are the pages whose Designator evidence is pinned byte-for-byte
+    downstream, so if the substitution moved a single component on any of them
+    the acceptance pins would move with it.
+    """
+    from common.imaging import grayscale_rows
+    from proof.synthetic_pages import ALL_PAGES, render_page
+
+    for page in ALL_PAGES:
+        width, height, rows = grayscale_rows(render_page(page))
+        background = infer_background(width, height, rows)
+        pixels = ink_pixels(width, height, rows, background=background, margin=margin)
+        _both_labellers_agree(pixels, gap_tolerance_px)
+
+
+def test_the_row_run_labeller_matches_the_reference_on_known_components():
+    """A page whose components are known by construction, asserted outright.
+
+    Equality against the reference proves the substitution changed nothing; it
+    does not prove either implementation is right. This page's answer is written
+    out independently of both: three marks, one of which is two rectangles a
+    3-pixel blank gap apart on the same rows (joined at tolerance 3, separate at
+    tolerance 2), and one single pixel two rows below the first mark's bottom
+    edge (joined at tolerance 1, separate at tolerance 0).
+    """
+    width, height = 60, 50
+    rows = blank_rows(width, height)
+    paint_rect(rows, 5, 5, 10, 6, INK)  # mark A
+    paint_pixel(rows, 5, 13, INK)  # two blank rows below A's last row (10)
+    paint_rect(rows, 30, 5, 8, 6, INK)  # mark B, left half
+    paint_rect(rows, 41, 5, 8, 6, INK)  # mark B, right half: blank x in 38..40
+    paint_rect(rows, 20, 30, 12, 9, INK)  # mark C
+
+    def bounds_at(gap: int) -> list:
+        pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
+        return [component["bounds"] for component in _both_labellers_agree(pixels, gap)]
+
+    assert bounds_at(0) == [
+        {"x": 5, "y": 5, "w": 10, "h": 6},
+        {"x": 30, "y": 5, "w": 8, "h": 6},
+        {"x": 41, "y": 5, "w": 8, "h": 6},
+        {"x": 5, "y": 13, "w": 1, "h": 1},
+        {"x": 20, "y": 30, "w": 12, "h": 9},
+    ]
+    assert bounds_at(1) == [
+        {"x": 5, "y": 5, "w": 10, "h": 6},
+        {"x": 30, "y": 5, "w": 8, "h": 6},
+        {"x": 41, "y": 5, "w": 8, "h": 6},
+        {"x": 5, "y": 13, "w": 1, "h": 1},
+        {"x": 20, "y": 30, "w": 12, "h": 9},
+    ]
+    assert bounds_at(2) == [
+        {"x": 5, "y": 5, "w": 10, "h": 9},  # the lone pixel has joined mark A
+        {"x": 30, "y": 5, "w": 8, "h": 6},
+        {"x": 41, "y": 5, "w": 8, "h": 6},
+        {"x": 20, "y": 30, "w": 12, "h": 9},
+    ]
+    assert bounds_at(3) == [
+        {"x": 5, "y": 5, "w": 10, "h": 9},
+        {"x": 30, "y": 5, "w": 19, "h": 6},  # mark B's two halves have joined
+        {"x": 20, "y": 30, "w": 12, "h": 9},
+    ]
+
+
+@pytest.mark.parametrize("gap_tolerance_px", [0, 1, 3, 5])
+@pytest.mark.parametrize("density", [1, 5, 20, 60])
+def test_the_row_run_labeller_matches_the_reference_on_randomised_pages(density, gap_tolerance_px):
+    """Scattered ink at four densities, which is where an ordering tie is likely.
+
+    A sparse page produces many single-pixel components that share origins and
+    exercise the tie-break; a dense one produces few large ones and exercises
+    the run-merge sweep. The seed is fixed so a failure is reproducible.
+    """
+    import random
+
+    width, height = 70, 55
+    for seed in range(6):
+        generator = random.Random((seed, density, gap_tolerance_px).__hash__())
+        pixels = {
+            (x, y)
+            for y in range(height)
+            for x in range(width)
+            if generator.randrange(100) < density
+        }
+        _both_labellers_agree(pixels, gap_tolerance_px)
+
+
+def test_the_row_run_labeller_matches_the_reference_on_the_shared_origin_page():
+    """The one page whose expected order depends on the tie-break, both ways."""
+    pixels = {(0, 0), (0, 3), (1, 2), (2, 1), (3, 0)}
+    for gap_tolerance_px in (0, 1, 2, 3):
+        _both_labellers_agree(pixels, gap_tolerance_px)
+
+
+def test_the_row_run_labeller_matches_the_reference_on_negative_coordinates():
+    """`label_components` is documented over an *arbitrary* pixel set.
+
+    Nothing on the live path passes a negative coordinate -- `ink_pixels` only
+    ever emits pixels inside the page -- but the contract does not exclude one,
+    and the row sweep's earlier-scanline window is the place a `max(0, ...)`
+    would have quietly changed the answer for a caller that did.
+    """
+    pixels = {(-4, -3), (-3, -3), (-3, -2), (2, -3), (0, 1), (1, 1)}
+    for gap_tolerance_px in (0, 1, 2, 4):
+        _both_labellers_agree(pixels, gap_tolerance_px)
+
+
+def test_the_reference_labeller_is_reachable_and_refuses_the_same_way():
+    """The oracle is real code, held to the same refusals as what replaced it."""
+    assert _label_components_reference(set(), gap_tolerance_px=3) == []
+    with pytest.raises(ContractError, match="gap tolerance -1 is negative"):
+        _label_components_reference({(0, 0)}, gap_tolerance_px=-1)
+    with pytest.raises(TypeError):
+        _label_components_reference({(0, 0)})
