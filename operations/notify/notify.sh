@@ -247,8 +247,10 @@ then
   # "delivered" from "hung" and sent the same ping twice. One line on stderr
   # closes that: silence is never again evidence of anything. Stdout is
   # untouched -- the bridges key on the exit code and on `NOTIFY_SUPPRESSED`
-  # there, and this line never reaches that stream.
-  echo "notify: delivered ($event)" >&2
+  # there, and this line never reaches that stream. Best-effort under
+  # `set -e`: a closed stderr must not turn an accepted post into a failure
+  # the caller would resend -- the delivery already happened.
+  echo "notify: delivered ($event)" >&2 || true
   exit 0
 fi
 

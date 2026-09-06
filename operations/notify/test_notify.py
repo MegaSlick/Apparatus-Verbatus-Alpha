@@ -222,8 +222,28 @@ def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
     script, env = notify_repo
     result = run(script, env, event)
     assert result.returncode == 0, result.stderr
-    assert result.stderr.count("notify: delivered") == 1
-    assert f"notify: delivered ({event})" in result.stderr
+    # The whole stream, exactly: one event-specific line and nothing around it.
+    assert result.stderr == f"notify: delivered ({event})\n"
+    assert result.stdout == ""
+
+
+def test_a_closed_stderr_does_not_turn_a_delivery_into_a_failure(notify_repo):
+    """The script runs under `set -e`; if the diagnostic write could fail the
+    run, an accepted post would come back non-zero and be resent -- the very
+    duplicate the line exists to prevent."""
+
+    script, env = notify_repo
+    result = subprocess.run(
+        ["sh", "-c", 'exec "$1" "$2" "$3" 2>&-', "sh", str(script), "done", "finished"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout
+    assert result.stdout == ""
+    assert Path(env["FAKE_ARGS"]).exists()
 
 
 def test_a_failed_delivery_prints_no_delivered_line(notify_repo):
