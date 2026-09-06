@@ -87,7 +87,7 @@ def new_repo(path):
 def test_workflow_has_one_history_scan_and_immutable_dependencies():
     text = workflow_text()
     assert text.count("python3 .githooks/check_ingress.py --history HEAD") == 1
-    assert "run: sh .githooks/check-all.sh --ci" in text
+    assert "run: sh .githooks/check-all.sh --ci --parallel" in text
     assert "fetch-depth: 0" in text
     # The property, not the tally: every checkout step must decline to persist
     # credentials, however many jobs the workflow grows.
@@ -358,15 +358,62 @@ def gate_repo(tmp_path):
     return repo
 
 
-def run_gate(repo, *, env=None):
+def run_gate(repo, *, env=None, args=()):
     return subprocess.run(
-        ["sh", ".githooks/check-all.sh"],
+        ["sh", ".githooks/check-all.sh", *args],
         cwd=repo,
         env=env,
         capture_output=True,
         text=True,
         timeout=60,
     )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [(), ("--ci",), ("--parallel",), ("--ci", "--parallel"), ("--parallel", "--ci")],
+)
+def test_the_gate_accepts_its_two_flags_in_either_order(tmp_path, args):
+    """Both flags, once each, in any order. Accepted arguments reach the checks."""
+
+    result = run_gate(gate_repo(tmp_path), args=args)
+
+    # Exit 1 with this message is the first real check refusing a repo with no
+    # `.venv` -- that is, the arguments parsed and the gate proceeded.
+    assert result.returncode == 1
+    assert "frozen interpreter is missing" in result.stderr
+    assert "usage:" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--parallel=4",),
+        ("-n", "4"),
+        ("--Parallel",),
+        ("--ci", "--ci"),
+        ("--parallel", "--parallel"),
+        ("--ci", "--parallel", "extra"),
+    ],
+)
+def test_the_gate_refuses_anything_but_those_two_flags(tmp_path, args):
+    """A misspelled or repeated flag is a usage error, never a silently different run."""
+
+    result = run_gate(gate_repo(tmp_path), args=args)
+
+    assert result.returncode == 2
+    assert "usage: sh .githooks/check-all.sh [--ci] [--parallel]" in result.stderr
+
+
+def test_parallel_names_the_plugin_worker_count_and_distribution_on_the_command_line():
+    """Nothing about the split may come from the environment the caller controls."""
+
+    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
+    assert '"$frozen_python" -m pytest -p xdist -n 4 --dist loadfile' in gate
+    # The serial invocation stays, and it is the default.
+    assert "parallel=no" in gate
+    assert "unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS" in gate
+    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in gate
 
 
 def test_the_gate_refuses_to_run_without_the_frozen_interpreter(tmp_path):

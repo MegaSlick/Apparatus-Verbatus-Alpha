@@ -33,6 +33,31 @@ ALLOWED_EVENTS: Final = frozenset({"milestone", "decision"})
 NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 
 
+NOTIFY_SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
+"""`notify.sh` prints this word, then the reserved topic, on stdout and exits 0
+when the test sink swallowed the notification instead of posting it.
+
+Mapping that exit 0 to `delivered` was the defect this constant closes: under the
+sink the record said "Phone notification: sent." for a notification that never
+left the machine. The exit code stays 0 on purpose -- suites assert on delivered
+versus NOT DELIVERED outcomes and a guard must not change what its subject
+measures -- so the marker is what separates the two, on the one stream this
+script writes nothing else to. The word is matched, not the topic: the topic is
+normally a bearer secret and no bridge carries it."""
+
+
+def _suppression_marker(stdout: str | None) -> str | None:
+    """The marker line if the sink swallowed this notification, else `None`."""
+
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped == NOTIFY_SUPPRESSED_MARKER or stripped.startswith(
+            f"{NOTIFY_SUPPRESSED_MARKER} "
+        ):
+            return stripped[:160]
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class NotifyOutcome:
     """Whether the phone got it, in words the surface can print unchanged."""
@@ -40,10 +65,18 @@ class NotifyOutcome:
     attempted: bool
     delivered: bool
     detail: str
+    suppressed: bool = False
+    """The test sink swallowed it: attempted, not delivered, and not a failure.
+
+    A third state rather than a reworded failure. `delivered=False` alone would
+    report the sink as a delivery problem in a record an operator reads for real
+    ones, and `delivered=True` is the lie this field exists to stop."""
 
     def line(self) -> str:
         if not self.attempted:
             return f"Phone notification: not sent ({self.detail})."
+        if self.suppressed:
+            return "Phone notification: suppressed (test sink)."
         if self.delivered:
             return "Phone notification: sent."
         return f"Phone notification: NOT DELIVERED ({self.detail}). The result above still stands."
@@ -92,6 +125,9 @@ def shell_notifier(
         except OSError as error:
             return NotifyOutcome(True, False, f"the notification command could not run: {error}")
         if result.returncode == 0:
+            marker = _suppression_marker(result.stdout)
+            if marker is not None:
+                return NotifyOutcome(True, False, marker, suppressed=True)
             return NotifyOutcome(True, True, "delivered")
         detail = " ".join((result.stderr or result.stdout or "no reason given").split())
         if len(detail) > 160:
@@ -103,6 +139,7 @@ def shell_notifier(
 
 __all__ = [
     "ALLOWED_EVENTS",
+    "NOTIFY_SUPPRESSED_MARKER",
     "NOTIFY_TIMEOUT_SECONDS",
     "Notifier",
     "NotifyOutcome",
