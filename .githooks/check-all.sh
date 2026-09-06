@@ -170,6 +170,41 @@ if [ "$mode" = local ]; then
   "$frozen_python" .githooks/check_ingress.py --worktree
 fi
 
+# The gate is the one place the suites run inside the checkout that holds the
+# real `private/ntfy.conf`, and that is exactly where a test which forgot to
+# inject its notification seam pages his phone: nine identical milestones
+# arrived from a single gate run. `operations/notify/notify.sh` treats one
+# reserved topic as "under test" -- it prints what it would have sent and exits
+# 0 without posting -- and the root `conftest.py` sets that topic for any pytest
+# session. This is belt to those braces, and it is set here rather than
+# inherited, for the reason the environment block at the top of this file
+# exists.
+#
+# It sits beside the pytest line rather than in that block because the gate's
+# own tests run this script against synthetic repositories that have no
+# `conftest.py`, and every one of them stops before pytest. Refusing up there
+# would have failed seven of them for the absence of a file they have no reason
+# to carry. The variable is needed exactly where it is now used.
+#
+# The value is *read* from `conftest.py`, not written out again. Writing it
+# again would be a fourth copy of a constant whose whole job is to be identical
+# everywhere, and `.githooks/check_ingress.py` refuses a literal
+# `NTFY_TOPIC=<topic-shaped value>` anywhere in the tree -- correctly, and under
+# a ruling that deliberately exempts no exact topic. Reading it satisfies both:
+# one source of truth, and no topic-shaped assignment to exempt.
+#
+# It fails closed. An empty `NTFY_TOPIC` is not "no sink"; it is the real topic
+# from `private/ntfy.conf`, which is the precise failure this guards against. So
+# a renamed or reshaped constant stops the gate rather than quietly unsinking it.
+NTFY_TOPIC=$(sed -n 's/^NOTIFY_TEST_SINK_TOPIC = "\([A-Za-z0-9_-]\{1,64\}\)"$/\1/p' \
+  "$root/conftest.py" | head -n 1)
+[ -n "$NTFY_TOPIC" ] || {
+  echo "check-all: could not read NOTIFY_TEST_SINK_TOPIC from conftest.py; refusing to run the" >&2
+  echo "check-all: suites in a checkout that may hold the real notification topic" >&2
+  exit 1
+}
+export NTFY_TOPIC
+
 "$frozen_python" -m pytest
 
 # `--strict` makes an unreachable advisory service or unresolvable requirement

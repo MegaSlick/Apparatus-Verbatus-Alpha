@@ -69,7 +69,13 @@ from .models import (
     SpendRefusal,
     validate_pod_report_identity,
 )
-from .notify_bridge import NotifyOutcome, shell_notifier, silent
+from .notify_bridge import (
+    NOTIFY_SCRIPT,
+    NOTIFY_SUPPRESSED_MARKER,
+    NotifyOutcome,
+    shell_notifier,
+    silent,
+)
 from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
 from .preflight import (
     CacheMismatch,
@@ -2730,6 +2736,55 @@ def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
 
     assert outcome == NotifyOutcome(True, False, "notify: NOT DELIVERED (start) — no topic")
     assert outcome.line().startswith("Phone notification: NOT DELIVERED")
+
+
+def test_pod_shell_notifier_reports_the_test_sink_as_suppressed_never_as_sent() -> None:
+    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
+
+    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
+    not change what the suites it protects measure -- so this bridge read that 0
+    as delivery and printed "Phone notification: sent." for a spend warning no
+    phone ever saw. The marker on stdout is the only thing separating the two.
+    """
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command, kwargs
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n", stderr=""
+        )
+
+    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
+
+    assert outcome.attempted
+    assert not outcome.delivered
+    assert outcome.suppressed
+    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
+    assert outcome.line() == "Phone notification: suppressed (test sink)."
+    assert "sent" not in outcome.line()
+
+
+def test_pod_shell_notifier_still_reports_a_real_success_as_delivered() -> None:
+    """The counterfactual: exit 0 without the marker must not become suppressed."""
+
+    for stdout in ("", "\n", "some unrelated chatter\n"):
+
+        def runner(command, _stdout=stdout, **kwargs):  # type: ignore[no-untyped-def]
+            del command, kwargs
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=_stdout, stderr="")
+
+        outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
+
+        assert outcome == NotifyOutcome(True, True, "delivered")
+        assert not outcome.suppressed
+        assert outcome.line() == "Phone notification: sent."
+
+
+def test_the_marker_word_the_pod_bridge_reads_is_the_one_the_script_prints() -> None:
+    """Two languages, neither able to import the other, one typo apart from a
+    silent return to "sent." for a notification that never left the machine."""
+
+    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
+    assert f"printf '{NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
 
 
 def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -> None:
@@ -6971,18 +7026,96 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
 # --- --notify wires launch and close through operations/pod/notify_hooks ----
 
 
+def _stub_balance_notifications(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Close the third notification moment for tests that only care about the first two.
+
+    ``--notify`` wires *three* hooks, not one: launch, close, and -- through
+    ``set_balance_notify`` -- every account-balance observation the launch
+    makes. A green create against ``FakeProvider`` observes the balance three
+    times, so a test that stubs only ``notify_launch`` still reaches
+    ``notify_hooks.notify_balance``, whose ``default_runner`` is the real
+    ``subprocess.run`` on the real ``operations/notify/notify.sh``.
+
+    That is not hypothetical. Three tests here did exactly that, and the first
+    gate to run in a checkout holding ``private/ntfy.conf`` posted nine
+    identical ``pod balance: account, $100.00 available`` milestones to his
+    phone. In every worktree before it the script had failed "no topic
+    configured", so the missing stub read as a passing test.
+
+    Named once, here, so a fourth test driving ``--notify`` has something to
+    call rather than a pattern to notice.
+
+    **The signature is the real one, not ``**kwargs``.** ``notify_balance``
+    requires ``balance_usd`` and ``spend_rate_usd_per_hr``; a stub that accepts
+    anything accepts a call site that has stopped passing one of them, and the
+    tests below would still pass while the real hook would raise. ``runner`` is
+    deliberately absent: a stub cannot honour a runner, so a call site that
+    starts passing one must fail here loudly rather than have it silently
+    dropped.
+
+    **And it returns the suppressed outcome, not a delivered one.** Nothing was
+    delivered -- no phone, no script, no ``curl`` -- so reporting ``delivered``
+    would make ``cli.py`` record "Phone notification: sent." for a notification
+    that never existed, which is the same lie the sink in ``notify.sh`` was
+    built to stop. The three callers need only that the hook ran and that the
+    launch was unaffected; none asserts a delivered balance line.
+    """
+
+    calls: list[dict[str, object]] = []
+
+    def fake_notify_balance(
+        *,
+        balance_usd: object,
+        spend_rate_usd_per_hr: object,
+        lease_id: str | None = None,
+    ) -> cli.notify_hooks.NotifyOutcome:
+        calls.append(
+            {
+                "balance_usd": balance_usd,
+                "spend_rate_usd_per_hr": spend_rate_usd_per_hr,
+                "lease_id": lease_id,
+            }
+        )
+        return cli.notify_hooks.NotifyOutcome(
+            True, False, "NOTIFY_SUPPRESSED test-stub", suppressed=True
+        )
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", fake_notify_balance)
+    return calls
+
+
+def _assert_balance_hook_was_stubbed(calls: list[dict[str, object]]) -> None:
+    """The stub ran, and it recorded what ``notify_balance`` actually requires.
+
+    Asserted, not merely arranged, for two reasons. Emptiness would mean the
+    balance hook is live again -- the exact state that put nine milestones on
+    his phone -- and a stub whose recorded call is never read cannot show that
+    the values reaching the hook are the observation's own. ``FakeProvider``
+    reports ``$100.00`` and no spend rate, so those are the two values a green
+    create must carry into every balance notification.
+    """
+
+    assert calls, "the balance hook is wired by --notify and must be stubbed, not live"
+    for call in calls:
+        assert call["balance_usd"] == Decimal("100.00")
+        assert call["spend_rate_usd_per_hr"] is None
+
+
 def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
 
-    A fake stands in for ``notify_hooks.notify_launch`` so this never spawns
-    ``operations/notify/notify.sh`` for real.
+    Fakes stand in for ``notify_hooks.notify_launch`` *and* for the balance
+    hook ``--notify`` also wires, so this never spawns
+    ``operations/notify/notify.sh`` for real. The docstring claimed that
+    before the balance stub existed, and the claim was false.
     """
 
     clock = Clock()
     provider = fake(clock)
     calls: list[dict[str, object]] = []
+    balance_calls = _stub_balance_notifications(monkeypatch)
 
     def fake_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         calls.append(kwargs)
@@ -6992,6 +7125,8 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
 
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
+    _assert_balance_hook_was_stubbed(balance_calls)
+
     assert exit_code == 0
     assert len(calls) == 1
     assert calls[0]["card"] == "fake-48gb"
@@ -6999,6 +7134,16 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     assert isinstance(calls[0]["lease_id"], str) and calls[0]["lease_id"] != "unknown-lease"
     record = _last_json_object(capsys.readouterr().out)
     assert record["launch_notification"] == "Phone notification: sent."
+
+    # The balance half of the record must not claim a delivery the stub never
+    # made. `_BalanceWiring` writes one `NotifyOutcome.line()` per observation
+    # into the launch record an operator reads, so a stub answering "delivered"
+    # would put "Phone notification: sent." there for three notifications that
+    # never left the machine -- the same lie the sink in `notify.sh` exists to
+    # stop, reproduced inside the test suite.
+    balance = record["balance_notification"]
+    assert len(balance["sent"]) == len(balance_calls)
+    assert set(balance["sent"]) == {"Phone notification: suppressed (test sink)."}
 
 
 def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
@@ -7013,6 +7158,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
 
     clock = Clock()
     provider = fake(clock)
+    balance_calls = _stub_balance_notifications(monkeypatch)
 
     def raising_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
@@ -7022,6 +7168,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
     assert exit_code == 0
+    _assert_balance_hook_was_stubbed(balance_calls)
     record = _last_json_object(capsys.readouterr().out)
     assert record["pod_id"]
     assert record["lease_path"]
@@ -7220,6 +7367,7 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
 ) -> None:
     clock = Clock()
     provider = fake(clock)
+    balance_calls = _stub_balance_notifications(monkeypatch)
     monkeypatch.setattr(
         cli.notify_hooks,
         "notify_launch",
@@ -7229,5 +7377,6 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
     assert exit_code == 0
+    _assert_balance_hook_was_stubbed(balance_calls)
     record = _last_json_object(capsys.readouterr().out)
     assert "NOT DELIVERED" in record["launch_notification"]

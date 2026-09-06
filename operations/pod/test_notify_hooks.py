@@ -319,3 +319,52 @@ def test_a_long_stderr_reason_is_bounded() -> None:
 
     assert len(outcome.detail) < 200
     assert "truncated" in outcome.detail
+
+
+# --- the test sink is suppressed, never delivered ----------------------------
+
+
+def test_the_test_sink_marker_is_reported_as_suppressed_and_never_as_delivered() -> None:
+    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
+
+    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
+    not change what the suites it protects measure -- so for a while this module
+    read that 0 as delivery and the pod record said "Phone notification: sent."
+    for a notification no phone ever saw. The marker on stdout is the only thing
+    separating the two, and this is the assertion that it is read.
+    """
+
+    runner = FakeRunner(stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n")
+
+    outcome = notify_balance(balance_usd="100.00", spend_rate_usd_per_hr=None, runner=runner)
+
+    assert outcome.attempted
+    assert not outcome.delivered
+    assert outcome.suppressed
+    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
+    assert outcome.line() == "Phone notification: suppressed (test sink)."
+    assert "sent" not in outcome.line()
+
+
+def test_a_real_success_is_still_delivered_and_carries_no_suppression() -> None:
+    """The counterfactual: exit 0 without the marker must not become suppressed."""
+
+    for stdout in ("", "\n", "some unrelated chatter\n"):
+        outcome = notify_launch(
+            lease_id="lease-abc123",
+            card="RTX PRO 6000",
+            max_hourly_usd="1.99",
+            runner=FakeRunner(stdout=stdout),
+        )
+
+        assert outcome == NotifyOutcome(True, True, "delivered")
+        assert not outcome.suppressed
+        assert outcome.line() == "Phone notification: sent."
+
+
+def test_the_marker_word_this_module_reads_is_the_one_the_script_prints() -> None:
+    """Two languages, neither able to import the other, one typo apart from a
+    silent return to "sent." for a notification that never left the machine."""
+
+    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
+    assert f"printf '{notify_hooks.NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
