@@ -66,6 +66,36 @@ if [ "${NTFY_SERVER+x}" = x ]; then
   exit 2
 fi
 
+# One reserved topic value means "a test harness is driving this; do not send."
+#
+# The seam every caller is supposed to use is an injected runner, and on the
+# night this was added three tests were not using it: they drove `pod` with
+# `--notify` against a fake provider, stubbed the launch hook and left the
+# balance hook real, and posted nine identical milestones to his phone. That
+# was invisible for as long as it was, because every earlier gate ran in a
+# worktree with no `private/ntfy.conf` — the script failed "no topic
+# configured" and the missing seam looked like a passing test. The gate that
+# finally ran in the checkout that *does* hold the topic sent them.
+#
+# So the harness stops relying on every caller getting its seam right: the root
+# `conftest.py` exports this value for the whole session and `.githooks/
+# check-all.sh` exports it for its pytest line. A test that reaches this script
+# anyway is reported here, loudly, on stderr, and no post is made.
+#
+# Deliberately *not* a failure. Exiting non-zero would make the guard change
+# what the suites measure — several tests assert on delivered/NOT DELIVERED
+# outcomes — and a guard that rewrites its subject's results is the shape
+# GOVERNANCE 10 refuses. It exits 0 and says what it swallowed, so the
+# behaviour under test is unchanged and the leak is still visible to anyone
+# reading stderr.
+#
+# The value is a literal, not a pattern: a prefix or suffix rule would make a
+# mistyped real topic silently stop notifying him.
+if [ "$topic" = "verbatus-test-sink" ]; then
+  echo "notify: test sink — not sent ($event): $message" >&2
+  exit 0
+fi
+
 # `start` fires from a hook, not a hand. The desktop app can open several
 # sessions in one launch — each fires the hook, and four pings for one sitting
 # is noise, which is what makes the next one get ignored. One start per quarter

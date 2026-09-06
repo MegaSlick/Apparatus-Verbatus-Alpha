@@ -167,6 +167,115 @@ def test_invalid_topic_is_not_echoed(notify_repo):
     assert not Path(env["FAKE_ARGS"]).exists()
 
 
+def test_the_test_sink_topic_echoes_the_message_and_spawns_no_curl(notify_repo):
+    """The reserved topic that stops a test session from paging his phone.
+
+    Its whole job is that the fake `curl` -- which stands where the real one
+    would be -- is never reached, so that is what is asserted: no arguments
+    file and no body file, the two things the fake writes the instant it runs.
+    Exit 0 and not a refusal, because the guard must not change what the suite
+    it is protecting measures; the swallowed message goes to stderr instead, so
+    a leak stays visible to anyone reading it.
+    """
+
+    script, env = notify_repo
+    env["NTFY_TOPIC"] = "verbatus-test-sink"
+    result = run(script, env, "milestone", "a message no phone should see")
+    assert result.returncode == 0
+    assert not Path(env["FAKE_ARGS"]).exists()
+    assert not Path(env["FAKE_BODY"]).exists()
+    assert "test sink" in result.stderr
+    assert "milestone" in result.stderr
+    assert "a message no phone should see" in result.stderr
+
+
+def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
+    """A near-miss must still notify. A prefix or substring rule would make one
+    mistyped character in the real topic silently stop every notification, which
+    is the failure this whole file exists to prevent."""
+
+    script, env = notify_repo
+    env["NTFY_TOPIC"] = "verbatus-test-sink-2"
+    result = run(script, env)
+    assert result.returncode == 0, result.stderr
+    body = json.loads(Path(env["FAKE_BODY"]).read_text(encoding="utf-8"))
+    assert body["topic"] == "verbatus-test-sink-2"
+
+
+def test_the_conftest_sink_matches_the_topic_the_script_recognises():
+    """One typo apart, the guard is off and nothing says so.
+
+    The root `conftest.py` sets the value and `notify.sh` recognises it; they
+    are in different languages and neither can import the other, so the only
+    thing holding them together is this comparison.
+    """
+
+    import conftest
+
+    source = SOURCE.read_text(encoding="utf-8")
+    assert f'"$topic" = "{conftest.NOTIFY_TEST_SINK_TOPIC}"' in source
+
+
+def test_the_gate_reads_and_exports_the_same_sink_topic():
+    """`.githooks/check-all.sh` runs the suites in the checkout that holds the
+    real topic. It is the one run that most needs the sink, and it deliberately
+    controls its own environment rather than inheriting one.
+
+    It *reads* the constant instead of restating it, for two reasons that point
+    the same way: a fourth copy of a value whose job is to be identical
+    everywhere, and `.githooks/check_ingress.py`, which refuses a literal
+    ``NTFY_TOPIC=<topic-shaped value>`` anywhere in the tree under a ruling that
+    exempts no exact topic. So the extraction is what has to be tested, not the
+    text: it is run here, against the real `conftest.py`, exactly as the gate
+    runs it.
+    """
+
+    import conftest
+
+    root = SOURCE.parents[2]
+    gate = root.joinpath(".githooks", "check-all.sh").read_text(encoding="utf-8")
+    extractor = next(
+        (line for line in gate.splitlines() if line.lstrip().startswith("NTFY_TOPIC=$(sed")),
+        None,
+    )
+    assert extractor is not None, "check-all.sh no longer reads the sink topic from conftest.py"
+
+    # Run the gate's own line, not a paraphrase of it. `\` continues onto the
+    # next line in the script, so the pair is reassembled before executing.
+    lines = gate.splitlines()
+    index = lines.index(extractor)
+    snippet = extractor
+    while snippet.endswith("\\"):
+        index += 1
+        snippet = snippet[:-1] + lines[index]
+    extracted = subprocess.run(
+        ["sh", "-c", f'set -eu\nroot="$1"\n{snippet}\nprintf "%s" "$NTFY_TOPIC"', "sh", str(root)],
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    ).stdout
+    assert extracted == conftest.NOTIFY_TEST_SINK_TOPIC
+
+    # Assigned is not exported, and an unexported assignment reaches no child.
+    assert any(
+        line.startswith("export ") and "NTFY_TOPIC" in line.split() for line in gate.splitlines()
+    ), "check-all.sh reads the sink topic but never exports it"
+
+
+def test_the_gate_refuses_to_run_when_the_sink_topic_cannot_be_read():
+    """An empty `NTFY_TOPIC` is not "no sink" -- it is `private/ntfy.conf`, the
+    real topic, which is the precise failure the sink exists to prevent. So a
+    renamed or reshaped constant must stop the gate, not silently unsink it."""
+
+    root = SOURCE.parents[2]
+    gate = root.joinpath(".githooks", "check-all.sh").read_text(encoding="utf-8")
+    guard = '[ -n "$NTFY_TOPIC" ] || {'
+    assert guard in gate, "check-all.sh no longer fails closed on an unreadable sink topic"
+    after = gate.split(guard, 1)[1].split("}", 1)[0]
+    assert "exit 1" in after
+
+
 def test_server_override_is_refused(notify_repo):
     script, env = notify_repo
     env["NTFY_SERVER"] = "https://example.test"

@@ -57,6 +57,43 @@ The destination is fixed to `https://ntfy.sh`. Setting `NTFY_SERVER` is refused 
 rather than honoured, so a redirect to another host cannot be arranged by an environment
 variable.
 
+## The test sink
+
+**One topic value is reserved: `verbatus-test-sink`.** With it, the script prints what it
+would have sent to stderr and exits 0 without calling `curl`. It is a literal, not a
+prefix — a near-miss like `verbatus-test-sink-2` notifies normally, because a matching
+rule loose enough to catch a typo would be loose enough to silence him.
+
+It exists because the injected-runner seam every caller is meant to use is only as good
+as the caller. Three tests in `operations/pod/test_pod_runtime.py` drove the pod CLI with
+`--notify`, stubbed the launch hook, and left the balance hook real; a single gate run
+posted nine identical `pod balance` milestones to his phone. Every earlier gate had run in
+a worktree with no `private/ntfy.conf`, where the script failed "no topic configured" —
+so the missing stub read as a passing test for as long as it did.
+
+Two places set it, and both are deliberate rather than inherited:
+
+- the root `conftest.py`, in a session-scoped autouse fixture, so any pytest session and
+  every process it spawns is covered
+- `.githooks/check-all.sh`, immediately above its pytest line, because the gate is the one
+  run that happens inside the checkout holding the real topic. It *reads* the value out of
+  `conftest.py` rather than restating it — one source of truth, and no literal
+  `NTFY_TOPIC=<topic>` for `.githooks/check_ingress.py` to refuse, which it rightly would.
+  It fails closed: a constant that has been renamed stops the gate, because an empty
+  `NTFY_TOPIC` is not "no sink", it is `private/ntfy.conf`
+
+**Exit 0, not a refusal.** A guard that failed the send would change what the suites it
+protects measure — several assert on delivered versus `NOT DELIVERED` — and an instrument
+that constrains its subject is what GOVERNANCE 10 refuses. The swallowed message goes to
+stderr instead, so a leak stays visible without being fatal.
+
+The sink is a backstop, not the seam. A test that reaches this script at all is still a
+defect: inject a fake runner, or use the `silent` notifier.
+
+`operations/notify/test_notify.py` drives its own copy of the script with a scrubbed
+`NTFY_` environment and a fake `curl`, so the sink never blocks the tests of the script
+itself.
+
 ## Why `start` is rate-limited and the others are not
 
 The desktop app can open several sessions in one launch, and each fires the hook. Four

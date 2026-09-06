@@ -6971,18 +6971,51 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
 # --- --notify wires launch and close through operations/pod/notify_hooks ----
 
 
+def _stub_balance_notifications(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Close the third notification moment for tests that only care about the first two.
+
+    ``--notify`` wires *three* hooks, not one: launch, close, and -- through
+    ``set_balance_notify`` -- every account-balance observation the launch
+    makes. A green create against ``FakeProvider`` observes the balance three
+    times, so a test that stubs only ``notify_launch`` still reaches
+    ``notify_hooks.notify_balance``, whose ``default_runner`` is the real
+    ``subprocess.run`` on the real ``operations/notify/notify.sh``.
+
+    That is not hypothetical. Three tests here did exactly that, and the first
+    gate to run in a checkout holding ``private/ntfy.conf`` posted nine
+    identical ``pod balance: account, $100.00 available`` milestones to his
+    phone. In every worktree before it the script had failed "no topic
+    configured", so the missing stub read as a passing test.
+
+    Named once, here, so a fourth test driving ``--notify`` has something to
+    call rather than a pattern to notice.
+    """
+
+    calls: list[dict[str, object]] = []
+
+    def fake_notify_balance(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
+        calls.append(kwargs)
+        return cli.notify_hooks.NotifyOutcome(True, True, "delivered")
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", fake_notify_balance)
+    return calls
+
+
 def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
 
-    A fake stands in for ``notify_hooks.notify_launch`` so this never spawns
-    ``operations/notify/notify.sh`` for real.
+    Fakes stand in for ``notify_hooks.notify_launch`` *and* for the balance
+    hook ``--notify`` also wires, so this never spawns
+    ``operations/notify/notify.sh`` for real. The docstring claimed that
+    before the balance stub existed, and the claim was false.
     """
 
     clock = Clock()
     provider = fake(clock)
     calls: list[dict[str, object]] = []
+    balance_calls = _stub_balance_notifications(monkeypatch)
 
     def fake_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         calls.append(kwargs)
@@ -6991,6 +7024,11 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     monkeypatch.setattr(cli.notify_hooks, "notify_launch", fake_notify_launch)
 
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
+
+    # Asserted, not merely arranged: this is the count that reached the phone
+    # for real, and a stub nobody checks is a stub that can quietly stop being
+    # installed.
+    assert balance_calls, "the balance hook is wired by --notify and must be stubbed, not live"
 
     assert exit_code == 0
     assert len(calls) == 1
@@ -7013,6 +7051,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
 
     clock = Clock()
     provider = fake(clock)
+    _stub_balance_notifications(monkeypatch)
 
     def raising_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
@@ -7220,6 +7259,7 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
 ) -> None:
     clock = Clock()
     provider = fake(clock)
+    _stub_balance_notifications(monkeypatch)
     monkeypatch.setattr(
         cli.notify_hooks,
         "notify_launch",
