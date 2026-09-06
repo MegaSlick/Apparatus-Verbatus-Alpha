@@ -344,10 +344,15 @@ order) before anything is built or sent; build the body deterministically
 profile's seed — this is why the client refuses at construction unless its
 caller's `record_temperature` is already 0, so a policy that disagrees is a
 named refusal, not a silent override); POST through
-`ServiceHandle.request_reading`; refuse before retention if the response is
-non-200 or names another model (bytes from the wrong source are not this
-chair's evidence); retain the raw response through the caller's `retain`
-callable; only then parse content — a content/choices problem becomes
+`ServiceHandle.request_reading`; **retain the raw response through the caller's
+`retain` callable, before anything is checked** — when vLLM refuses a request it
+says why in the body of a non-200, and that sentence is the artefact a rented
+card exists to produce, so it reaches disk before any refusal can discard it
+(this used to run the other way round, and the refusal's own docstring claimed
+otherwise); then refuse if the response is non-200 or names another model, with
+the retained reference and the head of the body in the refusal's `detail` —
+retention is not attribution, and bytes from the wrong source still never become
+a reading; only then parse content — a content/choices problem becomes
 `parse_problem` on the returned `ChairResponse`, never a raised exception,
 because a malformed body from a witness or reader is retained evidence, not a
 stage abort; and finally write one `chair-call-record.v1` blob (the closed
@@ -360,6 +365,27 @@ comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 `CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
 the recorded `parse_problem` never asserts a foreign-source observation that
 was never made (GOVERNANCE 10).
+
+**The capacity record travels with the request, and the client neither
+computes nor checks it.** `ChairRequest.capacity` is the caller's own
+`common.request_capacity` record: whether this request's images, prompt and
+answer budget fit the sealed row it is about to be sent to. Only the caller
+knows which prompt and which answer shape a call is, so the arithmetic belongs
+to the stage; what belongs here is carrying it. `read` copies it onto the
+`chair-call-record.v1` blob — `null` where the caller states none, as the
+readiness probe and `smoke.py` do — so every stage that keeps a reading can
+reach the arithmetic that admitted it through the call record it already names,
+without a second reference.
+
+It is sealed at construction, all the way down. A capacity record is not flat —
+`request_fits` returns an `images` list of per-image dictionaries — and every
+builder passes that record straight in while keeping its own reference to it,
+so freezing the outer mapping alone left the nested data live and a later write
+could have made the retained receipt disagree with the evidence the request was
+admitted on. `ChairRequest` takes a detached recursive snapshot instead,
+canonicalized through `canonical_bytes` (a record the writer could not hold is
+refused there and then, as `CHAIR_REQUEST_INVALID`, rather than inside receipt
+serialization after the wire call) and then deep-frozen.
 
 **The reading parser, against the probe parser.** `http.parse_openai_reading`
 is not `parse_openai_answer` reused: a readiness probe must prove the engine

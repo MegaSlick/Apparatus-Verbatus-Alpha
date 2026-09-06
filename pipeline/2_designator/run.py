@@ -329,6 +329,10 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "page_text_rule",
         "decoding",
         "provenance",
+        # The `verbatus-request-capacity.v1` record this page's request was
+        # admitted or held on. Counts and dimensions only -- no text -- so it
+        # passes `_refuse_text_fields` like every other block here.
+        "capacity",
     }
 )
 # Geometry, and both of the chair's free strings only as a digest and a length.

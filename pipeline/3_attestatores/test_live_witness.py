@@ -18,6 +18,7 @@ a test specifically wants to prove real wiring, not a stub's promise.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import sys
 from pathlib import Path
@@ -40,14 +41,22 @@ from common.chairs.models import ChairIdentity  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.imaging import encode_grayscale_png  # noqa: E402
 from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
+from common.request_capacity import (  # noqa: E402
+    RequestCapacityRefusal,
+    sealed_prompt_tokens,
+)
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
+    ServingProfile,
     chair_preflight_identity_digest,
+    load_serving_recipes,
     parse_serving_recipes,
     profile_preflight_digest,
 )
+from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.fakes import (  # noqa: E402
     ABSENT,
     FakeBlobStore,
@@ -57,6 +66,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
 )
 from operations.serving.manager import ServingManager  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
@@ -65,6 +75,47 @@ REVISION = "a" * 40
 MANIFEST = "b" * 64
 DECODING_SHA = "c" * 64
 TIER = "generic-48gb"
+REPO_ROOT = STAGE.parents[1]
+REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
+CHURRO_SERVED_MODEL_ID = "attestator-3-churro"
+
+
+def _sealed_churro_rows() -> tuple[ServingProfile, ...]:
+    """Every Churro row in the shipped real catalogue, at every tier.
+
+    Read from the file the operator actually ships, not a hand-typed copy: the
+    defect this guards against was a sent bound that no shipped row could
+    accept, so the shipped bytes are the only ones worth asserting against.
+    """
+
+    rows = tuple(
+        profile
+        for profile in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(profile, ServingProfile) and profile.served_model_id == CHURRO_SERVED_MODEL_ID
+    )
+    assert rows, f"the shipped real catalogue names no {CHURRO_SERVED_MODEL_ID} serving row"
+    return rows
+
+
+DAI_SERVED_MODEL_ID = "attestator-2-dai"
+
+
+def _sealed_row(served_model_id: str, tier: str = TIER) -> ServingProfile:
+    """One shipped real row, read from the catalogue the operator actually ships."""
+
+    rows = [
+        profile
+        for profile in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(profile, ServingProfile)
+        and profile.served_model_id == served_model_id
+        and profile.tier == tier
+    ]
+    assert len(rows) == 1, f"{served_model_id} at {tier} is not exactly one shipped row"
+    return rows[0]
+
+
+def _dai_row(tier: str = TIER) -> ServingProfile:
+    return _sealed_row(DAI_SERVED_MODEL_ID, tier)
 
 
 # --- a fake run tree: image bytes by path, plus a content-addressed blob sink -----
@@ -85,6 +136,20 @@ class _FakeTree:
         relative_path = f"{stage}/blobs/sha256/{digest}"
         self._by_path[relative_path] = data
         return digest, SimpleNamespace(relative_path=relative_path)
+
+
+def _png(width: int, height: int) -> bytes:
+    """A real PNG of a named size.
+
+    The request builders now measure what they are about to embed
+    (`live_witness.request_capacity_or_refuse` reads the bytes' own IHDR), so a
+    presentation whose "image" is a short byte string no longer describes
+    anything a chair could be charged for.  Small on purpose: these drills are
+    about framing, not about the pixel budget, which
+    `common/test_request_capacity.py` pins directly.
+    """
+
+    return encode_grayscale_png(width, height, [bytearray(width) for _ in range(height)])
 
 
 def _presentation(
@@ -130,12 +195,12 @@ def _decoded_images(request: ChairRequest) -> list[bytes]:
 
 def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_split():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"dai-crop-bytes"
+    image_bytes = _png(40, 30)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
-    act_request = live_witness.act_chair_request(context, adapter, presentation)
+    act_request = live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
     request = act_request.request
 
     assert request.kind == "chat-completions"
@@ -163,40 +228,342 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
 
 def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own_digest():
     context = SimpleNamespace(tree=_FakeTree())
-    presentation = _presentation(kind="region", image_bytes=b"real-bytes")
-    context.tree.seed(presentation["image_path"], b"different-bytes-entirely")
+    presentation = _presentation(kind="region", image_bytes=_png(40, 30))
+    context.tree.seed(presentation["image_path"], _png(41, 30))
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
     with pytest.raises(SchemaRefusal):
-        live_witness.act_chair_request(context, adapter, presentation)
+        live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
 
 
-def test_page_chair_request_builds_churros_two_message_framing_and_renames_the_token_bound():
+def _churro_page_request(profile: Any):
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"whole-page-bytes"
+    image_bytes = _png(50, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
-    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_prompt)
+    # The live instruction, not the trained carry: `churro.prompt` is what the
+    # registry binds for a served chair, and the capacity check weighs the
+    # prompt the request will really carry (`feeding.churro_layout_prompt`).
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_layout_prompt)
+    request = live_witness.page_chair_request(
+        context, adapter, "churro.v1", presentation, profile=profile
+    )
+    return request, digest_bytes(image_bytes)
 
-    request = live_witness.page_chair_request(context, adapter, "churro.v1", presentation)
 
-    assert request.image_sha256s == (digest_bytes(image_bytes),)
+def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_token_bound():
+    row = _sealed_churro_rows()[0]
+    request, image_sha256 = _churro_page_request(row)
+
+    assert request.image_sha256s == (image_sha256,)
     system, user = request.messages
-    assert system == {"role": "system", "content": feeding.churro_prompt()["system"]}
-    assert user["content"][0]["text"] == feeding.churro_prompt()["user"]
+    assert system == {"role": "system", "content": feeding.churro_layout_prompt()["system"]}
+    assert user["content"][0]["text"] == feeding.churro_layout_prompt()["user"]
+    # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
-    assert dict(request.generation_sent) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    # The sealed row is shorter than the declared bound, so no bound is sent
+    # and the engine bounds generation by `max_model_len` itself.
+    assert CHURRO_OUTPUT_TOKENS >= row.max_model_len
+    assert dict(request.generation_sent) == {}
+
+
+def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends():
+    """The defect, asserted against the shipped catalogue rather than one row.
+
+    vLLM admits a request when `prompt_tokens + max_tokens <= max_model_len`,
+    so that whole sum is what is asserted here -- against the request's own
+    capacity record, which counted this exact page image and this exact prompt
+    against this exact row.
+    """
+
+    rows = _sealed_churro_rows()
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb", "generic-80gb-plus"}
+    for row in rows:
+        request, _ = _churro_page_request(row)
+        assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+        sent = dict(request.generation_sent)
+        assert set(sent) <= {"max_tokens"}
+        if "max_tokens" in sent:
+            capacity = request.capacity
+            assert capacity is not None
+            prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
+            assert prompt + sent["max_tokens"] <= row.max_model_len, row.tier
+
+
+def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():
+    """The counterfactual: what this seam used to send, against the same rows."""
+
+    rows = _sealed_churro_rows()
+    over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
+    assert over == [row.tier for row in rows]
+    # Raised from 2,048/4,096/8,192 by the capacity unit so a whole page fits;
+    # still an order of magnitude under the 24,000 the old flat bound sent.
+    assert [row.max_model_len for row in rows] == [8192, 8192, 16384]
+
+
+def _stand_in_row(max_model_len):
+    """A row long enough to exercise the sendable branch. No shipped row is."""
+
+    return SimpleNamespace(max_model_len=max_model_len, recipe="r", chair="attestator_3", tier="t")
+
+
+def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it():
+    """A longer row is not refused: the declaration is sendable when it fits."""
+
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=1
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    # A row exactly as long as the bound holds it only with an empty prompt,
+    # which no real request has: one token of prompt and nothing is sent.
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=0
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=1
+        )
+        == {}
+    )
+
+
+def test_the_bound_is_weighed_against_this_requests_own_prompt_not_against_the_row_alone():
+    """vLLM admits on `prompt + max_tokens <= max_model_len`, so both are counted.
+
+    The boundary the earlier rule got wrong, at exactly one token either side of
+    it. At `max_model_len = 24001` the old rule sent the whole 24,000 because
+    24,000 < 24,001, and the engine refuses that request for any prompt at all:
+    a Churro page carries a 2,280-token image and a 281-token prompt at the
+    smallest tier's `max_pixels`. Nothing is sent there now. A row long enough
+    to hold that prompt beside the bound still gets it.
+    """
+
+    declared = feeding.churro_generation()
+    page_prompt = 2280 + 281
+
+    # The row the old rule would have sent 24,000 to.
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), declared, prompt_tokens=page_prompt
+        )
+        == {}
+    )
+    # One token short of holding the pair, and one token over: the boundary is
+    # `prompt + bound <= max_model_len`, inclusive.
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt - 1),
+            declared,
+            prompt_tokens=page_prompt,
+        )
+        == {}
+    )
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt), declared, prompt_tokens=page_prompt
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+
+
+@pytest.mark.parametrize("bad", [None, -1, True, "2280", 2280.0])
+def test_a_generation_bound_is_never_decided_against_an_unmeasured_prompt(bad):
+    with pytest.raises(SchemaRefusal):
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=bad
+        )
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, "2048", 2048.0])
+def test_page_chair_request_refuses_a_row_that_cannot_state_its_context_bound(value):
+    """A row with every other field stated and no usable `max_model_len`.
+
+    The geometry fields are stated so this drill still isolates the context
+    bound: the capacity check now runs first and would otherwise refuse on the
+    missing patch size instead, which is a different defect.
+    """
+
+    row = SimpleNamespace(
+        max_model_len=value,
+        min_pixels=3136,
+        max_pixels=3211264,
+        patch_size=14,
+        merge_size=2,
+        recipe="unproven-real-attestatores",
+        chair="attestator_3",
+        tier="t",
+    )
+    with pytest.raises(SchemaRefusal) as error:
+        _churro_page_request(row)
+    assert "max_model_len" in str(error.value)
+    assert "attestator_3" in str(error.value)
+
+
+@pytest.mark.parametrize("field", ["patch_size", "merge_size", "min_pixels", "max_pixels"])
+def test_page_chair_request_refuses_a_row_that_cannot_state_its_image_geometry(field):
+    """The token cost of an image is never counted against a default.
+
+    Chandra and the Perlector spend 1,024 px per image token; DAI and Churro
+    spend 784.  A row silent about which is refused by name rather than
+    counted wrong by a third.
+    """
+
+    row = SimpleNamespace(
+        max_model_len=4096,
+        min_pixels=3136,
+        max_pixels=3211264,
+        patch_size=14,
+        merge_size=2,
+        recipe="unproven-real-attestatores",
+        chair="attestator_3",
+        tier="generic-48gb",
+    )
+    setattr(row, field, None)
+    with pytest.raises(SchemaRefusal) as error:
+        _churro_page_request(row)
+    assert field in str(error.value)
+
+
+# --------------------- the pre-send capacity refusal --------------------------
+
+
+def _page_request_of_size(width: int, height: int, row):
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(width, height)
+    presentation = _presentation(kind="page", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_layout_prompt)
+    return live_witness.page_chair_request(context, adapter, "churro.v1", presentation, profile=row)
+
+
+def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
+    request = _page_request_of_size(50, 70, _sealed_churro_rows()[0])
+    capacity = dict(request.capacity)
+    assert capacity["schema"] == "verbatus-request-capacity.v1"
+    assert capacity["fits"] is True
+    assert capacity["chair"] == "attestator_3"
+    # Churro's own measured prompt cost and dense-page answer budget, not a
+    # guess -- both re-measured for the layout instruction the live chair is
+    # sent and the JSON object it asks back.
+    assert capacity["prompt_tokens"] == 441
+    assert capacity["answer_budget"] == 1631
+
+
+def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
+    """The counterfactual this unit exists for, at the context the tree shipped.
+
+    A 300-dpi A4 page is 2,480x3,508.  Against the 24 GB Churro row's
+    `max_pixels` it costs 2,280 image tokens; with the measured 441-token
+    layout prompt and a 1,631-token dense-page answer that is 4,352 -- against
+    the `max_model_len = 2048` this catalogue carried until this branch.  The
+    request went to the endpoint and the engine answered HTTP 400; now nothing
+    is built.  The shipped row is 8,192 and admits the same page, which is what
+    `operations/serving/test_serving_catalogue_capacity.py` asserts; the row is
+    reconstructed here because the drill is about the refusal, not the row.
+    """
+
+    shipped = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
+    row = dataclasses.replace(shipped, max_model_len=2048)
+    with pytest.raises(RequestCapacityRefusal) as error:
+        _page_request_of_size(2480, 3508, row)
+    record = error.value.capacity
+    assert record["image_prompt_tokens"] == 2280
+    assert record["need"] == 4352
+    assert record["headroom"] == 2048 - 4352
+    assert record["fits"] is False
+    assert "downscaled" in str(error.value)
+    # And the row the catalogue actually ships admits it.
+    assert shipped.max_model_len == 8192
+    admitted = _page_request_of_size(2480, 3508, shipped)
+    assert admitted.capacity["fits"] is True
+
+
+def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
+    """DAI is act-scoped, and a page-fallback act's crop is the whole page.
+
+    The measured case from the token study: presented at DAI's own ceilings the
+    page is 1,291x1,826 and still costs 2,280 image tokens, which the 24 GB row
+    cannot hold beside an 84-token prompt even with the *smaller* single-act
+    answer budget reserved. The image cost alone is what settles it -- which is
+    why an act chair reserving one act's answer rather than a page's does not
+    let a page-fallback act through.
+    """
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(1291, 1826)
+    presentation = _presentation(kind="region", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
+    # At the context this catalogue shipped until this branch. The shipped row
+    # is 8,192 now and holds it.
+    row = dataclasses.replace(_dai_row("generic-24gb"), max_model_len=2048)
+
+    with pytest.raises(RequestCapacityRefusal) as error:
+        live_witness.act_chair_request(context, adapter, presentation, profile=row)
+    record = error.value.capacity
+    assert record["image_prompt_tokens"] == 2280
+    assert record["need"] == 2280 + 84 + 230
+    assert record["fits"] is False
+    assert _dai_row("generic-24gb").max_model_len == 8192
+
+
+def test_an_ordinary_act_crop_still_fits_the_smallest_row():
+    """DAI's ordinary act path is the one measured sound at 24 GB; it stays so."""
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(1500, 353)
+    presentation = _presentation(kind="region", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
+
+    built = live_witness.act_chair_request(
+        context, adapter, presentation, profile=_dai_row("generic-24gb")
+    )
+    assert built.capacity["image_prompt_tokens"] == 702
+    assert built.capacity["fits"] is True
+    # The request seals a detached, deep-frozen snapshot of the record it was
+    # admitted on (`operations/serving/client.py::_sealed_capacity`): mappings
+    # are `MappingProxyType` and the `images` list is a tuple, so the two are
+    # compared as content rather than as objects.
+    sealed = built.request.capacity
+    assert sealed is not None
+    assert {key: value for key, value in sealed.items() if key != "images"} == {
+        key: value for key, value in built.capacity.items() if key != "images"
+    }
+    assert [dict(image) for image in sealed["images"]] == built.capacity["images"]
+
+
+def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is_sent():
+    """The digests that expire the measured constants, checked where they live.
+
+    A prompt edit that leaves `common/request_capacity.py`'s measured token
+    count in place fails here rather than reaching a pod with a stale number.
+    """
+
+    chandra_module = sys.modules.get("chandra") or __import__("chandra")
+    assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["instruction"]) == 256
+    dai = feeding.dai_prompt()
+    assert sealed_prompt_tokens("attestator_2", dai["system"], dai["user"]) == 84
+    # Churro's constant is sealed against the *live* instruction, because that
+    # is the prompt a served request carries.  `feeding.churro_prompt` is the
+    # trained carry the fixture posture declares and nothing sends, and it no
+    # longer has a measured constant of its own -- asserted below so the two
+    # postures cannot be confused for one another.
+    churro = feeding.churro_layout_prompt()
+    assert sealed_prompt_tokens("attestator_3", churro["system"], churro["user"]) == 441
+    carried = feeding.churro_prompt()
+    with pytest.raises(RequestCapacityRefusal) as expired:
+        sealed_prompt_tokens("attestator_3", carried["system"], carried["user"])
+    assert "the prompt changed after it was measured" in str(expired.value)
 
 
 def test_page_chair_request_builds_chandras_single_instruction_framing():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"whole-page-bytes-2"
+    image_bytes = _png(51, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=chandra_module.prompt)
 
-    request = live_witness.page_chair_request(context, adapter, "chandra.v1", presentation)
+    request = live_witness.page_chair_request(
+        context, adapter, "chandra.v1", presentation, profile=_sealed_churro_rows()[0]
+    )
 
     assert len(request.messages) == 1
     (message,) = request.messages
@@ -208,13 +575,15 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"page-bytes-3"
+    image_bytes = _png(52, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=lambda: {"weird": "shape"})
 
     with pytest.raises(SchemaRefusal):
-        live_witness.page_chair_request(context, adapter, "made-up.v1", presentation)
+        live_witness.page_chair_request(
+            context, adapter, "made-up.v1", presentation, profile=_sealed_churro_rows()[0]
+        )
 
 
 # =========================== response derivation harness ======================
@@ -255,6 +624,12 @@ def _vllm_row(*, recipe: str, chair: str, served_model_id: str) -> dict[str, obj
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1024,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 14,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
@@ -328,6 +703,62 @@ def _read_one(tmp_path: Path, *, script: ScriptedAnswer):
         )
         response = client.read(request)
     return response, endpoint, blob_store
+
+
+def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop(
+    tmp_path: Path,
+) -> None:
+    """The other half of `scripted_structure_cut_off`, at this stage.
+
+    A cut-off is HTTP 200 with `finish_reason="length"`: the engine answered
+    and ran out of room, and this stage records that as a truncated capture. A
+    prompt too long for the context is HTTP 400 with no choices at all: nothing
+    was generated, and there is no capture to truncate. Reading the second as
+    the first would publish a Testimonium that says a witness was cut off when
+    no witness spoke.
+
+    It is also the counterfactual for the pre-send check: this is exactly what
+    the request the seam used to build received from a real engine.
+    """
+
+    client, endpoint, blob_store = _world(tmp_path)
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048,
+        # The seam's own arithmetic for a 300-dpi page at this row, under the
+        # layout instruction: 2,280 image + 441 prompt + a 1,631-token
+        # dense-page answer.
+        requested_tokens=4352,
+        prompt_tokens=2721,
+        completion_tokens=1631,
+    )
+    with client:
+        endpoint.script(refusal)
+        data_uri = "data:image/png;base64," + base64.b64encode(b"one-image").decode("ascii")
+        with pytest.raises(ChairResponseRefusal) as error:
+            client.read(
+                ChairRequest(
+                    kind="chat-completions",
+                    messages=(
+                        {
+                            "role": "user",
+                            "content": [{"type": "image_url", "image_url": {"url": data_uri}}],
+                        },
+                    ),
+                    image_sha256s=(digest_bytes(b"one-image"),),
+                    generation_declared={},
+                    generation_sent={},
+                )
+            )
+    assert error.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
+    assert error.value.code != "CHAIR_RESPONSE_LENGTH"
+    assert "maximum context length is 2048" in error.value.detail
+    # Retained before the refusal, by its own digest -- the engine's diagnostic
+    # is the artefact the card was rented to produce.
+    assert blob_store.has(hashlib.sha256(refusal.body).hexdigest())
+    # And no reading was derived from it: the refusal is raised, so
+    # `live_attempt_from_response` is never reached and no capture exists to
+    # be mistaken for a truncated one.
+    assert len(blob_store) == 1
 
 
 def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | None = None) -> Any:

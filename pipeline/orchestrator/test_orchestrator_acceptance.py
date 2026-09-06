@@ -1441,34 +1441,66 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
 #
-# Re-pinned for Unit 12's F2, under Tyrel's ruling that a continuation page's
-# testimony content coverage is recorded unmeasured by name. Two record changes,
-# both deliberate: page 2's finding now carries `shortfall: None` with a reason
-# instead of `shortfall: True`, and every Recensor review, recovery request,
-# Armarium manifest entry and export row carries the new
-# `testimony_content_coverage_continuation` restatement -- empty for an act that
-# spans one page, one row for the act that continues onto page 2. No new file is
-# written and no outcome moves: happy still exits 0 at 96 files and review still
-# exits 3 at 107.
+# Merge re-pin (`origin/main` adfadbc0d4 -- the request-capacity unit -- into
+# `work/churro-native-layout`, Unit 12). **Both parents moved these pins, for
+# two different causes, and neither parent's literals describe this tree**:
+# each was measured before the other's change existed. One entry replaces the
+# two, because there is now one tree and it has one story.
 #
-# Checked, not assumed. Both trees were built and compared leaf by leaf against
-# the pre-change tree: happy 15 changed files / 151 changed leaves, review 20 /
-# 111, and **every non-digest leaf among them belongs to the new field** -- 96
-# in happy and 51 in review, all under
-# `testimony_content_coverage_continuation`; everything else that moved is a
-# 64-hex digest, a content-addressed blob path, or the one Armarium bundle blob
-# per scenario whose name is its own content digest. Review's
-# `2_designator/artifacts/region` record moves too, and only in two digests: its
-# recovery recrop names the Recensor recovery request whose bytes moved.
+#   Cause 1 (from Unit 12, parent 56d74e4bb3). Tyrel's ruling on F2: a
+#   continuation page's testimony content coverage is recorded unmeasured by
+#   name rather than dropped. Page 2's finding carries `shortfall: None` with a
+#   reason instead of `shortfall: True`, and every Recensor review, recovery
+#   request, Armarium manifest entry and export row carries the new
+#   `testimony_content_coverage_continuation` restatement -- empty for an act
+#   that spans one page, one row for the act that continues onto page 2.
+#
+#   Cause 2 (from the capacity unit, parent adfadbc0d4). `config/
+#   pod_placement.toml`'s `context_cap` moved with the raised serving rows --
+#   2,048/4,096/8,192 to 16,384 at every tier -- because a 300-dpi page costs a
+#   Qwen-VL chair between 1,715 and 6,693 prompt tokens and the old caps
+#   admitted no row that could serve one. Unit 17 seals that file byte-for-byte
+#   into every run's `config_digest`, so both scenario trees move without
+#   gaining an artifact.
+#
+# Neither cause adds or removes an artifact and neither moves an outcome:
+# counts and exits are unmoved on both sides at happy 96 / exit 0 and review
+# 107 / exit 3.
+#
+# **Each cause is attributed to its own parent by measurement, not by
+# argument.** Both parent trees were built here from their own commits and each
+# reproduced its own superseded literals exactly -- 56d74e4bb3 gave
+# c97fee05... and 5c9b5bd2..., adfadbc0d4 gave ea065113... and 8a1027f3... --
+# so the two comparisons below are against trees that are what they claim to
+# be. Then, leaf by leaf:
+#
+#   * Against Unit 12's parent, this tree changes 75 files / 377 leaves (happy)
+#     and 87 / 444 (review), and **not one changed leaf is a non-digest
+#     field**: 365 and 427 are 64-hex digests, the remaining 12 and 17 are
+#     content-addressed blob paths, plus one renamed blob each in `4_perlector`
+#     and `7_armarium` per scenario whose own name is its content digest. That
+#     is cause 2 arriving on Unit 12's tree, and nothing else.
+#   * Against the capacity unit's parent, this tree changes 15 files / 154
+#     leaves (happy) and 20 / 114 (review), and **every non-digest leaf belongs
+#     to the new field** -- 99 in happy and 54 in review, all under
+#     `testimony_content_coverage_continuation` -- beside 53 and 58 digests,
+#     two content-addressed blob paths each, and the one renamed `7_armarium`
+#     bundle blob per scenario whose name is its own content digest. That is
+#     cause 1 arriving on main's tree, and nothing else.
+#
+# So the merge introduces no third cause of its own. Churro's re-measured
+# prompt and answer constants (`common/request_capacity.py`, re-sealed here
+# because Unit 12 changed the instruction the live chair is sent) reach no
+# fixture run: the capacity check is live-path only, and the real serving
+# catalogue is never sealed into either scenario.
 #
 # Measured twice, in two independent temporary roots, at canonical run id "r",
-# through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
-# roots agreed exactly on both scenarios, and the pre-change tree reproduced the
-# superseded literals below it exactly before the change was applied.
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "c97fee05d934ce8811afa12499c255b3941740d9afacc7996b0f5c3b92b8e632"
-REVIEW_RUN_TREE_DIGEST = "5c9b5bd28a924f40c7e8b72b2145f8a49bd3b76487a423a0e786efa076f0613f"
+HAPPY_RUN_TREE_DIGEST = "5b225fa3d64f0131974fdd3b777c42265e5fe2e28c5264131b2e20b88602fa24"
+REVIEW_RUN_TREE_DIGEST = "1936f76c1b7063390fa4425c19df774e33161715e50867b4033b6465a6785b62"
 
 
 def orchestrate(

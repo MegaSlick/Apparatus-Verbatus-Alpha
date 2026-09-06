@@ -638,9 +638,23 @@ this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
 | parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
 | the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
 | custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
+| the request does not fit the sealed serving row | `held`, `structure-request-too-large` | as above; checked *before* the request is built, and nothing is sent |
 | parsed, the scan found ink, and no rectangle touches any ink pixel | `held`, `structure-answer-no-ink-overlap` | as above |
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
+
+The capacity row is the only one decided before a request exists. A whole
+300-dpi page costs this chair 1,715 prompt tokens at the smallest tier's
+`max_pixels` and 5,100 at the largest, before a word of prompt is counted
+(`common/request_capacity.py`); with the measured 329-token prompt and a
+measured dense-page answer budget of 1,575, the 24 GB and 48 GB rows cannot
+hold one. vLLM answers such a request with HTTP 400 and no reading at all, so
+`ask_page` computes the arithmetic first and holds the page rather than paying
+a card to be refused. The page is never downscaled to make it fit: 300 dpi is
+what `config/pdf_render.toml` argues is needed to read the ink, and trading a
+measurable refusal for an unmeasurable misreading is not this pass's decision.
+Every live page record carries its `capacity` block, held or not, and the same
+record travels on the request onto the retained `chair-call-record.v1`.
 
 A cut-off answer is held even though it parsed: a truncated act list is a
 missed act (GOALS 1). The custody row is held before the body is looked at and

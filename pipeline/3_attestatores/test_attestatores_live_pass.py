@@ -23,6 +23,7 @@ than described.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -65,6 +66,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
 )
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
@@ -148,7 +150,24 @@ attestatores = _load_attestatores()
 # --------------------------- the sealed live catalogue ------------------------
 
 
-def _vllm_row(*, recipe: str, chair: str, port: int) -> dict[str, Any]:
+# What each chair's stand-in row states, per chair, as the shipped real
+# catalogue states it at its smallest tier.  Churro's is the long one here.
+# Every row was 2,048 while this chair's sealed prompt was the trained
+# `<output>` framing's 281 tokens and its dense-page answer 1,433 -- 1,715 with
+# the fixture page's single image token, which fitted.  Unit 12 asks the live
+# chair for block geometry instead (`feeding.churro_layout_prompt`), so the
+# measured prompt is 441 and the JSON object it asks back reserves 1,631: 2,073
+# against 2,048.  **The row moves, never the arithmetic and never the pixels**
+# -- the disposition `TOKEN_COST_REPORT.md` section 10 already took, and the
+# one the Perlector's own row took here when the reader stopped admitting on a
+# floor.  The shipped catalogue states 8,192 for this chair at every tier, so
+# that is what the stand-in states.
+LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_3": 8192}
+
+
+def _vllm_row(
+    *, recipe: str, chair: str, port: int, max_model_len: int | None = None
+) -> dict[str, Any]:
     """One complete `kind = "vllm"` profile row, in the shape `config.py` closes.
 
     Mirrors `operations/serving/test_manager.py::profile_row` and the row
@@ -156,6 +175,8 @@ def _vllm_row(*, recipe: str, chair: str, port: int) -> dict[str, Any]:
     what those rows describe; the figures are test values and are never written
     into a committed catalogue.
     """
+    if max_model_len is None:
+        max_model_len = LIVE_ROW_CONTEXTS.get(chair, 2048)
     return {
         "kind": "vllm",
         "recipe": recipe,
@@ -167,12 +188,18 @@ def _vllm_row(*, recipe: str, chair: str, port: int) -> dict[str, Any]:
         "dtype": "bfloat16",
         "seed": 7,
         "required_packages": {"vllm": "0.test"},
-        "max_model_len": 2048,
+        "max_model_len": max_model_len,
         "max_num_seqs": 1,
         "max_num_batched_tokens": 256,
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1024,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 14,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
@@ -212,7 +239,7 @@ def _toml_profile(row: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_live_catalogue(path: Path, registry) -> Path:
+def write_live_catalogue(path: Path, registry, *, contexts: dict[str, int] | None = None) -> Path:
     """A serving catalogue whose witness rows are live, sealed into this run.
 
     The two non-witness chairs keep fixture rows: this run's Designator and
@@ -236,7 +263,15 @@ def write_live_catalogue(path: Path, registry) -> Path:
         )
     for index, chair in enumerate(CATALOGUE_CHAIRS):
         identity = registry.resolve(chair)
-        row = _vllm_row(recipe=identity.serving_recipe, chair=chair, port=8000 + index)
+        row = _vllm_row(
+            recipe=identity.serving_recipe,
+            chair=chair,
+            port=8000 + index,
+            # A narrower context than the 2,048 the rest of this module uses is
+            # how a request is made not to fit without touching a single pixel:
+            # the sealed row is the only thing that decides it.
+            max_model_len=(contexts or {}).get(chair),
+        )
         row["preflight_identity_digest"] = chair_preflight_identity_digest(identity)
         row["preflight_digest"] = profile_preflight_digest(row)
         rows.append(row)
@@ -316,17 +351,21 @@ def _invoke_stage(program: str, *, run_root: Path, catalogue: Path, models: Path
     assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
-@pytest.fixture(scope="module")
-def live_run(tmp_path_factory) -> SimpleNamespace:
-    """One run carried to the Designator boundary under a live serving catalogue.
+def _carried_to_the_designator_boundary(
+    work: Path, *, contexts: dict[str, int] | None = None
+) -> SimpleNamespace:
+    """One run walked to the Designator boundary under a live serving catalogue.
 
-    Built once: the four upstream stage programs are real subprocesses, and the
-    Attestatores tests below each copy the finished tree so no test writes into
-    another's evidence.
+    The catalogue is sealed into the run by the upstream stages, so a run whose
+    rows state a different context is a different run and has to be walked
+    again from the Door -- which is why this is a helper two module fixtures
+    call rather than one fixture with an argument.
     """
-    work = tmp_path_factory.mktemp("live-seam")
+
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
-    catalogue = write_live_catalogue(work / "serving_recipes_live.toml", registry)
+    catalogue = write_live_catalogue(
+        work / "serving_recipes_live.toml", registry, contexts=contexts
+    )
     models = committed_models_config()
     run_root = work / "runs"
     for program in (
@@ -343,6 +382,39 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
         models=models,
         run_root=run_root,
         decoding_sha256=decoding_sha256,
+    )
+
+
+@pytest.fixture(scope="module")
+def live_run(tmp_path_factory) -> SimpleNamespace:
+    """One run carried to the Designator boundary under a live serving catalogue.
+
+    Built once: the four upstream stage programs are real subprocesses, and the
+    Attestatores tests below each copy the finished tree so no test writes into
+    another's evidence.
+    """
+    return _carried_to_the_designator_boundary(tmp_path_factory.mktemp("live-seam"))
+
+
+# The two chairs whose rows cannot hold their own request in `refusing_run`,
+# and the arithmetic that decides it. Every page in this fixture is 200x260,
+# which at the test row's `max_pixels = 1024` costs one prompt token; what
+# refuses is the prompt and the reserved answer, both measured constants
+# (`common/request_capacity.py`). DAI is act-scoped: 1 + 84 + 230 = 315 against
+# 256. Churro is page-scoped and reserves a dense page's answer, and both halves
+# are the layout instruction's: 1 + 441 + 1,631 = 2,073 against 512.
+# Attestator 1 keeps the module's ordinary 2,048 and needs 1,777, so its
+# testimony is what proves the refusals were per request.
+REFUSING_CONTEXTS = {"attestator_2": 256, "attestator_3": 512}
+REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (2073, 512)}
+
+
+@pytest.fixture(scope="module")
+def refusing_run(tmp_path_factory) -> SimpleNamespace:
+    """The same run, under a catalogue two chairs' own requests cannot fit."""
+
+    return _carried_to_the_designator_boundary(
+        tmp_path_factory.mktemp("refusing-seam"), contexts=REFUSING_CONTEXTS
     )
 
 
@@ -748,6 +820,181 @@ def test_a_wire_response_the_client_cannot_parse_at_all_is_retained_as_the_trans
     # not poison the rest of the roster.
     other = act_records(tree)[("a2", "attestator_2")]["payload"]
     assert other["raw_response_kind"] == "model-output"
+
+
+def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pass(
+    refusing_run, tmp_path
+):
+    """The Attestatores hold per request, exactly as the Designator already did.
+
+    A pre-send capacity refusal used to leave `_serve_act_unit` and
+    `_serve_page_unit` as a `RequestCapacityRefusal`, and nothing between there
+    and `main` caught it: one oversized page killed the stage and every other
+    page's testimony went with it, while the Designator held the single page
+    and published the rest (`structure-request-too-large`). A missed act is
+    worse than a poorly read one (GOALS 1), so the refusal is now this attempt's
+    own failure and the pass carries on.
+
+    Both scopes at once: DAI is act-scoped and Churro page-scoped, their rows
+    cannot hold their own requests (`REFUSING_NEEDS`), and Attestator 1's row
+    can. What that chair publishes is the assertion that matters -- unrefused
+    testimony, from the same pass, over the same acts.
+    """
+
+    run_root = fresh_tree(refusing_run, tmp_path)
+    scripts = dict(default_scripts())
+    # Nothing is sent for either refused chair, so scripting an answer for one
+    # would be an answer no request ever asked for.
+    scripts["attestator_2"] = []
+    scripts["attestator_3"] = []
+    world = LiveWorld(refusing_run, tmp_path, scripts)
+
+    assert run_attestatores(refusing_run, run_root, factory=world.factory) == 0
+
+    # Both refused chairs were started -- the pass loads a chair before it can
+    # ask it anything -- and neither was ever asked.
+    assert world.loads == sorted(LIVE_CHAIRS)
+    assert world.requests("attestator_2") == []
+    assert world.requests("attestator_3") == []
+    assert len(world.requests("attestator_1")) == 2
+
+    tree = RunTree(run_root, RUN_ID)
+    records = act_records(tree)
+    for chair, (need, context) in REFUSING_NEEDS.items():
+        for act_key in ("a1", "a2"):
+            record = records[(act_key, chair)]
+            payload = record["payload"]
+            assert record["outcome"] == "failed", (act_key, chair)
+            assert "was refused before it was sent" in payload["reason"]
+            assert f"that is {need} against a max_model_len of {context}" in payload["reason"]
+            # Nothing arrived, so there is no channel to call unrecordable and
+            # no bytes to name: the no-response health, and none of the three
+            # references a served response leaves behind.
+            assert payload["content_health"]["recordable"] is None
+            assert payload["payload"] is None
+            assert "raw_response_ref" not in payload
+            assert "serving_call_ref" not in payload
+            assert "native_capture" not in payload
+            # The serving moment is real: the chair started, and its receipt is
+            # this run's own rather than a fixture stand-in.
+            assert attestatores.served_live(SimpleNamespace(tree=tree), payload["provenance"])
+
+    # The page record says the same thing about the page, once.
+    page = page_records(tree)[(1, "attestator_3")]
+    assert page["outcome"] == "failed"
+    assert page["payload"]["content_health"]["recordable"] is None
+    assert "native_capture" not in page["payload"]
+
+    # And the chair whose row could hold its request is untouched: this is the
+    # whole point of holding per request rather than per pass.
+    assert records[("a1", "attestator_1")]["outcome"] == "read"
+    assert records[("a2", "attestator_1")]["outcome"] == "read"
+    assert page_records(tree)[(1, "attestator_1")]["outcome"] == "read"
+
+
+def test_a_pass_interrupted_between_two_views_of_a_refused_page_resumes_over_it(
+    refusing_run, tmp_path, monkeypatch
+):
+    """The resume rule against a record of a request that was never sent.
+
+    `resumed_page_captures` refuses an attempted act record naming no serving
+    call, because that is the fixture posture's own shape and a live pass must
+    not resume over one. A request refused before it was sent names no serving
+    call either -- there was no call -- and this is the crash that makes the
+    difference visible: interrupt Churro between the two act views of its
+    refused page 1 and the page Testimonium is sealed nowhere, so the resumed
+    pass has nothing but that one act record to rebuild the page from. It reads
+    the three facts together -- no serving call, no-response health, a live
+    receipt -- and lets the record stand for the page it already described,
+    rather than refusing the run or asking a chair whose row still cannot hold
+    the request.
+    """
+
+    run_root = fresh_tree(refusing_run, tmp_path)
+    scripts = dict(default_scripts())
+    scripts["attestator_2"] = []
+    scripts["attestator_3"] = []
+    world = LiveWorld(refusing_run, tmp_path, scripts)
+    real_publish_attempt = attestatores.publish_attempt
+
+    def crashing_publish_attempt(
+        context, *, act, chair, resolved, ordinal, regions, attempt, live=False
+    ):
+        if chair == "attestator_3" and act["act_key"] == "a2":
+            raise RuntimeError("simulated crash between two act views of one refused page")
+        return real_publish_attempt(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions,
+            attempt=attempt,
+            live=live,
+        )
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crashing_publish_attempt)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_attestatores(refusing_run, run_root, factory=world.factory)
+    monkeypatch.undo()
+
+    interrupted = act_records(RunTree(run_root, RUN_ID))
+    assert ("a1", "attestator_3") in interrupted
+    assert ("a2", "attestator_3") not in interrupted
+    # The sealed record is exactly the shape the resume has to recognize: an
+    # attempted outcome with no serving call, because there was no call.
+    assert interrupted[("a1", "attestator_3")]["outcome"] == "failed"
+    assert "serving_call_ref" not in interrupted[("a1", "attestator_3")]["payload"]
+    assert not page_records(RunTree(run_root, RUN_ID))
+
+    resumed = LiveWorld(refusing_run, tmp_path / "resumed", scripts)
+    assert run_attestatores(refusing_run, run_root, factory=resumed.factory) == 0
+    # Page 1 was rebuilt from that record rather than re-asked; page 2 is the
+    # only Churro unit this pass had left, and its row refuses it too, so no
+    # chair is asked for a reading at all.
+    assert resumed.requests("attestator_3") == []
+    finished = act_records(RunTree(run_root, RUN_ID))
+    assert finished[("a2", "attestator_3")]["outcome"] == "failed"
+    assert page_records(RunTree(run_root, RUN_ID))[(1, "attestator_3")]["outcome"] == "failed"
+
+
+def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, tmp_path):
+    """The other half of the boundary: a wire refusal is not a per-attempt hold.
+
+    Two refusals reach `_serve_page_unit` and only one of them is this stage's
+    to absorb. A *pre-send* capacity refusal is arithmetic about a request that
+    never left, and it becomes this attempt's failure. An HTTP 400 is the
+    engine's own refusal of a request that did leave: bytes arrived from a
+    chair that was asked, and this stage's contract for a serving refusal is to
+    stop and say so with those bytes retained, not to publish a Testimonium
+    about a response it decided to overlook.
+    """
+
+    run_root = fresh_tree(live_run, tmp_path)
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048,
+        # The seam's own arithmetic for a 300-dpi page at this row, under the
+        # layout instruction: 2,280 image + 441 prompt + a 1,631-token
+        # dense-page answer.
+        requested_tokens=4352,
+        prompt_tokens=2721,
+        completion_tokens=1631,
+    )
+    scripts = dict(default_scripts())
+    scripts["attestator_3"] = [refusal, refusal]
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    with pytest.raises(ContractError, match="a live witness reading was refused"):
+        run_attestatores(live_run, run_root, factory=world.factory)
+
+    tree = RunTree(run_root, RUN_ID)
+    # The engine's own diagnostic is on disk before the stage stopped, by its
+    # own digest, which is the artefact a rented card would have been paying
+    # for (GOVERNANCE 2).
+    assert _RunTreeBlobs(SimpleNamespace(tree=tree)).has(hashlib.sha256(refusal.body).hexdigest())
+    # No page Testimonium for the page it refused: nothing was published about
+    # a response this stage would not read.
+    assert (1, "attestator_3") not in page_records(tree)
 
 
 def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produced_it(

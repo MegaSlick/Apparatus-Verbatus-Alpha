@@ -224,12 +224,33 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         "dtype": "bfloat16",
         "seed": 7,
         "required_packages": {"vllm": "0.test"},
-        "max_model_len": 2048,
+        # Per chair, as the shipped real catalogue states them: the Perlector's
+        # row is the long one. It was 2,048 for every chair while the reader
+        # admitted on a prompt *floor* of 790; the seam now admits on the
+        # measured upper bound, and this run's four-image Perlector request
+        # costs 2,080 by it.
+        #
+        # Churro's row moved for the same reason at a different seam. Its prompt
+        # and answer are sealed constants rather than a floor, but Unit 12
+        # changed which prompt it is asked (`feeding.churro_layout_prompt`) and
+        # which shape it answers in, so both constants were re-measured: 441 and
+        # 1,631 against the trained framing's 281 and 1,433, which is 2,073 with
+        # this fixture's one image token and does not fit 2,048. The shipped
+        # catalogue states 8,192 for this chair at every tier, so the stand-in
+        # states it too -- the row moves, never the arithmetic and never the
+        # pixels. Chandra's row is untouched and still needs 1,777.
+        "max_model_len": {"perlector": 16384, "attestator_3": 8192}.get(chair, 2048),
         "max_num_seqs": 1,
         "max_num_batched_tokens": 256,
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1806336,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 14 if chair in {"attestator_2", "attestator_3"} else 16,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,

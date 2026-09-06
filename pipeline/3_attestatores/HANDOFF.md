@@ -387,6 +387,79 @@ say.
    adapter's own account of its bytes beside the bytes themselves instead of
    dropping the view for want of a state name.
 
+**Churro's declared 24,000-token bound is a declaration, and only sometimes the
+request.** `common/native_witness.py::CHURRO_OUTPUT_TOKENS` is Churro's carried
+HuggingFace-generate `max_new_tokens`, and the live seam used to rename it
+straight onto the wire as vLLM's `max_tokens`. Every Churro row in
+`config/serving_recipes_real.toml` caps `max_model_len` far below it (2,048,
+4,096 and 8,192 when this was written; 8,192 and 16,384 since the capacity unit
+raised them), and vLLM refuses a request whose prompt plus `max_tokens` exceeds the
+row's context — so the very first call on a real pod was a refusal, on a card
+billing by the hour, from the one chair in the pass that sent a bound at all.
+`live_witness.churro_generation_sent` now asks the sealed row the chair is
+actually running under (`ChairClient.handle.profile`): the declared bound goes
+on the wire only where `max_model_len` is strictly larger than it, and
+otherwise nothing is sent and the engine bounds generation by `max_model_len`
+itself — the same decision the Perlector and the Designator already record, and
+the only answer budget measured by the component that holds the tokenizer and
+the image. This seam estimates no prompt cost: a reservation nobody measured
+would be a number the record could not defend and could still be refused by the
+row. The declaration is untouched — `generation_declared` carries 24,000 on
+every request, the retained Churro model view still requires it, and a row that
+states no positive `max_model_len` is refused by name before the request is
+built. `test_live_witness.py` walks every Churro row in the shipped catalogue at
+every tier and asserts what this seam would send is a bound that row can take;
+its counterfactual holds the old flat 24,000 against the same three rows.
+
+**Whether a request *fits* is a different question, and it is now asked of both
+page chairs and of DAI.** The bound above governs what may be *sent*; it cannot
+say whether the request the engine receives is admissible at all. A whole
+300-dpi page costs Chandra 1,715 prompt tokens and Churro 2,280 at the smallest
+tier's `max_pixels`, before a word of prompt is counted, and a page-fallback
+act hands DAI a page-sized crop at the same cost. `live_witness.
+request_capacity_or_refuse` computes that arithmetic from the sealed row's own
+`min_pixels`/`max_pixels`/`patch_size`/`merge_size` (`common/request_capacity.py`)
+plus the chair's measured prompt cost and its measured answer budget at the
+scope it was asked at — a page's answer for a page chair, one act's for DAI, so
+that reserving a page's answer never refuses an ordinary act crop that
+measurably works. A request that does not fit is refused by name before it is
+built, and the refusal carries the whole record. One that does fit carries the
+record onto the request, and the client copies it onto the retained call
+record. Nothing is ever downscaled to make a request fit.
+
+**A refused request costs its own attempt, not the pass.** The refusal above is
+a fact about one request -- these pixels, at this row's `max_pixels`, against
+this row's `max_model_len` -- and it left `_serve_act_unit` and
+`_serve_page_unit` as an exception nothing between there and `main` caught, so
+one oversized page ended the stage and every other page's testimony went with
+it. The Designator, asked the same question, held the single page and published
+the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
+the refusal as this attempt's own `outcome="failed"`, in the same shape an
+empty or malformed response takes, and the pass moves to the next unit. A
+missed act is worse than a poorly read one (GOALS 1), and one page's arithmetic
+is no reason to lose another page's reading.
+
+What that record says, and what it refuses to say: the **no-response** health,
+because nothing arrived and there is no channel to call unrecordable; no
+`raw_response_ref`, `serving_call_ref` or `native_capture`, because there was
+no call and no bytes; the refusal's own sentence as `reason`, which is the
+capacity record in words -- every image's token cost, the prompt, the reserved
+answer, the need, the row, and by how much it overran; and the chair's real
+serving receipt, because the chair did start and this pass entered its client
+before the arithmetic refused it. `arrived` in the page-record loop is decided
+by retained bytes rather than by the presence of a capture, so a refused page
+cannot borrow the health of a body nobody received. A resumed pass reads that
+pair -- no serving call, no-response health, live receipt -- and lets the record
+stand for the page it already described rather than refusing it as a
+fixture-posture record.
+
+**A wire refusal is still the stage's refusal.** Only the *pre-send* arithmetic
+became a per-attempt failure. An HTTP 400 is the engine refusing a request that
+did leave, from a chair that was asked; its bytes are retained and the stage
+stops and says so, rather than publishing a Testimonium about a response it
+declined to read. `test_attestatores_live_pass.py` drives both through
+`_serve_page_unit` and asserts the two different endings.
+
 Two further seams closed with them:
 
 **A live record says which kind of bytes it retained.** `raw_response_ref` means
