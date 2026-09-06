@@ -63,6 +63,7 @@ from operations.serving.fakes import (
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
     structure_answer_body,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
@@ -135,6 +136,13 @@ def _live_row(identity) -> dict[str, Any]:
         "gpu_memory_utilization": "0.58",
         "min_pixels": 3136,
         "max_pixels": 1806336,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it for Chandra: without it nothing can say what one
+        # page image costs this chair in prompt tokens, and `ask_page` refuses
+        # by name rather than counting against a default
+        # (`common/request_capacity.py`).
+        "patch_size": 16,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
@@ -966,6 +974,53 @@ def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path,
     assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
 
 
+def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
+    live_run, tmp_path, monkeypatch
+):
+    """The failure SPEC_D 7 names, in the shape vLLM actually gives it.
+
+    `scripted_structure_cut_off` scripts the *answer*-side truncation: HTTP 200,
+    `finish_reason="length"`, a body cut mid-object. A prompt too long for the
+    context is a different wire event -- HTTP 400, no choices at all -- and the
+    two must not be read as one thing: a 400 read as a length stop would hold
+    the page as `structure-answer-cut-off`, asserting that a chair answered and
+    was cut off when no chair answered at all.
+
+    The pass refuses the run rather than holding the page, which is the
+    contract for a serving refusal here (a transport failure is not one page's
+    outcome), and the engine's own sentence survives -- retained by the client
+    before the refusal, and quoted in the refusal itself.
+    """
+
+    root, catalogue = live_run
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048,
+        requested_tokens=3619,
+        prompt_tokens=2044,
+        completion_tokens=1575,
+    )
+    with pytest.raises(ContractError) as error:
+        _run_designator(
+            root,
+            catalogue,
+            tmp_path,
+            monkeypatch,
+            [_answer(PAGE_ONE_ACTS), refusal],
+        )
+    message = str(error.value)
+    assert "HTTP 400" in message
+    assert "maximum context length is 2048" in message
+    # Not a hold, and specifically not a cut-off hold: nothing was published.
+    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    assert "cut-off" not in message
+    # The bytes reached disk before the refusal was raised: the engine's own
+    # account of why it refused is the artefact a rented card exists to
+    # produce, and it used to be discarded here.
+    tree = RunTree(root, RUN_ID)
+    retained = tree.read_bytes(tree.blob_path(DESIGNATOR, digest_bytes(refusal.body)))
+    assert b"maximum context length is 2048" in retained
+
+
 # --- the refusals before any chair starts ---------------------------------------------
 
 
@@ -1158,6 +1213,132 @@ def _minimal_answer_record() -> dict[str, Any]:
     record["findings"] = []
     record["decoding"] = dict.fromkeys(designator._STRUCTURE_ANSWER_DECODING_FIELDS)
     return record
+
+
+# --- the pre-send capacity check ---------------------------------------------
+
+
+def _capacity_row(**overrides: Any) -> SimpleNamespace:
+    """The six fields `ask_page` reads off the sealed row, as the real one states them."""
+
+    fields: dict[str, Any] = {
+        "recipe": "unproven-real-designator",
+        "chair": "designator_structure",
+        "tier": "generic-24gb",
+        "max_model_len": 2048,
+        "min_pixels": 3136,
+        "max_pixels": 1806336,
+        "patch_size": 16,
+        "merge_size": 2,
+        "served_model_id": "designator-structure",
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class _RefusingClient:
+    """A client whose `read` is an assertion failure: nothing may be sent."""
+
+    def __init__(self, profile: SimpleNamespace) -> None:
+        self.handle = SimpleNamespace(
+            profile=profile,
+            receipt_reference={"relative_path": "receipts/r.json", "sha256": "0" * 64},
+        )
+
+    def read(self, request):  # pragma: no cover - the point is that it never runs
+        raise AssertionError("a request that does not fit the sealed row must never be sent")
+
+
+def _ask(client, width: int, height: int):
+    return structure_pass.ask_page(
+        SimpleNamespace(tree=None),
+        client,
+        {"subject_id": "page-1", "payload": {"source_sha256": "a" * 64}},
+        1,
+        b"",
+        {"width": width, "height": height},
+        temperature=0,
+        decoding_config_sha256="c" * 64,
+        provenance={},
+    )
+
+
+def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent():
+    """The failure this check exists to move off a billing card.
+
+    An A4 300-dpi page is 2,480x3,508. Against the shipped 24 GB row it costs
+    1,715 image tokens; with the measured 329-token structure prompt and a
+    1,575-token dense-page answer that is 3,619 against a `max_model_len` of
+    2,048. Before this check the request went out and vLLM answered HTTP 400
+    with a body the client discarded; now the page is held by name, its record
+    is published with the whole arithmetic on it, and `_RefusingClient.read`
+    proves nothing was sent. The page is never downscaled to fit.
+    """
+
+    answer = _ask(_RefusingClient(_capacity_row()), 2480, 3508)
+
+    assert answer.disposition == structure_pass.DISPOSITION_HELD
+    assert answer.reason_code == structure_pass.HELD_REQUEST_TOO_LARGE
+    assert answer.reason_code in structure_pass.STRUCTURE_HELD_CODES
+    assert answer.mint == ()
+    capacity = answer.record["capacity"]
+    assert capacity["image_prompt_tokens"] == 1715
+    assert capacity["prompt_tokens"] == 329
+    assert capacity["answer_budget"] == 1575
+    assert capacity["need"] == 3619
+    assert capacity["headroom"] == 2048 - 3619
+    assert capacity["fits"] is False
+    # Nothing that describes a response is invented: there was none.
+    for field in ("call_record_ref", "raw_response_ref", "custody_ref", "request_sha256"):
+        assert answer.record[field] is None
+    # And the record is publishable exactly as any other answer is.
+    designator._validate_structure_answer_payload(answer.record)
+
+
+def test_the_same_page_is_admitted_once_the_row_states_a_larger_context():
+    """The counterfactual: only the row changed, and the request goes."""
+
+    client = _RefusingClient(_capacity_row(max_model_len=8192))
+    with pytest.raises(AssertionError, match="must never be sent"):
+        _ask(client, 2480, 3508)
+
+
+def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_that_is_sent():
+    """The digest that expires the measured constant, checked where the prompt lives."""
+
+    assert structure_pass.structure_prompt_tokens() == 329
+
+
+def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
+    live_run, tmp_path, monkeypatch
+):
+    """The admitted path over the real chain: the arithmetic is published too.
+
+    The fixture pages are 200x260 and cost 48 image tokens on this chair --
+    two orders of magnitude under the budget, which is itself why no fixture
+    run had ever exercised this arithmetic before it was written down.
+    """
+
+    root, catalogue = live_run
+    _endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
+    assert exit_code == EXIT_COMPLETE
+    answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    assert set(answers) == {1, 2}
+    for payload in (record["payload"] for record in answers.values()):
+        capacity = payload["capacity"]
+        assert capacity["schema"] == "verbatus-request-capacity.v1"
+        assert capacity["fits"] is True
+        assert capacity["image_prompt_tokens"] == 48
+        assert capacity["prompt_tokens"] == 329
+        assert capacity["answer_budget"] == 1575
+        assert capacity["headroom"] == 4096 - (48 + 329 + 1575)
+        # The same record reached the retained call record, beside the request.
+        tree = RunTree(root, RUN_ID)
+        call_record = json.loads(
+            tree.read_bytes(payload["call_record_ref"]["relative_path"]).decode("utf-8")
+        )
+        assert call_record["schema"] == CHAIR_CALL_RECORD_SCHEMA
+        assert call_record["capacity"] == capacity
 
 
 def test_a_field_outside_the_structure_answer_contract_refuses_by_name():

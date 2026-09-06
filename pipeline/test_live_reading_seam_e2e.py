@@ -197,12 +197,24 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         "dtype": "bfloat16",
         "seed": 7,
         "required_packages": {"vllm": "0.test"},
-        "max_model_len": 2048,
+        # Per chair, as the shipped real catalogue states them: the Perlector's
+        # row is the long one. It was 2,048 for every chair while the reader
+        # admitted on a prompt *floor* of 790; the seam now admits on the
+        # measured upper bound, and this run's four-image Perlector request
+        # costs 2,080 by it. The witness rows are untouched -- their prompts are
+        # sealed constants and were never counted from a floor.
+        "max_model_len": 16384 if chair == "perlector" else 2048,
         "max_num_seqs": 1,
         "max_num_batched_tokens": 256,
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1806336,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 14 if chair in {"attestator_2", "attestator_3"} else 16,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,

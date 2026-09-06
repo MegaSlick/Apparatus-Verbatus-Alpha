@@ -25,7 +25,7 @@ the other chairs to reach it would re-read ink nobody doubted.
 import json
 import sys
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Mapping, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,6 +64,7 @@ from common.native_witness import (  # noqa: E402
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
+from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -3447,10 +3448,18 @@ def publish_page_testimonia_and_attachments(
             # could not parse into a reading at all -- that body arrived, was
             # retained, and produced an unrecordable channel, which is a
             # different fact from a chair that answered nothing (GOVERNANCE 2).
+            # Retained bytes are what the question turns on, which is why the
+            # test is `raw_response_ref` rather than the mere presence of a
+            # capture: a request refused before it was sent
+            # (`capacity_refusal_attempt`) is filed as a capture too, and
+            # nothing arrived for it -- it must take the no-response health,
+            # not the health of a body nobody received.
             # In the fixture posture `page_captures` is None and this is exactly
             # the `native_capture is not None` it has always been.
             arrived = native_capture is not None or (
-                page_captures is not None and captured is not None
+                page_captures is not None
+                and captured is not None
+                and page_attempt_result.raw_response_ref is not None
             )
             attempted_page = captured is not None or page_witness_attempted(
                 page_acts, chair, attempts_by_pair
@@ -4528,8 +4537,27 @@ def resumed_page_captures(
                     # record wearing this act's name, it is simply not evidence
                     # of this page's response either way.
                     continue
+                if (
+                    attempt.serving_call_ref is None
+                    and attempt.health.get("recordable") is None
+                    and served_live(context, {"receipt_ref": attempt.receipt_ref})
+                ):
+                    # A live attempt at a request that was refused before it was
+                    # sent (`capacity_refusal_attempt`): there is no call record
+                    # because there was no call, and its no-response health says
+                    # exactly that. Both facts are needed, and neither alone
+                    # would do: the fixture posture also writes a failed attempt
+                    # with no-response health for a row that declared no
+                    # payload, and only the receipt says which posture served
+                    # this one. It stands in for this page rather than being
+                    # refused -- the arithmetic that refused it is the same on a
+                    # resumed pass, and re-asking would only rebuild the record
+                    # it already sealed.
+                    candidates.append((act["act_id"], attempt))
+                    continue
                 if attempt.serving_call_ref is None:
-                    # An *attempted* outcome naming no serving call is the
+                    # An *attempted* outcome naming no serving call, with a
+                    # response channel it could describe, is the
                     # fixture posture's own shape: every live attempt names the
                     # call record of the request that produced it, whether or
                     # not its adapter's retained view could be published beside
@@ -4799,6 +4827,49 @@ def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> Non
         )
 
 
+def capacity_refusal_attempt(
+    error: RequestCapacityRefusal, *, receipt_ref: Mapping[str, str], what: str
+) -> Attempt:
+    """One chair's outcome for a request its sealed row could not hold.
+
+    A pre-send capacity refusal is a fact about *this* request: this page's
+    pixels, at this row's `max_pixels`, against this row's `max_model_len`. It
+    says nothing about the next page, which may be smaller, or about the same
+    chair on another unit. Letting it out of `_serve_act_unit` /
+    `_serve_page_unit` would have stopped the whole pass, so one oversized page
+    would have cost every other page's testimony -- and a missed act is worse
+    than a poorly read one (GOALS 1). It is recorded here instead, in the same
+    shape an empty or malformed response takes: `outcome="failed"`, a named
+    reason, and the pass moves on to the next unit. The Designator already
+    holds this way (`structure_pass`'s `structure-request-too-large`), and this
+    closes the asymmetry.
+
+    The health is the **no-response** shape, not the unrecordable one, and the
+    difference is the whole point: nothing arrived, so there is no channel to
+    call unrecordable. `reason` carries the refusal's own sentence, which is
+    the capacity record in words -- every image's token cost, the prompt, the
+    reserved answer, the need, the row it was measured against, and by how much
+    it overran.
+
+    `receipt_ref` is the chair's real serving moment. The chair *did* start:
+    this pass entered its client, the manager published its receipt, and the
+    request was refused after that, on this laptop. Naming that receipt is what
+    keeps the record a live one -- a resumed pass reads it back and must not
+    mistake this for a fixture-posture record.
+    """
+
+    reason = f"{what} was refused before it was sent: {error}"
+    return Attempt(
+        outcome="failed",
+        native_payload=None,
+        witness_reported=None,
+        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        health=no_response_health(reason=reason),
+        reason=reason,
+        receipt_ref=dict(receipt_ref),
+    )
+
+
 def _serve_act_unit(
     context,
     *,
@@ -4813,7 +4884,37 @@ def _serve_act_unit(
 ) -> int:
     """One act-scoped chair, one act: ask, derive, publish, before the next act."""
     presentation = presentation_for_region(regions[0])
-    built = live_witness.act_chair_request(context, adapter, presentation)
+    try:
+        built = live_witness.act_chair_request(
+            context,
+            adapter,
+            presentation,
+            # The sealed row this chair is actually running under: a page-fallback
+            # act's crop is a whole 300-dpi page and does not fit every row
+            # (`live_witness.request_capacity_or_refuse`).
+            profile=client.handle.profile,
+        )
+    except RequestCapacityRefusal as error:
+        # This act's crop against this row, and nothing else: the next act's
+        # crop may be a sixth of the page and fit comfortably
+        # (`capacity_refusal_attempt`).
+        attempt = capacity_refusal_attempt(
+            error,
+            receipt_ref=client.handle.receipt_reference,
+            what=f"the {resolved.witness_adapter} request for act {act['act_id']}",
+        )
+        attempts_by_pair[(act["act_id"], chair)] = attempt
+        publish_attempt(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions,
+            attempt=attempt,
+            live=True,
+        )
+        return 1
     response = client.read(built.request)
     live = live_witness.live_attempt_from_response(
         context,
@@ -4914,9 +5015,40 @@ def _serve_page_unit(
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
-    request = live_witness.page_chair_request(
-        context, adapter, resolved.witness_adapter, presentation
-    )
+    try:
+        request = live_witness.page_chair_request(
+            context,
+            adapter,
+            resolved.witness_adapter,
+            presentation,
+            # The sealed row this chair is actually running under. Churro's
+            # generation bound is only sendable if that row can hold it
+            # (`live_witness.churro_generation_sent`).
+            profile=client.handle.profile,
+        )
+    except RequestCapacityRefusal as error:
+        # This page against this row. Every other page keeps its testimony, and
+        # the page's own record says why this one has none
+        # (`capacity_refusal_attempt`). The capture is filed exactly as a
+        # malformed response's is -- with no retained model view, because there
+        # was no response to derive one from.
+        attempt = capacity_refusal_attempt(
+            error,
+            receipt_ref=client.handle.receipt_reference,
+            what=f"the {resolved.witness_adapter} request for page {page_ordinal}",
+        )
+        page_captures[(page_ordinal, chair)] = (attempt, None)
+        return publish_page_act_views(
+            context,
+            chair=chair,
+            resolved=resolved,
+            attempt=attempt,
+            page_ordinal=page_ordinal,
+            page_acts=page_acts,
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
+        )
     response = client.read(request)
     live = live_witness.captured_page_attempt(
         context, page_ordinal, chair, resolved.witness_adapter, adapter, response

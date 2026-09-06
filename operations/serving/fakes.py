@@ -157,12 +157,12 @@ class FakeEndpoint:
         # (mirrors test_manager.py's own fake). Set true only where a test
         # needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
         self.sticky_after_stop = sticky_after_stop
-        # Deliberately opt-in, not a blanket invariant: a non-200 or
-        # wrong-model reading is refused with *no* blob written by design
-        # (`ChairClient._refuse_bytes_from_the_wrong_source`), so a test
-        # sequence that scripts one of those before a following read must not
-        # trip this check. Set true only where every prior reading in the
-        # sequence is expected to retain.
+        # Deliberately opt-in rather than a blanket invariant, because a test
+        # may drive this endpoint through a seam that never reaches
+        # `ChairClient.read` at all. Every reading that does reach it retains,
+        # including a non-200 or wrong-model one: retention now runs before the
+        # wrong-source refusal, so vLLM's own account of why it refused is on
+        # disk before the refusal is raised.
         self.assert_retained_before_next_request = assert_retained_before_next_request
         self._answers: list[ScriptedAnswer] = []
         self.requests: list[dict[str, object]] = []
@@ -242,16 +242,12 @@ class FakeEndpoint:
             if answer.usage is not None:
                 payload["usage"] = dict(answer.usage)
             body = json.dumps(payload).encode()
-        if answer.status == 200 and _peeked_model(body) in (None, self.served_model_id):
-            # `ChairClient._refuse_bytes_from_the_wrong_source` retains only a
-            # 200 response naming this endpoint's own model (or no model at
-            # all — a malformed body is still legitimate retained evidence);
-            # a non-200 or wrong-model answer is refused with no blob written
-            # by design (see the class docstring), so this fake must not
-            # expect one for those either.
-            self._last_served_reading_sha256 = hashlib.sha256(body).hexdigest()
-        else:
-            self._last_served_reading_sha256 = None
+        # Every body this fake serves as a reading is retained by
+        # `ChairClient.read`, whatever its status and whatever model it names:
+        # retention happens before the wrong-source check, so a 400 explaining
+        # a context overflow reaches disk before it is refused. The fake
+        # therefore predicts retention for all of them.
+        self._last_served_reading_sha256 = hashlib.sha256(body).hexdigest()
         return HttpResponse(answer.status, body)
 
     def _auto_probe_response(self, decoded: dict[str, object] | None, url: str) -> HttpResponse:
@@ -264,24 +260,6 @@ class FakeEndpoint:
             200,
             json.dumps({"model": model_id or self.served_model_id, "choices": [choice]}).encode(),
         )
-
-
-def _peeked_model(body: bytes) -> str | None:
-    """Mirrors ``client._peek_model``: the declared ``model``, or ``None``.
-
-    Kept local rather than imported so this fake predicts retention from the
-    wire shape alone, the same way the client's own pre-retention check does,
-    without depending on the client's private helper.
-    """
-
-    try:
-        payload = json.loads(body)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    model = payload.get("model")
-    return model if isinstance(model, str) else None
 
 
 # --------------------------- the structure chair's answers ---------------------------
@@ -434,6 +412,55 @@ def scripted_structure_refusal(
     return ScriptedAnswer(content=content, finish_reason=finish_reason, **fields)
 
 
+def scripted_prompt_too_long(
+    *,
+    max_model_len: int,
+    requested_tokens: int,
+    prompt_tokens: int,
+    completion_tokens: int = 0,
+    model: str | None = None,
+) -> ScriptedAnswer:
+    """The refusal vLLM actually gives when the **prompt** exceeds the context.
+
+    This is the other half of the failure `scripted_structure_cut_off` scripts,
+    and it is the half that stops the first real page. That one is a
+    ``finish_reason="length"`` inside an HTTP 200: the engine generated, and
+    generation ran out of room. This one is an HTTP **400** with no choices at
+    all: the engine refused before it generated, because the request could not
+    be admitted. A stage that reads the first as "the answer was cut off" would
+    read the second the same way and record a truncated reading where no
+    reading exists, so both must be scripted and both must be exercised.
+
+    The body is vLLM's own OpenAI-compatible error envelope
+    (``{"object": "error", "message": ..., "type": "BadRequestError", "param":
+    null, "code": 400}``) carrying the sentence its context check emits. Its
+    exact wording has never been observed from a live engine by this
+    repository -- only its *shape* is asserted here, and what the stages are
+    proven to do with it is refuse by name and retain it, never parse it.
+
+    ``model`` is deliberately absent by default: vLLM's error envelope names no
+    model, and a fake that added one would let the client's wrong-source check
+    fire on the wrong code.
+    """
+
+    message = (
+        f"This model's maximum context length is {max_model_len} tokens. "
+        f"However, you requested {requested_tokens} tokens "
+        f"({prompt_tokens} in the messages, {completion_tokens} in the completion). "
+        "Please reduce the length of the messages or completion."
+    )
+    payload: dict[str, Any] = {
+        "object": "error",
+        "message": message,
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
+    if model is not None:
+        payload["model"] = model
+    return ScriptedAnswer(status=400, body=json.dumps(payload).encode())
+
+
 def scripted_structure_cut_off(
     acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
     page_w: int,
@@ -443,10 +470,18 @@ def scripted_structure_cut_off(
     """A whole-page answer the engine stopped mid-object, as a real overrun looks.
 
     The body is the complete answer truncated inside its first act, and the
-    stop word is `"length"` — the two halves of the failure SPEC_D §7 names as
-    the likely first real one (`max_model_len` too small for a page). Both
-    matter: the cut-off row of §1.4 holds "parsed or not", so a truncated body
-    must be held as cut off rather than blamed on the chair's JSON.
+    stop word is `"length"`. Both matter: the cut-off row of §1.4 holds "parsed
+    or not", so a truncated body must be held as cut off rather than blamed on
+    the chair's JSON.
+
+    **This is the answer-side truncation, and it is real** -- an engine that
+    admits a request and then runs out of room to finish it stops exactly like
+    this. It is *not* the failure SPEC_D §7 names as the likely first real one:
+    a `max_model_len` too small for a page is refused before generation with an
+    HTTP 400 and no choices at all, which is `scripted_prompt_too_long`. This
+    docstring used to claim to script that one, and scripting it in the wrong
+    shape is what let "proven offline against a fake endpoint" mean a claim
+    about wire shape rather than about admissibility.
     """
     whole = structure_answer_body(acts, page_w, page_h)
     cut = whole[: whole.index('"box_1000"') + len('"box_1000"')]
