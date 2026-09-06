@@ -243,3 +243,33 @@ reason = "fixture test removes this witness without replacing it"
         "the splice changed which chairs the roster declares"
     )
     return path
+
+
+# The session-wide notification sink. See `operations/notify/notify.sh`.
+#
+# `operations/notify/notify.sh` reads the topic from `NTFY_TOPIC` first and
+# from the gitignored `private/ntfy.conf` only if that is unset, so setting it
+# here takes the real topic out of reach of the whole test session -- every
+# child process inherits it, which is what matters, because the leak this
+# closes was a `subprocess.run` several frames below a test that believed it
+# had stubbed the notification out.
+#
+# It is set with `os.environ` at session scope rather than through `monkeypatch`
+# because `monkeypatch` is function-scoped and this must cover collection-time
+# and fixture-time spawns too. `NTFY_SERVER` is *not* touched: the script
+# refuses that variable outright, and a test asserting on that refusal must
+# still see whatever it sets.
+#
+# A suite that deliberately drives the script with its own topic still can:
+# `operations/notify/test_notify.py` builds a scrubbed environment by stripping
+# the whole `NTFY_` prefix, so this value never reaches the copy of the script
+# it tests. That is the intended way past the sink -- a fake `curl` and a
+# throwaway topic -- and not an accident of ordering.
+NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _notification_sink() -> None:
+    """No test session may page his phone, whatever a caller forgot to inject."""
+
+    os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
