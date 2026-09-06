@@ -5513,7 +5513,15 @@ def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
     assert policy.shutdown_deadline_seconds == 900
     assert policy.billing_cutoff_margin_seconds == 3600
     text = (root / "config/spend.toml").read_text(encoding="utf-8")
-    assert "unverified" in text
+    # The active note above the floor, not the template comment that also says
+    # "unverified": the check must fail when the live setting loses its caveat.
+    # The template comment above also spells `state = "configured"`; the active
+    # line is the one at column zero.
+    active = text[text.index('\nstate = "configured"') :]
+    floor_note, _, floor_line = active.partition("account_balance_floor_usd =")
+    assert floor_line.startswith(' "50.00"')
+    assert "Documented, unverified default" in floor_note
+    assert "checks it against the RunPod balance" in floor_note
     assert "not permission to launch" in text
 
 
