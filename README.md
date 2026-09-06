@@ -39,7 +39,8 @@ spawned agent.** Landing work on `main`, deleting recursively outside the drawer
 exist to be emptied, rewriting published history, deleting a remote ref, putting a
 credential into git, and switching the git hooks off. The seventh is a spawned agent
 editing a governed path, and the eighth is a spawned agent pushing, opening a pull
-request, or merging one — the two refusals that are not the same for both audiences,
+request, marking one ready for review, updating its branch on the server, or merging
+one — in every `git`, `gh pr`, REST and GraphQL spelling the guard reaches — the two refusals that are not the same for both audiences,
 and the reason built-in agent types can be used here at all. The eighth is what carries
 hard rule 12 now that a build seat may run in a worktree on this machine: a chamber
 never pushed because its container had no route out, while a worktree seat holds the

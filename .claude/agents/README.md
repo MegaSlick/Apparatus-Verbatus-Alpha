@@ -144,7 +144,7 @@ Built-in host agents receive this preamble:
 > You are working in Apparatus Verbatus. Read `GOALS.md`, `GOVERNANCE.md`,
 > `ARCHITECTURE.md`, `GLOSSARY.md`, and `CLAUDE.md` from disk. Never edit a governed path,
 > push, merge, open a pull request, notify anyone, or start paid infrastructure — the
-> guard refuses the first three mechanically, and a refusal is final, so commit your work
+> guard refuses the first four mechanically, and a refusal is final, so commit your work
 > on your branch and name it in your report rather than trying another spelling. Make and
 > explain ordinary engineering decisions; stop only for a concrete governance conflict or
 > an action reserved to Tyrel.

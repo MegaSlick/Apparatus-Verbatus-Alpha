@@ -1054,10 +1054,28 @@ _GH_API_TAKES_A_VALUE = frozenset(
 # all rather than matching the path alone.
 API_OPENS_A_PULL_REQUEST = re.compile(r"repos/[^/]+/[^/]+/pulls")
 API_MERGES_A_PULL_REQUEST = re.compile(r"repos/[^/]+/[^/]+/pulls/\d+/merge")
+# `POST .../merges` is the merge that never mentions a pull request: it merges one branch
+# into another directly, so an agent could put its own work on `main` without opening
+# anything. Found by CodeRabbit on pull request 93 alongside the auto-merge mutations.
+API_MERGES_A_BRANCH = re.compile(r"repos/[^/]+/[^/]+/merges")
+# `PUT .../pulls/N/update-branch` is a merge *into* the head branch rather than out of it,
+# so it is not landing work on `main` — but it is still GitHub writing a commit onto a
+# remote branch at the agent's word, which is the act hard rule 12 denies it, and it is a
+# step in the session's own merge sequence. Refused; `POST .../pulls/N/requested_reviewers`
+# and the other pull-request writes an agent needs for review are not.
+API_UPDATES_A_PULL_REQUEST_BRANCH = re.compile(r"repos/[^/]+/[^/]+/pulls/\d+/update-branch")
 
-# The GraphQL spellings of the same two acts. Everything else GraphQL does here — reading
-# review threads, comments, check runs — is reading, so only the two mutations count.
-GRAPHQL_PULL_REQUEST_MUTATION = re.compile(r"\b(?:merge|create)pullrequest\b", re.IGNORECASE)
+# The GraphQL spellings of the same acts. `enablePullRequestAutoMerge` and
+# `enqueuePullRequest` merge as soon as the requirements are met, which is merging with a
+# delay rather than not merging, and `markPullRequestReadyForReview` is what `gh pr ready`
+# sends. Everything else GraphQL does here — reading review threads, comments, check runs,
+# and `disablePullRequestAutoMerge`, which takes a merge *off* the queue — is not.
+GRAPHQL_PULL_REQUEST_MUTATION = re.compile(
+    r"\b(?:(?:merge|create|enqueue)pullrequest"
+    r"|enablepullrequestautomerge"
+    r"|markpullrequestreadyforreview)\b",
+    re.IGNORECASE,
+)
 
 # `gh pr <verb>` spellings that push work at `main` or take it there. `ready` is here
 # because marking a draft ready is what makes a pull request mergeable, and the settings
@@ -1073,6 +1091,13 @@ def gh_api_target(tokens: list[str]) -> tuple[str, str] | None:
     expected turns the judgement below into a judgement of the wrong token. The method is
     the explicit `-X`/`--method` when given, POST when a body option is present, GET
     otherwise — which is `gh api`'s own rule.
+
+    A short option may carry its value attached — `-XPUT`, `-ftitle=x` — and `tokenize`
+    hands those over as one token because that is what the shell does. Read here rather
+    than in `tokenize`, which the other seven refusals share: splitting `-XPUT` there
+    would change what `git push -uorigin` and every other attached spelling look like to
+    checks that never asked for it. `gh api -XPUT repos/o/r/pulls/5/merge` was a merge
+    this function called a GET until CodeRabbit found it on pull request 93.
     """
     if not tokens or tokens[0].lower() != "api":
         return None
@@ -1083,6 +1108,18 @@ def gh_api_target(tokens: list[str]) -> tuple[str, str] | None:
     while index < len(tokens):
         token = tokens[index]
         lowered = token.lower()
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            # `-H` is here for its value only: an attached header is not a body, and
+            # skipping it keeps it from being read as the path. Lowercasing conflates
+            # `-f` with `-F` exactly as the separated spellings above do.
+            attached = lowered[:2]
+            if attached in ("-x", "-f", "-h"):
+                if attached == "-x":
+                    method = token[2:].lstrip("=").lower()
+                elif attached == "-f":
+                    has_body = True
+                index += 1
+                continue
         head, _, value = lowered.partition("=")
         if head in ("-x", "--method") and value:
             method = value
@@ -1116,6 +1153,16 @@ def agent_pushing_or_merging(tool: str, tool_input: Any, payload: dict[str, Any]
     pushed because it had no route out; a worktree seat inherits the session's
     credentials and its allow list, so "an agent never pushes" was a sentence with
     nothing behind it. The session is untouched: hard rules 4 and 14 are its to exercise.
+
+    **The inventory, so the README can cite it rather than paraphrase it.** Refused for an
+    agent: `git push` in every spelling the rest of this file already reads; `gh pr
+    create`, `gh pr merge`, `gh pr ready`; the REST calls `POST .../pulls`, `PUT
+    .../pulls/N/merge`, `PUT .../pulls/N/update-branch` and `POST .../merges`; and the
+    GraphQL mutations `mergePullRequest`, `createPullRequest`, `enablePullRequestAutoMerge`,
+    `enqueuePullRequest` and `markPullRequestReadyForReview`. Silent for an agent: every
+    read of the same resources, `git fetch`, `git bundle`, `gh pr view`/`diff`/`checks`/
+    `comment`/`list`, `POST .../pulls/N/requested_reviewers`, and the whole of it for the
+    main session.
     """
     agent = subagent_name(payload)
     if not agent or tool != "Bash":
@@ -1153,9 +1200,14 @@ def agent_pushing_or_merging(tool: str, tool_input: Any, payload: dict[str, Any]
             if GRAPHQL_PULL_REQUEST_MUTATION.search(command):
                 return "deny", refusal
             continue
-        if method == "post" and API_OPENS_A_PULL_REQUEST.fullmatch(path):
+        if method == "post" and (
+            API_OPENS_A_PULL_REQUEST.fullmatch(path) or API_MERGES_A_BRANCH.fullmatch(path)
+        ):
             return "deny", refusal
-        if method == "put" and API_MERGES_A_PULL_REQUEST.fullmatch(path):
+        if method == "put" and (
+            API_MERGES_A_PULL_REQUEST.fullmatch(path)
+            or API_UPDATES_A_PULL_REQUEST_BRANCH.fullmatch(path)
+        ):
             return "deny", refusal
     return None
 

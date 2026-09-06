@@ -106,7 +106,7 @@ Stage only files touched for the task; never `git add -A`.
 Repository-writing agents work in a worktree seat by default and in a chamber when the
 work earns one. The host session remains accountable for the goal, decisions, integrated
 diff, and verification. Either seat is pinned to a commit, returns a branch, may not edit
-a governed path, and cannot push, open a pull request, or merge — the guard refuses those
+a governed path, and cannot push, open a pull request, mark one ready, or merge — the guard refuses those
 on the spawned-agent name (refusals 7 and 8), which is what makes hard rules 10 and 12
 mechanical rather than merely written. Use agents for bounded work that benefits from
 independent context; do not create ceremony merely to satisfy a roster.

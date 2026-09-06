@@ -782,6 +782,106 @@ class TestAgentPushingAndMerging:
         )
         assert denied(decide_as_agent("Bash", {"command": command}))
 
+    @pytest.mark.parametrize(
+        "mutation",
+        (
+            'mergePullRequest(input: {pullRequestId: "PR_1"})',
+            'enablePullRequestAutoMerge(input: {pullRequestId: "PR_1", mergeMethod: SQUASH})',
+            'enqueuePullRequest(input: {pullRequestId: "PR_1"})',
+            'markPullRequestReadyForReview(input: {pullRequestId: "PR_1"})',
+            'createPullRequest(input: {title: "x"})',
+        ),
+    )
+    def test_every_mutation_that_merges_or_readies_is_refused_and_silent_for_the_session(
+        self, mutation
+    ):
+        # Auto-merge and the merge queue merge when the requirements are met, which is a
+        # merge with a wait in front of it; `markPullRequestReadyForReview` is what
+        # `gh pr ready` sends over the wire. Refusing `gh pr ready` and not its API
+        # spelling was the gap CodeRabbit found on pull request 93.
+        command = f"gh api graphql -f query='mutation {{ {mutation} {{ clientMutationId }} }}'"
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+        assert decide(command) is None, command
+
+    @pytest.mark.parametrize(
+        "mutation",
+        (
+            'disablePullRequestAutoMerge(input: {pullRequestId: "PR_1"})',
+            'addComment(input: {subjectId: "PR_1", body: "fixed in ce6d8bd"})',
+            'resolveReviewThread(input: {threadId: "RT_1"})',
+        ),
+    )
+    def test_a_mutation_that_does_not_merge_stays_silent(self, mutation):
+        # Taking a merge *off* the queue is the opposite of merging, and answering a
+        # review thread is how a seat reports. Silence here is what keeps the refusal
+        # above visible.
+        command = f"gh api graphql -f query='mutation {{ {mutation} {{ clientMutationId }} }}'"
+        assert decide_as_agent("Bash", {"command": command}) is None, command
+
+    @pytest.mark.parametrize(
+        "name",
+        ("enablePullRequestAutoMerge", "enqueuePullRequest", "markPullRequestReadyForReview"),
+    )
+    def test_a_multiline_form_of_each_new_mutation_is_still_seen(self, name):
+        command = (
+            "gh api graphql -f query='\n"
+            "mutation {\n"
+            f'  {name}(input: {{pullRequestId: "PR_1"}}) {{ clientMutationId }}\n'
+            "}\n'"
+        )
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "gh api -X POST repos/tyrel/verbatus_alpha/merges -f base=main -f head=work/topic",
+            "gh api --method=POST /repos/tyrel/verbatus_alpha/merges",
+            "gh api -f base=main -f head=work/topic repos/tyrel/verbatus_alpha/merges",
+            "gh api -X PUT repos/tyrel/verbatus_alpha/pulls/85/update-branch",
+            "gh api --method PUT /repos/tyrel/verbatus_alpha/pulls/85/update-branch",
+        ),
+    )
+    def test_the_rest_merge_and_branch_writes_are_refused_and_silent_for_the_session(self, command):
+        # `POST .../merges` is the merge that never names a pull request — it puts one
+        # branch into another directly. `update-branch` is GitHub writing a commit onto a
+        # remote branch at the agent's word, and a step in the session's merge sequence.
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+        assert decide(command) is None, command
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "gh api -XPUT repos/tyrel/verbatus_alpha/pulls/85/merge",
+            "gh api -XPOST repos/tyrel/verbatus_alpha/pulls",
+            "gh api -ftitle=x repos/tyrel/verbatus_alpha/pulls",
+            "gh api -Fbase=main -Fhead=work/topic repos/tyrel/verbatus_alpha/merges",
+            "gh api -XPUT repos/tyrel/verbatus_alpha/pulls/85/update-branch",
+        ),
+    )
+    def test_an_attached_short_option_value_does_not_hide_the_method(self, command):
+        # A short option may carry its value attached, and `tokenize` hands `-XPUT` over
+        # as one token because the shell does. Before this was read, the method fell back
+        # to GET and every one of these passed.
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+        assert decide(command) is None, command
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "gh api -XGET repos/tyrel/verbatus_alpha/pulls",
+            "gh api -fstate=closed repos/tyrel/verbatus_alpha/pulls/85",
+            "gh api -X POST repos/tyrel/verbatus_alpha/pulls/85/requested_reviewers "
+            "-f reviewers[]=tyrel",
+            "gh api repos/tyrel/verbatus_alpha/merges",
+            "gh api -q.title repos/tyrel/verbatus_alpha/pulls/85",
+            "gh api -HAccept:application/vnd.github+json repos/tyrel/verbatus_alpha/pulls",
+        ),
+    )
+    def test_reading_and_requesting_review_survive_the_attached_forms(self, command):
+        # Asking for a reviewer is a write on a pull request and not a merge; an attached
+        # `-q` or `-H` must not be mistaken for the path either.
+        assert decide_as_agent("Bash", {"command": command}) is None, command
+
     def test_a_write_or_edit_is_not_touched_by_this_refusal(self):
         # Refusal 8 judges shell commands only. An agent's ordinary file work answers to
         # refusal 7 and to nothing here.
