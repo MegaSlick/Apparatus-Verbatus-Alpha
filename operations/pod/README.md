@@ -597,6 +597,22 @@ file that exists and **cannot be read** is exit 3, not 2: it is the durable reco
 paid action, the pod it names may be billing, and the refusal prints the exact path to go
 and look at.
 
+**Everything that fails on this laptop before the provider is reached is exit 3 as well**,
+under one `CLOSE NOT ATTEMPTED:` prefix — the sibling of `UNVERIFIED CLOSE`, and a
+different phrase because that one means a close ran and could not be verified while this
+one means none was tried. It covers a `--provider-factory` that will not import, will not
+resolve, raises when it is called, or returns something that is not the seam, and a
+`--spend` policy that cannot be read or is unconfigured. None of those stops a pod, so
+none of them may exit 2 and say "nothing was paid"; each leaves the durable record, names
+what failed, and leaves the lease exactly as it was so whatever guards it keeps guarding
+it. The optional attachments around the close are contained rather than fatal for the same
+reason: an evidence recorder that cannot be opened (`OSError`) or a provider that raises
+while attaching it is written into the close record, and a balance-notification seam that
+raises while being wired is written into `balance_notification` — a phone that cannot be
+reached has never been allowed to decide a launch, and it certainly may not abandon a
+close. `create` and `adopt` keep the opposite disposition for the recorder: nothing is
+paid yet, so a recorder that cannot be attached refuses by name with exit 2.
+
 **`--provider-name` is a label, not a proof of account**, and one refusal exists because of
 that. It is the string the operator typed, recorded in the lease; nothing reconciles it
 against the credentials behind `--provider-factory`. So a factory pointing at the wrong

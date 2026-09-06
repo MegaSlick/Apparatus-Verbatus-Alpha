@@ -129,30 +129,66 @@ def main(argv: Sequence[str] | None = None) -> int:
     fixture_note: str | None = None
     try:
         provider = _provider(args.provider_factory)
-    except (TypeError, ValueError) as error:
-        # The named refusal this command promises instead of a traceback: an
-        # unusable factory reference leaves nothing to act with at all. Exit 2
-        # is this command's "refused, nothing paid" status.
-        return _refused(str(error))
+    except Exception as error:  # noqa: BLE001 -- every factory failure is named, never a traceback
+        # `_provider` raises far more than the two types this once caught: an
+        # unimportable module raises `ModuleNotFoundError`, a name the module
+        # does not carry raises `AttributeError`, and the factory itself raises
+        # whatever it likes when it is called. Each of those used to leave the
+        # `close` path with a traceback, no close, and no durable record, for a
+        # lease whose pod may be billing at that moment.
+        detail = (
+            f"--provider-factory {args.provider_factory!r} could not be loaded and called: "
+            f"{type(error).__name__}: {error}"
+        )
+        if args.command == "close":
+            return _close_not_attempted(
+                args,
+                f"{detail}; no provider was reached, so nothing was terminated and the pod this "
+                "lease names may still be billing -- go and look at the provider console, then "
+                "close again with a factory that loads",
+            )
+        # For `create` and `adopt` the refusal shape is unchanged: nothing was
+        # loaded, so nothing was paid, and exit 2 says exactly that.
+        return _refused(f"{detail}; no paid action occurred")
     if args.record_fixture is not None:
         try:
             recorder = _record_fixture(provider, args.record_fixture)
-        except ValueError as error:
+        except Exception as error:  # noqa: BLE001 -- an optional recorder never decides a close
+            # `FixtureRecorder` opens and chmods the path, so construction
+            # raises `OSError` on an unwritable directory or a bad mode; the
+            # provider's own `record_exchanges` may raise anything at all.
+            detail = (
+                str(error)
+                if isinstance(error, ValueError)
+                else (
+                    f"--record-fixture {args.record_fixture} could not be attached: "
+                    f"{type(error).__name__}: {error}"
+                )
+            )
             if args.command != "close":
                 # `operations/pod/README.md`: a provider that cannot record its
                 # own exchanges "refuses the flag by name before any preview".
-                return _refused(str(error))
+                return _refused(detail)
             # ...but not for `close`. That verb exists for the moment a pod is
             # billing and something has already gone wrong, and refusing to
             # stop the meter because the evidence recorder could not be
             # attached would trade money and a live pod for a fixture nobody
             # asked for in that moment. The fact is recorded in the close
             # record instead of raised (GOVERNANCE 2).
-            fixture_note = f"--record-fixture was not honoured: {error}"
+            fixture_note = f"--record-fixture was not honoured: {detail}"
     # Wired before the preview, because the preview itself observes a balance:
     # a launch run with --notify should page the phone for the reading its own
     # spend gate made, not only for later ones.
-    balance_wiring = _wire_balance_notify(provider, enabled=args.notify)
+    try:
+        balance_wiring = _wire_balance_notify(provider, enabled=args.notify)
+    except Exception as error:  # noqa: BLE001 -- notification is never fatal, on any verb
+        # `--notify` is notification-only by ruling: a phone that cannot be
+        # reached may not decide a launch, and it certainly may not abort a
+        # close and leave a pod billing. The failure is written into the record
+        # the same way an unwired seam already is.
+        balance_wiring = _BalanceWiring(
+            f"--notify could not wire balance notifications: {type(error).__name__}: {error}"
+        )
     try:
         if args.command == "close":
             # No preview, no balance reading, no typed phrase, and no arming
@@ -259,7 +295,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Every line was already flushed and fsynced under the recorder's
             # own lock, so this loses nothing -- it closes the descriptor on
             # the way out rather than leaving it to interpreter exit.
-            recorder.close()
+            #
+            # Contained, and said out loud: an exception raised in a `finally`
+            # replaces the return value it is unwinding past, so a failing
+            # descriptor close would have discarded the exit status of a
+            # created pod or a completed close and raised in its place. The
+            # record above is already printed; this is the note beside it.
+            try:
+                recorder.close()
+            except Exception as error:  # noqa: BLE001 -- never past the record it would replace
+                print(
+                    json.dumps(
+                        {
+                            "state": "record-fixture-close-failed",
+                            "green": False,
+                            "detail": (
+                                f"the --record-fixture handle {args.record_fixture} could not be "
+                                f"closed: {type(error).__name__}: {error}; every line it wrote "
+                                "was already flushed and fsynced, and the record above stands"
+                            ),
+                        },
+                        sort_keys=True,
+                        indent=2,
+                    ),
+                    flush=True,
+                )
 
 
 def _refused(detail: str) -> int:
@@ -279,6 +339,41 @@ def _refused(detail: str) -> int:
         flush=True,
     )
     return 2
+
+
+_CLOSE_NOT_ATTEMPTED = "CLOSE NOT ATTEMPTED"
+"""The prefix a close that never reached the provider prints, in one place.
+
+The sibling of `UNVERIFIED CLOSE`, and deliberately a different phrase: that one
+means a close ran and could not be verified, this one means no close was tried at
+all. Both are exit 3 and neither may read as "nothing was paid" -- the lease
+names a pod that may be billing while the operator reads the record.
+"""
+
+
+def _close_not_attempted(args: argparse.Namespace, detail: str) -> int:
+    """Every `close` that fails before the provider is reached, in one shape.
+
+    Exit 3, not 2. Exit 2 is this surface's "refused, and nothing was paid", and
+    it is a lie about a lease: the lease exists because a paid action created
+    it, and the pod it names is not stopped by this command failing to run. The
+    honest status is "go and look", and the durable record is written for the
+    same reason every other close outcome writes one (GOVERNANCE 2).
+    """
+
+    return _print_close_record(
+        {
+            "state": "refused",
+            "green": False,
+            "lease_id": args.lease,
+            "detail": f"{_CLOSE_NOT_ATTEMPTED}: {detail}",
+            "close": None,
+            "lease_phase": None,
+        },
+        3,
+        leases_root=args.leases,
+        lease_id=args.lease,
+    )
 
 
 def _close_command(
@@ -301,7 +396,10 @@ def _close_command(
     poll interval, deadline and billing-cutoff margin are reviewed policy
     values, and a close driven on invented timings is not the close this
     repository verifies. It is not a spend gate here -- no ceiling is consulted,
-    because stopping a meter is not a paid action.
+    because stopping a meter is not a paid action. Both ways that policy can
+    fail -- unreadable, and unconfigured -- exit 3 through `_close_not_attempted`
+    rather than 2: the lease names a pod this command did not stop, and a status
+    meaning "nothing was paid" would be false about it.
 
     Every outcome, refusals included, leaves a durable record beside the lease
     through `supervise._write_final_record` (GOVERNANCE 2): the operator who
@@ -338,35 +436,27 @@ def _close_command(
             leases_root=leases_root,
             lease_id=None,
         )
+    # Both policy refusals below exit 3, not 2. The lease id is syntactically a
+    # lease id by this point, so the record this command refuses over is one a
+    # paid action wrote, and the pod it names is not stopped by an unreadable
+    # timings file. "Nothing was touched" is true and is not the whole truth:
+    # exit 2 would say "nothing was paid" about a meter that may be running.
     try:
         policy = load_spend_policy(args.spend)
     except Exception as error:  # noqa: BLE001 -- a named refusal, never a traceback
-        return _print_close_record(
-            {
-                "state": "refused",
-                "green": False,
-                "lease_id": lease_id,
-                "detail": f"spend policy {args.spend} could not be read: {error}",
-            },
-            2,
-            leases_root=leases_root,
-            lease_id=lease_id,
+        return _close_not_attempted(
+            args,
+            f"spend policy {args.spend} could not be read: {error}; nothing was touched, and "
+            f"the pod lease {lease_id} names may still be billing -- go and look, then close "
+            "again under the reviewed policy this lease was launched with",
         )
     if not policy.configured:
-        return _print_close_record(
-            {
-                "state": "refused",
-                "green": False,
-                "lease_id": lease_id,
-                "detail": (
-                    f"spend policy {args.spend} is unconfigured, so this close would run on "
-                    "invented shutdown timings; supply the reviewed policy this lease was "
-                    "launched under. Nothing was touched"
-                ),
-            },
-            2,
-            leases_root=leases_root,
-            lease_id=lease_id,
+        return _close_not_attempted(
+            args,
+            f"spend policy {args.spend} is unconfigured, so this close would run on invented "
+            "shutdown timings; supply the reviewed policy this lease was launched under. "
+            f"Nothing was touched, and the pod lease {lease_id} names may still be billing -- "
+            "go and look",
         )
     # Narrowing, not a check: a configured policy carries every one of these
     # (`SpendPolicy.__post_init__` refuses one that does not).
@@ -689,7 +779,13 @@ def _wire_balance_notify(provider: PodProvider, *, enabled: bool) -> _BalanceWir
 
     if not enabled:
         return _BalanceWiring("not requested: --notify was not passed")
-    attach = getattr(provider, "set_balance_notify", None)
+    try:
+        attach = getattr(provider, "set_balance_notify", None)
+    except Exception as error:  # noqa: BLE001 -- a vendor property may compute, and may fail
+        return _BalanceWiring(
+            f"--notify could not reach a balance-notification seam on "
+            f"{type(provider).__name__}: {type(error).__name__}: {error}"
+        )
     if not callable(attach):
         return _BalanceWiring(
             f"--notify was passed, but {type(provider).__name__} has no balance-notification "
@@ -714,8 +810,10 @@ def _wire_balance_notify(provider: PodProvider, *, enabled: bool) -> _BalanceWir
 
     try:
         attach(notify)
-    except (TypeError, ValueError) as error:
-        return _BalanceWiring(f"--notify could not wire balance notifications: {error}")
+    except Exception as error:  # noqa: BLE001 -- an unreachable phone never decides a close
+        return _BalanceWiring(
+            f"--notify could not wire balance notifications: {type(error).__name__}: {error}"
+        )
     wiring.detail = "wired: every account-balance observation this launch makes pages the phone"
     return wiring
 

@@ -7075,6 +7075,40 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
     assert provider.create_requests == []
 
 
+def test_cli_record_fixture_refuses_a_recorder_that_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other way the flag fails, on a provider that *can* record.
+
+    `FixtureRecorder` creates the parent directory, opens the file and narrows
+    its mode, so it raises `OSError` -- here because a regular file sits where
+    the fixture's parent directory belongs. Only `ValueError` was caught, so
+    this raised out of `cli.main` before the preview: a traceback where this
+    command promises a named refusal. `create` refuses, because nothing is paid
+    yet and an operator who asked for evidence should get evidence or a reason.
+    """
+
+    clock = Clock()
+    provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("a file where the fixture's parent directory should be", encoding="utf-8")
+
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["--record-fixture", str(blocked / "fixture.jsonl"), "create", "--request"],
+    )
+
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert "could not be attached" in printed["detail"]
+    assert str(blocked / "fixture.jsonl") in printed["detail"]
+    assert provider.create_requests == []
+
+
 # --- --notify wires launch and close through operations/pod/notify_hooks ----
 
 
