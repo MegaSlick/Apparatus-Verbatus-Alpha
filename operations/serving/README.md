@@ -344,10 +344,15 @@ order) before anything is built or sent; build the body deterministically
 profile's seed — this is why the client refuses at construction unless its
 caller's `record_temperature` is already 0, so a policy that disagrees is a
 named refusal, not a silent override); POST through
-`ServiceHandle.request_reading`; refuse before retention if the response is
-non-200 or names another model (bytes from the wrong source are not this
-chair's evidence); retain the raw response through the caller's `retain`
-callable; only then parse content — a content/choices problem becomes
+`ServiceHandle.request_reading`; **retain the raw response through the caller's
+`retain` callable, before anything is checked** — when vLLM refuses a request it
+says why in the body of a non-200, and that sentence is the artefact a rented
+card exists to produce, so it reaches disk before any refusal can discard it
+(this used to run the other way round, and the refusal's own docstring claimed
+otherwise); then refuse if the response is non-200 or names another model, with
+the retained reference and the head of the body in the refusal's `detail` —
+retention is not attribution, and bytes from the wrong source still never become
+a reading; only then parse content — a content/choices problem becomes
 `parse_problem` on the returned `ChairResponse`, never a raised exception,
 because a malformed body from a witness or reader is retained evidence, not a
 stage abort; and finally write one `chair-call-record.v1` blob (the closed

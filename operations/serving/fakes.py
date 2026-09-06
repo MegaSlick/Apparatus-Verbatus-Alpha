@@ -157,12 +157,12 @@ class FakeEndpoint:
         # (mirrors test_manager.py's own fake). Set true only where a test
         # needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
         self.sticky_after_stop = sticky_after_stop
-        # Deliberately opt-in, not a blanket invariant: a non-200 or
-        # wrong-model reading is refused with *no* blob written by design
-        # (`ChairClient._refuse_bytes_from_the_wrong_source`), so a test
-        # sequence that scripts one of those before a following read must not
-        # trip this check. Set true only where every prior reading in the
-        # sequence is expected to retain.
+        # Deliberately opt-in rather than a blanket invariant, because a test
+        # may drive this endpoint through a seam that never reaches
+        # `ChairClient.read` at all. Every reading that does reach it retains,
+        # including a non-200 or wrong-model one: retention now runs before the
+        # wrong-source refusal, so vLLM's own account of why it refused is on
+        # disk before the refusal is raised.
         self.assert_retained_before_next_request = assert_retained_before_next_request
         self._answers: list[ScriptedAnswer] = []
         self.requests: list[dict[str, object]] = []
@@ -242,16 +242,12 @@ class FakeEndpoint:
             if answer.usage is not None:
                 payload["usage"] = dict(answer.usage)
             body = json.dumps(payload).encode()
-        if answer.status == 200 and _peeked_model(body) in (None, self.served_model_id):
-            # `ChairClient._refuse_bytes_from_the_wrong_source` retains only a
-            # 200 response naming this endpoint's own model (or no model at
-            # all — a malformed body is still legitimate retained evidence);
-            # a non-200 or wrong-model answer is refused with no blob written
-            # by design (see the class docstring), so this fake must not
-            # expect one for those either.
-            self._last_served_reading_sha256 = hashlib.sha256(body).hexdigest()
-        else:
-            self._last_served_reading_sha256 = None
+        # Every body this fake serves as a reading is retained by
+        # `ChairClient.read`, whatever its status and whatever model it names:
+        # retention happens before the wrong-source check, so a 400 explaining
+        # a context overflow reaches disk before it is refused. The fake
+        # therefore predicts retention for all of them.
+        self._last_served_reading_sha256 = hashlib.sha256(body).hexdigest()
         return HttpResponse(answer.status, body)
 
     def _auto_probe_response(self, decoded: dict[str, object] | None, url: str) -> HttpResponse:
@@ -264,24 +260,6 @@ class FakeEndpoint:
             200,
             json.dumps({"model": model_id or self.served_model_id, "choices": [choice]}).encode(),
         )
-
-
-def _peeked_model(body: bytes) -> str | None:
-    """Mirrors ``client._peek_model``: the declared ``model``, or ``None``.
-
-    Kept local rather than imported so this fake predicts retention from the
-    wire shape alone, the same way the client's own pre-retention check does,
-    without depending on the client's private helper.
-    """
-
-    try:
-        payload = json.loads(body)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    model = payload.get("model")
-    return model if isinstance(model, str) else None
 
 
 # --------------------------- the structure chair's answers ---------------------------

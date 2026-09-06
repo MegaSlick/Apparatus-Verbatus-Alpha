@@ -362,29 +362,75 @@ def test_request_sha256_is_the_digest_of_the_body_actually_posted(tmp_path: Path
     assert response.request_sha256 == digest_bytes(posted_body)
 
 
-# --- refuse-before-retain: model mismatch and non-200 -------------------------
+# --- retain, then refuse: model mismatch and non-200 --------------------------
 
 
-def test_response_model_mismatch_refuses_with_no_blob_written(tmp_path: Path) -> None:
+def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
+    tmp_path: Path,
+) -> None:
+    """Retention is not attribution.
+
+    A body from another model is still not this chair's evidence and still
+    never becomes a reading -- the refusal is unchanged and no `ChairResponse`
+    comes back. What changed is that the bytes exist afterwards, by their own
+    digest, so a reader can see what actually arrived instead of taking the
+    refusal's word for it.
+    """
+
     client, endpoint, blob_store, _ = _built(tmp_path)
+    foreign = ScriptedAnswer(content="hello", finish_reason="stop", model="someone-elses-model")
     with client:
-        endpoint.script(
-            ScriptedAnswer(content="hello", finish_reason="stop", model="someone-elses-model")
-        )
+        endpoint.script(foreign)
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_MODEL_MISMATCH"
-    assert len(blob_store) == 0
+    assert len(blob_store) == 1
+    assert b"someone-elses-model" in blob_store.written[0]
+    assert digest_bytes(blob_store.written[0]) in excinfo.value.detail
+    assert "someone-elses-model" in excinfo.value.detail
 
 
-def test_non_200_refuses_with_no_blob_written(tmp_path: Path) -> None:
+def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
+    tmp_path: Path,
+) -> None:
+    """The one artefact a rented card exists to produce, no longer discarded.
+
+    When vLLM refuses a request it says *why* in the body of a non-200, and
+    that sentence is the whole diagnostic. It used to be thrown away here --
+    `_refuse_bytes_from_the_wrong_source` ran before `self._retain` -- so the
+    predicted first real boot returned a stack trace and no engine account of
+    what went wrong. GOVERNANCE 2: nothing is lost silently.
+    """
+
+    body = (
+        b'{"object":"error","message":"This model\'s maximum context length is 2048 tokens. '
+        b'However, you requested 3994 tokens.","type":"BadRequestError","code":400}'
+    )
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
-        endpoint.script(ScriptedAnswer(status=500, body=b'{"error":"boom"}'))
+        endpoint.script(ScriptedAnswer(status=400, body=body))
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
-    assert len(blob_store) == 0
+    assert blob_store.written == [body]
+    assert blob_store.has(digest_bytes(body))
+    assert "HTTP 400" in excinfo.value.detail
+    assert "maximum context length is 2048" in excinfo.value.detail
+    assert digest_bytes(body) in excinfo.value.detail
+
+
+def test_a_long_refused_body_is_retained_whole_and_previewed_short(tmp_path: Path) -> None:
+    """The detail carries a bounded head; the blob carries all of it."""
+
+    body = b'{"error":"' + b"x" * 4000 + b'"}'
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(status=502, body=body))
+        with pytest.raises(ChairResponseRefusal) as excinfo:
+            client.read(_request())
+    assert blob_store.written == [body]
+    assert len(excinfo.value.detail) < 1000
+    assert f"first 512 of {len(body)} bytes" in excinfo.value.detail
 
 
 # --- raw bytes retained before parsing; malformed body never raises -----------

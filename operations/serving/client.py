@@ -385,10 +385,24 @@ class ChairClient:
         response = handle.request_reading(
             request.kind, body, handle.profile.request_timeout_seconds
         )
-        _refuse_bytes_from_the_wrong_source(
-            response, expected_model_id=handle.profile.served_model_id
-        )
+        # Retention comes first, and it comes first for the one artefact a
+        # rented card exists to produce: when vLLM refuses a request it says
+        # *why* in the body of a non-200, and that sentence -- "this model's
+        # maximum context length is N tokens, however you requested M" -- is
+        # the whole diagnostic. Refusing before retaining threw it away, on a
+        # card billing by the hour, which is exactly what GOVERNANCE 2 forbids.
+        #
+        # Retention is not attribution. A body from another model is still not
+        # this chair's evidence and still never becomes a reading: the refusal
+        # below is unchanged and no `ChairResponse` is returned. What changes is
+        # that the bytes exist afterwards, by their own digest, so the refusal
+        # can name them and a reader can see what actually arrived.
         raw_response_ref = self._retain(response.body)
+        _refuse_bytes_from_the_wrong_source(
+            response,
+            expected_model_id=handle.profile.served_model_id,
+            raw_response_ref=raw_response_ref,
+        )
 
         content: str | None
         finish_reason: str | None = None
@@ -523,26 +537,56 @@ def _nonfinite_path(value: object, path: str = "") -> str | None:
     return None
 
 
-def _refuse_bytes_from_the_wrong_source(response: HttpResponse, *, expected_model_id: str) -> None:
-    """Refuse before retention: bytes from another model are not this chair's evidence.
+# How much of a refused body travels in the refusal's own detail. Enough to
+# carry vLLM's own overflow sentence, which is the artefact a real run is
+# paying for; short enough that a megabyte of HTML from something that is not
+# vLLM at all cannot be pasted into a traceback. The whole body is retained
+# either way and the refusal names where.
+_REFUSAL_BODY_PREVIEW_BYTES = 512
+
+
+def _body_preview(body: bytes) -> str:
+    """The head of a refused body, decoded loosely, for the refusal's detail."""
+
+    head = body[:_REFUSAL_BODY_PREVIEW_BYTES]
+    text = head.decode("utf-8", errors="replace")
+    if len(body) > _REFUSAL_BODY_PREVIEW_BYTES:
+        return f"{text!r} (first {_REFUSAL_BODY_PREVIEW_BYTES} of {len(body)} bytes)"
+    return f"{text!r} ({len(body)} bytes)"
+
+
+def _refuse_bytes_from_the_wrong_source(
+    response: HttpResponse,
+    *,
+    expected_model_id: str,
+    raw_response_ref: Mapping[str, str],
+) -> None:
+    """Refuse a response that is not this chair's, with its bytes already retained.
 
     Deliberately narrower than :func:`~operations.serving.http.parse_openai_reading`
     — it checks only status and, when the body parses as a JSON object naming a
     model, that name. Anything else (an unparseable body, one with no ``model``
-    field) is left for the full parse after retention, because that is
-    legitimate retained evidence for a malformed reading, not evidence from
-    somewhere else.
+    field) is left for the full parse, because that is legitimate retained
+    evidence for a malformed reading, not evidence from somewhere else.
+
+    ``raw_response_ref`` names the blob the caller has already written. Both
+    refusals carry it and the head of the body, so the engine's own account of
+    why it refused survives in the traceback as well as on disk.
     """
 
     if response.status != 200:
         raise ChairResponseRefusal(
-            "CHAIR_RESPONSE_HTTP_ERROR", f"reading response returned HTTP {response.status}"
+            "CHAIR_RESPONSE_HTTP_ERROR",
+            f"reading response returned HTTP {response.status}; its body is retained at "
+            f"{dict(raw_response_ref)!r} and begins {_body_preview(response.body)}",
         )
     model = _peek_model(response.body)
     if model is not None and model != expected_model_id:
         raise ChairResponseRefusal(
             "CHAIR_RESPONSE_MODEL_MISMATCH",
-            f"reading response model={model!r}, expected {expected_model_id!r}",
+            f"reading response model={model!r}, expected {expected_model_id!r}; its body is "
+            f"retained at {dict(raw_response_ref)!r} and begins "
+            f"{_body_preview(response.body)}",
         )
 
 
