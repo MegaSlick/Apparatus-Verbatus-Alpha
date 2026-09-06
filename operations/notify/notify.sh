@@ -66,6 +66,52 @@ if [ "${NTFY_SERVER+x}" = x ]; then
   exit 2
 fi
 
+# One reserved topic value means "a test harness is driving this; do not send."
+#
+# The seam every caller is supposed to use is an injected runner, and on the
+# night this was added three tests were not using it: they drove `pod` with
+# `--notify` against a fake provider, stubbed the launch hook and left the
+# balance hook real, and posted nine identical milestones to his phone. That
+# was invisible for as long as it was, because every earlier gate ran in a
+# worktree with no `private/ntfy.conf` — the script failed "no topic
+# configured" and the missing seam looked like a passing test. The gate that
+# finally ran in the checkout that *does* hold the topic sent them.
+#
+# So the harness stops relying on every caller getting its seam right: the root
+# `conftest.py` exports this value for the whole session and `.githooks/
+# check-all.sh` exports it for its pytest line. A test that reaches this script
+# anyway is reported here, loudly, on stderr, and no post is made.
+#
+# Deliberately *not* a failure. Exiting non-zero would make the guard change
+# what the suites measure — several tests assert on delivered/NOT DELIVERED
+# outcomes — and a guard that rewrites its subject's results is the shape
+# GOVERNANCE 10 refuses. It exits 0 and says what it swallowed, so the
+# behaviour under test is unchanged and the leak is still visible to anyone
+# reading stderr.
+#
+# The value is a literal, not a pattern: a prefix or suffix rule would make a
+# mistyped real topic silently stop notifying him.
+#
+# Exit 0 alone was a second lie in the place built to stop the first one. Every
+# Python bridge over this script (`operations/pod/notify_bridge.py`,
+# `operations/pod/notify_hooks.py`, `operations/operator/notify_bridge.py`) maps
+# exit 0 to `delivered=True`, so the record printed under the sink read "Phone
+# notification: sent." for a notification that never left the machine. The exit
+# code stays 0 -- suites assert on delivered versus NOT DELIVERED outcomes, and a
+# guard must not change what its subject measures -- so the distinction is
+# carried on stdout instead, where nothing else in this script ever writes: one
+# stable line, `NOTIFY_SUPPRESSED <topic>`, which each bridge maps to an explicit
+# suppressed outcome. The human reason still goes to stderr, unchanged.
+#
+# The topic is safe to print here and nowhere else in this script: control only
+# reaches this line when it is exactly the reserved public constant, never the
+# bearer secret.
+if [ "$topic" = "verbatus-test-sink" ]; then
+  printf 'NOTIFY_SUPPRESSED %s\n' "$topic"
+  echo "notify: test sink — not sent ($event): $message" >&2
+  exit 0
+fi
+
 # `start` fires from a hook, not a hand. The desktop app can open several
 # sessions in one launch — each fires the hook, and four pings for one sitting
 # is noise, which is what makes the next one get ignored. One start per quarter

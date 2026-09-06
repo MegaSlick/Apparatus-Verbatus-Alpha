@@ -6,9 +6,16 @@ verification.
 
 ## Boundary
 
-- **Repository-writing work runs in a chamber.** The agent gets its own clone and branch,
-  a full shell, and tests. It cannot push. `operations/autoclave/README.md` owns the
-  mechanism.
+- **Repository-writing work runs in a worktree seat by default.** The agent gets its own
+  linked worktree and branch, a full shell, and tests, on this machine and under the
+  tool-call guard. PR #84 made that guard judge each worktree's own checkout, so a seat
+  there is bounded by the same six refusals the session is, plus the two that apply to a
+  spawned agent alone.
+- **A chamber is the seat for two jobs, not the default one.** Reach for
+  `operations/autoclave/` when the work needs the window onto the old pipeline
+  (`AUTOCLAVE_WINDOW`, see below), or when it installs a dependency this machine should
+  not be asked to trust. Otherwise the container buys isolation nobody is spending and
+  costs a clone, an image and a hand-off.
 - **A chamber sees this repository and the design notes, not the old pipeline.** The
   window closed on 2026-08-20; `/specs` carries the notes, and the old code arrives only
   when `AUTOCLAVE_WINDOW` is set on `new` — mounts are fixed at container creation, so
@@ -18,11 +25,17 @@ verification.
   only after the mount is confirmed in the chamber, never because the brief named it.
   `operations/autoclave/briefs/rebuilder.md` is the one brief that assumes the window and
   says so at the top.
-- **Host agents are read-only.** The custom `scout`, `auditor`, and `consult` roles have no
-  shell or write tools. Use them for lookup or advice when a chamber adds no value.
+- **The three custom host roles are read-only.** `scout`, `auditor` and `consult` hold no
+  shell or write tools, and `test_roster.py` keeps it that way. That bound is about those
+  role files, not about the machine: a worktree seat writes and runs a shell, and what
+  holds it is the guard and its own branch rather than an absent tool.
 - **No agent edits a governed path, pushes, merges, opens a pull request, sends a
   notification, or starts paid infrastructure.** It proposes; the main session decides
-  and acts where authorized.
+  and acts where authorized. The first two halves are mechanical: the guard's seventh
+  refusal stops a governed-path write and its eighth stops `git push`, `gh pr
+  create`/`merge`/`ready`, and the REST and GraphQL spellings of the same two acts —
+  keyed on the spawned-agent name, so the session is untouched. A seat leaves its work
+  committed on its branch and names it in the report.
 
 Tell every agent to read `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
 and `CLAUDE.md` from disk. Injected context may be older than the checkout.
@@ -103,8 +116,10 @@ after reasonable investigation; it is not a route for handing routine work back 
 
 ## Integration
 
-**A chamber builds and audits; the host integrates.** A chamber's brief charges it with its own independent audit round, and a chamber
-returns a branch or a report together with that audit's ledger. The host verifies the
+**A seat builds and audits; the host integrates.** A seat's brief charges it with its own
+independent audit round, and it returns a branch or a report together with that audit's
+ledger — a branch in a worktree it cannot push, or a branch out of a chamber it could
+never have pushed. The host verifies the
 load-bearing claims and the check results, runs the review loops and the gate,
 integrates, and pushes. **The host does not re-read the returned diff line by line** —
 that spends the context the chamber existed to save and adds a reader who is no longer
@@ -128,6 +143,8 @@ Built-in host agents receive this preamble:
 
 > You are working in Apparatus Verbatus. Read `GOALS.md`, `GOVERNANCE.md`,
 > `ARCHITECTURE.md`, `GLOSSARY.md`, and `CLAUDE.md` from disk. Never edit a governed path,
-> push, merge, open a pull request, notify anyone, or start paid infrastructure. Make and
+> push, merge, open a pull request, notify anyone, or start paid infrastructure — the
+> guard refuses the first four mechanically, and a refusal is final, so commit your work
+> on your branch and name it in your report rather than trying another spelling. Make and
 > explain ordinary engineering decisions; stop only for a concrete governance conflict or
 > an action reserved to Tyrel.

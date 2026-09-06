@@ -100,15 +100,23 @@ def test_no_host_role_can_write_or_run_a_shell():
     # `rebuilder` held `Write`, `Edit` and `Bash` on Tyrel's machine — the session's
     # own reach, granted to something running unattended against a prompt nobody
     # reads twice — and each carried its own prohibitions in prose to compensate.
-    # They are briefs now (`operations/autoclave/briefs/`), dispatched into a
-    # container where the boundary is the mount rather than the wording.
+    # They are briefs now (`operations/autoclave/briefs/`), dispatched into a seat
+    # whose boundary is a mechanism rather than the wording: a chamber's mount, or,
+    # since R4 (2026-09-05), a worktree under the tool-call guard's eight refusals.
+    #
+    # **R4 did not relax this one.** What it moved is where a *writing* seat runs;
+    # what this pins is that the three custom roles in this directory stay readers.
+    # A role file's tools are granted for every dispatch of that name, forever, with
+    # no brief in front of them — which is a different and worse thing than a seat
+    # given a shell for one task under a brief the host wrote.
     #
     # Stated as a bound on the roster rather than as a fact about today's roles:
     # this is what fails if a writing role is ever added back here instead.
     for path in ROLE_FILES:
         assert not writes(path), (
-            f"{path.name} holds a write or shell tool. Writing work is dispatched into a "
-            "chamber — see operations/autoclave/README.md — not spawned on this machine."
+            f"{path.name} holds a write or shell tool. Writing work is dispatched per "
+            "task into a worktree seat or a chamber — see .claude/agents/README.md — "
+            "never granted standing to a role file here."
         )
 
 
