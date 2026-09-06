@@ -1177,29 +1177,46 @@ rectangle pairs, not pages, so sample size clears it comfortably. Sample size
 was never the obstacle here, provenance is, and provenance is not a number a
 larger sample can fix.
 
-**The Ink Map's and the Recensor's own paper value is still the raw histogram
-mode, so their coverage audit is vacuous on a photographed page — the next
-cross-stage unit.** `common/residual_ink.py::_background_level` returns the
-page's single most common pixel value and `residual_ink` then calls a pixel ink
-only if it is `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` levels below it. On a
-photographed register opening the most common value is the bezel — 0 or near it
-on every one of the 127 calibration pages that reaches the surround branch — so
-that predicate is satisfied by almost nothing, the residual ink of a page full of
-writing computes to approximately zero, and the independent coverage proof that
-exists to catch a missed region passes by construction rather than by
-measurement. Both consumers are affected: `pipeline/1_ink_map/run.py` and
-`pipeline/5_recensor/run.py` call the same function. **This stage's own
-inference has moved and theirs has not**, which is why it is named here: since
-2026-09-06 the Designator distinguishes a photographed page from a dark one,
-derives its paper value from the two population modes, and refuses by name a
-value that is not a background of its own page (`[grouping.background]`), while
-the audit that is meant to be independent of it still uses the statistic the
-Designator retired. Closing it means deciding whether that audit should share
-this stage's inference — which would cost it the independence that is the whole
-point of a second opinion — or grow its own, calibrated on the same real
-material. That is a cross-stage decision and this handoff does not make it; what
-this handoff records is that until it is made, a green residual-ink audit on a
-photographed page is not evidence of coverage.
+**The Ink Map's and the Recensor's own paper value is this stage's, since
+2026-09-06 — the cross-stage unit named here is done.** It used to be the raw
+histogram mode: `common/residual_ink.py::_background_level` returned the page's
+single most common pixel and `residual_ink` then called a pixel ink only if it
+was `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` levels below it, so on a
+photographed opening — whose most common value is the bezel, 0 or near it on
+every one of the 127 calibration pages that reaches the surround branch — the
+residual of a page full of writing computed to approximately zero and the
+independent coverage proof passed by construction.
+
+The inference now lives in `common/background.py` and all three stages call it
+on the same page bytes: this stage's `structure.py` re-exports it, and
+`pipeline/1_ink_map/run.py` and `pipeline/5_recensor/run.py` reach it through
+`common/residual_ink.py`. The decision the handoff left open was whether the
+audit should share this inference and lose its independence, or grow its own on
+the same real material. **It shares the background and keeps its own contrast.**
+Paper is a property of the page, not of the stage looking at it — two stages
+inferring two different paper values for one page is a disagreement about the
+specimen, and there is no second opinion to be had about it. Sensitivity is a
+property of the instrument, and that stays separate: this stage scans at the
+margin each page derives for itself, reconciles at `SECONDARY_MARGIN = 2`, and
+the audit runs at its own fixed 40. All three now sit under one background,
+which is what turns `recensor_contrast >= SECONDARY_MARGIN` from arithmetic over
+an empty set into a real containment —
+`test_the_containment_is_not_vacuous_on_a_photographed_page` proves it on a
+photographed-shaped page where the three ink sets nest strictly.
+
+The sealed `[grouping.background]` block did **not** move to a shared config. All
+three stages read `config/designator_grouping.toml`, validate it through one
+function (`common.background.validate_background_table`) and prove the bytes
+against the run's own `designator-grouping` seal, so each record names the policy
+it ran under. The cost is stated where it is paid: a file named for this stage is
+read by three, and that is a naming debt for whichever unit splits `config/` by
+concern, not a reason to seal one calibration twice.
+
+A page this inference refuses is now refused by name at all three: this stage
+records `background_source: "not-inferable"` and `ink_measurable: false`, the Ink
+Map publishes `outcome="ink-not-measurable"` with no counts, and the Recensor's
+audit carries the page in `page_coverage.unmeasurable_pages` on every act that
+touches it rather than in `checked_pages`.
 
 **A page-fallback tile's per-tile `rationale` still says "no ink to group"
 even on the live path.** The record-level `reason` on `page-fallback` now

@@ -40,7 +40,21 @@
 # honestly set.
 #
 # `[grouping.background]` holds the policy the per-page background inference runs
-# under, and it is the only block in this file measured against real material --
+# under. **Three stages read it, not one.** The inference moved to
+# common/background.py on 2026-09-06 so that the Ink Map (pipeline/1_ink_map) and
+# the Recensor's residual-ink audit (common/residual_ink.py) infer a page's paper
+# value the same way the Designator's structure pass does; before that they took
+# the page's raw histogram mode, which on a photographed opening is the bezel, so
+# their coverage audit measured approximately no ink on a page full of writing and
+# passed by construction. All three load this block through
+# common.background.load_background_config or the Designator's own
+# load_grouping_config, validate it through one function, and prove the bytes they
+# read against the run's sealed designator-grouping digest, so a record always
+# names the policy it ran under. The file is still named for the Designator, which
+# is now one reader of three; splitting config/ by concern rather than by stage is
+# a later unit's work and this block goes with it when that happens.
+#
+# It is the only block in this file measured against real material --
 # so it carries a provenance block of its own, with
 # `calibrated_for_this_corpus = true` and `sample_count = 127`, rather than
 # sitting under the file-level provenance whose `sample_count` is 0. One block
@@ -130,7 +144,8 @@
 # `pipeline/2_designator/HANDOFF.md` for the reasoning and the remainder.
 #
 # **Two constants deliberately do NOT live here and never will:**
-# `structure.PRIMARY_MARGIN` (20) and `structure.SECONDARY_MARGIN` (2) are
+# `PRIMARY_MARGIN` (20, declared in common/background.py since the inference moved
+# there, and re-exported by structure.py) and `structure.SECONDARY_MARGIN` (2) are
 # absolute 8-bit ink-intensity offsets, not page geometry -- scaling either by a
 # page dimension is meaningless, and `common/test_designator_recensor_ink_calibration.py`
 # is an AST pin that reads `SECONDARY_MARGIN` as a source literal in

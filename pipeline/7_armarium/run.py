@@ -69,7 +69,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_sealed_page_pixels,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
-from common.residual_ink import edge_ink_from_runs  # noqa: E402
+from common.residual_ink import INK_NOT_MEASURABLE, edge_ink_from_runs  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -724,12 +724,22 @@ def ink_map_page_rows(
                 "record decides the edge hold. Restore the sealed Ink Map inventory or restart "
                 "the run before exporting."
             )
-        if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
+        if record["outcome"] not in {"mapped", "unclaimed-edge-ink", INK_NOT_MEASURABLE}:
             raise FatalAccounting(
                 "ink-map has an unknown page finding outcome. The Armarium cannot determine "
                 "whether the page remains held. Rebuild the Ink Map under this version before "
                 "exporting."
             )
+        if record["outcome"] == INK_NOT_MEASURABLE:
+            # **A page whose paper value the shared background inference refused.**
+            # There is no threshold, so there are no retained runs to re-measure
+            # and no hold to release: the page stays in the denominator, carries
+            # its refusal, and is re-measured by nobody. Writing zeros here would
+            # put a measurement nobody took into the export (GOVERNANCE 10) --
+            # the same reason a `mapped` page records `remeasured: None` below --
+            # and dropping the row would break the census reconciliation.
+            found[ordinal] = {"outcome": record["outcome"], "evidence": None}
+            continue
         evidence = payload.get("edge_findings")
         if not isinstance(evidence, dict):
             raise FatalAccounting(

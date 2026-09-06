@@ -1,0 +1,157 @@
+"""One paper value across three stages, proved on the shape that broke the old one.
+
+`common/test_designator_recensor_ink_calibration.py` pins the two margins as
+source literals and proves the three ink sets nest under one background. This
+proves the same claim through the *shipped functions on both sides*: the
+Designator's own `structure.ink_pixels` and `conservation`-margin scan against
+`common.residual_ink.residual_ink`, on a page with a photographed register
+opening's shape. A stage may import `common/`; the reverse is what
+`pipeline/test_stage_import_boundaries.py` forbids, and it is why this half of
+the proof lives here rather than beside the pin.
+"""
+
+import structure
+from grouping_config import load_grouping_config, resolve_background_policy
+
+from common.residual_ink import MINIMUM_CONTRAST_BELOW_BACKGROUND, residual_ink
+
+# The shape, not a photograph: a 200x200 frame of near-black at 5 around a lit
+# interior at 210, with three marks on it. What it takes from real material is
+# the one property that broke the retired inference -- 20,400 pixels of frame
+# against the interior's 19,000 of paper (19,600 less the 600 the three marks
+# take), so the page's single most common value is the frame's
+# 5, which `common/residual_ink.py` called paper until 2026-09-06. Nothing here
+# is a calibration sample; the Designator's 127 real pages are in its own survey.
+FRAME = 5
+PAPER = 210
+DARK_STROKE = 40
+MID_STROKE = 160
+FAINT_STROKE = 180
+
+
+def photographed_shaped_page() -> tuple[int, int, list[bytearray]]:
+    width = height = 200
+    border = 30
+    rows = [bytearray([FRAME] * width) for _ in range(height)]
+    for y in range(border, height - border):
+        for x in range(border, width - border):
+            rows[y][x] = PAPER
+    for value, top, tall in ((DARK_STROKE, 60, 10), (MID_STROKE, 90, 5), (FAINT_STROKE, 110, 5)):
+        for y in range(top, top + tall):
+            for x in range(50, 80):
+                rows[y][x] = value
+    return width, height, rows
+
+
+def test_all_three_readers_infer_one_paper_value_on_a_photographed_shaped_page():
+    """The Designator, the Ink Map and the Recensor's audit, one call, one answer.
+
+    The Ink Map and the Recensor reach the inference through
+    `common.residual_ink`; this stage reaches it through `structure`, which
+    re-exports it. Asserting the two objects are the same function is what makes
+    "they cannot come to disagree" a fact about the code rather than about two
+    call sites that currently match.
+    """
+    import common.background
+    import common.residual_ink
+
+    assert structure.infer_background_evidence is common.background.infer_background_evidence
+    assert common.residual_ink.infer_background_evidence is (
+        common.background.infer_background_evidence
+    )
+
+    width, height, rows = photographed_shaped_page()
+    policy = resolve_background_policy(load_grouping_config(), width, height)
+    evidence = structure.infer_background_evidence(width, height, rows, background_policy=policy)
+
+    assert evidence["background"] == PAPER
+    assert evidence["source"] == structure.BACKGROUND_SOURCE_INTERIOR_MODE
+    assert evidence["dark_mode"] == FRAME
+    # (210 - 5) * 3333 // 10000 = 68, well past the floor of 20.
+    assert evidence["ink_margin"] == 68
+
+    audited = residual_ink(width, height, rows, [], background_policy=policy)
+    assert audited["background"]["background_level"] == evidence["background"]
+    assert audited["background"]["background_source"] == evidence["source"]
+    assert audited["background"]["dark_mode"] == evidence["dark_mode"]
+    assert audited["background"]["ink_margin"] == evidence["ink_margin"]
+    assert audited["background"]["ink_threshold"] == PAPER - MINIMUM_CONTRAST_BELOW_BACKGROUND
+
+
+def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more():
+    """The containment, over the shipped ink sets rather than over thresholds.
+
+    Three nested sets, strictly, and the strictness is what says the claim is
+    not an equality that happens to hold today:
+
+    * `structure.ink_pixels` at the page's own derived margin -- what the
+      proposing scan counts.
+    * The audit's, at its own fixed contrast of 40. It must contain the scan's,
+      or a mark the Designator dismissed could be called ink by the audit and
+      the disagreement would be in the direction that loses ink.
+    * `structure.ink_pixels` at `SECONDARY_MARGIN`, the conservation
+      denominator, which must contain the audit's for the same reason one level
+      up.
+    """
+    width, height, rows = photographed_shaped_page()
+    policy = resolve_background_policy(load_grouping_config(), width, height)
+    evidence = structure.infer_background_evidence(width, height, rows, background_policy=policy)
+    background = evidence["background"]
+
+    scanned = structure.ink_pixels(
+        width, height, rows, background=background, margin=evidence["ink_margin"]
+    )
+    reconciled = structure.ink_pixels(
+        width, height, rows, background=background, margin=structure.SECONDARY_MARGIN
+    )
+    audited = structure.ink_pixels(
+        width, height, rows, background=background, margin=MINIMUM_CONTRAST_BELOW_BACKGROUND
+    )
+
+    # The retired inference on this page: the frame wins the histogram, and 40
+    # levels below 5 is below every 8-bit sample, so the audit's set was empty
+    # and every containment below was true of nothing.
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    assert max(range(256), key=lambda value: histogram[value]) == FRAME
+    assert FRAME - MINIMUM_CONTRAST_BELOW_BACKGROUND < 0
+
+    assert scanned < audited < reconciled
+    assert len(scanned) == 20_700
+    assert len(audited) == 20_850
+    assert len(reconciled) == 21_000
+
+    strokes = {(x, y) for y in range(60, 70) for x in range(50, 80)}
+    assert strokes <= scanned
+    assert strokes <= audited
+
+    # And the audit's own counts come from the same set, through the shipped
+    # measure rather than through a threshold restated here.
+    measured = residual_ink(width, height, rows, [], background_policy=policy)
+    assert measured["total_ink_pixels"] == len(audited)
+
+
+def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
+    """One refusal, one name, whichever stage asks.
+
+    The inverted scan `test_structure.py` uses: 80% of the page at 30 and 20% at
+    220, whose mode is darker than its own mean and whose interior is dark, so
+    no branch can call anything on it paper. The Designator refuses it and
+    records `ink_measurable: false`; the audit must refuse it by the same
+    exception rather than measure zero residual ink on it, which is what a
+    coverage proof taken under a divider that is not paper would be.
+    """
+    import pytest
+
+    width = height = 100
+    rows = [bytearray([30] * width) for _ in range(height)]
+    for y in range(80, height):
+        rows[y] = bytearray([220] * width)
+    policy = resolve_background_policy(load_grouping_config(), width, height)
+
+    with pytest.raises(structure.BackgroundInferenceRefusal):
+        structure.infer_background_evidence(width, height, rows, background_policy=policy)
+    with pytest.raises(structure.BackgroundInferenceRefusal):
+        residual_ink(width, height, rows, [], background_policy=policy)

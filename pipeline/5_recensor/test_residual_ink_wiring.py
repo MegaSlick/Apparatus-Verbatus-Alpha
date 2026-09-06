@@ -28,12 +28,19 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from common.background import (
+    DEFAULT_BACKGROUND_CONFIG_PATH,
+    load_background_config,
+    resolve_background_policy,
+)
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
-from common.imaging import encode_grayscale_png
+from common.imaging import dimensions, encode_grayscale_png
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +57,17 @@ def _load_module(relative_path: str, name: str):
 RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_residual_ink_wiring")
 sys.path.insert(0, str((ROOT / "pipeline" / "5_recensor")))
 from residual_ink import page_residual_ink  # noqa: E402
+
+
+def _measure_page(image_bytes, covered):
+    """`page_residual_ink` under this page's own resolved background policy."""
+    return page_residual_ink(
+        image_bytes,
+        covered,
+        background_policy=resolve_background_policy(
+            load_background_config(), *dimensions(image_bytes)
+        ),
+    )
 
 
 def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
@@ -91,6 +109,15 @@ class _FakeContext:
     def __init__(self, tree):
         self.tree = tree
         self.run = tree.read_run()
+        # `page_coverage_findings` reads its background policy from the path its
+        # own parsed argv names and proves those bytes against the run's seal,
+        # the way the Designator and the Ink Map do. A stub without these two
+        # would exercise a stage that did neither.
+        self.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+        self.required_configs = []
+
+    def require_sealed_config(self, name, observed_sha256):
+        self.required_configs.append((name, observed_sha256))
 
 
 def test_regions_by_source_page_reads_every_real_designator_region(tmp_path):
@@ -259,12 +286,12 @@ def test_a_genuinely_incomplete_covered_set_flags_real_pipeline_pixels(tmp_path)
     incomplete_coverage = [max(by_page[1], key=lambda bounds: bounds["y"])]
     assert len(incomplete_coverage) < len(by_page[1])
 
-    finding = page_residual_ink(image_bytes, incomplete_coverage)
+    finding = _measure_page(image_bytes, incomplete_coverage)
     assert finding["flagged"] is True
     assert finding["outside_ink_pixels"] > 0
 
     # And the full, real coverage set clears it, on the identical bytes.
-    full_finding = page_residual_ink(image_bytes, by_page[1])
+    full_finding = _measure_page(image_bytes, by_page[1])
     assert full_finding["flagged"] is False
 
 
@@ -359,3 +386,83 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked(tmp_path):
+    """The audit refuses the page rather than reporting zero residual ink on it.
+
+    The page substituted here is the inverted scan
+    `pipeline/2_designator/test_structure.py` uses -- 80% at 30, 20% at 220 --
+    whose mode is darker than its own mean and whose interior is dark, so no
+    branch of the shared inference can call anything on it paper. Before
+    2026-09-06 this check would have taken 30 as the paper value, found no pixel
+    40 levels below it, and reported the page as carrying no ink outside
+    coverage at all: a green coverage proof over a page nobody measured.
+
+    Page 1's bytes are substituted at the read this check makes, with the page
+    record's own declared digest moved to match, so the boundary check passes
+    and what is exercised is the measurement rather than the verification. The
+    sealed blob on disk is left alone: the run tree verifies every artifact
+    input when it builds a manifest, and rewriting it would fail there first.
+    """
+    tree = _built_through_designator(tmp_path)
+    context = _FakeContext(tree)
+    pages = RUN.sealed_page_images(context)
+    relative_path = pages[1]["payload"]["image_path"]
+
+    rows = [bytearray([30] * 100) for _ in range(100)]
+    for y in range(80, 100):
+        rows[y] = bytearray([220] * 100)
+    substituted = encode_grayscale_png(100, 100, rows)
+    pages[1]["payload"]["source_sha256"] = digest_bytes(substituted)
+
+    class SubstitutingTree:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def read_bytes(self, path):
+            return substituted if path == relative_path else self._inner.read_bytes(path)
+
+    context.tree = SubstitutingTree(tree)
+    findings = RUN.page_coverage_findings(context, sealed_pages=pages)
+    assert findings[1]["ink_measurable"] is False
+    assert findings[1]["named_finding"] == "ink-not-measurable"
+    assert "majority ink" in findings[1]["background_refusal"]
+    # No count of any kind: not zero ink, no measurement.
+    assert "total_ink_pixels" not in findings[1]
+    assert "flagged" not in findings[1]
+
+    # Page 2 was not substituted and still measures normally, so the refusal is
+    # about the page rather than about the run.
+    assert findings[2]["flagged"] is False
+
+    regions = [
+        {"payload": {"transform": {"source_page_ordinal": 1}}},
+        {"payload": {"transform": {"source_page_ordinal": 2}}},
+    ]
+    coverage = RUN.page_coverage_for(regions, findings)
+    assert coverage == {
+        "checked_pages": [2],
+        "flagged_pages": [],
+        "unmeasurable_pages": [1],
+    }
+
+
+def test_an_unmeasurable_page_confirms_no_witness_pointer_and_authorizes_no_recovery():
+    """`None` in the ink map is not `0` and is not a missing artifact.
+
+    Recovery requires independently measured ink outside every current cut. A
+    page the Ink Map published as `ink-not-measurable` has no measurement at
+    all, so no pointer at it can be confirmed -- and the absence must not be
+    read as a missing artifact either, which is a fatal accounting gap with a
+    different repair. The page is not lost: every act touching it carries it in
+    `page_coverage.unmeasurable_pages`.
+    """
+    observation = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
+
+    assert RUN.unclaimed_ink_observations({1: None}, [observation], 1, {}) == []
+    with pytest.raises(FatalAccounting, match="no ink-map page-space evidence"):
+        RUN.unclaimed_ink_observations({}, [observation], 1, {})

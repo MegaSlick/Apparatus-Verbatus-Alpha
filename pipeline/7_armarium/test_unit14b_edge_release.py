@@ -224,3 +224,62 @@ def test_a_verified_region_with_no_bounds_is_refused_not_skipped(monkeypatch):
     )
     with pytest.raises(FatalAccounting, match="no crop bounds"):
         armarium.claimed_bounds_by_page(_context({DESIGNATOR: [region]}), {})
+
+
+def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
+    """`ink-not-measurable`: a census row with no measurement and no evidence.
+
+    The Ink Map publishes this when the shared background inference refuses a
+    page's paper value: no threshold was cut, so there are no retained runs to
+    re-measure and no counts a hold could be derived from. The row must still
+    exist -- the page census is reconciled against these rows, and a missing one
+    is refused as a denominator mismatch -- and it must carry `remeasured: None`
+    for the same GOVERNANCE 10 reason a `mapped` page does, only more strongly:
+    here nothing was measured at all.
+    """
+    armarium = _armarium()
+    record = {
+        "artifact_id": "a",
+        "outcome": "ink-not-measurable",
+        "payload": {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "the page is majority ink",
+            "background_config_sha256": "0" * 64,
+        },
+    }
+    rows = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+    assert rows == ({"ordinal": 1, "initial_outcome": "ink-not-measurable", "remeasured": None},)
+    assert armarium.edge_hold_pages_from_rows(list(rows)) == ()
+
+
+def test_the_export_verifier_accepts_the_unmeasurable_row_and_refuses_a_measured_one():
+    """The closed row shape knows the third outcome, and still refuses a claim.
+
+    A row that says the page could not be measured and then carries a
+    re-measurement is the same contradiction as a `mapped` page carrying one:
+    a measurement nobody took, in the one file a clean-machine verifier reads.
+    """
+    # Bare, the way this stage's other tests import it: pytest's prepend import
+    # mode puts this directory on `sys.path`, and a `spec_from_file_location`
+    # load leaves the module unregistered, which its dataclasses cannot resolve.
+    from armarium_export import _validate_ink_map_pages
+
+    from common.contracts.errors import SchemaRefusal
+
+    row = {"ordinal": 1, "initial_outcome": "ink-not-measurable", "remeasured": None}
+    assert _validate_ink_map_pages([row], "subject") == [row]
+    with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
+        _validate_ink_map_pages(
+            [
+                {
+                    **row,
+                    "remeasured": {
+                        "total_ink_pixels": 1,
+                        "outside_ink_pixels": 1,
+                        "edge_band_pixels": 1,
+                    },
+                }
+            ],
+            "subject",
+        )

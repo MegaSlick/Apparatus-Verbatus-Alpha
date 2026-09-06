@@ -29,6 +29,11 @@ from common.act_visibility_geometry import (  # noqa: E402
     classify_capture_visibility,
     expected_surface_cells,
 )
+from common.background import (  # noqa: E402
+    BackgroundInferenceRefusal,
+    load_background_config,
+    resolve_background_policy,
+)
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
@@ -57,6 +62,7 @@ from common.cross_capture_coverage import (  # noqa: E402
     same_chair_witness_floor,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.imaging import grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unrouted_observations,
@@ -73,7 +79,11 @@ from common.recovery import (  # noqa: E402
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
-from common.residual_ink import MINIMUM_INK_PIXELS, page_residual_ink  # noqa: E402
+from common.residual_ink import (  # noqa: E402
+    INK_NOT_MEASURABLE,
+    MINIMUM_INK_PIXELS,
+    residual_ink,
+)
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -1633,6 +1643,12 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     regions = regions_by_source_page(context)
     if not regions:
         return {}
+    # The same sealed file the Designator and the Ink Map read, proved against
+    # the digest this run bound at `open_context`. Read once for the run: only
+    # the two band widths are per-page, and `resolve_background_policy` derives
+    # those from each page's own dimensions.
+    background_config = load_background_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", background_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
     findings: dict[int, dict] = {}
     for ordinal, bounds in regions.items():
@@ -1652,7 +1668,30 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 f"the sealed Exemplar page {ordinal} the residual-ink check read does not "
                 "match the pixel digest its own page record verified"
             )
-        findings[ordinal] = page_residual_ink(image_bytes, bounds)
+        width, height, rows = grayscale_rows(image_bytes)
+        try:
+            findings[ordinal] = residual_ink(
+                width,
+                height,
+                rows,
+                bounds,
+                background_policy=resolve_background_policy(background_config, width, height),
+            )
+        except BackgroundInferenceRefusal as error:
+            # **The audit refuses the page rather than reporting zero on it.**
+            # Its paper value could not be inferred, so "how much ink is outside
+            # every cut" has no answer here at all; a finding of zero would be a
+            # green coverage proof taken under a divider that is not paper, which
+            # is exactly the failure this stage's audit stopped being able to
+            # catch while it inferred its own background. Recorded rather than
+            # dropped: `page_coverage_for` carries it to every act that touches
+            # the page, so no consumer reads the absence as a clean page.
+            findings[ordinal] = {
+                "ink_measurable": False,
+                "named_finding": INK_NOT_MEASURABLE,
+                "background_refusal": str(error),
+                "background_config_sha256": background_config["config_sha256"],
+            }
     return findings
 
 
@@ -1685,16 +1724,33 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
             and isinstance(region["payload"].get("transform"), dict)
         }
     )
-    checked = [ordinal for ordinal in ordinals if ordinal in findings]
+    present = [ordinal for ordinal in ordinals if ordinal in findings]
+    # A page whose background the shared inference refused is *not* checked. It
+    # was looked at and no measurement came back, which is a third state beside
+    # "checked and clear" and "never checked", and the field set says all three
+    # apart rather than folding the new one into either: an unmeasurable page in
+    # `checked_pages` would be a coverage claim nobody measured, and an
+    # unmeasurable page in neither list would be indistinguishable from a page
+    # no region was ever cut on.
+    unmeasurable = {
+        ordinal for ordinal in present if findings[ordinal].get("ink_measurable") is False
+    }
+    checked = [ordinal for ordinal in present if ordinal not in unmeasurable]
     return {
         "checked_pages": checked,
         "flagged_pages": [ordinal for ordinal in checked if findings[ordinal].get("flagged")],
+        "unmeasurable_pages": sorted(unmeasurable),
     }
 
 
-def ink_map_by_page(context) -> dict[int, dict]:
-    """Read the sealed page-space evidence without re-decoding page pixels."""
-    maps: dict[int, dict] = {}
+def ink_map_by_page(context) -> dict[int, dict | None]:
+    """Read the sealed page-space evidence without re-decoding page pixels.
+
+    A page the Ink Map published as `ink-not-measurable` maps to `None`: it is
+    in the census and it has no retained runs, because the shared background
+    inference refused its paper value and no threshold was ever cut.
+    """
+    maps: dict[int, dict | None] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
             continue
@@ -1708,17 +1764,27 @@ def ink_map_by_page(context) -> dict[int, dict]:
                 "its ink evidence to a sealed page. Restore the sealed Ink Map inventory or "
                 "restart the run before rerunning the Recensor."
             )
-        if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
-            raise FatalAccounting(
-                f"ink-map page {ordinal} has no readable ink-runs.v1 page-space evidence. The "
-                "Recensor cannot confirm witness pointers from a bare page outcome. Restore the "
-                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
-            )
         if ordinal in maps:
             raise FatalAccounting(
                 f"ink-map repeats page ordinal {ordinal}. The Recensor has no rule for choosing "
                 "which retained page-space evidence confirms witness pointers. Restore the sealed "
                 "Ink Map inventory or restart the run before rerunning the Recensor."
+            )
+        if record.get("outcome") == INK_NOT_MEASURABLE:
+            # **Present, and explicitly without evidence.** The shared background
+            # inference refused this page's paper value, so the Ink Map cut no
+            # threshold and retained no runs. `None` rather than an absent key,
+            # because "the map never measured this page" and "the map has no
+            # record of this page at all" are different faults and the caller
+            # below must be able to tell them apart: the first is a page whose
+            # ink nobody could measure, the second is a missing artifact.
+            maps[ordinal] = None
+            continue
+        if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has no readable ink-runs.v1 page-space evidence. The "
+                "Recensor cannot confirm witness pointers from a bare page outcome. Restore the "
+                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
             )
         maps[ordinal] = evidence
     return maps
@@ -1848,6 +1914,15 @@ def unclaimed_ink_observations(
     other malformed-evidence path in this module raises.
     """
     evidence = maps.get(page_ordinal)
+    if evidence is None and page_ordinal in maps:
+        # **The Ink Map measured this page and refused it by name.** There is no
+        # independent ink measurement, so no pointer here can be confirmed and
+        # no recovery may be authorized from one -- recovery requires measured
+        # ink outside every cut, and this page has no measurement at all. That
+        # is not the same as measuring zero, and it is not lost: the page is
+        # carried in every touching act's `page_coverage.unmeasurable_pages`,
+        # so a reviewer can tell "no unclaimed ink here" from "nobody could say".
+        return []
     if evidence is None:
         if unclaimed_observations:
             raise FatalAccounting(

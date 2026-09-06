@@ -65,7 +65,7 @@ from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
-from common.residual_ink import coverage_flag
+from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -1019,7 +1019,15 @@ _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
     {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
-_INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK})
+# `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
+# inferring each page's paper value through `common.background` and gained a way
+# to refuse one. **No schema id moves for it**, and the reason is the one the ids
+# above exist for: a bump exists to stop a reader silently misreading a renamed
+# shape under an unchanged id, and an older verifier meeting this value refuses it
+# by name at the check below. A new value in a closed vocabulary fails loudly on
+# an old reader; a renamed field does not, which is why one moves the id and the
+# other does not.
+_INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK, INK_NOT_MEASURABLE})
 
 
 def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
@@ -1029,6 +1037,13 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     stage re-measures only the pages Unit 9 actually flagged, and writing zeros
     for the rest would put a measurement nobody took into the record
     (GOVERNANCE 10). The absence is recorded as absence.
+
+    An `ink-not-measurable` page carries `remeasured: None` for a stronger
+    version of the same reason: the Ink Map could not infer its paper value, so
+    it cut no threshold, retained no runs and took no measurement at all. It is
+    in these rows because it is in the page census — dropping it would break the
+    denominator this file reconciles — and it can never be a held page, because
+    a hold here is derived from counts and this row has none.
     """
     if not isinstance(rows, list | tuple):
         raise SchemaRefusal(

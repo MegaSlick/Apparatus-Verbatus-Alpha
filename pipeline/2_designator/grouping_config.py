@@ -59,12 +59,23 @@ from typing import Any, Final
 
 from geometry import (
     _PROVENANCE_FIELDS,
-    BP_DENOMINATOR,
     _is_plain_int,
     _pad_amount,
     _validate_dimensions,
 )
 
+# `resolve_background_policy` is re-exported rather than defined here: it stopped
+# being this stage's own resolver on 2026-09-06, when the Ink Map and the
+# Recensor began inferring a page's paper value under the same sealed policy.
+# `run.py` and this stage's tests still call it as `grouping_config.resolve_
+# background_policy`, which is what the name here preserves.
+from common.background import (  # noqa: F401
+    BACKGROUND_BP_FIELDS as _BACKGROUND_BP_FIELDS,
+)
+from common.background import (  # noqa: F401
+    resolve_background_policy,
+    validate_background_table,
+)
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
@@ -302,14 +313,6 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
 # page's ink threshold. It is a fraction of a *population distance*, which is
 # why it belongs here and an absolute ink offset never can -- see
 # `_FORBIDDEN_NAMES`.
-_BACKGROUND_BP_FIELDS: Final = (
-    "band_bp",
-    "max_interior_dark_bp",
-    "max_ink_bp",
-    "ink_margin_bp",
-)
-
-
 def _load_background(table: Any) -> dict[str, Any]:
     """Read `[grouping.background]` and its own provenance.
 
@@ -318,6 +321,17 @@ def _load_background(table: Any) -> dict[str, Any]:
     with `sample_count = 0`, and folding four values measured on 127 real pages
     into that block would either overstate the rest of the file or understate
     these. Two blocks say two true things; one would say a false one.
+
+    **The four values themselves are checked by
+    `common.background.validate_background_table`, not here.** They stopped
+    being this stage's alone on 2026-09-06: the Ink Map and the Recensor's
+    residual-ink audit now infer a page's paper value through the same function
+    under the same policy, so a value one of the three would refuse has to be a
+    value all three refuse, and one validator is the only way that stays true.
+    What remains here is what is genuinely this file's: the forbidden-name
+    refusal, the closed field set including `provenance`, and the provenance
+    block's own schema, which the other two stages do not read and which
+    `_load_provenance` validates against the same shape as the rest of the file.
     """
     if not isinstance(table, dict):
         raise ContractError("the grouping configuration has no [grouping.background] table")
@@ -334,91 +348,11 @@ def _load_background(table: Any) -> dict[str, Any]:
         raise ContractError(
             f"the grouping configuration's [grouping.background] is missing field(s) {missing}"
         )
-    values = {name: table[name] for name in _BACKGROUND_BP_FIELDS}
-    for name in ("max_interior_dark_bp", "max_ink_bp"):
-        if not _is_plain_int(values[name]) or not 0 <= values[name] <= BP_DENOMINATOR:
-            raise ContractError(
-                f"the grouping configuration's [grouping.background] {name} is not a basis-point "
-                f"integer in 0..{BP_DENOMINATOR}"
-            )
-    # `ink_margin_bp` is bounded strictly below half its range, and the bound is
-    # structural rather than a taste. `structure._dark_surround` measures at the
-    # midpoint of the page's two modes and its result is only readable as "this
-    # much of the counted ink is bezel" while every pixel it counts is a pixel
-    # the scan counts too -- which holds exactly while the derived threshold
-    # stays at or above that midpoint, i.e. while this fraction stays under
-    # 5000. At 5000 the two coincide and the surround block measures the whole
-    # of the page's ink; past it the block would count pixels the scan does not,
-    # and its two published counts would stop bracketing anything. Zero is
-    # refused for the reason the two bounds above are: a fraction of zero is the
-    # derivation switched off by a value rather than by a decision, leaving
-    # every page on the floor.
-    if (
-        not _is_plain_int(values["ink_margin_bp"])
-        or not 0 < values["ink_margin_bp"] < BP_DENOMINATOR // 2
-    ):
-        raise ContractError(
-            "the grouping configuration's [grouping.background] ink_margin_bp is not a "
-            f"basis-point integer strictly between 0 and {BP_DENOMINATOR // 2}; zero derives "
-            "no margin at all and leaves every page on structure.PRIMARY_MARGIN, and half or "
-            "more puts this page's ink threshold at or below the level the surround test "
-            "measures at, where that test's two dark counts stop being subsets of the ink "
-            "they are published as fractions of"
-        )
-    # A band of zero leaves no border to measure and a band at or over half the
-    # page leaves no interior, so both ends are refused rather than silently
-    # turning the test off -- `structure._dark_surround` would return `None` for
-    # either, and a page would then refuse for a reason no config line stated.
-    if not _is_plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BP_DENOMINATOR // 2:
-        raise ContractError(
-            "the grouping configuration's [grouping.background] band_bp is not a basis-point "
-            f"integer strictly between 0 and {BP_DENOMINATOR // 2}; a band of zero has no "
-            "border to measure and a band of half the page has no interior to compare it against"
-        )
-    # Both bounds refuse, and a bound at the top of its range refuses nothing.
-    # `max_interior_dark_bp = 10000` admits a page every one of whose interior
-    # pixels is at or below the level -- an inverted scan and a page of solid
-    # dark alike -- and `max_ink_bp = 10000` admits a background that leaves the
-    # whole page as ink. Either is the test switched off by a value rather than
-    # by a decision, which is the shape this file refuses everywhere else.
-    for name in ("max_interior_dark_bp", "max_ink_bp"):
-        if values[name] == BP_DENOMINATOR:
-            raise ContractError(
-                f"the grouping configuration's [grouping.background] {name} is "
-                f"{BP_DENOMINATOR} basis points, which refuses nothing: a bound at the top of "
-                "its own range is the test turned off, and this policy is sealed into a run "
-                "as something that decides"
-            )
+    values = validate_background_table(table)
     values["provenance"] = _load_provenance(
         table.get("provenance"), "[grouping.background.provenance]"
     )
     return values
-
-
-def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> dict[str, int]:
-    """One page's own resolved background-inference policy.
-
-    Separate from `resolve_thresholds` and deliberately *not* a field of
-    `GroupingThresholds`. `run.py` publishes the whole `GroupingThresholds` as a
-    page's `resolved_thresholds`, and this policy answers a question asked
-    strictly before that record exists -- the background inference runs before
-    any threshold is applied to any geometry. Folding it in would put a
-    background-inference input into the structure pass's published geometry and
-    move every existing page record's bytes for a value that pass never used.
-
-    Both bands resolve through `geometry._pad_amount`, the same round-half-up
-    integer rule every other basis point in this file uses, so this module still
-    carries exactly one rounding rule.
-    """
-    _validate_dimensions(width, height, "page")
-    background = config["background"]
-    return {
-        "band_px_x": _pad_amount(width, background["band_bp"]),
-        "band_px_y": _pad_amount(height, background["band_bp"]),
-        "max_interior_dark_bp": background["max_interior_dark_bp"],
-        "max_ink_bp": background["max_ink_bp"],
-        "ink_margin_bp": background["ink_margin_bp"],
-    }
 
 
 @dataclass(frozen=True)

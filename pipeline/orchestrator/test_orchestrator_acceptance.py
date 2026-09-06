@@ -1596,10 +1596,52 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # are renamed in `4_perlector` and `7_armarium`, each one's name being its own
 # content digest. Snapshot counts and exit codes unmoved: happy 96 files at exit
 # 0, review 107 at exit 3.
+# **Shared background inference (`work/shared-background-inference`).** Both
+# digests move again, for the sealed config's bytes and for two record shapes.
+# The Ink Map and the Recensor's residual-ink audit now infer a page's paper
+# value through `common/background.py` under the same sealed
+# `[grouping.background]` block the Designator runs under, instead of taking the
+# page's raw histogram mode; `config/designator_grouping.toml`'s header gained a
+# paragraph saying three stages read it, and that file's bytes are sealed into
+# every run by SHA-256, so a comment moves every downstream digest.
+#
+# **No fixture page's measurement moves.** A walking-skeleton page is
+# majority-paper, so its raw mode and the shared inference's paper value are the
+# same 230, it takes the same `inferred-modal` branch, and every count is
+# identical: page 1 `total_ink_pixels` 11,520 and `outside_ink_pixels` 8,328 at
+# the edge, page 2 3,840 and 3,384, 2,880 and 960 retained runs. Checked against
+# the baseline trees leaf by leaf rather than asserted.
+#
+# What actually changes in a record is shape, in three places. Each `ink-map`
+# payload gains `ink_measurable: true` and one `background` block
+# (`background_level` 230, `background_source` "inferred-modal", `dark_mode` 90,
+# `ink_margin` 46, `contrast_below_background` 40, `ink_threshold` 190, and the
+# sealed policy's `config_sha256`) -- GOVERNANCE 6: the record names what it ran
+# under. `background_level` leaves the `ink` and `edge` findings for that one
+# block, so a page states its paper value once. And every Recensor review
+# record's `page_coverage` gains `unmeasurable_pages`, empty on every fixture
+# page because no fixture page's background is refused.
+#
+# Attributed leaf by leaf against baseline trees built from a worktree pinned at
+# the preceding commit with its own venv, which reproduced the retired digests
+# `9100c2c2...` and `d71e9463...` exactly before anything was compared. Happy:
+# 75 changed files, 418 changed leaves -- 377 bare 64-hex digests, 21
+# `relative_path` values naming a content-addressed blob, 16 the new fields
+# above, 4 the moved `background_level`, and **zero anything else**. Review: 87
+# files, 491 leaves -- 442, 29, 16, 4, and **zero**. Two blobs per scenario are
+# renamed in `4_perlector` and `7_armarium`, each one's name being its own
+# content digest. `unmeasurable_pages` is an empty list on every fixture page, so
+# it adds a key and no leaf: it moves the bytes of the records that carry it
+# without appearing in that leaf census, and it is named here rather than left
+# to look like an unattributed digest. Snapshot counts and exit codes unmoved:
+# happy 96 files at exit 0, review 107 at exit 3. Both digests measured twice in
+# independent temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest`, and the two trees compared file
+# by file.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "9100c2c2b6721d17b6447c5c20d4df30944b87c7d7bf660ad42fe65f4fae4623"
-REVIEW_RUN_TREE_DIGEST = "d71e94635719a5b71ffd4c1153e4e29c0825083b3e496d930939272435c27aab"
+HAPPY_RUN_TREE_DIGEST = "81c789e680fc980560a665b8b14d365d35bdab34c366fe626ae9070ad296b4e4"
+REVIEW_RUN_TREE_DIGEST = "5b4a8b9307f5e8b30662ae6d333a480b332756e2d09f8d15de11229277339a25"
 
 
 def orchestrate(

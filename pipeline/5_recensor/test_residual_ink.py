@@ -27,9 +27,37 @@ from residual_ink import (  # noqa: E402
     residual_ink,
 )
 
-from common.imaging import encode_grayscale_png  # noqa: E402
+from common.background import (  # noqa: E402
+    BackgroundInferenceRefusal,
+    infer_background_evidence,
+    load_background_config,
+    resolve_background_policy,
+)
+from common.imaging import dimensions, encode_grayscale_png  # noqa: E402
 from common.residual_ink import edge_ink_from_runs, ink_runs, page_edge_ink  # noqa: E402
 from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
+
+
+def _policy(width: int, height: int):
+    """This page's own resolved background policy, from the shipped sealed file.
+
+    Every measure here takes one since 2026-09-06: the ink predicate is taken
+    below the background `common.background` infers, under the same sealed
+    `[grouping.background]` block the Designator runs under, and no call site is
+    allowed a default -- measuring under a policy nobody sealed is what the
+    required keyword prevents.
+    """
+    return resolve_background_policy(load_background_config(), width, height)
+
+
+def _measure(width, height, rows, covered):
+    return residual_ink(width, height, rows, covered, background_policy=_policy(width, height))
+
+
+def _measure_page(image_bytes, covered):
+    width, height = dimensions(image_bytes)
+    return page_residual_ink(image_bytes, covered, background_policy=_policy(width, height))
+
 
 BACKGROUND = 230
 INK = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND - 10  # comfortably past the contrast floor
@@ -47,22 +75,25 @@ def paint(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = IN
 
 
 def _straightforward_counts(
-    width: int, height: int, rows: list[bytearray], covered: list[dict]
-) -> tuple[int, int, int]:
-    """`(background, total_ink, outside_ink)` the obvious, per-pixel way.
+    width: int, height: int, rows: list[bytearray], covered: list[dict], background: int
+) -> tuple[int, int]:
+    """`(total_ink, outside_ink)` the obvious, per-pixel way.
 
     The reference the module's C-level implementation is checked against. This
     is deliberately the slow, plainly-correct version -- one interpreted
-    comparison per pixel, a full 256-bucket histogram list, `list.index(max())`
-    for the mode -- exactly what `residual_ink` did before `bytes.translate`,
-    `Counter` and `int.bit_count` replaced those loops for real-page speed.
-    """
-    histogram = [0] * 256
-    for row in rows:
-        for value in row:
-            histogram[value] += 1
-    background = histogram.index(max(histogram))
+    comparison per pixel -- exactly what `residual_ink` did before
+    `bytes.translate` and `int.bit_count` replaced those loops for real-page
+    speed.
 
+    **The background is given, not inferred here.** It used to be this
+    function's own `histogram.index(max(histogram))`, which was a second copy of
+    the module's retired inference, so the two agreed by being the same mistake:
+    on a page whose mode is not paper both returned the bezel and both counted
+    almost nothing. Since 2026-09-06 the inference is
+    `common.background.infer_background_evidence`'s and is proved elsewhere;
+    what this reference exists to check is the *counting*, which is what the
+    optimisation actually changed.
+    """
     mask = bytearray(width * height)
     for bounds in covered:
         x0 = max(0, min(bounds["x"], width))
@@ -81,7 +112,7 @@ def _straightforward_counts(
             total_ink += 1
             if not mask[y * width + x]:
                 outside_ink += 1
-    return background, total_ink, outside_ink
+    return total_ink, outside_ink
 
 
 def test_the_fast_counts_agree_with_a_straightforward_implementation():
@@ -95,6 +126,7 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
     boundary, and pages with no ink at all.
     """
     rng = random.Random(20260811)
+    measured = refused = 0
     for case in range(60):
         width = rng.randint(1, 40)
         height = rng.randint(1, 40)
@@ -132,21 +164,42 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
             for _ in range(rng.randint(0, 4))
         ]
 
-        expected_background, expected_total, expected_outside = _straightforward_counts(
-            width, height, [bytearray(row) for row in rows], covered
-        )
-        result = residual_ink(width, height, [bytearray(row) for row in rows], covered)
-
         context = f"case {case}: {width}x{height}, covered={covered}"
-        assert result["background_level"] == expected_background, context
+        # The arbitrary-value pages are frequently majority-ink, and the shared
+        # inference refuses those by name rather than returning the bezel as
+        # paper. That refusal has to reach the caller, so it is asserted rather
+        # than skipped: a page nobody can measure must not quietly become a page
+        # measured as clean.
+        try:
+            evidence = infer_background_evidence(
+                width, height, rows, background_policy=_policy(width, height)
+            )
+        except BackgroundInferenceRefusal:
+            with pytest.raises(BackgroundInferenceRefusal):
+                _measure(width, height, [bytearray(row) for row in rows], covered)
+            refused += 1
+            continue
+
+        expected_total, expected_outside = _straightforward_counts(
+            width, height, [bytearray(row) for row in rows], covered, evidence["background"]
+        )
+        result = _measure(width, height, [bytearray(row) for row in rows], covered)
+
+        assert result["background"]["background_level"] == evidence["background"], context
         assert result["total_ink_pixels"] == expected_total, context
         assert result["outside_ink_pixels"] == expected_outside, context
+        measured += 1
+
+    # Both arms actually ran. Without this the whole equivalence proof could
+    # become the refusal branch and stay green over nothing.
+    assert measured >= 40, measured
+    assert refused >= 1, refused
 
 
 def test_ink_fully_inside_the_covered_region_is_not_flagged():
     rows = canvas(20, 20)
     paint(rows, 2, 2, 6, 6)
-    result = residual_ink(20, 20, rows, covered=[{"x": 2, "y": 2, "w": 6, "h": 6}])
+    result = _measure(20, 20, rows, [{"x": 2, "y": 2, "w": 6, "h": 6}])
     assert result["outside_ink_pixels"] == 0
     assert result["flagged"] is False
 
@@ -154,7 +207,7 @@ def test_ink_fully_inside_the_covered_region_is_not_flagged():
 def test_ink_entirely_outside_any_covered_region_is_flagged():
     rows = canvas(20, 20)
     paint(rows, 2, 2, 6, 6)  # 36 ink pixels, well past the pixel floor
-    result = residual_ink(20, 20, rows, covered=[])
+    result = _measure(20, 20, rows, [])
     assert result["total_ink_pixels"] == 36
     assert result["outside_ink_pixels"] == 36
     assert result["fraction_outside"] == 1.0
@@ -168,7 +221,7 @@ def test_a_mark_below_the_minimum_pixel_count_is_not_flagged():
     rows = canvas(40, 20)
     mark = MINIMUM_INK_PIXELS - 1
     paint(rows, 1, 1, mark, 1)
-    result = residual_ink(40, 20, rows, covered=[])
+    result = _measure(40, 20, rows, [])
     assert result["outside_ink_pixels"] == mark
     assert result["fraction_outside"] == 1.0
     assert result["flagged"] is False
@@ -177,7 +230,7 @@ def test_a_mark_below_the_minimum_pixel_count_is_not_flagged():
 def test_a_mark_at_exactly_the_minimum_pixel_count_is_flagged():
     rows = canvas(40, 20)
     paint(rows, 1, 1, MINIMUM_INK_PIXELS, 1)
-    result = residual_ink(40, 20, rows, covered=[])
+    result = _measure(40, 20, rows, [])
     assert result["outside_ink_pixels"] == MINIMUM_INK_PIXELS
     assert result["flagged"] is True
 
@@ -193,7 +246,7 @@ def test_a_small_fraction_of_heavily_covered_ink_is_not_flagged():
     paint(rows, 0, 0, 50, 40)  # 2000 covered ink pixels
     outside = MINIMUM_INK_PIXELS + 6  # 30: above the pixel floor
     paint(rows, 55, 0, outside, 1)
-    result = residual_ink(200, 200, rows, covered=[{"x": 0, "y": 0, "w": 50, "h": 40}])
+    result = _measure(200, 200, rows, [{"x": 0, "y": 0, "w": 50, "h": 40}])
     assert result["outside_ink_pixels"] == outside
     assert result["fraction_outside"] < MINIMUM_FRACTION_OUTSIDE_COVERAGE
     assert result["flagged"] is False
@@ -207,14 +260,16 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
     a missed act reported as a clean page, GOALS 1's worst failure. The
     absolute gate is what catches it.
     """
-    # Ink stays a minority of the page (202,000 of 960,000), so the background
-    # inference is not itself confused -- this test is about the fraction gate's
-    # dense-page hole, not about `_background_level`'s own majority-ink limit.
+    # Ink stays a minority of the page (202,000 of 960,000), so the shared
+    # background inference is not itself confused -- this test is about the
+    # fraction gate's dense-page hole, not about the majority-ink refusal
+    # `common.background.infer_background_evidence` raises on the other side of
+    # that line.
     rows = canvas(1200, 800)
     paint(rows, 0, 0, 400, 500)  # 200,000 covered ink pixels
     outside = SUBSTANTIAL_INK_PIXELS  # plainly real text, but only ~1% of the total
     paint(rows, 0, 600, outside // 4, 4)
-    result = residual_ink(1200, 800, rows, covered=[{"x": 0, "y": 0, "w": 400, "h": 500}])
+    result = _measure(1200, 800, rows, [{"x": 0, "y": 0, "w": 400, "h": 500}])
 
     assert result["outside_ink_pixels"] == outside
     # Under the fraction gate, which alone would have called this page clean.
@@ -226,14 +281,14 @@ def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink
     rows = canvas(20, 20)
     paint(rows, 0, 0, 10, 10)  # 100 covered ink pixels
     paint(rows, 10, 10, 6, 6)  # 36 uncovered -- 36 / 136 > 2%
-    result = residual_ink(20, 20, rows, covered=[{"x": 0, "y": 0, "w": 10, "h": 10}])
+    result = _measure(20, 20, rows, [{"x": 0, "y": 0, "w": 10, "h": 10}])
     assert result["fraction_outside"] > MINIMUM_FRACTION_OUTSIDE_COVERAGE
     assert result["flagged"] is True
 
 
 def test_a_page_with_no_ink_at_all_is_never_flagged():
     rows = canvas(20, 20)
-    result = residual_ink(20, 20, rows, covered=[])
+    result = _measure(20, 20, rows, [])
     assert result["total_ink_pixels"] == 0
     assert result["fraction_outside"] == 0.0
     assert result["flagged"] is False
@@ -245,8 +300,8 @@ def test_background_is_inferred_per_page_not_assumed():
     light value that would misread the whole page as ink."""
     rows = [bytearray([80] * 20) for _ in range(20)]
     paint(rows, 5, 5, 5, 5, value=80 - MINIMUM_CONTRAST_BELOW_BACKGROUND - 5)
-    result = residual_ink(20, 20, rows, covered=[])
-    assert result["background_level"] == 80
+    result = _measure(20, 20, rows, [])
+    assert result["background"]["background_level"] == 80
     assert result["total_ink_pixels"] == 25
     assert result["flagged"] is True
 
@@ -257,7 +312,7 @@ def test_a_covered_bound_reaching_outside_the_page_is_clipped_not_refused():
     ever reached, so it clips rather than raising."""
     rows = canvas(20, 20)
     paint(rows, 15, 15, 5, 5)
-    result = residual_ink(20, 20, rows, covered=[{"x": 15, "y": 15, "w": 50, "h": 50}])
+    result = _measure(20, 20, rows, [{"x": 15, "y": 15, "w": 50, "h": 50}])
     assert result["outside_ink_pixels"] == 0
     assert result["flagged"] is False
 
@@ -265,7 +320,7 @@ def test_a_covered_bound_reaching_outside_the_page_is_clipped_not_refused():
 def test_a_negative_covered_origin_is_clipped_not_refused():
     rows = canvas(20, 20)
     paint(rows, 0, 0, 5, 5)
-    result = residual_ink(20, 20, rows, covered=[{"x": -3, "y": -3, "w": 8, "h": 8}])
+    result = _measure(20, 20, rows, [{"x": -3, "y": -3, "w": 8, "h": 8}])
     assert result["outside_ink_pixels"] == 0
     assert result["flagged"] is False
 
@@ -293,7 +348,7 @@ def test_overlapping_and_clipped_bounds_cover_exactly_their_union():
         for y in range(max(0, bounds["y"]), min(20, bounds["y"] + bounds["h"])):
             for x in range(max(0, bounds["x"]), min(20, bounds["x"] + bounds["w"])):
                 union.add((x, y))
-    result = residual_ink(20, 20, rows, covered=covered)
+    result = _measure(20, 20, rows, covered)
     assert result["total_ink_pixels"] == len(ink)
     assert result["outside_ink_pixels"] == len(ink - union)
     assert ink - union  # the case would prove nothing if everything were covered
@@ -303,14 +358,14 @@ def test_page_residual_ink_decodes_before_measuring():
     rows = canvas(10, 10)
     paint(rows, 0, 0, 6, 6)
     encoded = encode_grayscale_png(10, 10, rows)
-    result = page_residual_ink(encoded, covered=[])
+    result = _measure_page(encoded, [])
     assert result["outside_ink_pixels"] == 36
     assert result["flagged"] is True
 
 
 def test_page_residual_ink_refuses_undecodable_bytes():
     with pytest.raises(ValueError):
-        page_residual_ink(b"not a page", covered=[])
+        _measure_page(b"not a page", [])
 
 
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
@@ -322,8 +377,11 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])
-        initial = page_edge_ink(image)
-        released = edge_ink_from_runs(ink_runs(image), [act["bounds"] for act in page["acts"]])
+        initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
+        released = edge_ink_from_runs(
+            ink_runs(image, background_policy=_policy(*dimensions(image))),
+            [act["bounds"] for act in page["acts"]],
+        )
 
         assert initial["flagged"] is True
         assert released["total_ink_pixels"] == initial["total_ink_pixels"]
@@ -351,8 +409,10 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     paint(rows, 0, 0, width, height)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(image)
-    remeasured = edge_ink_from_runs(ink_runs(image), [])
+    initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
+    remeasured = edge_ink_from_runs(
+        ink_runs(image, background_policy=_policy(*dimensions(image))), []
+    )
 
     assert remeasured["edge_band_pixels"] == initial["edge_band_pixels"] >= 1
     # Same band, same uncovered page, so the same perimeter ink is seen and the
@@ -378,8 +438,10 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
         paint(rows, 0, y, width, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(image)
-    remeasured = edge_ink_from_runs(ink_runs(image), [])
+    initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
+    remeasured = edge_ink_from_runs(
+        ink_runs(image, background_policy=_policy(*dimensions(image))), []
+    )
 
     assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"] == 13

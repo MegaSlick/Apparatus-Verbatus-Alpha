@@ -10,11 +10,42 @@ The early Ink Map passes empty coverage to record the pre-proposal denominator;
 the Recensor passes every proposal and recovery region for the page. This module
 must not invent an act identity, request recovery, or hold a run. Unit 14 owns
 the explicit hold for unproposed edge ink.
+
+**The paper value is no longer inferred here.** Until 2026-09-06 this module
+took the page's single most common pixel as paper. On a photographed register
+opening that is the bezel -- 0 or near it on every page of the Designator's
+127-page calibration that reaches its surround branch -- so `background - 40`
+was below every 8-bit sample, this audit counted approximately zero ink over a
+page full of writing, `flagged` was `False` by construction, and the cross-stage
+containment pin in `common/test_designator_recensor_ink_calibration.py` held
+vacuously over an empty set. Every function here now infers through
+`common.background.infer_background_evidence` under the same sealed
+`[grouping.background]` policy the Designator runs under, so the audit and the
+stage it audits threshold the same pixels against the same paper.
+
+**What stays this module's own is the contrast**, and it has to: an audit that
+shared the Designator's derived margin as well would be a restatement of the
+stage it is checking rather than a second opinion.
+`MINIMUM_CONTRAST_BELOW_BACKGROUND` is that own number, and its relation to the
+Designator's conservation denominator is what makes the containment claim below
+true rather than vacuous.
+
+**A page whose background the shared inference refuses is refused here too**,
+by the same `BackgroundInferenceRefusal` and for the same reason: a residual of
+zero taken under a paper value that is not paper is arithmetic wearing a
+measurement's name. The caller records the refusal on its own record rather than
+publishing a count nobody took (GOVERNANCE 10). It does not remove the page from
+the run -- every consumer of this module cuts and reads the page either way.
 """
 
-from collections import Counter
 from typing import Any
 
+from common.background import (
+    BackgroundInferenceRefusal,  # noqa: F401  (re-exported: the refusal callers catch)
+    BackgroundPolicy,
+    _ink_threshold,
+    infer_background_evidence,
+)
 from common.imaging import Bounds, grayscale_rows
 
 # PROPOSED, NOT YET MEASURED. There is no real corpus in this walking skeleton
@@ -44,6 +75,30 @@ MINIMUM_INK_PIXELS = 24
 #: could lose ink silently. Pinned by
 #: `common/test_designator_recensor_ink_calibration.py`; see the Designator's
 #: `conservation.py` module docstring for the whole decision.
+#:
+#: **That guarantee was arithmetic until 2026-09-06 and is a measurement now.**
+#: A margin comparison only orders two thresholds when both are taken below the
+#: *same* background, and until this module began inferring through
+#: `common.background` the two backgrounds were different statistics — the
+#: Designator's two-mode paper value against this module's raw histogram mode.
+#: On a photographed page that made the containment true and empty: this audit's
+#: ink set was empty, and an empty set is contained in anything.
+#: `common/test_designator_recensor_ink_calibration.py::
+#: test_the_containment_is_not_vacuous_on_a_photographed_page` proves it over
+#: the sets themselves on a photographed-shaped page, and
+#: `pipeline/2_designator/test_shared_background.py` proves the same through the
+#: shipped functions on both sides of the boundary.
+#:
+#: **This value stays a fixed offset while the Designator's primary scan runs at
+#: a derived one, and the direction of that difference is stated rather than
+#: assumed.** 40 is below the margin a photographed page derives for itself
+#: (median 66 over the Designator's 127-page calibration), so on such a page this
+#: audit's threshold is *higher* than the primary scan's and it counts more ink
+#: than that scan does — including paper. It is still far below the
+#: conservation denominator of 2, which is the number the containment claim is
+#: about. What that costs on real material, and whether
+#: `SUBSTANTIAL_INK_PIXELS` can survive it, is measured in this branch's report
+#: rather than argued here.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: The fraction of a page's own ink pixels that must fall outside every region
@@ -58,6 +113,16 @@ MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 #: proposed value is above plausible isolated scan artifacts and below the
 #: estimated ink in one line of 300-DPI text.
 SUBSTANTIAL_INK_PIXELS = 2_000
+
+#: The Ink Map's outcome for a page whose paper value the shared background
+#: inference refused, and the Armarium's and its export verifier's name for the
+#: same thing. One spelling in one place: three modules branch on this string,
+#: and the failure a private copy invites is a page silently dropping out of the
+#: census because two of them disagreed about how it is spelled.
+#:
+#: It is a third outcome beside `mapped` and `unclaimed-edge-ink`, not a variant
+#: of either. `mapped` claims a measurement, and this page has none.
+INK_NOT_MEASURABLE = "ink-not-measurable"
 
 # A bounded strip on every page edge.  This is an instrument boundary, not a
 # claim that 64 pixels is a calibrated cross-page-act threshold: it only
@@ -98,34 +163,65 @@ def _ink_table(background: int) -> bytes:
     comparison per pixel. The predicate is exactly the one the old loop
     applied: ink is a value at least `MINIMUM_CONTRAST_BELOW_BACKGROUND`
     levels below this page's own inferred background.
+
+    The threshold goes through `common.background._ink_threshold`, the same
+    function the Designator's scans use, so a background too dark to express
+    this contrast at all refuses by name here exactly as it does there rather
+    than counting zero ink on a dark page and calling that a measurement.
     """
+    # Called for its refusal, not for its value: the table below is built from
+    # `background` directly, and this is the line that stops a background too
+    # dark to express this contrast from producing an all-zero table instead of
+    # a named refusal.
+    _ink_threshold(background, MINIMUM_CONTRAST_BELOW_BACKGROUND)
     return bytes(
         1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
     )
 
 
-def _background_level(rows: list[bytearray]) -> int:
-    """The page's own most common pixel value: the inferred paper tone.
+def page_background(
+    width: int, height: int, rows: list[bytearray], *, background_policy: BackgroundPolicy
+) -> dict[str, Any]:
+    """This page's paper value and the level this audit thresholds it at.
 
-    A histogram mode, not a mean or a fixed constant, so each page self-
-    calibrates to its own scan conditions rather than assuming one tone for an
-    entire corpus. That rests on an explicit assumption and not a proven bound:
-    a page whose ink genuinely covers more than half its pixels -- a dense
-    full-bleed plate, not a parish register act -- would confuse the mode into
-    calling ink the background. True of every register page this project has
-    described so far; worth revisiting if a real corpus contradicts it.
+    The paper value is `common.background.infer_background_evidence`'s, under the
+    sealed `[grouping.background]` policy the caller resolved for this page's own
+    dimensions — the identical call the Designator's structure pass makes on the
+    identical bytes, which is what makes "the audit never calls ink what the
+    Designator dismissed" a comparison of two margins under one background rather
+    than of two different statistics.
+
+    What this function adds is this module's own half:
+    `contrast_below_background` is `MINIMUM_CONTRAST_BELOW_BACKGROUND`, unshared
+    and deliberately so, and `ink_threshold` is the level it puts the audit at. `ink_margin` and
+    `dark_mode` are carried from the shared evidence and decide nothing here;
+    they are recorded so a reader holding a page record can see the level this
+    audit ran at beside the level the stage it audits ran at, and tell a
+    disagreement about paper apart from a disagreement about sensitivity.
+
+    Raises `BackgroundInferenceRefusal` on a page whose paper cannot be inferred,
+    or whose paper is too dark to express this contrast. The caller records the
+    refusal; it never turns into a zero.
     """
-    # Counter avoids an interpreted iteration per pixel. Iterating the key range
-    # upward also fixes ties at the lowest modal value, which is part of the
-    # deterministic background inference.
-    histogram: Counter[int] = Counter()
-    for row in rows:
-        histogram.update(row)
-    return max(range(256), key=lambda value: histogram.get(value, 0))
+    evidence = infer_background_evidence(width, height, rows, background_policy=background_policy)
+    background = evidence["background"]
+    return {
+        "background_level": background,
+        "background_source": evidence["source"],
+        "dark_mode": evidence["dark_mode"],
+        "ink_margin": evidence["ink_margin"],
+        "contrast_below_background": MINIMUM_CONTRAST_BELOW_BACKGROUND,
+        "ink_threshold": _ink_threshold(background, MINIMUM_CONTRAST_BELOW_BACKGROUND),
+    }
 
 
 def residual_ink(
-    width: int, height: int, rows: list[bytearray], covered: list[Bounds]
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    covered: list[Bounds],
+    *,
+    background_policy: BackgroundPolicy,
 ) -> dict[str, Any]:
     """How much of this page's own ink sits outside every region cut for it.
 
@@ -136,8 +232,15 @@ def residual_ink(
     clipped to it rather than refused: geometry a later stage will itself
     refuse as a fatal accounting imbalance should not also crash this
     independent check before that refusal is ever reached.
+
+    `background_policy` is the sealed `[grouping.background]` policy resolved for
+    *this page's own* dimensions (`common.background.resolve_background_policy`).
+    Keyword-only, and with no default: a caller that forgets it fails loudly
+    rather than measuring under a policy nobody sealed, which is the shape
+    `structure.py`'s `gap_tolerance_px` is handled with for the same reason.
     """
-    background = _background_level(rows)
+    background_evidence = page_background(width, height, rows, background_policy=background_policy)
+    background = background_evidence["background_level"]
     covered_mask = bytearray(width * height)
     for bounds in covered:
         x0 = max(0, min(bounds["x"], width))
@@ -169,7 +272,7 @@ def residual_ink(
 
     fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
     return {
-        "background_level": background,
+        "background": background_evidence,
         "total_ink_pixels": total_ink,
         "outside_ink_pixels": outside_ink,
         "fraction_outside": fraction_outside,
@@ -177,19 +280,35 @@ def residual_ink(
     }
 
 
-def page_residual_ink(image_bytes: bytes, covered: list[Bounds]) -> dict[str, Any]:
+def page_residual_ink(
+    image_bytes: bytes, covered: list[Bounds], *, background_policy: BackgroundPolicy
+) -> dict[str, Any]:
     width, height, rows = grayscale_rows(image_bytes)
-    return residual_ink(width, height, rows, covered)
+    return residual_ink(width, height, rows, covered, background_policy=background_policy)
 
 
-def ink_runs(image_bytes: bytes) -> dict[str, Any]:
+def ink_runs(image_bytes: bytes, *, background_policy: BackgroundPolicy) -> dict[str, Any]:
+    """`ink_runs_from_rows` over bytes this caller has not already decoded."""
+    width, height, rows = grayscale_rows(image_bytes)
+    return ink_runs_from_rows(width, height, rows, background_policy=background_policy)
+
+
+def ink_runs_from_rows(
+    width: int, height: int, rows: list[bytearray], *, background_policy: BackgroundPolicy
+) -> dict[str, Any]:
     """The ink map's reusable, lossless page-space evidence.
 
     Later consumers must count these retained runs rather than decode the page
-    again under a potentially different pixel measurement.
+    again under a potentially different pixel measurement. That is why the
+    policy is a required argument here too: the runs the Armarium re-measures
+    months later have to have been cut at the same threshold the page's own
+    finding was, and a default would let one call site drift.
     """
-    width, height, rows = grayscale_rows(image_bytes)
-    table = _ink_table(_background_level(rows))
+    table = _ink_table(
+        page_background(width, height, rows, background_policy=background_policy)[
+            "background_level"
+        ]
+    )
     encoded: list[list[list[int]]] = []
     for row in rows:
         bits = row.translate(table)
@@ -230,7 +349,7 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
     ):
         raise ValueError("ink-run evidence has invalid dimensions")
 
-    # The same band `page_edge_ink` records, including its smallest-legal-image
+    # The same band `edge_ink` records, including its smallest-legal-image
     # floor. Without `max(1, ...)` a one-pixel-wide or one-pixel-high page gets
     # band 0 here and band 1 there, so the Ink Map flags the page and the
     # Armarium re-measures it clean; `ink_map_page_rows` then refuses the whole
@@ -265,7 +384,7 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
         # `width <= 2 * band` folds into the same full-width interval as the
         # top/bottom rows: on a page this narrow the left and right bands
         # overlap or touch, and treating them as the two separate intervals
-        # `page_edge_ink` never forms would count an overlapping run twice --
+        # `edge_ink` never forms would count an overlapping run twice --
         # inflating `outside_ink_pixels` against `total_ink_pixels` and risking
         # the very "two detectors disagree" split `ink_map_page_rows` treats as
         # damaged evidence, over a page rather than a genuine account of it.
@@ -318,7 +437,15 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
     }
 
 
-def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
+def page_edge_ink(image_bytes: bytes, *, background_policy: BackgroundPolicy) -> dict[str, Any]:
+    """`edge_ink` over bytes this caller has not already decoded."""
+    width, height, rows = grayscale_rows(image_bytes)
+    return edge_ink(width, height, rows, background_policy=background_policy)
+
+
+def edge_ink(
+    width: int, height: int, rows: list[bytearray], *, background_policy: BackgroundPolicy
+) -> dict[str, Any]:
     """Measure unclaimed ink in the bounded perimeter of one sealed page.
 
     The central rectangle is the only covered area, so this delegates the ink
@@ -326,7 +453,6 @@ def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
     creating a second detector with slightly different arithmetic. Its finding
     is evidence only; this measurement does not assign the ink to an act.
     """
-    width, height, rows = grayscale_rows(image_bytes)
     # A one-pixel-wide or one-pixel-high image has no centre, but it still has
     # an edge. ``max(1, ...)`` keeps the recorded band honest for that smallest
     # legal image; the explicit centre check prevents a negative rectangle.
@@ -336,5 +462,5 @@ def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
         if 2 * band >= width or 2 * band >= height
         else [{"x": band, "y": band, "w": width - 2 * band, "h": height - 2 * band}]
     )
-    finding = residual_ink(width, height, rows, covered)
+    finding = residual_ink(width, height, rows, covered, background_policy=background_policy)
     return {**finding, "edge_band_pixels": band, "named_finding": "unclaimed-edge-ink"}
