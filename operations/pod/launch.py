@@ -39,6 +39,7 @@ from .models import (
     utc_now,
 )
 from .notify_bridge import Notifier, NotifyOutcome, silent
+from .preflight import PlacementTable
 from .provider import AccountBalanceProvider, PodProvider
 from .shutdown import CloseReport, VerifiedShutdown
 from .spend import (
@@ -307,6 +308,7 @@ class LaunchState(StrEnum):
     REFUSED_CONTROLLER_NOT_READY = "refused-controller-not-ready"
     REFUSED_RUNTIME_CONTRACT = "refused-runtime-contract"
     REFUSED_REQUEST = "refused-request"
+    REFUSED_CARD = "refused-card"
     REFUSED_CEILING = "refused-ceiling"
     REFUSED_BALANCE_FLOOR = "refused-balance-floor"
     REFUSED_BALANCE_UNOBSERVABLE = "refused-balance-unobservable"
@@ -395,6 +397,7 @@ class PodRuntime:
         provider_name: str,
         spend_policy: SpendPolicy,
         lease_root: str | Path,
+        placement_table: PlacementTable | None = None,
         shutdown: VerifiedShutdown | None = None,
         now: Callable[[], datetime] = utc_now,
         token_factory: Callable[[], str] = lambda: secrets.token_hex(16),
@@ -409,6 +412,11 @@ class PodRuntime:
         self.provider_name = provider_name
         self.spend_policy = spend_policy
         self.lease_root = Path(lease_root)
+        # The reviewed card table this runtime holds a create to, or `None` for
+        # a caller that supplies none -- an offline drill, a test. `cli.py`
+        # passes `config/pod_placement.toml` by default, so the enforced path is
+        # the one an operator actually runs.
+        self.placement_table = placement_table
         if shutdown is None:
             if spend_policy.configured:
                 # Narrowing, not a check: `SpendPolicy.__post_init__` raises `SpendRefusal`
@@ -453,6 +461,11 @@ class PodRuntime:
         already-issued challenge. Callers asking to see a price leave it alone.
         """
 
+        card = self._card_refusal(request)
+        if card is not None:
+            # First, before anything else this method does: an unreviewed card
+            # is refused with no provider call at all, not even an estimate.
+            return LaunchResult(LaunchState.REFUSED_CARD, detail=card)
         readiness = self.shutdown.prove_ready()
         if not readiness.ready:
             return LaunchResult(
@@ -470,6 +483,12 @@ class PodRuntime:
             estimate = self.provider.estimate(request)
         except Exception as error:
             return LaunchResult(LaunchState.PROVIDER_FAILURE, detail=f"estimate failed: {error}")
+        card = self._card_refusal(request, volume_hourly_usd=estimate.volume_hourly_usd)
+        if card is not None:
+            # The same check again, now that the volume's own rate is known and
+            # the ceiling can be net of it. Still before `create`: `estimate` is
+            # a price read, and nothing is billing yet.
+            return LaunchResult(LaunchState.REFUSED_CARD, detail=card)
         try:
             # A field with no reviewed digest form must refuse through the gate
             # as a named result, never escape the paid path as a traceback.
@@ -1058,6 +1077,68 @@ class PodRuntime:
                 f"recorded for it: lease {path} is {lease.phase}{named}; at most one pod "
                 "may be live at a time, so this one is refused -- close the open one and "
                 "confirm its verified close first; no paid action occurred"
+            )
+        return None
+
+    def _card_refusal(
+        self, request: PodCreateRequest, *, volume_hourly_usd: Decimal | None = None
+    ) -> str | None:
+        """Hold a create to the reviewed card table, by name and by reviewed price.
+
+        `PodCreateRequest.gpu_type` is free text that goes straight to the
+        provider, and until this existed nothing in the launch path ever read
+        `config/pod_placement.toml`: the only mechanical bound on *which card*
+        gets rented was `max_hourly_usd`, and a typo or a wrong tier that
+        happened to fit under the ceiling was a launch. `PlacementTable.price_for`
+        was written for this and had no production caller anywhere in the tree.
+
+        Two conditions, both refusing by name:
+
+        * the request's `gpu_type` must be a row of the reviewed table, matched
+          on `gpu_type_id` alone (`PlacementTable.profile_for_gpu_type_id`).
+          `gpu_type_id` is the only spelling that has ever gone to the API:
+          `boot_a_request.py` renders `"gpu_type": card.gpu_type_id`, and the
+          table's `name` column is prose for the operator. Accepting the name
+          too would allowlist a string no provider is known to take, so a create
+          could pass this gate and then fail at the API -- or rent something
+          else;
+        * that row's reviewed hourly price must fit under `max_hourly_usd`, net
+          of the volume's hourly rate when the estimate has supplied one. This
+          binds the *reviewed* price rather than the quoted one, which is the
+          part the existing ceiling cannot do: the ceiling re-applied to the
+          provider's returned price stays exactly as it was, and still runs.
+
+        `None` -- no table, or an unconfigured policy -- enforces nothing here.
+        An unconfigured policy refuses every paid path at the spend gate a few
+        lines later, and saying so twice, in different words, would only
+        obscure which refusal an operator is actually looking at.
+        """
+
+        table = self.placement_table
+        if table is None:
+            return None
+        profile = table.profile_for_gpu_type_id(request.gpu_type)
+        if profile is None:
+            reviewed = (
+                ", ".join(f"{row.name!r} ({row.gpu_type_id!r})" for row in table.card_profiles)
+                or "none"
+            )
+            return (
+                f"gpu_type {request.gpu_type!r} is not a reviewed card in the placement "
+                f"table; reviewed cards are: {reviewed}. No provider call was made"
+            )
+        ceiling = self.spend_policy.max_hourly_usd
+        if ceiling is None:
+            return None
+        volume = volume_hourly_usd if volume_hourly_usd is not None else Decimal("0")
+        headroom = ceiling - volume
+        if profile.hourly_usd > headroom:
+            volume_note = f" less the volume's ${volume}/h" if volume_hourly_usd is not None else ""
+            return (
+                f"reviewed card {profile.name!r} ({profile.gpu_type_id!r}) is priced at "
+                f"${profile.hourly_usd}/h in the placement table, above the ${headroom}/h this "
+                f"policy leaves for the pod (max_hourly_usd ${ceiling}{volume_note}). "
+                "No pod was created"
             )
         return None
 
