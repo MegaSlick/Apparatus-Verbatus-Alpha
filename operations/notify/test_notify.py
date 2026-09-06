@@ -269,10 +269,16 @@ def _gate_sink_block() -> str:
     assert first is not None, "check-all.sh no longer reads the sink topic from conftest.py"
     last = next((i for i in range(first, len(lines)) if "-m pytest" in lines[i]), None)
     assert last is not None, "check-all.sh no longer runs pytest after reading the sink topic"
-    return "\n".join(lines[first : last + 1])
+    # The pytest line sits inside the `--parallel` switch (`if ... else ... fi`), so
+    # the lifted block must close that `if`: run through the `fi` that follows,
+    # and the child supplies `$parallel` beside `$root` and `$frozen_python`.
+    end = next((i for i in range(last, len(lines)) if lines[i].strip() == "fi"), last)
+    return "\n".join(lines[first : end + 1])
 
 
-def _run_gate_sink_block(tmp_path: Path, root: Path) -> tuple[subprocess.CompletedProcess, Path]:
+def _run_gate_sink_block(
+    tmp_path: Path, root: Path, *, parallel: str = "no"
+) -> tuple[subprocess.CompletedProcess, Path]:
     """Run that block with a sentinel standing where the frozen interpreter stands.
 
     The sentinel records the `NTFY_TOPIC` it inherited and the arguments it was
@@ -282,6 +288,7 @@ def _run_gate_sink_block(tmp_path: Path, root: Path) -> tuple[subprocess.Complet
     what the sentinel replaces.
     """
 
+    tmp_path.mkdir(parents=True, exist_ok=True)
     record = tmp_path / "sentinel-record"
     sentinel = tmp_path / "sentinel-python"
     sentinel.write_text(
@@ -295,10 +302,11 @@ def _run_gate_sink_block(tmp_path: Path, root: Path) -> tuple[subprocess.Complet
         [
             "sh",
             "-c",
-            'set -eu\nroot="$1"\nfrozen_python="$2"\n' + _gate_sink_block(),
+            'set -eu\nroot="$1"\nfrozen_python="$2"\nparallel="$3"\n' + _gate_sink_block(),
             "sh",
             str(root),
             str(sentinel),
+            parallel,
         ],
         text=True,
         capture_output=True,
@@ -322,6 +330,13 @@ def test_the_gate_hands_the_sink_topic_to_the_process_it_runs_the_suite_with(tmp
     assert inherited == conftest.NOTIFY_TEST_SINK_TOPIC
     # The sentinel stands where pytest is invoked, not somewhere earlier.
     assert arguments == ["-m", "pytest"]
+    # And under `--parallel` the same block hands the same topic to the four-worker
+    # line, with the plugin, count and distribution on the command line.
+    result, record = _run_gate_sink_block(tmp_path / "parallel", SOURCE.parents[2], parallel="yes")
+    assert result.returncode == 0, result.stderr
+    inherited, *arguments = record.read_text(encoding="utf-8").splitlines()
+    assert inherited == conftest.NOTIFY_TEST_SINK_TOPIC
+    assert arguments == ["-m", "pytest", "-p", "xdist", "-n", "4", "--dist", "loadfile"]
 
 
 def test_the_gate_refuses_to_run_when_the_sink_topic_cannot_be_read(tmp_path):
