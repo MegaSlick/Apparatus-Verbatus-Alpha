@@ -14,6 +14,7 @@ import grouping_config
 import pytest
 from grouping import (
     assign_columns,
+    fallback_tiles,
     find_continuation_candidate,
     group_page,
     partition_page_spanning,
@@ -730,9 +731,12 @@ def test_a_page_spanning_component_is_withheld_and_a_small_one_is_not():
 def test_the_bound_is_inclusive_at_its_own_value_and_exclusive_just_below():
     """A box exactly on the line is withheld; one basis point under it is not.
 
-    The area is floor-divided, so the box just below the bound reads as under it
-    -- the safe direction for a rule that withholds, because a component that is
-    grouped is still reconciled while one that is withheld is not grouped at all.
+    Both halves, because the bound is only meaningful as a pair: the area is
+    floor-divided and the comparison is `>=`, so the rounding can only ever move
+    a box *down*, toward being grouped, and the bound still holds inclusively at
+    its own stated value. `grouping._bbox_area_bp`'s docstring carries the same
+    sentence and this test is what makes it a check; two spellings of one
+    rationale is how they come to disagree.
     """
     # PAGE_W x PAGE_H is 200x300 == 60,000 px. Half of it is 30,000: a
     # 200x150 box is exactly 5000bp, a 200x149 box is 4966bp.
@@ -823,10 +827,28 @@ def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fire
     `SPEC_FINDINGS.md` 2026-09-06 item 4 recorded that on real pages
     `group_page` returned bezel-welded groups, so the page read as `detected`
     and the four-band grid Tyrel ruled for on 2026-08-11 never ran. A page whose
-    only component spans it now returns no groups at all, which is what
+    only component spans it now returns no groups at all, which is the condition
     `run.py` reads as `fallback-tiles`.
+
+    Both halves are asserted, because the first alone would not earn this test's
+    name: the empty result is the trigger, and `fallback_tiles` -- this module's
+    own -- is what that trigger reaches. Every pixel of the page ends up inside a
+    tile, so the page is cut and sent downstream to be read rather than being
+    called blank on the strength of one threshold. What this cannot check from
+    here is `run.py` making that call; `test_structure_failure.py` is where the
+    live path's `structure_evidence` is pinned.
     """
     assert group([_bezel()]) == []
+
+    tiles = fallback_tiles(PAGE_W, PAGE_H, bands=4, overlap_px=8)
+    assert len(tiles) == 4
+    covered = set()
+    for tile in tiles:
+        bounds = tile["bounds"]
+        assert bounds["x"] == 0 and bounds["w"] == PAGE_W
+        covered.update(range(bounds["y"], bounds["y"] + bounds["h"]))
+        assert "fallback tile" in tile["rationale"]
+    assert covered == set(range(PAGE_H))
 
 
 def test_the_partition_is_invariant_under_input_order():
