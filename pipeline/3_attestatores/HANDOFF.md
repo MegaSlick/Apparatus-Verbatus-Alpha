@@ -391,6 +391,22 @@ built. `test_live_witness.py` walks every Churro row in the shipped catalogue at
 every tier and asserts what this seam would send is a bound that row can take;
 its counterfactual holds the old flat 24,000 against the same three rows.
 
+**Whether a request *fits* is a different question, and it is now asked of both
+page chairs and of DAI.** The bound above governs what may be *sent*; it cannot
+say whether the request the engine receives is admissible at all. A whole
+300-dpi page costs Chandra 1,715 prompt tokens and Churro 2,280 at the smallest
+tier's `max_pixels`, before a word of prompt is counted, and a page-fallback
+act hands DAI a page-sized crop at the same cost. `live_witness.
+request_capacity_or_refuse` computes that arithmetic from the sealed row's own
+`min_pixels`/`max_pixels`/`patch_size`/`merge_size` (`common/request_capacity.py`)
+plus the chair's measured prompt cost and its measured answer budget at the
+scope it was asked at — a page's answer for a page chair, one act's for DAI, so
+that reserving a page's answer never refuses an ordinary act crop that
+measurably works. A request that does not fit is refused by name before it is
+built, and the refusal carries the whole record. One that does fit carries the
+record onto the request, and the client copies it onto the retained call
+record. Nothing is ever downscaled to make a request fit.
+
 Two further seams closed with them:
 
 **A live record says which kind of bytes it retained.** `raw_response_ref` means

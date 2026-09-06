@@ -361,6 +361,17 @@ comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 the recorded `parse_problem` never asserts a foreign-source observation that
 was never made (GOVERNANCE 10).
 
+**The capacity record travels with the request, and the client neither
+computes nor checks it.** `ChairRequest.capacity` is the caller's own
+`common.request_capacity` record: whether this request's images, prompt and
+answer budget fit the sealed row it is about to be sent to. Only the caller
+knows which prompt and which answer shape a call is, so the arithmetic belongs
+to the stage; what belongs here is carrying it. `read` copies it onto the
+`chair-call-record.v1` blob — `null` where the caller states none, as the
+readiness probe and `smoke.py` do — so every stage that keeps a reading can
+reach the arithmetic that admitted it through the call record it already names,
+without a second reference.
+
 **The reading parser, against the probe parser.** `http.parse_openai_reading`
 is not `parse_openai_answer` reused: a readiness probe must prove the engine
 can answer at all, so it refuses blank content. A witness or reader's

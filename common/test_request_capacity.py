@@ -17,6 +17,7 @@ import pytest
 
 from common.imaging import encode_grayscale_png
 from common.request_capacity import (
+    MEASURED_ACT_ANSWER_TOKENS,
     MEASURED_DENSE_PAGE_ANSWER_TOKENS,
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_PROMPT_FLOOR_TOKENS,
@@ -25,6 +26,7 @@ from common.request_capacity import (
     PROMPT_TOKENS_MEASURED_RATE,
     SCHEMA,
     RequestCapacityRefusal,
+    act_answer_budget,
     dense_page_answer_budget,
     image_prompt_tokens,
     image_sizes,
@@ -334,3 +336,39 @@ def test_a_chair_with_no_measured_answer_budget_is_refused():
     with pytest.raises(RequestCapacityRefusal) as refusal:
         dense_page_answer_budget("recensor")
     assert "no measured dense-page answer budget" in str(refusal.value)
+
+
+@pytest.mark.parametrize("chair, expected", [("attestator_2", 230), ("perlector", 216)])
+def test_the_measured_single_act_answer_budgets(chair, expected):
+    """The two act-scoped chairs reserve one act's answer, not a page's."""
+
+    assert act_answer_budget(chair) == expected
+    assert MEASURED_ACT_ANSWER_TOKENS[chair] == expected
+
+
+@pytest.mark.parametrize("chair", ["designator_structure", "attestator_1", "attestator_3"])
+def test_a_page_scoped_chair_has_no_single_act_budget_to_reserve(chair):
+    """The page chairs are never asked for one act, so nothing measured one."""
+
+    with pytest.raises(RequestCapacityRefusal) as refusal:
+        act_answer_budget(chair)
+    assert "no measured single-act answer budget" in str(refusal.value)
+
+
+def test_dais_ordinary_act_stays_admissible_at_the_smallest_row():
+    """The one chair measured sound at 24 GB must not be refused into silence.
+
+    Reserving a whole page's answer for a request that asked for one act would
+    put 702 + 84 + 1,426 against a 2,048-token row and refuse a call that
+    measurably works. GOALS 1: a refused act is a missed act.
+    """
+
+    row = _row(chair="attestator_2", max_model_len=2048, max_pixels=TIER_MAX_PIXELS["generic-24gb"])
+    ordinary = request_fits(row, [(1500, 353)], 84, act_answer_budget("attestator_2"))
+    assert ordinary["need"] == 702 + 84 + 230 == 1016
+    assert ordinary["fits"] is True
+    # And the page-fallback act at the same row is still refused, on its image
+    # cost alone, with the same smaller budget reserved.
+    fallback = request_fits(row, [(1291, 1826)], 84, act_answer_budget("attestator_2"))
+    assert fallback["image_prompt_tokens"] == 2280
+    assert fallback["fits"] is False

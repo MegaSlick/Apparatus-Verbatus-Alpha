@@ -197,6 +197,14 @@ class ChairRequest:
     actually goes on the wire, and may never name ``model``, ``stream``,
     ``temperature``, ``seed``, or ``n`` — those are the manager's and the
     decoding policy's alone (GOVERNANCE 7).
+
+    ``capacity`` is the caller's own
+    ``common.request_capacity`` record for this request against the sealed row
+    it is about to be sent to. The client neither computes nor checks it — only
+    the caller knows which prompt and which answer shape this call is — but it
+    copies it onto the retained call record, so a run's receipts carry the
+    arithmetic a request was admitted on beside the request itself. ``None``
+    where the caller states none.
     """
 
     kind: str
@@ -204,10 +212,13 @@ class ChairRequest:
     image_sha256s: tuple[str, ...]
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
+    capacity: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
         object.__setattr__(self, "image_sha256s", tuple(self.image_sha256s))
+        if self.capacity is not None:
+            object.__setattr__(self, "capacity", MappingProxyType(dict(self.capacity)))
         object.__setattr__(
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
@@ -428,6 +439,7 @@ class ChairClient:
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
             "parse_problem": parse_problem,
+            "capacity": dict(request.capacity) if request.capacity is not None else None,
         }
         if set(record) != CHAIR_CALL_RECORD_FIELDS:
             raise AssertionError(  # pragma: no cover - closed by construction above

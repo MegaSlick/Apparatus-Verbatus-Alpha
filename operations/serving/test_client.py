@@ -583,6 +583,8 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["usage"] == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
     assert response.usage == record["usage"]
     assert record["parse_problem"] is None
+    # No caller stated one here, and the client never invents one.
+    assert record["capacity"] is None
     # GOVERNANCE 7: the exact bytes the engine returned, never stripped,
     # cased, or trimmed — carried verbatim into both the response and the
     # blob the record was built alongside.
@@ -591,6 +593,30 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     # Canonical: re-serializing the parsed record reproduces the stored bytes.
     assert canonical_bytes(record) == record_bytes
     assert response.call_record_ref["sha256"] == digest_bytes(record_bytes)
+
+
+def test_a_callers_capacity_record_reaches_the_call_record_verbatim(tmp_path: Path) -> None:
+    """The client carries the arithmetic; it neither computes nor checks it.
+
+    Only the caller knows which prompt and which answer shape a call is, so
+    whether a request fits its sealed row is decided in the stage
+    (`common/request_capacity.py`). What the client owes is that the record
+    lands on the retained call record, beside the request it admitted, so every
+    stage can reach it through the reference it already keeps.
+    """
+
+    capacity = {
+        "schema": "verbatus-request-capacity.v1",
+        "need": 3619,
+        "headroom": 4573,
+        "fits": True,
+    }
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="ok", finish_reason="stop"))
+        response = client.read(_request(capacity=capacity))
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    assert json.loads(record_bytes)["capacity"] == capacity
 
 
 # --- a vendor's float decoding values, recorded exactly as they were sent -----

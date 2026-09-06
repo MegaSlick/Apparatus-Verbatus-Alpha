@@ -4813,7 +4813,15 @@ def _serve_act_unit(
 ) -> int:
     """One act-scoped chair, one act: ask, derive, publish, before the next act."""
     presentation = presentation_for_region(regions[0])
-    built = live_witness.act_chair_request(context, adapter, presentation)
+    built = live_witness.act_chair_request(
+        context,
+        adapter,
+        presentation,
+        # The sealed row this chair is actually running under: a page-fallback
+        # act's crop is a whole 300-dpi page and does not fit every row
+        # (`live_witness.request_capacity_or_refuse`).
+        profile=client.handle.profile,
+    )
     response = client.read(built.request)
     live = live_witness.live_attempt_from_response(
         context,

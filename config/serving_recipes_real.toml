@@ -16,6 +16,16 @@
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
 #
+# `patch_size`/`merge_size` are the chair's vision-encoder geometry, read from
+# the pinned revision's own `preprocessor_config.json`.  They are not vLLM
+# flags -- vLLM reads them from the model repository -- and they are recorded
+# here because they are what decides how many prompt tokens one image costs
+# (`common/request_capacity.py`), which no other field in this row can say.
+# The two families differ: Chandra and the Perlector are Qwen3-VL, patch 16,
+# 1,024 px per image token; DAI and Churro are Qwen2.5-VL, patch 14, 784 px per
+# image token.  A row that omits them still launches; what it cannot do is have
+# a request checked against it before it is sent.
+#
 # `request_timeout_seconds` bounds one non-streaming reading request, which
 # returns nothing until generation completes.  Witness rows carry 600s,
 # Perlector rows 1800s — both UNMEASURED planning values, not a claim that any
@@ -42,6 +52,8 @@ max_num_batched_tokens = 512
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -71,6 +83,8 @@ max_num_batched_tokens = 1024
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -100,6 +114,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -129,6 +145,8 @@ max_num_batched_tokens = 512
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -158,6 +176,8 @@ max_num_batched_tokens = 1024
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -187,6 +207,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -218,6 +240,8 @@ max_num_batched_tokens = 512
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -247,6 +271,8 @@ max_num_batched_tokens = 1024
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -276,6 +302,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -305,6 +333,8 @@ max_num_batched_tokens = 512
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -334,6 +364,8 @@ max_num_batched_tokens = 1024
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -363,6 +395,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -392,6 +426,8 @@ max_num_batched_tokens = 512
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -421,6 +457,8 @@ max_num_batched_tokens = 1024
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -450,6 +488,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true

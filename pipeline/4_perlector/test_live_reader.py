@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import hashlib
 from pathlib import Path
 from typing import Mapping
 
@@ -24,7 +25,9 @@ from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
+from common.imaging import encode_grayscale_png
 from common.perlector_audit import audit_request as build_audit_request
+from common.request_capacity import RequestCapacityRefusal
 from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,
@@ -70,8 +73,8 @@ def _chair(recipe: str = "unproven-real-perlector") -> ChairIdentity:
     )
 
 
-def _vllm_row(chair: ChairIdentity) -> dict[str, object]:
-    return {
+def _vllm_row(chair: ChairIdentity, **overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
         "kind": "vllm",
         "recipe": chair.serving_recipe,
         "chair": chair.role,
@@ -88,6 +91,12 @@ def _vllm_row(chair: ChairIdentity) -> dict[str, object]:
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1024,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 16,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
@@ -103,10 +112,12 @@ def _vllm_row(chair: ChairIdentity) -> dict[str, object]:
             "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',
         },
     }
+    row.update(overrides)
+    return row
 
 
-def _sealed_row(chair: ChairIdentity) -> dict[str, object]:
-    row = dict(_vllm_row(chair))
+def _sealed_row(chair: ChairIdentity, **overrides: object) -> dict[str, object]:
+    row = dict(_vllm_row(chair, **overrides))
     row["preflight_identity_digest"] = chair_preflight_identity_digest(chair)
     row["preflight_digest"] = profile_preflight_digest(row)
     return row
@@ -120,7 +131,7 @@ def _read_receipt(chair: ChairIdentity):
     return read_receipt
 
 
-def _built(tmp_path: Path, *, chair: ChairIdentity | None = None):
+def _built(tmp_path: Path, *, chair: ChairIdentity | None = None, **row_overrides: object):
     chair = chair or _chair()
     blob_store = FakeBlobStore(tmp_path / "blobs")
     endpoint = FakeEndpoint(served_model_id=SERVED_MODEL_ID, blob_store=blob_store)
@@ -129,7 +140,7 @@ def _built(tmp_path: Path, *, chair: ChairIdentity | None = None):
     manager = ServingManager(
         registry=registry,
         recipes=parse_serving_recipes(
-            {"schema": "serving-recipes.v1", "profiles": [_sealed_row(chair)]}
+            {"schema": "serving-recipes.v1", "profiles": [_sealed_row(chair, **row_overrides)]}
         ),
         config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
         launcher=launcher,
@@ -151,8 +162,18 @@ def _built(tmp_path: Path, *, chair: ChairIdentity | None = None):
     return client, endpoint, blob_store, chair
 
 
-def _image_bytes(tag: bytes) -> bytes:
-    return b"\x89PNG fixture image " + tag
+def _image_bytes(tag: bytes, *, width: int = 40, height: int = 40) -> bytes:
+    """A real PNG whose pixels vary with the tag.
+
+    Real rather than a byte string with a PNG signature glued on, because
+    ``VLLMReader.read`` now measures every image it is about to send
+    (``common.request_capacity.image_sizes`` reads the IHDR): a fake cannot be
+    charged for pixels it does not have.
+    """
+
+    fill = hashlib.sha256(tag).digest()
+    rows = [bytearray(fill[(y % len(fill))] for _ in range(width)) for y in range(height)]
+    return encode_grayscale_png(width, height, rows)
 
 
 def _autopsia_and_refs(
@@ -595,6 +616,86 @@ def test_a_drifted_image_is_refused_before_anything_is_sent(tmp_path: Path) -> N
             )
     assert endpoint.requests == []
     assert len(blob_store) == 0
+
+
+# --- the pre-send capacity refusal -------------------------------------------
+
+
+def test_an_act_whose_images_overrun_the_sealed_row_is_refused_before_the_wire(
+    tmp_path: Path,
+) -> None:
+    """The failure this check exists to move off a billing card.
+
+    A page-fallback act carries a full-page region crop and a full-page render.
+    At 2,480 pixels wide against this row's `max_pixels` the two cost 1,404 and
+    1,715 image tokens; with the Perlector's measured prompt floor and even its
+    smaller single-act answer budget that is well past 4,096. Before this
+    check the request went out and vLLM answered HTTP 400 with a body the
+    client discarded; now nothing is built, the endpoint sees nothing, and the
+    refusal carries the whole arithmetic.
+    """
+
+    # The one row in this suite with a realistic pixel budget: everything else
+    # here uses `max_pixels = 1024`, under which a whole page costs one token
+    # and no request could overrun anything.
+    client, endpoint, blob_store, chair = _built(tmp_path, max_pixels=1806336)
+    region_image = _image_bytes(b"REGION", width=2480, height=584)
+    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    with client:
+        with pytest.raises(RequestCapacityRefusal) as error:
+            _reader(client, chair).read(
+                dossier,
+                pass_kind="perlectio",
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+    record = error.value.capacity
+    assert [entry["image_prompt_tokens"] for entry in record["images"]] == [1404, 1715]
+    assert record["answer_budget"] == 216
+    assert record["fits"] is False
+    assert record["headroom"] < 0
+    # The counterfactual half: nothing reached the endpoint and nothing was
+    # retained, because nothing was sent.
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_record(
+    tmp_path: Path,
+) -> None:
+    """The admitted path: the arithmetic travels with the request it allowed."""
+
+    import json as _json
+
+    client, endpoint, blob_store, chair = _built(tmp_path)
+    endpoint.script(ScriptedAnswer(content="a reading", finish_reason="stop"))
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        result = _reader(client, chair).read(
+            _dossier(region_image=region_image, page_image=page_image),
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    call_record = next(
+        payload
+        for payload in (
+            _json.loads(written)
+            for written in blob_store.written
+            if written.lstrip().startswith(b"{")
+        )
+        if payload.get("schema") == "chair-call-record.v1"
+    )
+    capacity = call_record["capacity"]
+    assert capacity["schema"] == "verbatus-request-capacity.v1"
+    assert capacity["fits"] is True
+    assert capacity["chair"] == "perlector"
+    assert capacity["prompt_tokens_basis"] in {
+        "measured-floor-for-this-prompt-shape",
+        "measured-tokens-per-word-extrapolation",
+    }
+    assert result["stop_reason"] == "stop"
 
 
 # --- audit re-proof: delivered instrument appended verbatim ------------------

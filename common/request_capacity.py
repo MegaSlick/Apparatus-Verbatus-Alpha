@@ -583,15 +583,45 @@ MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 )
 
 
+# What one *act*'s answer costs, for the two chairs that are asked for one act
+# rather than for a page: `TOKEN_COST_REPORT.md` section 8's 800-word figures
+# again, but the ordinary-act rows.  These are the budgets an act-scoped
+# request reserves, because reserving a whole page's answer for a request that
+# asked for one act would refuse calls that measurably work -- DAI on an
+# ordinary crop is the one chair sound at every tier, and refusing it would
+# cost acts (GOALS 1) to protect against an overrun that cannot happen.
+#
+# A *page-fallback* act -- an act whose bounds are the whole page -- is not
+# admitted by the back door here: its crop is a whole 300-dpi page, so it is
+# caught by its own image cost, which is between four and thirty times the
+# difference between these two budgets.
+MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "attestator_2": 230,
+        "perlector": 216,
+    }
+)
+
+
 def dense_page_answer_budget(chair: str) -> int:
     """The measured dense-page answer budget for one chair, or a named refusal."""
 
-    budget = MEASURED_DENSE_PAGE_ANSWER_TOKENS.get(chair)
+    return _answer_budget(chair, MEASURED_DENSE_PAGE_ANSWER_TOKENS, "dense-page")
+
+
+def act_answer_budget(chair: str) -> int:
+    """The measured single-act answer budget for one chair, or a named refusal."""
+
+    return _answer_budget(chair, MEASURED_ACT_ANSWER_TOKENS, "single-act")
+
+
+def _answer_budget(chair: str, table: Mapping[str, int], what: str) -> int:
+    budget = table.get(chair)
     if budget is None:
         raise RequestCapacityRefusal(
-            f"chair {chair!r} has no measured dense-page answer budget; a request is never "
+            f"chair {chair!r} has no measured {what} answer budget; a request is never "
             "checked against a row with room reserved for an answer nobody measured "
-            f"(the measured chairs are {sorted(MEASURED_DENSE_PAGE_ANSWER_TOKENS)})"
+            f"(the measured chairs are {sorted(table)})"
         )
     return budget
 

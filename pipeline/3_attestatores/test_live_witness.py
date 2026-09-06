@@ -40,7 +40,12 @@ from common.chairs.models import ChairIdentity  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.imaging import encode_grayscale_png  # noqa: E402
 from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
+from common.request_capacity import (  # noqa: E402
+    RequestCapacityRefusal,
+    sealed_prompt_tokens,
+)
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -89,6 +94,27 @@ def _sealed_churro_rows() -> tuple[ServingProfile, ...]:
     return rows
 
 
+DAI_SERVED_MODEL_ID = "attestator-2-dai"
+
+
+def _sealed_row(served_model_id: str, tier: str = TIER) -> ServingProfile:
+    """One shipped real row, read from the catalogue the operator actually ships."""
+
+    rows = [
+        profile
+        for profile in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(profile, ServingProfile)
+        and profile.served_model_id == served_model_id
+        and profile.tier == tier
+    ]
+    assert len(rows) == 1, f"{served_model_id} at {tier} is not exactly one shipped row"
+    return rows[0]
+
+
+def _dai_row(tier: str = TIER) -> ServingProfile:
+    return _sealed_row(DAI_SERVED_MODEL_ID, tier)
+
+
 # --- a fake run tree: image bytes by path, plus a content-addressed blob sink -----
 
 
@@ -107,6 +133,20 @@ class _FakeTree:
         relative_path = f"{stage}/blobs/sha256/{digest}"
         self._by_path[relative_path] = data
         return digest, SimpleNamespace(relative_path=relative_path)
+
+
+def _png(width: int, height: int) -> bytes:
+    """A real PNG of a named size.
+
+    The request builders now measure what they are about to embed
+    (`live_witness.request_capacity_or_refuse` reads the bytes' own IHDR), so a
+    presentation whose "image" is a short byte string no longer describes
+    anything a chair could be charged for.  Small on purpose: these drills are
+    about framing, not about the pixel budget, which
+    `common/test_request_capacity.py` pins directly.
+    """
+
+    return encode_grayscale_png(width, height, [bytearray(width) for _ in range(height)])
 
 
 def _presentation(
@@ -152,12 +192,12 @@ def _decoded_images(request: ChairRequest) -> list[bytes]:
 
 def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_split():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"dai-crop-bytes"
+    image_bytes = _png(40, 30)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
-    act_request = live_witness.act_chair_request(context, adapter, presentation)
+    act_request = live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
     request = act_request.request
 
     assert request.kind == "chat-completions"
@@ -185,17 +225,17 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
 
 def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own_digest():
     context = SimpleNamespace(tree=_FakeTree())
-    presentation = _presentation(kind="region", image_bytes=b"real-bytes")
-    context.tree.seed(presentation["image_path"], b"different-bytes-entirely")
+    presentation = _presentation(kind="region", image_bytes=_png(40, 30))
+    context.tree.seed(presentation["image_path"], _png(41, 30))
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
     with pytest.raises(SchemaRefusal):
-        live_witness.act_chair_request(context, adapter, presentation)
+        live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
 
 
 def _churro_page_request(profile: Any):
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"whole-page-bytes"
+    image_bytes = _png(50, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_prompt)
@@ -270,8 +310,22 @@ def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it
 
 @pytest.mark.parametrize("value", [None, 0, -1, True, "2048", 2048.0])
 def test_page_chair_request_refuses_a_row_that_cannot_state_its_context_bound(value):
+    """A row with every other field stated and no usable `max_model_len`.
+
+    The geometry fields are stated so this drill still isolates the context
+    bound: the capacity check now runs first and would otherwise refuse on the
+    missing patch size instead, which is a different defect.
+    """
+
     row = SimpleNamespace(
-        max_model_len=value, recipe="unproven-real-attestatores", chair="attestator_3", tier="t"
+        max_model_len=value,
+        min_pixels=3136,
+        max_pixels=3211264,
+        patch_size=14,
+        merge_size=2,
+        recipe="unproven-real-attestatores",
+        chair="attestator_3",
+        tier="t",
     )
     with pytest.raises(SchemaRefusal) as error:
         _churro_page_request(row)
@@ -279,9 +333,137 @@ def test_page_chair_request_refuses_a_row_that_cannot_state_its_context_bound(va
     assert "attestator_3" in str(error.value)
 
 
+@pytest.mark.parametrize("field", ["patch_size", "merge_size", "min_pixels", "max_pixels"])
+def test_page_chair_request_refuses_a_row_that_cannot_state_its_image_geometry(field):
+    """The token cost of an image is never counted against a default.
+
+    Chandra and the Perlector spend 1,024 px per image token; DAI and Churro
+    spend 784.  A row silent about which is refused by name rather than
+    counted wrong by a third.
+    """
+
+    row = SimpleNamespace(
+        max_model_len=4096,
+        min_pixels=3136,
+        max_pixels=3211264,
+        patch_size=14,
+        merge_size=2,
+        recipe="unproven-real-attestatores",
+        chair="attestator_3",
+        tier="generic-48gb",
+    )
+    setattr(row, field, None)
+    with pytest.raises(SchemaRefusal) as error:
+        _churro_page_request(row)
+    assert field in str(error.value)
+
+
+# --------------------- the pre-send capacity refusal --------------------------
+
+
+def _page_request_of_size(width: int, height: int, row):
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(width, height)
+    presentation = _presentation(kind="page", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_prompt)
+    return live_witness.page_chair_request(context, adapter, "churro.v1", presentation, profile=row)
+
+
+def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
+    request = _page_request_of_size(50, 70, _sealed_churro_rows()[0])
+    capacity = dict(request.capacity)
+    assert capacity["schema"] == "verbatus-request-capacity.v1"
+    assert capacity["fits"] is True
+    assert capacity["chair"] == "attestator_3"
+    # Churro's own measured prompt cost and dense-page answer budget, not a guess.
+    assert capacity["prompt_tokens"] == 281
+    assert capacity["answer_budget"] == 1433
+
+
+def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
+    """The counterfactual this unit exists for.
+
+    A 300-dpi A4 page is 2,480x3,508.  Against the shipped 24 GB Churro row it
+    costs 2,280 image tokens; with the measured 281-token prompt and a
+    1,433-token dense-page answer that is 3,994 against a `max_model_len` of
+    2,048.  Before this check the request went to the endpoint and the engine
+    answered HTTP 400; now nothing is built.
+    """
+
+    row = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
+    with pytest.raises(RequestCapacityRefusal) as error:
+        _page_request_of_size(2480, 3508, row)
+    record = error.value.capacity
+    assert record["image_prompt_tokens"] == 2280
+    assert record["need"] == 3994
+    assert record["headroom"] == 2048 - 3994
+    assert record["fits"] is False
+    assert "downscaled" in str(error.value)
+
+
+def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
+    """DAI is act-scoped, and a page-fallback act's crop is the whole page.
+
+    The measured case from the token study: presented at DAI's own ceilings the
+    page is 1,291x1,826 and still costs 2,280 image tokens, which the 24 GB row
+    cannot hold beside an 84-token prompt even with the *smaller* single-act
+    answer budget reserved. The image cost alone is what settles it -- which is
+    why an act chair reserving one act's answer rather than a page's does not
+    let a page-fallback act through.
+    """
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(1291, 1826)
+    presentation = _presentation(kind="region", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
+
+    with pytest.raises(RequestCapacityRefusal) as error:
+        live_witness.act_chair_request(
+            context, adapter, presentation, profile=_dai_row("generic-24gb")
+        )
+    record = error.value.capacity
+    assert record["image_prompt_tokens"] == 2280
+    assert record["need"] == 2280 + 84 + 230
+    assert record["fits"] is False
+
+
+def test_an_ordinary_act_crop_still_fits_the_smallest_row():
+    """DAI's ordinary act path is the one measured sound at 24 GB; it stays so."""
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(1500, 353)
+    presentation = _presentation(kind="region", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
+
+    built = live_witness.act_chair_request(
+        context, adapter, presentation, profile=_dai_row("generic-24gb")
+    )
+    assert built.capacity["image_prompt_tokens"] == 702
+    assert built.capacity["fits"] is True
+    assert dict(built.request.capacity) == built.capacity
+
+
+def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is_sent():
+    """The digests that expire the measured constants, checked where they live.
+
+    A prompt edit that leaves `common/request_capacity.py`'s measured token
+    count in place fails here rather than reaching a pod with a stale number.
+    """
+
+    chandra_module = sys.modules.get("chandra") or __import__("chandra")
+    assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["instruction"]) == 256
+    dai = feeding.dai_prompt()
+    assert sealed_prompt_tokens("attestator_2", dai["system"], dai["user"]) == 84
+    churro = feeding.churro_prompt()
+    assert sealed_prompt_tokens("attestator_3", churro["system"], churro["user"]) == 281
+
+
 def test_page_chair_request_builds_chandras_single_instruction_framing():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"whole-page-bytes-2"
+    image_bytes = _png(51, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
@@ -301,7 +483,7 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():
     context = SimpleNamespace(tree=_FakeTree())
-    image_bytes = b"page-bytes-3"
+    image_bytes = _png(52, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=lambda: {"weird": "shape"})
@@ -350,6 +532,12 @@ def _vllm_row(*, recipe: str, chair: str, served_model_id: str) -> dict[str, obj
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
         "max_pixels": 1024,
+        # The chair's own vision-encoder geometry, as the shipped real
+        # catalogue states it: without it nothing can say what one image costs
+        # this chair in prompt tokens, and the request builders refuse by name
+        # rather than counting against a default (`common/request_capacity.py`).
+        "patch_size": 14,
+        "merge_size": 2,
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,

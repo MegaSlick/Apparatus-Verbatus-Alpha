@@ -17,6 +17,19 @@ model. ``read`` below reads ``pass_kind`` in exactly two places: the closed
 membership check, and the delivery hand-off to ``validate_audit_delivery``.
 Nothing else in this module ever inspects it.
 
+**A request that cannot fit the sealed row is refused before it is sent.**
+``read`` computes ``common.request_capacity``'s record for the images it is
+about to carry, the prompt it just rendered, and this chair's measured
+single-act answer budget -- one act's reading is what this request asks for --
+and raises
+``common.request_capacity.RequestCapacityRefusal`` -- carrying that record --
+when the row's ``max_model_len`` cannot hold them. That is a refusal rather
+than a hold because a Perlector reading has no ``failed`` shape (see
+``EngineSignalRefusal`` below): there is nothing to publish for an act nothing
+read. On the admitted path the record travels on the request and the client
+copies it onto the retained call record, so the arithmetic sits beside the
+reading it allowed. Nothing is ever downscaled to make a request fit.
+
 **The stop-reason mapping is where an unrecognized engine answer becomes a
 loud stop, not a silent guess.** ``truncation.py:77-93`` documents the rule
 this implements: an engine's own word is authoritative for ``length``, but a
@@ -38,6 +51,12 @@ from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_del
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
+from common.request_capacity import (
+    act_answer_budget,
+    image_sizes,
+    perlector_prompt_tokens,
+    refuse_unless_it_fits,
+)
 from operations.serving.client import ChairClient, ChairRequest
 
 
@@ -201,6 +220,35 @@ class VLLMReader:
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         content.extend(_image_content_blocks(region_images + page_render_images))
 
+        # Before the request is built: does it fit the sealed row at all?
+        # This is the seam with the most images in one request -- every region
+        # crop and every page render, across every capture view
+        # (`config/perlector_protocol.toml` allows up to 32, a ceiling with no
+        # relation to any row's context) -- so it is also the seam most likely
+        # to overrun.  `max_tokens` is deliberately unset here so that a
+        # `"length"` stop honestly means the context was exhausted; the cost of
+        # that honesty is that a *prompt*-side overrun surfaces as an HTTP 400
+        # the engine answers before generating, which `EngineSignalRefusal`
+        # never sees. Refusing here is what turns that into a laptop refusal
+        # naming the arithmetic rather than a stack trace on a billing card.
+        prompt_tokens, basis = perlector_prompt_tokens(text)
+        capacity = refuse_unless_it_fits(
+            self._client.handle.profile,
+            image_sizes(region_images + page_render_images),
+            prompt_tokens,
+            # One act's reading, which is what this request asks for. A
+            # page-fallback act -- an act whose bounds are the whole page --
+            # carries a page-sized crop and is caught by its image cost, which
+            # dwarfs the difference between the two measured answer budgets.
+            act_answer_budget(self._chair.role),
+            # The pass label is deliberately absent from this message: this
+            # module may read it in exactly two places (the closed membership
+            # check and the audit hand-off) so that nothing about a request can
+            # vary with which pass it is. A refusal message is no exception.
+            what=f"the Perlector request for act {dossier.get('act_key')!r}",
+            prompt_tokens_basis=basis,
+        )
+
         request = ChairRequest(
             kind="chat-completions",
             messages=({"role": "user", "content": content},),
@@ -209,6 +257,7 @@ class VLLMReader:
             generation_sent={"max_tokens": self._max_tokens}
             if self._max_tokens is not None
             else {},
+            capacity=capacity,
         )
         response = self._client.read(request)
 
