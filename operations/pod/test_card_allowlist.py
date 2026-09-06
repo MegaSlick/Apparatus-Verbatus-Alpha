@@ -277,11 +277,14 @@ def test_a_runtime_with_no_reviewed_table_enforces_no_allowlist(tmp_path: Path) 
 def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The shipped reviewed table is the allowlist, named the way the default names it.
+    """The shipped reviewed table is the allowlist, with no `--placement` at all.
 
-    `--placement` is passed here only so the table is resolved from the
-    repository root rather than from whatever directory pytest was started in;
-    the value is `cli.py`'s own default file.
+    Passing `--placement` here -- even pointed at `cli.py`'s own default file --
+    exercised the flag and not the default: the test would still have passed if
+    the default were changed to another table or dropped entirely, which is the
+    one thing it exists to hold. So the cwd is moved to the repository root
+    instead, which is what `Path("config/pod_placement.toml")` resolves against,
+    and the command is run the way an operator runs it.
 
     Exit 2 is this surface's "refused, and nothing was paid"; the fake never
     saw a verb.
@@ -296,6 +299,9 @@ def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
     monkeypatch.setattr(
         "builtins.input", lambda _prompt: pytest.fail("a refused card asked for a confirmation")
     )
+    # The default is a bare relative path, so the cwd is the whole test. Every
+    # other path below is absolute and unaffected by the move.
+    monkeypatch.chdir(REPOSITORY_ROOT)
 
     exit_code = cli.main(
         [
@@ -309,8 +315,6 @@ def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
             str(tmp_path / "leases"),
             "--provider-name",
             "fake",
-            "--placement",
-            str(REVIEWED_TABLE),
             "create",
             "--request",
             str(request_path),
