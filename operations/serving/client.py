@@ -541,7 +541,9 @@ def _nonfinite_path(value: object, path: str = "") -> str | None:
 # carry vLLM's own overflow sentence, which is the artefact a real run is
 # paying for; short enough that a megabyte of HTML from something that is not
 # vLLM at all cannot be pasted into a traceback. The whole body is retained
-# either way and the refusal names where.
+# either way and the refusal names where. Used on the non-200 branch alone:
+# a 200 from the wrong model carries a foreign reading, and its words do not
+# go into an exception message.
 _REFUSAL_BODY_PREVIEW_BYTES = 512
 
 
@@ -570,8 +572,17 @@ def _refuse_bytes_from_the_wrong_source(
     evidence for a malformed reading, not evidence from somewhere else.
 
     ``raw_response_ref`` names the blob the caller has already written. Both
-    refusals carry it and the head of the body, so the engine's own account of
-    why it refused survives in the traceback as well as on disk.
+    refusals carry it, so the bytes are reachable from the traceback as well as
+    on disk.
+
+    **Only the non-200 quotes the body.** A non-200 is the engine's own account
+    of why it refused -- "this model's maximum context length is N tokens" --
+    and that sentence is the artefact a rented card was paying for. A 200 from
+    the wrong model is the opposite case: the body is a *foreign* reading, text
+    some other model produced about who knows what image, and this repository
+    does not put a foreign reading's words into an exception message where they
+    would be read, logged, and quoted onward. It is retained, by its own digest,
+    and the refusal names where.
     """
 
     if response.status != 200:
@@ -584,9 +595,10 @@ def _refuse_bytes_from_the_wrong_source(
     if model is not None and model != expected_model_id:
         raise ChairResponseRefusal(
             "CHAIR_RESPONSE_MODEL_MISMATCH",
-            f"reading response model={model!r}, expected {expected_model_id!r}; its body is "
-            f"retained at {dict(raw_response_ref)!r} and begins "
-            f"{_body_preview(response.body)}",
+            f"reading response model={model!r}, expected {expected_model_id!r}; its "
+            f"{len(response.body)} bytes are retained at {dict(raw_response_ref)!r} and are "
+            "not quoted here: a reading from another model is not this chair's evidence and "
+            "does not travel in a refusal message",
         )
 
 
@@ -594,9 +606,12 @@ def _peek_model(body: bytes) -> str | None:
     """The response's declared ``model``, or ``None`` when it cannot be read.
 
     Never raises: an unparseable body or a missing field is exactly the shape
-    a malformed reading is allowed to have, and this helper is used both
-    before retention (where that must not raise) and while building the call
-    record (where ``response_model`` is simply ``null`` for such a body).
+    a malformed reading is allowed to have, and every one of this helper's
+    three callers depends on that. It decides the wrong-source refusal; it
+    separates a real foreign-model observation from a body that named no model
+    at all, which the parser's own comparison cannot tell apart; and it fills
+    ``response_model`` on the call record, which is simply ``null`` for such a
+    body. All three run *after* the bytes are retained.
     """
 
     try:

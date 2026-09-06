@@ -375,10 +375,20 @@ def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
     comes back. What changed is that the bytes exist afterwards, by their own
     digest, so a reader can see what actually arrived instead of taking the
     refusal's word for it.
+
+    And what the refusal does *not* carry: the foreign reading itself. The
+    model's name is a field this check compared and says so; the text that
+    model produced is a reading from somewhere else, and a reading from
+    somewhere else does not enter an exception message to be logged and quoted
+    onward. It is on disk, by its digest, which the refusal names.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
-    foreign = ScriptedAnswer(content="hello", finish_reason="stop", model="someone-elses-model")
+    foreign = ScriptedAnswer(
+        content="A READING NO CHAIR HERE ASKED FOR",
+        finish_reason="stop",
+        model="someone-elses-model",
+    )
     with client:
         endpoint.script(foreign)
         with pytest.raises(ChairResponseRefusal) as excinfo:
@@ -388,6 +398,8 @@ def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
     assert b"someone-elses-model" in blob_store.written[0]
     assert digest_bytes(blob_store.written[0]) in excinfo.value.detail
     assert "someone-elses-model" in excinfo.value.detail
+    assert "A READING NO CHAIR HERE ASKED FOR" not in excinfo.value.detail
+    assert str(len(blob_store.written[0])) in excinfo.value.detail
 
 
 def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
