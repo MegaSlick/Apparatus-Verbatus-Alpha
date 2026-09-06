@@ -357,9 +357,6 @@ def test_the_bound_is_weighed_against_this_requests_own_prompt_not_against_the_r
     assert live_witness.churro_generation_sent(
         _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt), declared, prompt_tokens=page_prompt
     ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
-    # And the old rule's own answer at the first of those rows, for the
-    # comparison: it looked at the row alone and sent the bound.
-    assert CHURRO_OUTPUT_TOKENS < CHURRO_OUTPUT_TOKENS + 1
 
 
 @pytest.mark.parametrize("bad", [None, -1, True, "2280", 2280.0])
