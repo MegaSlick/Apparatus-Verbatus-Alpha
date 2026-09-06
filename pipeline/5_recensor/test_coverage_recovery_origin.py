@@ -191,13 +191,20 @@ def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(
     # would falsify this control and must not be read as this test passing.
     from common.background import load_background_config, resolve_background_policy
     from common.imaging import dimensions
-    from common.residual_ink import ink_runs
+    from common.residual_ink import (
+        ink_runs,
+        load_coverage_audit_config,
+        resolve_coverage_audit_policy,
+    )
     from proof.synthetic_pages import page_bytes
 
     page = page_bytes(1)
     evidence = ink_runs(
         page,
         background_policy=resolve_background_policy(load_background_config(), *dimensions(page)),
+        coverage_policy=resolve_coverage_audit_policy(
+            load_coverage_audit_config(), *dimensions(page)
+        ),
     )
     for bounds in observed_bounds:
         x0, x1 = bounds["x"], bounds["x"] + bounds["w"]

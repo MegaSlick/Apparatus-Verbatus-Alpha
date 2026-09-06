@@ -28,11 +28,11 @@ def _armarium():
     return module
 
 
-_RUNS = {"schema": "ink-runs.v1", "width": 40, "height": 2, "rows": [[], []]}
+_RUNS = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[], []]}
 # 80 ink pixels, all of them outside any crop: past `MINIMUM_INK_PIXELS`
 # and past the fraction gate, so the shared `coverage_flag` holds the page.
 _FLAGGED_RUNS = {
-    "schema": "ink-runs.v1",
+    "schema": "ink-runs.v2",
     "width": 40,
     "height": 2,
     "rows": [[[0, 40]], [[0, 40]]],
@@ -72,7 +72,24 @@ class _Tree:
 
 
 def _context(records: dict[str, list[dict]]):
-    return SimpleNamespace(tree=_Tree(records), run={})
+    """A context carrying the one argument and the one check the stage now makes.
+
+    `ink_map_page_rows` reads the sealed `[coverage_audit]` block through
+    `context.args.designator_grouping_config` and proves its bytes against the
+    run's `designator-grouping` seal, the way every other reader of that file
+    does. The stub records the check rather than skipping it, so a test can say
+    the stage really made it.
+    """
+    seen: list[tuple[str, str]] = []
+    return SimpleNamespace(
+        tree=_Tree(records),
+        run={},
+        args=SimpleNamespace(
+            designator_grouping_config=str(ROOT / "config/designator_grouping.toml")
+        ),
+        require_sealed_config=lambda name, digest: seen.append((name, digest)),
+        required_configs=seen,
+    )
 
 
 SEALED_ONE = {1: {"outcome": "sealed"}}
@@ -158,7 +175,7 @@ def test_an_ink_map_outcome_must_match_its_retained_ink_runs(outcome, evidence, 
 def test_a_mapped_page_with_unreadable_retained_runs_is_refused_by_name():
     """The clear outcome has the same evidence-validation duty as a hold."""
     armarium = _armarium()
-    malformed = {"schema": "ink-runs.v1", "width": 40, "height": 2, "rows": [[]]}
+    malformed = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[]]}
     context = _context({INK_MAP: [_ink_record("a", 1, "mapped", malformed)]})
     with pytest.raises(
         FatalAccounting,

@@ -56,7 +56,11 @@ def _load_module(relative_path: str, name: str):
 
 RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_residual_ink_wiring")
 sys.path.insert(0, str((ROOT / "pipeline" / "5_recensor")))
-from residual_ink import page_residual_ink  # noqa: E402
+from residual_ink import (  # noqa: E402
+    load_coverage_audit_config,
+    page_residual_ink,
+    resolve_coverage_audit_policy,
+)
 
 
 def _measure_page(image_bytes, covered):
@@ -66,6 +70,9 @@ def _measure_page(image_bytes, covered):
         covered,
         background_policy=resolve_background_policy(
             load_background_config(), *dimensions(image_bytes)
+        ),
+        coverage_policy=resolve_coverage_audit_policy(
+            load_coverage_audit_config(), *dimensions(image_bytes)
         ),
     )
 

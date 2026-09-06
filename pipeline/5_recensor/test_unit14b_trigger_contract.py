@@ -192,7 +192,7 @@ def _ink_map(width: int, height: int, ink_boxes: list[dict]) -> dict:
             (box["x"], box["w"]) for box in ink_boxes if box["y"] <= y < box["y"] + box["h"]
         )
         rows.append([[x, w] for x, w in runs])
-    return {"schema": "ink-runs.v1", "width": width, "height": height, "rows": rows}
+    return {"schema": "ink-runs.v2", "width": width, "height": height, "rows": rows}
 
 
 @pytest.mark.parametrize(
@@ -344,8 +344,8 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
 @pytest.mark.parametrize(
     "evidence",
     [
-        {"schema": "ink-runs.v1", "width": 0, "height": 1, "rows": [[]]},
-        {"schema": "ink-runs.v1", "width": 1, "height": False, "rows": []},
+        {"schema": "ink-runs.v2", "width": 0, "height": 1, "rows": [[]]},
+        {"schema": "ink-runs.v2", "width": 1, "height": False, "rows": []},
     ],
 )
 def test_invalid_ink_map_dimensions_are_refused_instead_of_read_as_empty(evidence):

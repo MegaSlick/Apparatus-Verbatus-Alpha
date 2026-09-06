@@ -61,6 +61,13 @@ class _RecordingContext:
         self.config_digest = "a" * 64
         self.run = {"source_manifest": []}
         self.registry = SimpleNamespace(config=object())
+        # The Armarium reads the sealed `[coverage_audit]` block through its own
+        # parsed argv and proves the bytes against the run's seal, so this
+        # double carries the one argument and the one check that path makes.
+        self.args = SimpleNamespace(
+            designator_grouping_config=str(ROOT / "config" / "designator_grouping.toml")
+        )
+        self.required_configs: list[tuple[str, str]] = []
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
         self.armarium_formats = ArmariumFormats(
@@ -68,6 +75,11 @@ class _RecordingContext:
             False,
         )
         self.blobs: dict[str, bytes] = {}
+
+        def require_sealed_config(name: str, digest: str) -> None:
+            self.required_configs.append((name, digest))
+
+        self.require_sealed_config = require_sealed_config
 
         def read_bytes(relative_path: str) -> bytes:
             if relative_path not in self.blobs:
@@ -85,7 +97,7 @@ class _RecordingContext:
         # is exactly the shape that becomes reachable later without anyone
         # noticing (GOVERNANCE 2). This double therefore answers the manifest
         # walk the real tree answers: one `mapped` page 1 finding, carrying
-        # real `ink-runs.v1`-shaped evidence rather than a placeholder, and no
+        # real `ink-runs.v2`-shaped evidence rather than a placeholder, and no
         # Designator regions to release anything with.
         self.ink_map_records = {
             "page-1": {
@@ -94,7 +106,7 @@ class _RecordingContext:
                 "payload": {
                     "page_ordinal": 1,
                     "edge_findings": {
-                        "schema": "ink-runs.v1",
+                        "schema": "ink-runs.v2",
                         "width": 8,
                         "height": 2,
                         "rows": [[], []],

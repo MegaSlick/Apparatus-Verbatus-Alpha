@@ -11,9 +11,13 @@
 # pixels with `geometry._pad_amount(dimension, bp)` -- round-half-up, pure
 # integer arithmetic -- never write a second rounding rule.
 #
-# Each field's basis is named below because it is NOT uniform: six fields
+# Each field's basis is named below because it is NOT uniform: five fields
 # are a fraction of the page's own HEIGHT and one (`margin_bp`) is a fraction
-# of the page's own WIDTH. This basis is a design decision recorded in
+# of the page's own WIDTH. `page_edge_reach_bp` was the sixth height-based
+# field until 2026-09-06 and is now `[grouping.continuation]`'s only field, for
+# the reason `page_area_bp` and `background` have tables of their own: it was
+# re-derived on 44 real pages and this table's provenance says, truthfully of
+# everything left in it, that its values are unmeasured fixture conversions. This basis is a design decision recorded in
 # SPEC_C section 2, chosen from what each threshold is compared against in
 # code -- vertical extents for the six height-based fields, the page-width
 # margin lane for `margin_bp` -- not a property recovered from the retired
@@ -30,9 +34,17 @@
 #   chain_gap_bp                        | HEIGHT | grouping.DEFAULT_CHAIN_GAP_PX (6)
 #   anchor_reach_bp                     | HEIGHT | grouping.DEFAULT_ANCHOR_REACH_PX (2)
 #   brace_min_height_bp                 | HEIGHT | grouping.DEFAULT_BRACE_MIN_HEIGHT_PX (30)
-#   page_edge_reach_bp                  | HEIGHT | grouping.DEFAULT_PAGE_EDGE_REACH_PX (4)
 #   review_priority_min_dimension_bp    | HEIGHT | conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX (6)
 #   fallback_overlap_bp                 | HEIGHT | grouping.DEFAULT_FALLBACK_OVERLAP_PX (8)
+#
+# `[grouping.continuation]` holds `page_edge_reach_bp`, a fraction of the page's
+# own HEIGHT: how close a group's bounds must come to the top or bottom edge for
+# `grouping.find_continuation_candidate` to treat it as reaching that edge. It
+# has a table and a provenance block of its own because it is measured -- 44
+# real pages, `sample_count = 44` -- and the seven values left in
+# `page_fraction_bp` are not. Its retired value, 154, was a conversion of
+# `grouping.DEFAULT_PAGE_EDGE_REACH_PX` (4) against the 200x260 fixture, and it
+# passed on none of those 44 pages.
 #
 # `[grouping.absolute]` holds `gap_tolerance_px`, which stays a raw pixel
 # count and must NEVER be converted to a page-fraction basis point -- see the
@@ -206,9 +218,20 @@ margin_bp = 1500
 chain_gap_bp = 231
 anchor_reach_bp = 77
 brace_min_height_bp = 1154
-page_edge_reach_bp = 154
 review_priority_min_dimension_bp = 231
 fallback_overlap_bp = 308
+
+[grouping.continuation]
+page_edge_reach_bp = 280
+
+[grouping.continuation.provenance]
+source = "measured on this Mac, 2026-09-06, over the 44 pages of the corpus named below. For each page the shipped pass was run end to end -- common.imaging.grayscale_rows, common.background.infer_background_evidence, structure.primary_scan at the margin the page derives for itself, grouping.group_page under the sealed page_spanning_area_bp -- and the distance from each page edge to the nearest group bound was recorded in basis points of the relevant dimension. The driver and its raw records are named in the session's AUDIT_GATES_REPORT.md. The retired value 154 was not measured against anything: it is a basis-point conversion of grouping.DEFAULT_PAGE_EDGE_REACH_PX (4) against this repository's 200x260 fixture page, and it sits under [grouping.provenance] with the six other unmeasured conversions until this block took it out"
+corpus = "47 real pages drawn once under the fixed seed audit-gates-2026-09-06: the seven review proxies under private/triage/measured/2026-08-22_005469606_62-68 as a control, the ten photographed pages the ink-margin unit measured on, 20 more flatbed pages from teklia_dai_cretdhi drawn from the 687 not already in the ten, and 10 more parish master pages (4 Embrun, 2 Montebello, 4 Oka) drawn from the 5,493 not already in the ten. 1.5 to 18.4 megapixels, five sources, three capture conditions. Three of the 47 -- all review proxies -- are refused by [grouping.background] max_ink_bp and carry no figure here, so every number below is over the 44 that infer a paper value. 29 of the 44 infer through the surround branch (inferred-interior-mode) and 15 through the plain modal branch (inferred-modal), which is the photographed/flatbed split this sample contains. THE SPLIT IS NOT A BEZEL-FREE CONTROL AND MUST NOT BE READ AS ONE: all 44, on both branches, carry exactly one page-spanning component, holding 35 to 87 per cent of every pixel the audit calls ink (median 65). The flatbed pages were sampled to be the counter-case and are not one -- their leaves sit in a dark frame with a gutter, and the frame welds. This sample therefore contains NO page whose largest component is an ordinary mark. No page here passed through pipeline/1_exemplar, and no page was copied into this tree"
+sample_unit = "page"
+sample_count = 44
+statistic = "the distance in basis points of the page's own HEIGHT from the top edge to the topmost group bound, and from the bottom edge to the bottommost group bound, over the 44 measurable pages -- reported as the whole ordered distribution, because the value is placed in a measured gap in the lower tail of it and not at a quantile"
+calibrated_for_this_corpus = true
+caveat = "WHAT THE SAMPLE ESTABLISHES. The retired 154 basis points could not fire. Measured over these 44 pages the bottommost group sits 157 to 1131 basis points above the page's bottom edge (median 427) and the topmost group sits 0 to 2366 below its top edge (median about 404), so find_continuation_candidate's bottom reach test passed on 0 of 44 and its top reach test on 3 of 44. A test that passes on no page decides nothing, and before the page-spanning bound existed the same two tests passed on 14 of 14 by construction because the whole-leaf group WAS the extreme group -- the threshold has been vacuous in both directions and never in between. 280 is placed in the widest gap in the lower tail of the measured bottom distribution: the sorted bottom margins run 157, 161, 163, 164, 171, 188, 204, 242, 242, 252, 257, then 304, so the gap 257 to 304 is 47 basis points wide and 280 is its midpoint. At 280 the bottom test passes on 11 of 44 and the top test on 13 of 44; every value from 258 to 303 gives the identical bottom partition, which is said here rather than hidden. WHAT THE SAMPLE DOES NOT ESTABLISH, AND IT IS THE HALF THAT MATTERS. These 44 pages are not consecutive pairs. find_continuation_candidate asks a question about TWO pages -- page A's trailing group near its bottom AND page B's leading group near its top AND no anchor on page B's leading group AND a shared column -- and this sample can only report the two marginal distributions the reach tests read. It says nothing about how often the conjunction holds on real consecutive openings, and nothing about whether a group near the bottom edge of a photographed page is in fact an act that runs on. It is also worth stating that the anchor test would still reject 37 of these 44 leading groups on its own, so raising this reach does not by itself make continuations common. Re-derive against consecutive pages from one register before trusting the joint behaviour. Finally, this value never removes a pixel from anything: it decides only whether a continuation is PROPOSED as a candidate, which run.py records rather than acts on, so a value too small loses a corroboration and never an act"
 
 [grouping.absolute]
 gap_tolerance_px = 3
@@ -248,3 +271,55 @@ sample_count = 0
 statistic = "none -- every field here is an unmeasured default or a policy ceiling reasoned from another module's documented limit, not a computed percentile or summary statistic over any sample"
 calibrated_for_this_corpus = false
 caveat = "gap_tolerance_px is the loudest number in this file and must never be expressed as a page-fraction basis point. It is a stroke-connectivity radius -- how many blank pixels two ink runs may have between them and still count as one connected mark -- not a page-layout proportion, and it must not scale with page size: Scaling it the way the six page_fraction_bp fields scale -- to ~41px on a 3508px-tall real page -- would change what 'connected' means, bridging inter-word gaps into merged lines rather than just closing letterform strokes. This caveat used to add that the labeller's cost was quadratic in this value; that was true of the retired per-pixel labeller (383s at gap 3 on a real page at 300-DPI-equivalent size) and is not true of the row-run implementation that replaced it on 2026-09-05, which measures 2.7s at gap 3 and 3.2s at gap 8 on the same page (workbench/active/TIMING_REPORT_2026-09-05.md, structure.label_components). Runtime is therefore no longer an argument about this number in either direction; the connectivity argument above is the whole of it. Its correct value is a function of scan resolution (DPI, stroke width in pixels), not of page dimension, and no measurement of that relationship exists in this project yet; it stays absolute at 3 by decision, not by oversight. Separately, fallback_bands and fallback_overlap_bp decide the crop rectangles that actually reach the Attestatores and the Perlector on a page the structure pass found nothing on, and they are the least measured values in this file: four bands is a guess against a 200x260 fixture, and a real register page may hold thirty entries. They are sealed here so a run can name what it cut rather than because the numbers are right. Separately, max_residual_components and max_secondary_proposals decide review granularity only -- it is reasoned from the operator console's item ceiling, never from a calibrated ink-density figure, and GOVERNANCE 10 forbids treating it as anything that constrains what conservation measures (see pipeline/2_designator/conservation.py's own module docstring). Every value in this file, gap_tolerance_px included, needs re-derivation against this project's own real corpus before calibrated_for_this_corpus may become true; padding_calibration.py's sibling harness for this file does not exist yet because no gold set does either."
+
+
+# ---------------------------------------------------------------------------
+# `[coverage_audit]` is NOT read by the Designator. It is the sealed policy of
+# the outside-coverage audit in `common/residual_ink.py`, which the Ink Map, the
+# Recensor and the Armarium run; the Designator's loader validates it and
+# applies nothing from it, so a malformed block is refused at the earliest stage
+# rather than at the last.
+#
+# It lives in this file, and the reason is the one `common/background.py`
+# already gives about `[grouping.background]`: a file of its own would mean a
+# second sealed name, a second command-line flag, a second entry in both of
+# `common/stage.py`'s digest maps and one in the Door's real-run bindings -- all
+# for a filename, on the path a run proves its policy on. It also needs this
+# file anyway. The component the audit takes out of its counts must be the same
+# component `[grouping.page_area_bp] page_spanning_area_bp` withheld from
+# grouping, found at the same `[grouping.absolute] gap_tolerance_px`, and that
+# is true only while both read one number.
+#
+#   substantial_ink_area_bp  how much outside-coverage ink, as basis points of
+#                            the page's OWN AREA, flags a page on its own
+#                            whatever fraction of that page's ink it is. Resolved
+#                            with common.background.round_half_up_bp and floored
+#                            at residual_ink.MINIMUM_INK_PIXELS (24), because
+#                            coverage_flag reads this gate before the fraction
+#                            gate's own noise floor and a resolved value under
+#                            that floor would flag a page on a speck.
+#   edge_band_bp             the perimeter strip the unclaimed-edge-ink finding
+#                            is measured in, as basis points of the page's
+#                            SHORTER SIDE. The shorter side and not each
+#                            dimension separately, because the band is one strip
+#                            and must be the same thickness all the way round.
+#
+# Both replace flat pixel counts that were reasoned against a 200x260 fixture
+# page and never measured: 2000 outside-coverage pixels and a 64-pixel band. On
+# that fixture 2000 pixels is 384 basis points of the page's area and 64 pixels
+# is 32 per cent of its shorter side; on a 12.6-megapixel leaf the same two
+# constants are 1.6 basis points and 1.8 per cent. They were not thresholds that
+# happened to be wrong, they were artefacts of fixture size.
+
+[coverage_audit]
+substantial_ink_area_bp = 4
+edge_band_bp = 100
+
+[coverage_audit.provenance]
+source = "measured on this Mac, 2026-09-06, over the 44 measurable pages of the corpus below. Each page was decoded through common.imaging.grayscale_rows, inferred through the shared common.background.infer_background_evidence, scanned and grouped through the shipped Designator pass under this file's own sealed values, and then measured through the audit's own ink predicate -- MINIMUM_CONTRAST_BELOW_BACKGROUND below the same paper value -- with the page's page-spanning component identified by the same bound the Designator withheld it under and taken out of both counts. Recorded per page: outside-coverage ink as pixels, as basis points of the page's own audited ink and as basis points of the page's area; the perimeter measure at four bands (the retired 64 pixels and 100, 200 and 300 basis points of the shorter side), each taken twice, against the empty coverage the Ink Map has and against the declared coverage the Armarium releases against; the ink held by one grouped unit of writing; and the distance of the extreme groups from all four page edges. The drivers, their raw records and the full tables are named in the session's AUDIT_GATES_REPORT.md"
+corpus = "47 real pages drawn once under the fixed seed audit-gates-2026-09-06: the seven review proxies under private/triage/measured/2026-08-22_005469606_62-68 as a control, the ten photographed pages the ink-margin unit measured on, 20 more flatbed pages from teklia_dai_cretdhi drawn from the 687 not already in the ten, and 10 more parish master pages (4 Embrun, 2 Montebello, 4 Oka) drawn from the 5,493 not already in the ten. 1.5 to 18.4 megapixels, five sources, three capture conditions. Three of the 47 -- all review proxies -- are refused by [grouping.background] max_ink_bp and carry no figure here, so every number below is over the 44 that infer a paper value. 29 of the 44 infer through the surround branch (inferred-interior-mode) and 15 through the plain modal branch (inferred-modal), which is the photographed/flatbed split this sample contains. THE SPLIT IS NOT A BEZEL-FREE CONTROL AND MUST NOT BE READ AS ONE: all 44, on both branches, carry exactly one page-spanning component, holding 35 to 87 per cent of every pixel the audit calls ink (median 65). The flatbed pages were sampled to be the counter-case and are not one -- their leaves sit in a dark frame with a gutter, and the frame welds. This sample therefore contains NO page whose largest component is an ordinary mark. No page here passed through pipeline/1_exemplar, and no page was copied into this tree"
+sample_unit = "page"
+sample_count = 44
+statistic = "for substantial_ink_area_bp: the outside-coverage ink of each page, less its page-spanning component, as floor-divided basis points of the page's own area, over the 44 -- reported as the whole ordered distribution beside the ink one grouped unit of writing holds on the same page, because the value is anchored on the second and not placed at a quantile of the first. For edge_band_bp: the same audited outside-coverage ink restricted to the perimeter strip, at four band widths, over the same 44, beside the count of pages on which any act group's bounds reach into the strip at all"
+calibrated_for_this_corpus = true
+caveat = "WHAT THE SAMPLE ESTABLISHES. SUBSTANTIAL_INK_AREA_BP = 4. The gate exists to catch a miss that is large full stop, which the 2 per cent fraction gate beside it lets through on a dense page, so it is anchored on the smallest real thing a page can be missing rather than placed at a quantile. On these pages the Designator groups LINES rather than acts (the session's GROUPING_REPORT.md section 4 says so on the overlays), and the ink one such grouped line holds, measured as the page's own audited ink over its group count, is 4 basis points of the page's area at the median (0 to 115 across the 44, 5 at the third quartile, 19 at the ninth decile). 4 basis points is therefore one line of writing on the page it is measured on. Measured firing: the substantial gate fires on 41 of the 44 and the fraction gate on 38, and the three the substantial gate adds are the three whose outside-coverage ink is real and under 2 per cent of a dense page's own ink -- which is precisely the hole this gate exists to close, measured for the first time rather than argued. Three pages are cleared by both gates and they are the three whose grouping leaves no audited ink outside coverage at all. THE CORPUS DOES NOT DISCRIMINATE THE VALUE FINELY: every value from 2 to 4 basis points fires on the same 41 pages and every value from 5 to 18 on the same 40, so what separates 4 from 12 is the line measurement and not a gap in this distribution. EDGE_BAND_BP = 100. The band is an instrument boundary and its job is to be a MARGIN -- a strip the writing does not reach -- so that ink found in it is genuinely outside everything the pass claimed. Measured: at 100 basis points an act group's bounds reach into the strip on 5 of the 44 pages, at 200 on 15, and at 300 on 25. A band inside the writing on more than half the corpus has stopped being a perimeter, so 100 is the only one of the three that keeps the property the band is for. At 100 basis points the strip is 10 to 36 pixels on these pages and 2 pixels on this repository's 200x260 fixture; the audited perimeter ink in it clears MINIMUM_INK_PIXELS on 9 of the 44 and not on 35. WHAT THE SAMPLE DOES NOT ESTABLISH. It contains no page without a page-spanning component, so it says nothing about either gate on a page where the audit's counts and the page's whole ink coincide -- on such a page both gates read exactly what they read before this block existed, and neither has been measured there. It says nothing about a page admitted through pipeline/1_exemplar, and nothing about what a real structure-pass model would propose: the coverage every number here is measured against is the walking skeleton's own grouping, which produces lines rather than acts, so the outside-coverage ink these gates fire on is largely the gap BETWEEN grouped lines. On a pass that grouped acts the same pages would measure differently and this block should be re-derived. Finally, neither gate removes a pixel from anything or holds anything on its own: they decide whether a page carries a coverage finding a reviewer sees, and the page's whole-ink figure travels beside the audited one on every record, so a gate set too loosely is visible on the record rather than silent"

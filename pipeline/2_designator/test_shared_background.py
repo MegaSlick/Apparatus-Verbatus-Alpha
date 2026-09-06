@@ -10,11 +10,18 @@ opening's shape. A stage may import `common/`; the reverse is what
 the proof lives here rather than beside the pin.
 """
 
+import grouping_config
 import pytest
 import structure
 from grouping_config import load_grouping_config, resolve_background_policy
 
-from common.residual_ink import MINIMUM_CONTRAST_BELOW_BACKGROUND, residual_ink
+from common.residual_ink import (
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    load_coverage_audit_config,
+    page_spanning_components,
+    residual_ink,
+    resolve_coverage_audit_policy,
+)
 
 # The shape, not a photograph: a 200x200 frame of near-black at 5 around a lit
 # interior at 210, with three marks on it. What it takes from real material is
@@ -71,7 +78,14 @@ def test_all_three_readers_infer_one_paper_value_on_a_photographed_shaped_page()
     # (210 - 5) * 3333 // 10000 = 68, well past the floor of 20.
     assert evidence["ink_margin"] == 68
 
-    audited = residual_ink(width, height, rows, [], background_policy=policy)
+    audited = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=policy,
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )
     assert audited["background"]["background_level"] == evidence["background"]
     assert audited["background"]["background_source"] == evidence["source"]
     assert audited["background"]["dark_mode"] == evidence["dark_mode"]
@@ -130,8 +144,21 @@ def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more(
 
     # And the audit's own counts come from the same set, through the shipped
     # measure rather than through a threshold restated here.
-    measured = residual_ink(width, height, rows, [], background_policy=policy)
-    assert measured["total_ink_pixels"] == len(audited)
+    measured = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=policy,
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )
+    # The audit's WHOLE set, which is what the containment above is about. Its
+    # `total_ink_pixels` is the audited pair's denominator -- the same set less
+    # this page's page-spanning component, which here is the frame -- and both
+    # are on the record so the subtraction is visible rather than silent.
+    assert measured["page_ink_pixels"] == len(audited)
+    assert measured["page_spanning_ink_pixels"] == 20_400
+    assert measured["total_ink_pixels"] == len(audited) - 20_400
 
 
 def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
@@ -153,7 +180,16 @@ def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
     with pytest.raises(structure.BackgroundInferenceRefusal):
         structure.infer_background_evidence(width, height, rows, background_policy=policy)
     with pytest.raises(structure.BackgroundInferenceRefusal):
-        residual_ink(width, height, rows, [], background_policy=policy)
+        residual_ink(
+            width,
+            height,
+            rows,
+            [],
+            background_policy=policy,
+            coverage_policy=resolve_coverage_audit_policy(
+                load_coverage_audit_config(), width, height
+            ),
+        )
 
 
 def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation():
@@ -250,3 +286,78 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
     assert result["residual_pixel_count"] >= frame["pixel_count"]
     assert len(result["residual_components"]) == 3
     assert len(result["residual_components"]) <= config["max_residual_components"]
+
+
+def test_the_audit_withholds_exactly_the_component_the_grouping_pass_withholds():
+    """The load-bearing claim of the outside-coverage exclusion, on both sides.
+
+    The audit takes this page's page-spanning component out of both its counts,
+    and it must be the *same* component `grouping.partition_page_spanning`
+    withheld from column assignment and body chaining -- otherwise the audit is
+    setting aside ink nobody is holding, which is a missed act reported as a
+    clean page.
+
+    It is the same by construction rather than by agreement: both sides label the
+    same bytes at the margin this page derives for itself, under one sealed
+    `gap_tolerance_px` and one sealed `page_spanning_area_bp`, through the one
+    labeller in `common/components.py`. This asserts it over the components
+    themselves, so a later change that gave either side its own threshold fails
+    here rather than in a run.
+    """
+    import grouping
+
+    width, height, rows = photographed_shaped_page()
+    config = load_grouping_config()
+    policy = resolve_background_policy(config, width, height)
+    thresholds = grouping_config.resolve_thresholds(config, width, height)
+    evidence = structure.infer_background_evidence(width, height, rows, background_policy=policy)
+
+    components = structure.primary_scan(
+        width,
+        height,
+        rows,
+        background=evidence["background"],
+        margin=evidence["ink_margin"],
+        gap_tolerance_px=thresholds.gap_tolerance_px,
+    )
+    _kept, withheld = grouping.partition_page_spanning(
+        components, width, height, page_spanning_area_bp=thresholds.page_spanning_area_bp
+    )
+
+    found, mask = page_spanning_components(
+        width,
+        height,
+        rows,
+        background_evidence={
+            "background_level": evidence["background"],
+            "ink_margin": evidence["ink_margin"],
+        },
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )
+
+    assert [component["bounds"] for component in found] == [
+        component["bounds"] for component in withheld
+    ]
+    assert [component["pixel_count"] for component in found] == [
+        component["pixel_count"] for component in withheld
+    ]
+    # Non-vacuous: this page really does have one, and it is the frame.
+    assert len(found) == 1
+    assert found[0]["bounds"] == {"x": 0, "y": 0, "w": width, "h": height}
+    assert sum(mask) == found[0]["pixel_count"] == 20_400
+
+    # And what the audit publishes is that component and nothing else.
+    finding = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=policy,
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )
+    assert finding["page_spanning_components"] == [found[0]["bounds"]]
+    assert finding["page_spanning_ink_pixels"] == 20_400
+    assert (
+        finding["page_ink_pixels"] - finding["page_spanning_ink_pixels"]
+        == (finding["total_ink_pixels"])
+    )

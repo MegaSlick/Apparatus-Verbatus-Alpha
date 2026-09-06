@@ -30,6 +30,35 @@ stage it is checking rather than a second opinion.
 Designator's conservation denominator is what makes the containment claim below
 true rather than vacuous.
 
+**The page-spanning component is named and taken out of both counts.** Until
+2026-09-06 this audit measured every ink pixel on the page against every region
+cut for it. On a real page the Designator withholds one connected component
+whose bounding box is the whole leaf from grouping and mints it as a held act
+(`pipeline/2_designator/grouping.partition_page_spanning`), and that component
+holds 35 to 87 per cent of every pixel this audit calls ink, measured on 44 real
+pages. Counting it as "ink outside coverage" reported 29 to 87 per cent of every
+page as unclaimed and flagged all 44 -- a gate firing on a whole corpus, which
+says no more than one firing on none of it. So this module finds the same
+component itself, from the same bytes at the same derived margin under the same
+sealed bound, and publishes it by name: `page_ink_pixels` is every pixel this
+audit calls ink, `page_spanning_ink_pixels` is the part of it the Designator is
+already holding, and `total_ink_pixels` / `outside_ink_pixels` -- the pair both
+gates read -- are what is left. Nothing is dropped in silence: the component's
+own bounds and pixel count are on the record beside the counts they were taken
+out of.
+
+**It re-derives that component rather than reading the Designator's record**,
+for the reason the record cannot serve: `page_spanning_components` carries
+bounding boxes, and each of them is the whole page, so it masks nothing. It
+labels at the page's own *derived* margin, not at this module's contrast, and
+that is measured rather than chosen: at this module's looser contrast the
+writing merges into the page-spanning component and the audit hides 3,367 to
+1,480,349 outside-coverage ink pixels on 41 of the 44 pages -- it reports clean
+pages, which is the direction GOALS 1 forbids. A component is a property of the
+page's structure, found at the level the page derives for itself; how much ink
+there is, is this module's own question, and the contrast that answers it stays
+its own.
+
 **A page whose background the shared inference refuses is refused here too**,
 by the same `BackgroundInferenceRefusal` and for the same reason: a residual of
 zero taken under a paper value that is not paper is arithmetic wearing a
@@ -38,14 +67,21 @@ publishing a count nobody took (GOVERNANCE 10). It does not remove the page from
 the run -- every consumer of this module cuts and reads the page either way.
 """
 
-from typing import Any
+import tomllib
+from pathlib import Path
+from typing import Any, Final, TypedDict
 
 from common.background import (
+    BASIS_POINTS,
     BackgroundInferenceRefusal,  # noqa: F401  (re-exported: the refusal callers catch)
     BackgroundPolicy,
     _ink_threshold,
     infer_background_evidence,
+    round_half_up_bp,
 )
+from common.components import label_component_runs
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
 
 # PROPOSED, NOT YET MEASURED. There is no real corpus in this walking skeleton
@@ -96,9 +132,11 @@ MINIMUM_INK_PIXELS = 24
 #: audit's threshold is *higher* than the primary scan's and it counts more ink
 #: than that scan does — including paper. It is still far below the
 #: conservation denominator of 2, which is the number the containment claim is
-#: about. What that costs on real material, and whether
-#: `SUBSTANTIAL_INK_PIXELS` can survive it, is measured in this branch's report
-#: rather than argued here.
+#: about. What that costs on real material was measured on 2026-09-06 over 44
+#: pages and it is the reason the absolute gate below is now a fraction of the
+#: page: at this contrast a real page's audited ink is 1 to 27 per cent of its
+#: own area, so a flat count of outside-coverage pixels means something
+#: different on every page it is read on.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: The fraction of a page's own ink pixels that must fall outside every region
@@ -107,12 +145,23 @@ MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 
 #: Enough outside-coverage ink to flag a page on its own, whatever fraction of
 #: that page's total ink it is. The fraction gate alone has a hole at the dense
-#: end: a page carrying 500,000 ink pixels can leave 9,000 of them — several
-#: words, plainly real text — outside every cut region and still sit under 2%.
-#: That would report a missed act as a clean page, contrary to GOALS 1. The
-#: proposed value is above plausible isolated scan artifacts and below the
-#: estimated ink in one line of 300-DPI text.
-SUBSTANTIAL_INK_PIXELS = 2_000
+#: end: a page carrying 500,000 ink pixels can leave 9,000 of them -- several
+#: words, plainly real text -- outside every cut region and still sit under 2%.
+#: That would report a missed act as a clean page, contrary to GOALS 1.
+#:
+#: **It is a fraction of the page's own area now, and until 2026-09-06 it was
+#: the flat count 2,000.** A flat count is 384 basis points of this
+#: repository's 200x260 fixture page and 1.6 of a 12.6-megapixel leaf, so the
+#: same constant asked a question 240 times stricter on the real page than on
+#: the page it was reasoned against -- an artefact of fixture size wearing a
+#: threshold's name. The basis is the page's AREA and deliberately not the
+#: page's own ink: the fraction gate above is already the page's own ink, and a
+#: second gate on the same denominator would add nothing. The sealed value and
+#: what it was measured against are in `[coverage_audit]`.
+#:
+#: The name is what the resolved *pixel* count is called on a policy; the
+#: sealed basis point it comes from is `substantial_ink_area_bp`.
+SUBSTANTIAL_INK_AREA_BP_FIELD: Final = "substantial_ink_area_bp"
 
 #: The Ink Map's outcome for a page whose paper value the shared background
 #: inference refused, and the Armarium's and its export verifier's name for the
@@ -124,22 +173,245 @@ SUBSTANTIAL_INK_PIXELS = 2_000
 #: of either. `mapped` claims a measurement, and this page has none.
 INK_NOT_MEASURABLE = "ink-not-measurable"
 
-# A bounded strip on every page edge.  This is an instrument boundary, not a
-# claim that 64 pixels is a calibrated cross-page-act threshold: it only
-# localizes the signal, and the ink thresholds above remain PROPOSED, NOT YET
-# MEASURED until they are read against a real corpus.
-EDGE_BAND_PIXELS = 64
+#: The retained page-space evidence's schema id. `v2` from 2026-09-06: the runs
+#: are this page's AUDITED ink -- every pixel this audit calls ink, less its
+#: page-spanning component -- where `v1`'s were the whole page's. See
+#: `ink_runs_from_rows` for the change and why the id moved with it.
+INK_RUNS_SCHEMA = "ink-runs.v2"
+
+# A bounded strip on every page edge. This is an instrument boundary rather
+# than a calibrated cross-page-act threshold: it localizes the signal, and what
+# decides is the pair of gates above.
+#
+# **It is a fraction of the page's shorter side now, and until 2026-09-06 it was
+# the flat 64 pixels.** 64 pixels is 32 per cent of this repository's 200-pixel
+# fixture page -- not a strip, most of the page -- and 1.8 per cent of a
+# 3,600-pixel leaf. The basis is the SHORTER side and not each dimension
+# separately, because the band is one perimeter: a fraction of each dimension
+# would make the top strip a different thickness from the side strips on every
+# page that is not square, and `2 * band < min(width, height)` then holds by
+# construction. The sealed value is `edge_band_bp` in `[coverage_audit]`.
+EDGE_BAND_BP_FIELD: Final = "edge_band_bp"
 
 
-def coverage_flag(total_ink_pixels: int, outside_ink_pixels: int) -> tuple[float, bool]:
+class CoverageAuditPolicy(TypedDict):
+    """One page's own resolved coverage-audit policy.
+
+    Resolved from the sealed `[coverage_audit]` block against this page's own
+    dimensions, the way `common.background.BackgroundPolicy` is. Both bounds
+    that are lengths are already pixels here; the two that are not lengths
+    (`page_spanning_area_bp` is a fraction of the page's area and
+    `gap_tolerance_px` is a stroke-connectivity radius that must never scale)
+    pass through unresolved, exactly as they do in `GroupingThresholds`.
+    """
+
+    substantial_ink_pixels: int
+    edge_band_px: int
+    page_spanning_area_bp: int
+    gap_tolerance_px: int
+
+
+#: The file the two sealed values live in, and the two Designator fields this
+#: audit resolves beside them.
+#:
+#: **One file, for the reason `common/background.py` gives about the same
+#: file.** `[coverage_audit]` is read by the Ink Map, the Recensor and the
+#: Armarium and by no other stage, so a file named for the Designator is the
+#: wrong name for it; a file of its own would mean a second sealed name, a
+#: second command-line flag, a second entry in both of `common/stage.py`'s
+#: digest maps and one in the Door's real-run bindings -- all for a filename,
+#: and all on the path a run proves its policy on. It lives beside
+#: `[grouping.background]` instead, under the one `designator-grouping` seal
+#: every reader already proves its bytes against, and it needs the Designator's
+#: own `page_spanning_area_bp` and `gap_tolerance_px` anyway: the component this
+#: audit takes out of its counts must be the same component that stage withheld,
+#: which is true only while both read one number. The cost is the same one that
+#: file's header already states, and a later unit that splits `config/` by
+#: concern rather than by stage should take this block with it.
+DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
+)
+
+#: The closed field set of `[coverage_audit]`, in the order the file writes it.
+COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
+
+
+def _plain_int(value: Any) -> bool:
+    """An `int` that is not a `bool`.
+
+    The sixth copy of this two-line predicate, for the reason
+    `common/background.py` owns the fifth: `common/` may not import a stage, and
+    this module may not import `common/background`'s private helper without
+    making a private name public across two modules to save two lines.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
+    """The two sealed values, checked against their bounds and returned.
+
+    The bounds live here rather than in the Designator's loader for the reason
+    `validate_background_table`'s do: three stages run under this block, and a
+    value one of them would refuse is a value all three must. The Designator
+    validates it too -- it owns the file and refuses an unknown top-level table
+    -- and that is the one reader that also checks the provenance block, exactly
+    the asymmetry `[grouping.background]` already carries.
+    """
+    if not isinstance(table, dict):
+        raise ContractError(f"the grouping configuration has no {where} table")
+    unexpected = sorted(set(table) - set(COVERAGE_AUDIT_BP_FIELDS) - {"provenance"})
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's {where} carries unknown field(s) "
+            f"{unexpected}; an unread policy field cannot be applied"
+        )
+    missing = sorted(set(COVERAGE_AUDIT_BP_FIELDS) - set(table))
+    if missing:
+        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+    values = {name: table[name] for name in COVERAGE_AUDIT_BP_FIELDS}
+    # Zero is refused at both, and for the same reason the background policy
+    # refuses a zero band: a gate of zero fires on every page and a band of zero
+    # has no strip to measure, and either is the instrument switched off by a
+    # value rather than by a decision.
+    if not _plain_int(values[SUBSTANTIAL_INK_AREA_BP_FIELD]) or not (
+        0 < values[SUBSTANTIAL_INK_AREA_BP_FIELD] <= BASIS_POINTS
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
+            f"basis-point integer strictly between 0 and {BASIS_POINTS}; a gate of zero "
+            "flags every page that carries a single unclaimed pixel and says nothing"
+        )
+    # The band is bounded strictly below half the shorter side because at half
+    # there is no centre left: `edge_ink` would declare an empty covered region
+    # and measure the whole page as its own perimeter, which is not a perimeter.
+    if not _plain_int(values[EDGE_BAND_BP_FIELD]) or not (
+        0 < values[EDGE_BAND_BP_FIELD] < BASIS_POINTS // 2
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} {EDGE_BAND_BP_FIELD} is not a basis-point "
+            f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no strip "
+            "to measure and a band of half the shorter side leaves the page no centre, so "
+            "the perimeter measure would be a whole-page measure under another name"
+        )
+    return values
+
+
+def load_coverage_audit_config(
+    path: str | Path = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH,
+) -> dict[str, Any]:
+    """The sealed coverage-audit policy and the digest of the bytes it came from.
+
+    Reads `[coverage_audit]` and the two Designator fields this audit resolves
+    beside it. Refused loudly rather than defaulted, matching
+    `load_background_config`: a gate silently taken as unlimited would change
+    which pages are held with nobody able to point at a config line that said so.
+    """
+    path = Path(path)
+    try:
+        data = path.read_bytes()
+        config = tomllib.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ContractError(
+            f"the coverage-audit configuration at {path} could not be read: {error}"
+        ) from error
+    if not isinstance(config, dict):
+        raise ContractError("the coverage-audit configuration is not a table")
+    grouping = config.get("grouping")
+    if not isinstance(grouping, dict):
+        raise ContractError("the coverage-audit configuration has no [grouping] table")
+    page_area = grouping.get("page_area_bp")
+    absolute = grouping.get("absolute")
+    if not isinstance(page_area, dict) or not isinstance(absolute, dict):
+        raise ContractError(
+            "the coverage-audit configuration is missing [grouping.page_area_bp] or "
+            "[grouping.absolute]; this audit takes the page-spanning bound and the "
+            "stroke-connectivity radius from the same file the Designator withheld under"
+        )
+    spanning = page_area.get("page_spanning_area_bp")
+    gap = absolute.get("gap_tolerance_px")
+    if not _plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
+        raise ContractError(
+            "the coverage-audit configuration's [grouping.page_area_bp] page_spanning_area_bp "
+            f"is not a basis-point integer in 1..{BASIS_POINTS}"
+        )
+    if not _plain_int(gap) or gap < 0:
+        raise ContractError(
+            "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
+            "non-negative integer"
+        )
+    return {
+        "config_sha256": digest_bytes(data),
+        "coverage_audit": validate_coverage_audit_table(config.get("coverage_audit")),
+        "page_spanning_area_bp": spanning,
+        "gap_tolerance_px": gap,
+    }
+
+
+def resolve_coverage_audit_policy(
+    config: dict[str, Any], width: int, height: int
+) -> CoverageAuditPolicy:
+    """One page's own resolved coverage-audit policy.
+
+    `substantial_ink_pixels` is floored at `MINIMUM_INK_PIXELS`, and the floor
+    is structural rather than a taste: `coverage_flag` reads the substantial
+    gate *before* the fraction gate's own noise floor, so a resolved value below
+    `MINIMUM_INK_PIXELS` would make the noise floor unreachable and flag a page
+    on a speck. On this repository's 200x260 fixture the sealed fraction
+    resolves to 21 pixels and the floor is what binds; on a 12.6-megapixel leaf
+    it resolves to 5,041 and the floor is nowhere near.
+
+    **Where the floor binds, the two gates coincide, and that is said rather
+    than hidden.** At the sealed 4 basis points the fraction resolves to exactly
+    `MINIMUM_INK_PIXELS` at 60,000 pixels of page area, so on any page smaller
+    than about 245x245 the substantial gate fires wherever the noise floor is
+    cleared and the fraction gate can no longer decide anything. That is a
+    property of pages two orders of magnitude smaller than any this pipeline
+    reads -- the smallest real page in the calibration sample is 1.5 megapixels
+    -- and it is the price of the floor. The alternative is worse in the
+    direction GOALS 1 cares about: without it a 20x20 page resolves the gate to
+    zero and every stray pixel flags.
+
+    Both resolutions go through `common.background.round_half_up_bp`, the one
+    basis-point rounding rule, so a page's band and a page's padding cannot come
+    to round differently.
+    """
+    if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
+        raise ContractError(f"page {width}x{height} does not have positive integer dimensions")
+    audit = config["coverage_audit"]
+    return {
+        "substantial_ink_pixels": max(
+            MINIMUM_INK_PIXELS,
+            round_half_up_bp(width * height, audit[SUBSTANTIAL_INK_AREA_BP_FIELD]),
+        ),
+        # Floored at one pixel for the smallest legal image, which is the
+        # contract `edge_ink` and `edge_ink_from_runs` already keep between
+        # them: a one-pixel-wide page has no centre but it still has an edge,
+        # and a band of zero there would make the Ink Map flag the page and the
+        # Armarium re-measure it clean -- the two-detector split
+        # `ink_map_page_rows` refuses the whole export over.
+        "edge_band_px": max(1, round_half_up_bp(min(width, height), audit[EDGE_BAND_BP_FIELD])),
+        "page_spanning_area_bp": config["page_spanning_area_bp"],
+        "gap_tolerance_px": config["gap_tolerance_px"],
+    }
+
+
+def coverage_flag(
+    total_ink_pixels: int, outside_ink_pixels: int, *, substantial_ink_pixels: int
+) -> tuple[float, bool]:
     """The one outside-coverage gate, and the ratio it is read against.
 
     Either gate flags on its own. The fraction gate catches a miss that is
     large *relative to* what the page carries; the absolute gate catches one
     that is large *full stop*, which on a dense page the fraction gate alone
-    would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
-    a flag, never remove one — every page flagged before this second gate
+    would let through (see `SUBSTANTIAL_INK_AREA_BP_FIELD`). This can only ever
+    add a flag, never remove one — every page flagged before this second gate
     existed is still flagged by the first.
+
+    `substantial_ink_pixels` is that second gate resolved for the page these
+    counts came from, and it is keyword-only with no default: a caller that
+    forgets it fails loudly rather than gating under a number nobody sealed,
+    which is the shape `background_policy` is already handled with here and
+    `gap_tolerance_px` in `structure.py`.
 
     One function rather than a copy per measure, because the Armarium's export
     verifier recomputes this predicate over recorded counts on a clean machine
@@ -148,7 +420,7 @@ def coverage_flag(total_ink_pixels: int, outside_ink_pixels: int) -> tuple[float
     than the one that measured, which is not a check.
     """
     fraction_outside = (outside_ink_pixels / total_ink_pixels) if total_ink_pixels else 0.0
-    flagged = outside_ink_pixels >= SUBSTANTIAL_INK_PIXELS or (
+    flagged = outside_ink_pixels >= substantial_ink_pixels or (
         outside_ink_pixels >= MINIMUM_INK_PIXELS
         and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
     )
@@ -215,6 +487,76 @@ def page_background(
     }
 
 
+def _runs_in_row(bits: bytes, width: int) -> list[tuple[int, int]]:
+    """One translated scanline as maximal half-open ink runs.
+
+    The same rule `common.components.ink_runs_by_row` applies to a pixel set,
+    applied to the row of 0/1 bytes `bytes.translate` already produced, so the
+    page never has to become one Python tuple per ink pixel to be labelled.
+    """
+    runs: list[tuple[int, int]] = []
+    start = 0
+    while start < width:
+        start = bits.find(1, start)
+        if start < 0:
+            break
+        end = bits.find(0, start)
+        if end < 0:
+            end = width
+        runs.append((start, end))
+        start = end
+    return runs
+
+
+def page_spanning_components(
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    *,
+    background_evidence: dict[str, Any],
+    coverage_policy: CoverageAuditPolicy,
+) -> tuple[list[dict[str, Any]], bytearray]:
+    """This page's page-spanning components, and the mask of their pixels.
+
+    The same question `pipeline/2_designator/grouping.partition_page_spanning`
+    asks, asked here on the same bytes: which connected components have a
+    bounding box covering at least `page_spanning_area_bp` of the page's own
+    area. Same margin (the one this page derived for itself), same
+    `gap_tolerance_px`, same bound, same labeller -- so the component this audit
+    takes out of its counts is the component that stage withheld from grouping
+    and minted as a held act, without this module reading that stage's record.
+
+    Returns the components (bounds and pixel count, in the labeller's own total
+    order) and a page-sized 0/1 mask of their pixels. The mask is what the
+    counts below need: a page-spanning component's *bounding box* is the page,
+    so nothing can be subtracted by rectangle.
+    """
+    threshold = _ink_threshold(
+        background_evidence["background_level"], background_evidence["ink_margin"]
+    )
+    table = bytes(1 if value <= threshold else 0 for value in range(256))
+    runs_by_row: dict[int, list[tuple[int, int]]] = {}
+    for y, row in enumerate(rows):
+        runs = _runs_in_row(bytes(row.translate(table)), width)
+        if runs:
+            runs_by_row[y] = runs
+    area = width * height
+    found: list[dict[str, Any]] = []
+    mask = bytearray(area)
+    for component, runs in label_component_runs(
+        runs_by_row, gap_tolerance_px=coverage_policy["gap_tolerance_px"]
+    ):
+        bounds = component["bounds"]
+        if (bounds["w"] * bounds["h"] * BASIS_POINTS) // area < coverage_policy[
+            "page_spanning_area_bp"
+        ]:
+            continue
+        found.append(dict(component))
+        for y, x0, x1 in runs:
+            mask[y * width + x0 : y * width + x1] = b"\x01" * (x1 - x0)
+    return found, mask
+
+
 def residual_ink(
     width: int,
     height: int,
@@ -222,6 +564,7 @@ def residual_ink(
     covered: list[Bounds],
     *,
     background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
 ) -> dict[str, Any]:
     """How much of this page's own ink sits outside every region cut for it.
 
@@ -234,13 +577,30 @@ def residual_ink(
     independent check before that refusal is ever reached.
 
     `background_policy` is the sealed `[grouping.background]` policy resolved for
-    *this page's own* dimensions (`common.background.resolve_background_policy`).
-    Keyword-only, and with no default: a caller that forgets it fails loudly
-    rather than measuring under a policy nobody sealed, which is the shape
-    `structure.py`'s `gap_tolerance_px` is handled with for the same reason.
+    *this page's own* dimensions (`common.background.resolve_background_policy`);
+    `coverage_policy` is the sealed `[coverage_audit]` policy resolved the same
+    way. Both keyword-only, both with no default: a caller that forgets one
+    fails loudly rather than measuring under a policy nobody sealed, which is
+    the shape `structure.py`'s `gap_tolerance_px` is handled with for the same
+    reason.
+
+    **`total_ink_pixels` and `outside_ink_pixels` are the audited pair**, this
+    page's ink with its page-spanning component taken out of both. What that
+    component is, how many pixels it holds and where its bounds are travel
+    beside them under their own names, so the whole-page figure is recoverable
+    from the record and nothing has gone quiet: `page_ink_pixels` is every pixel
+    this audit calls ink, and `page_ink_pixels - page_spanning_ink_pixels` is
+    `total_ink_pixels`.
     """
     background_evidence = page_background(width, height, rows, background_policy=background_policy)
     background = background_evidence["background_level"]
+    spanning, spanning_mask = page_spanning_components(
+        width,
+        height,
+        rows,
+        background_evidence=background_evidence,
+        coverage_policy=coverage_policy,
+    )
     covered_mask = bytearray(width * height)
     for bounds in covered:
         x0 = max(0, min(bounds["x"], width))
@@ -259,82 +619,148 @@ def residual_ink(
     # One spelling of the ink predicate, shared with `ink_runs`: a second copy
     # would let the retained runs and this count drift apart silently.
     ink_table = _ink_table(background)
+    page_ink = 0
     total_ink = 0
     outside_ink = 0
+    spanning_ink = 0
     for y, row in enumerate(rows):
         row_offset = y * width
         ink_row = row.translate(ink_table)
-        total_ink += ink_row.count(1)
-        covered_row = covered_mask[row_offset : row_offset + width]
-        outside_ink += (
-            int.from_bytes(ink_row, "big") & ~int.from_bytes(covered_row, "big")
-        ).bit_count()
+        ink_bits = int.from_bytes(ink_row, "big")
+        covered_bits = int.from_bytes(bytes(covered_mask[row_offset : row_offset + width]), "big")
+        spanning_bits = int.from_bytes(bytes(spanning_mask[row_offset : row_offset + width]), "big")
+        page_ink += ink_row.count(1)
+        # The page-spanning component was found at the page's own derived
+        # margin, which is at or above this audit's contrast, so its pixels are
+        # a subset of this ink set on every page -- `& ink_bits` is belt and
+        # braces against a page where the two thresholds coincide, never a
+        # correction.
+        spanning_ink += (ink_bits & spanning_bits).bit_count()
+        audited_bits = ink_bits & ~spanning_bits
+        total_ink += audited_bits.bit_count()
+        outside_ink += (audited_bits & ~covered_bits).bit_count()
 
-    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
+    fraction_outside, flagged = coverage_flag(
+        total_ink, outside_ink, substantial_ink_pixels=coverage_policy["substantial_ink_pixels"]
+    )
     return {
         "background": background_evidence,
+        "page_ink_pixels": page_ink,
+        "page_spanning_ink_pixels": spanning_ink,
+        "page_spanning_components": [component["bounds"] for component in spanning],
         "total_ink_pixels": total_ink,
         "outside_ink_pixels": outside_ink,
         "fraction_outside": fraction_outside,
         "flagged": flagged,
+        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
     }
 
 
 def page_residual_ink(
-    image_bytes: bytes, covered: list[Bounds], *, background_policy: BackgroundPolicy
+    image_bytes: bytes,
+    covered: list[Bounds],
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
 ) -> dict[str, Any]:
     width, height, rows = grayscale_rows(image_bytes)
-    return residual_ink(width, height, rows, covered, background_policy=background_policy)
+    return residual_ink(
+        width,
+        height,
+        rows,
+        covered,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
 
 
-def ink_runs(image_bytes: bytes, *, background_policy: BackgroundPolicy) -> dict[str, Any]:
+def ink_runs(
+    image_bytes: bytes,
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
     """`ink_runs_from_rows` over bytes this caller has not already decoded."""
     width, height, rows = grayscale_rows(image_bytes)
-    return ink_runs_from_rows(width, height, rows, background_policy=background_policy)
+    return ink_runs_from_rows(
+        width,
+        height,
+        rows,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
 
 
 def ink_runs_from_rows(
-    width: int, height: int, rows: list[bytearray], *, background_policy: BackgroundPolicy
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
 ) -> dict[str, Any]:
-    """The ink map's reusable, lossless page-space evidence.
+    """The ink map's reusable page-space evidence: this page's AUDITED ink.
 
     Later consumers must count these retained runs rather than decode the page
-    again under a potentially different pixel measurement. That is why the
-    policy is a required argument here too: the runs the Armarium re-measures
-    months later have to have been cut at the same threshold the page's own
-    finding was, and a default would let one call site drift.
+    again under a potentially different pixel measurement. That is why both
+    policies are required arguments here: the runs the Armarium re-measures
+    months later have to have been cut at the same threshold, and split by the
+    same page-spanning bound, as the page's own finding was, and a default would
+    let one call site drift.
+
+    **The schema id moved from `ink-runs.v1` to `ink-runs.v2` on 2026-09-06,
+    because what these runs hold changed.** They used to be every pixel the
+    audit called ink. They are now that set with this page's page-spanning
+    component removed -- the same subtraction `residual_ink` makes, made once
+    here so that the Armarium's release measure and the Ink Map's own finding
+    are two readings of one set rather than of two. The removed count travels on
+    the finding beside them as `page_spanning_ink_pixels`, so the whole-page
+    figure is still recoverable and nothing is dropped in silence. The id is
+    bumped rather than kept because a reader holding the old contract would
+    quietly measure the new content as though it were the old, and this
+    repository refuses that shape everywhere else.
     """
-    table = _ink_table(
-        page_background(width, height, rows, background_policy=background_policy)[
-            "background_level"
-        ]
+    background_evidence = page_background(width, height, rows, background_policy=background_policy)
+    _spanning, spanning_mask = page_spanning_components(
+        width,
+        height,
+        rows,
+        background_evidence=background_evidence,
+        coverage_policy=coverage_policy,
     )
+    table = _ink_table(background_evidence["background_level"])
     encoded: list[list[list[int]]] = []
-    for row in rows:
-        bits = row.translate(table)
-        runs: list[list[int]] = []
-        start = 0
-        while start < width:
-            start = bits.find(1, start)
-            if start < 0:
-                break
-            end = bits.find(0, start)
-            if end < 0:
-                end = width
-            runs.append([start, end - start])
-            start = end
-        encoded.append(runs)
-    return {"schema": "ink-runs.v1", "width": width, "height": height, "rows": encoded}
+    for y, row in enumerate(rows):
+        offset = y * width
+        bits = int.from_bytes(bytes(row.translate(table)), "big") & ~int.from_bytes(
+            bytes(spanning_mask[offset : offset + width]), "big"
+        )
+        encoded.append(
+            [
+                [start, end - start]
+                for start, end in _runs_in_row(bits.to_bytes(width, "big"), width)
+            ]
+        )
+    return {"schema": INK_RUNS_SCHEMA, "width": width, "height": height, "rows": encoded}
 
 
-def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[str, Any]:
+def edge_ink_from_runs(
+    evidence: dict[str, Any], covered: list[Bounds], *, coverage_policy: CoverageAuditPolicy
+) -> dict[str, Any]:
     """Re-measure the edge finding against later Designator cuts.
 
     The initial measure precedes all proposals, so it is a candidate finding.
     A later crop may release it only by applying the same edge band and flag
     gates to these retained runs; only the coverage mask may change.
+
+    `coverage_policy` carries both: the band this page's perimeter is, and the
+    substantial gate the release is decided by. It must be the policy resolved
+    for *this page's* own dimensions, which is why it is keyword-only with no
+    default -- a band resolved for another page would make the release measure a
+    different instrument from the finding it releases, which is the two-detector
+    split `ink_map_page_rows` treats as damaged evidence.
     """
-    if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+    if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
         raise ValueError("ink-run evidence has the wrong schema")
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
@@ -354,7 +780,7 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
     # band 0 here and band 1 there, so the Ink Map flags the page and the
     # Armarium re-measures it clean; `ink_map_page_rows` then refuses the whole
     # export over two detectors disagreeing rather than over the page.
-    band = min(EDGE_BAND_PIXELS, max(1, width // 2), max(1, height // 2))
+    band = min(coverage_policy["edge_band_px"], max(1, width // 2), max(1, height // 2))
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):
@@ -426,25 +852,44 @@ def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[
                         break
                 outside_ink += max(0, end - cursor)
 
-    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
+    fraction_outside, flagged = coverage_flag(
+        total_ink, outside_ink, substantial_ink_pixels=coverage_policy["substantial_ink_pixels"]
+    )
     return {
         "total_ink_pixels": total_ink,
         "outside_ink_pixels": outside_ink,
         "fraction_outside": fraction_outside,
         "flagged": flagged,
         "edge_band_pixels": band,
+        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
         "named_finding": "unclaimed-edge-ink",
     }
 
 
-def page_edge_ink(image_bytes: bytes, *, background_policy: BackgroundPolicy) -> dict[str, Any]:
+def page_edge_ink(
+    image_bytes: bytes,
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
     """`edge_ink` over bytes this caller has not already decoded."""
     width, height, rows = grayscale_rows(image_bytes)
-    return edge_ink(width, height, rows, background_policy=background_policy)
+    return edge_ink(
+        width,
+        height,
+        rows,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
 
 
 def edge_ink(
-    width: int, height: int, rows: list[bytearray], *, background_policy: BackgroundPolicy
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
 ) -> dict[str, Any]:
     """Measure unclaimed ink in the bounded perimeter of one sealed page.
 
@@ -456,11 +901,18 @@ def edge_ink(
     # A one-pixel-wide or one-pixel-high image has no centre, but it still has
     # an edge. ``max(1, ...)`` keeps the recorded band honest for that smallest
     # legal image; the explicit centre check prevents a negative rectangle.
-    band = min(EDGE_BAND_PIXELS, max(1, width // 2), max(1, height // 2))
+    band = min(coverage_policy["edge_band_px"], max(1, width // 2), max(1, height // 2))
     covered = (
         []
         if 2 * band >= width or 2 * band >= height
         else [{"x": band, "y": band, "w": width - 2 * band, "h": height - 2 * band}]
     )
-    finding = residual_ink(width, height, rows, covered, background_policy=background_policy)
+    finding = residual_ink(
+        width,
+        height,
+        rows,
+        covered,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
     return {**finding, "edge_band_pixels": band, "named_finding": "unclaimed-edge-ink"}

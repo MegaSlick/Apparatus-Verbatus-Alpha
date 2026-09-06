@@ -81,8 +81,11 @@ from common.recovery import (  # noqa: E402
 )
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
+    INK_RUNS_SCHEMA,
     MINIMUM_INK_PIXELS,
+    load_coverage_audit_config,
     residual_ink,
+    resolve_coverage_audit_policy,
 )
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -1658,6 +1661,13 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     # those from each page's own dimensions.
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
+    # `[coverage_audit]` from the same bytes and under the same seal: the two
+    # gates this audit's flag is decided by, and the page-spanning bound it
+    # splits its counts on -- the same bound the Designator withheld under, which
+    # is what makes the component this audit sets aside the component that stage
+    # is already holding.
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
     findings: dict[int, dict] = {}
     for ordinal, bounds in regions.items():
@@ -1685,6 +1695,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 rows,
                 bounds,
                 background_policy=resolve_background_policy(background_config, width, height),
+                coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
             )
         except BackgroundInferenceRefusal as error:
             # **The audit refuses the page rather than reporting zero on it.**
@@ -1789,9 +1800,9 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
             # ink nobody could measure, the second is a missing artifact.
             maps[ordinal] = None
             continue
-        if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+        if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
             raise FatalAccounting(
-                f"ink-map page {ordinal} has no readable ink-runs.v1 page-space evidence. The "
+                f"ink-map page {ordinal} has no readable {INK_RUNS_SCHEMA} page-space evidence. The "
                 "Recensor cannot confirm witness pointers from a bare page outcome. Restore the "
                 "sealed Ink Map artifact or restart the run before rerunning the Recensor."
             )

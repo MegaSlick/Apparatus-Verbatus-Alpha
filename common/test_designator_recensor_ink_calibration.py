@@ -25,7 +25,12 @@ from common.background import (
     load_background_config,
     resolve_background_policy,
 )
-from common.residual_ink import MINIMUM_CONTRAST_BELOW_BACKGROUND, residual_ink
+from common.residual_ink import (
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    load_coverage_audit_config,
+    residual_ink,
+    resolve_coverage_audit_policy,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -248,12 +253,28 @@ def test_the_containment_is_not_vacuous_on_a_photographed_page():
     # And the whole thing, through the shipped audit rather than through a
     # threshold restated here: coverage is empty, so every ink pixel is outside
     # it, and the page flags.
-    finding = residual_ink(width, height, rows, [], background_policy=policy)
+    finding = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=policy,
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )
     assert finding["background"]["background_level"] == background
     assert finding["background"]["contrast_below_background"] == MINIMUM_CONTRAST_BELOW_BACKGROUND
     assert finding["background"]["ink_threshold"] == background - MINIMUM_CONTRAST_BELOW_BACKGROUND
-    assert finding["total_ink_pixels"] == len(audited)
-    assert finding["outside_ink_pixels"] == len(audited)
+    # `page_ink_pixels` is the audit's whole set and is what the containment
+    # above is a statement about. `total_ink_pixels` is the AUDITED pair's
+    # denominator -- the same set with this page's page-spanning component taken
+    # out -- and on a photographed-shaped page that component is the bezel,
+    # which is most of the ink. Both are on the record, which is what keeps the
+    # subtraction visible rather than silent.
+    assert finding["page_ink_pixels"] == len(audited)
+    assert finding["page_spanning_ink_pixels"] == 20_400
+    assert finding["page_spanning_components"] == [{"x": 0, "y": 0, "w": width, "h": height}]
+    assert finding["total_ink_pixels"] == len(audited) - 20_400 == 450
+    assert finding["outside_ink_pixels"] == 450
     assert finding["flagged"] is True
 
 

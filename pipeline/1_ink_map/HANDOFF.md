@@ -76,10 +76,30 @@ budget stays an open question against real material and is named here rather
 than assumed away.
 
 `payload["edge"]` is the bounded `unclaimed-edge-ink` detector: it measures only
-the 64-pixel page perimeter using that same implementation. A flagged record is
-unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for an
-unproposed cross-page half act.** The thresholds remain **PROPOSED, NOT YET
-MEASURED**; this stage claims no calibration.
+the page's own perimeter strip using that same implementation. A flagged record
+is unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for
+an unproposed cross-page half act.**
+
+**The strip and the gate are measured now, and both are sealed.** They were the
+flat 64 pixels and the flat 2,000 outside-coverage pixels until 2026-09-06, both
+PROPOSED-NOT-MEASURED and both reasoned against a 200x260 fixture. They are
+`[coverage_audit] edge_band_bp = 100` and `substantial_ink_area_bp = 4` in
+`config/designator_grouping.toml`, `sample_count = 44`, resolved per page against
+its own shorter side and its own area; the block's caveat carries what the
+sample does and does not establish. This stage proves that file's bytes against
+the run's `designator-grouping` seal exactly as it does for the background
+policy, and every finding it publishes carries the resolved gate beside the
+counts it decided.
+
+**The counts on this record are the page's AUDITED ink.** `total_ink_pixels` and
+`outside_ink_pixels` are this page's ink with its page-spanning component taken
+out of both -- the component the Designator withholds from grouping and mints as
+a held act. `page_ink_pixels` is every pixel the audit calls ink and
+`page_spanning_ink_pixels` is the part of it that component holds, so the
+whole-page figure is on the record and nothing has gone quiet. The retained
+`edge_findings` runs are the same audited set, which is why their schema id is
+`ink-runs.v2` and an old reader is refused rather than quietly measuring new
+content under the old contract.
 
 The Designator consumes this producer's completion seal before any detection. The
 Recensor continues to use the same shared residual-ink implementation for its late
@@ -141,8 +161,12 @@ genuinely *claimed*; the semantic defect was treating a pre-proposal finding
 as unreleased after the Designator had supplied coverage, not a specimen with
 unclaimed edge ink.
 
-Unit 14B therefore retains the fixture and leaves `EDGE_BAND_PIXELS` and
-`MINIMUM_INK_PIXELS` unchanged. Armarium re-measures the Ink Map's retained,
+Unit 14B therefore retained the fixture and left the band and
+`MINIMUM_INK_PIXELS` unchanged. **The band was re-derived on 2026-09-06** and the
+figures in the paragraph above are the retired band's: at the sealed
+`edge_band_bp` the same two pages contain 0 of 11,520 and 0 of 3,840 ink pixels
+in their perimeter strips, so they are released before any crop is applied rather
+than by one. `MINIMUM_INK_PIXELS` is unchanged. Armarium re-measures the Ink Map's retained,
 lossless page-space runs against verified final Designator crop bounds. A clear
 re-measure releases the page; a flagged re-measure holds it. The
 `structure-failure` scenario is the positive: it cuts no page regions, so its

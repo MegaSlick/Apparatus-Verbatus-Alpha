@@ -69,6 +69,12 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
             "total_ink_pixels": total,
             "outside_ink_pixels": outside,
             "edge_band_pixels": 64,
+            # The gate the page was measured under, recorded on the row since
+            # 2026-09-06 so this verifier can recompute the hold from the counts
+            # alone on a clean machine. 2,000 is the retired flat constant, kept
+            # as this helper's value because these rows are hand-built shapes
+            # rather than a measurement of any page.
+            "substantial_ink_pixels": 2_000,
         },
     }
 
@@ -476,6 +482,7 @@ def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
                             "total_ink_pixels": 0,
                             "outside_ink_pixels": 0,
                             "edge_band_pixels": 64,
+                            "substantial_ink_pixels": 2_000,
                         },
                     },
                 )

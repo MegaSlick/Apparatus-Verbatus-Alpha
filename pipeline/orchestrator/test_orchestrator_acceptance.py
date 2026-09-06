@@ -1684,10 +1684,65 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # digests measured twice in independent temporary roots at canonical run id "r"
 # through this module's own `orchestrate` and `semantic_snapshot_digest`, and the
 # two trees per scenario compared file for file identical.
+# **The audit's two absolute gates, re-derived on real pages
+# (`work/audit-gates-on-real-pages`).** Both digests move again, and unlike the
+# entry above this one changes what a fixture run *reports*, not only what it
+# records.
+#
+# `common/residual_ink.py` held two flat pixel counts, both labelled
+# PROPOSED-NOT-MEASURED and both reasoned against this repository's 200x260
+# fixture: 2,000 outside-coverage pixels as the absolute gate, and a 64-pixel
+# perimeter band. Measured on 44 real pages they are artefacts of fixture size --
+# 2,000 pixels is 384 basis points of a fixture page's area and 1.6 of a
+# 12.6-megapixel leaf; 64 pixels is 32 per cent of a fixture page's shorter side
+# and 1.8 per cent of a real leaf's. They are now
+# `[coverage_audit] substantial_ink_area_bp = 4` and `edge_band_bp = 100`,
+# resolved per page. `[grouping.continuation] page_edge_reach_bp` moved the same
+# way, 154 to 280, because at 154 the continuation reach test passed on none of
+# the 44.
+#
+# **What a fixture run now reports, and the one thing it stops proving.** The
+# perimeter is 2 pixels here, and these pages carry zero ink in every band from 1
+# to 20 -- what the 64-pixel band saw was the fixture's own body text. So both
+# pages are `mapped` where they were `unclaimed-edge-ink`, and the
+# `structure-failure` scenario, which was this repository's only end-to-end proof
+# of a page hold travelling from the Ink Map to the export, now holds no page for
+# edge ink. That loss is named in `pipeline/1_ink_map/HANDOFF.md`, in
+# `test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction`
+# below, and in the Ink Map's own unit tests, which keep the flagged path
+# covered on a page built to carry edge ink.
+#
+# **No fixture page's ink, grouping or act rectangles move.** The audit now
+# subtracts each page's page-spanning component from both its counts, and a
+# fixture page has none: `page_spanning_ink_pixels` is 0 on every one, so
+# `total_ink_pixels` equals `page_ink_pixels` (11,520 and 3,840) exactly as
+# before, and no conservation number, act identity or crop rectangle appears in
+# the leaf census at all.
+#
+# Attributed leaf by leaf (`scripts/leafdiff.py`, which prints any leaf it cannot
+# attribute) against baseline trees built from a worktree pinned at the preceding
+# commit `7dd35b30d6` under its own name with its own venv, which reproduced the
+# retired digests `1a7398af...` and `558dda5a...` exactly before anything was
+# compared. Happy: 75 changed files, 409 changed leaves -- 368 bare 64-hex
+# digests, 12 `relative_path` values naming a content-addressed blob, 12 the
+# three new fields (`page_ink_pixels`, `page_spanning_ink_pixels`,
+# `substantial_ink_pixels`), 13 intended value moves (`outcome`
+# unclaimed-edge-ink to mapped x5, `edge_band_pixels` 64 to 2 x2, `flagged` true
+# to false x2, `schema` ink-runs.v1 to v2 x2, `page_edge_reach_px` 4 to 7 x2), 4
+# perimeter counts fallen to zero, and **zero anything else**. Review: 87 files,
+# 502 leaves -- 444, 29, 12, 13, 4, and **zero**. `page_spanning_components` is an
+# empty list on every fixture page, so it adds a key and no leaf; it is named
+# here rather than left to look like an unattributed digest. Two blobs per
+# scenario are renamed in `4_perlector` and `7_armarium`, each one's name being
+# its own content digest. Snapshot counts and exit codes unmoved: happy 96 files
+# at exit 0, review 107 at exit 3. Both digests measured twice in independent
+# temporary roots at canonical run id "r" through this module's own `orchestrate`
+# and `semantic_snapshot_digest`, and the two trees per scenario compared file
+# for file identical.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "1a7398afa71d983d47486572c8f206ca0a667b8cfbcfe7a547666d7768765cca"
-REVIEW_RUN_TREE_DIGEST = "558dda5ab8eb74ca11119a8e87e3634c0b89cca25bd02ab88ba6f170b7a08f97"
+HAPPY_RUN_TREE_DIGEST = "9090f3f00df4530cc30f3fc9d4be3d4f412ddf9c7e2b271286e13392308a7a46"
+REVIEW_RUN_TREE_DIGEST = "a01ef61a4b29673fd9bd737dadf8e1958627537758c1bd822dd8c8343cd8ac0c"
 
 
 def orchestrate(
@@ -6786,12 +6841,26 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
     assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
 
 
-def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_path):
-    """The positive edge case: an initial finding releases only after real coverage.
+def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):
+    """The positive edge case this scenario used to carry, and where it went.
 
-    `structure-failure` leaves the fixture's actual edge ink without any
-    Designator crop.  It therefore proves the complementary case to happy: the
-    hold reaches the terminal ledger and makes the export visibly partial.
+    `structure-failure` cuts no Designator region at all, so before 2026-09-06
+    the fixture's edge ink was unclaimed and both pages reached the terminal
+    ledger held for `unclaimed-edge-ink`. That was the only end-to-end proof in
+    this repository of a page hold surviving from the Ink Map to the export.
+
+    It is gone, and the reason is measured rather than incidental: the retired
+    64-pixel band was 32 per cent of a 200-pixel page, so what it called "edge
+    ink" was the fixture's own body text. `edge_band_bp` resolves to 2 pixels
+    here and these pages carry zero ink in every band up to 20, so the Ink Map
+    now maps both and holds neither.
+
+    **What this test protects is that the loss stays visible.** The scenario
+    still exits held and still exports partial -- for its own cause, which is
+    that no region was cut -- and no page reason mentions edge ink any more.
+    If a future fixture page gains ink near its edge, this test fails and the
+    edge path's end-to-end proof comes back with it. The gap is written into
+    `pipeline/1_ink_map/HANDOFF.md`.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structure-failure")
@@ -6804,15 +6873,14 @@ def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_
         manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
 
     assert manifest["claims"]["status"] == "partial"
-    assert manifest["claims"]["ink_map"]["held_pages"] == [1, 2]
-    assert any("unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"])
-    page_reasons = {
-        row["unit_id"]: row["reason"]
-        for row in manifest["claims"]["terminal_ledger"]["units"]
-        if row["unit_type"] == "page"
-    }
-    assert set(page_reasons) == {"page:1", "page:2"}
-    assert all("unclaimed-edge-ink" in reason for reason in page_reasons.values())
+    assert manifest["claims"]["ink_map"]["held_pages"] == []
+    assert not any(
+        "unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"]
+    )
+    assert manifest["claims"]["partial_reasons"], (
+        "the scenario must still be visibly partial for its own cause; a green "
+        "structure-failure export would be a far larger finding than the band"
+    )
 
 
 def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):

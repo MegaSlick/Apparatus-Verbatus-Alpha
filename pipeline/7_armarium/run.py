@@ -69,7 +69,12 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_sealed_page_pixels,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
-from common.residual_ink import INK_NOT_MEASURABLE, edge_ink_from_runs  # noqa: E402
+from common.residual_ink import (  # noqa: E402
+    INK_NOT_MEASURABLE,
+    edge_ink_from_runs,
+    load_coverage_audit_config,
+    resolve_coverage_audit_policy,
+)
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -702,7 +707,16 @@ def ink_map_page_rows(
     never occurred. Every initial outcome is first reconciled with the retained
     runs against the original empty crop set, independently of the later
     re-measurement against Designator cuts.
+
+    The sealed `[coverage_audit]` policy is read here, out of the same file and
+    under the same `designator-grouping` seal every other reader of it proves
+    its bytes against, and resolved for each page's own dimensions: the band
+    this stage re-measures in and the gate it releases by have to be the ones
+    the Ink Map's own finding was taken under, and a policy resolved for another
+    page would make this a second detector rather than the same one.
     """
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -747,8 +761,11 @@ def ink_map_page_rows(
                 "or release the page finding from a bare outcome. Restore the sealed Ink Map "
                 "artifact or restart the run before exporting."
             )
+        audit_policy = resolve_coverage_audit_policy(
+            coverage_config, evidence.get("width"), evidence.get("height")
+        )
         try:
-            initial_measure = edge_ink_from_runs(evidence, [])
+            initial_measure = edge_ink_from_runs(evidence, [], coverage_policy=audit_policy)
         except (KeyError, TypeError, ValueError) as error:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has unreadable retained page-space edge evidence. "
@@ -778,7 +795,15 @@ def ink_map_page_rows(
         remeasured = None
         if finding["outcome"] == "unclaimed-edge-ink":
             try:
-                measure = edge_ink_from_runs(finding["evidence"], claimed_bounds.get(ordinal, []))
+                measure = edge_ink_from_runs(
+                    finding["evidence"],
+                    claimed_bounds.get(ordinal, []),
+                    coverage_policy=resolve_coverage_audit_policy(
+                        coverage_config,
+                        finding["evidence"].get("width"),
+                        finding["evidence"].get("height"),
+                    ),
+                )
             except (KeyError, TypeError, ValueError) as error:
                 raise FatalAccounting(
                     "ink-map page-space edge evidence cannot be re-measured. The Armarium cannot "
@@ -789,6 +814,7 @@ def ink_map_page_rows(
                 "total_ink_pixels": measure["total_ink_pixels"],
                 "outside_ink_pixels": measure["outside_ink_pixels"],
                 "edge_band_pixels": measure["edge_band_pixels"],
+                "substantial_ink_pixels": measure["substantial_ink_pixels"],
             }
         rows.append(
             {
