@@ -5491,15 +5491,38 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
         assert any(issue.code == "disk-missing" for issue in report.issues)
 
 
-def test_pod_runtime_checked_in_spend_policy_refuses_paid_actions() -> None:
+def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
+    """Since 2026-09-06 the committed policy is configured with Tyrel's values
+    (standing ledger §8-§9). This pins them: a drift in the file is a drift in
+    what every paid gate enforces, and the floor stays marked unverified until
+    it has been checked against the provider's balance."""
+    from decimal import Decimal
+
     from .spend import load_spend_policy
 
     root = Path(__file__).resolve().parents[2]
-    configured = load_spend_policy(root / "config/spend.toml")
-    assert not configured.configured
-    template = (root / "config/spend.toml").read_text(encoding="utf-8")
-    assert 'account_balance_floor_usd = "50.00"' in template
-    assert "unverified" in template
+    policy = load_spend_policy(root / "config/spend.toml")
+    assert policy.configured
+    assert policy.max_hourly_usd == Decimal("0.40")
+    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
+    assert policy.account_balance_floor_usd == Decimal("50.00")
+    assert policy.account_balance_alert_usd == Decimal("75.00")
+    assert policy.hard_lifetime_seconds == 14400
+    assert policy.laptop_heartbeat_timeout_seconds == 900
+    assert policy.shutdown_poll_interval_seconds == 30
+    assert policy.shutdown_deadline_seconds == 900
+    assert policy.billing_cutoff_margin_seconds == 3600
+    text = (root / "config/spend.toml").read_text(encoding="utf-8")
+    # The active note above the floor, not the template comment that also says
+    # "unverified": the check must fail when the live setting loses its caveat.
+    # The template comment above also spells `state = "configured"`; the active
+    # line is the one at column zero.
+    active = text[text.index('\nstate = "configured"') :]
+    floor_note, _, floor_line = active.partition("account_balance_floor_usd =")
+    assert floor_line.startswith(' "50.00"')
+    assert "Documented, unverified default" in floor_note
+    assert "checks it against the RunPod balance" in floor_note
+    assert "not permission to launch" in text
 
 
 def test_spend_configuration_documentation_matches_the_observed_balance_contract() -> None:
