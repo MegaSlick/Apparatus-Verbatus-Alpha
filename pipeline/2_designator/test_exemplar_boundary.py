@@ -327,4 +327,8 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     blob_path.write_bytes(output.getvalue())
 
     with pytest.raises(ContractError, match="no longer matches its recorded digest"):
-        designator.page_pixels(context, page_record)
+        designator.page_pixels(
+            context,
+            page_record,
+            grouping_policy=designator.grouping_config.load_grouping_config(),
+        )

@@ -480,7 +480,9 @@ def _read_checked_page_bytes(context, page_record: dict) -> bytes:
     return data
 
 
-def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
+def page_pixels(
+    context, page_record: dict, *, grouping_policy: dict
+) -> tuple[int, int, list, structure.BackgroundEvidence]:
     """Decode one sealed page and infer its own background value.
 
     `common.imaging.grayscale_rows`, not `decode_grayscale_png`: the latter
@@ -504,8 +506,13 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     """
     page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = grayscale_rows(page_bytes)
-    background = structure.infer_background(width, height, rows)
-    return width, height, rows, background
+    evidence = structure.infer_background_evidence(
+        width,
+        height,
+        rows,
+        surround_policy=grouping_config.resolve_surround_policy(grouping_policy, width, height),
+    )
+    return width, height, rows, evidence
 
 
 def _bounds_of(row: dict) -> dict:
@@ -1161,13 +1168,18 @@ def _analyze_page(
     """
     if ordinal not in cache:
         try:
-            width, height, rows, background = page_pixels(context, page_record)
-            background_source = "inferred-modal"
+            width, height, rows, evidence = page_pixels(
+                context, page_record, grouping_policy=grouping_policy
+            )
+            background = evidence["background"]
+            background_source = evidence["source"]
+            surround = evidence["surround"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
+            surround = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
         components = (
             []
@@ -1220,6 +1232,12 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": background_source,
+            # The dark-surround measurement, or `None` on a page that had no
+            # dark surround to measure. Published on the conservation record
+            # below, because that record is where this page's ink accounting
+            # lives and the surround is the part of that ink which is bezel
+            # rather than writing.
+            "surround": surround,
             "groups": groups,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,
@@ -2171,6 +2189,18 @@ def _publish_conservation_and_secondary(
         if withheld
         else RESIDUAL_ENUMERATION_COMPLETE,
     }
+    # Present only on a page that had a dark surround, absent on every other
+    # page, exactly like `residual_components` above. A key that is always
+    # present would carry `null` on every fixture page and move bytes that
+    # nothing measured differently; `background_source` already says which
+    # branch inferred this page's paper, so an absent `surround` is not a
+    # fact going unrecorded. What it records when present is how much of this
+    # page's counted ink is photographic bezel rather than writing -- the
+    # surround is never removed from the scan or from this reconciliation
+    # (see `structure._dark_surround` for why), so without this a reader
+    # would take an ink fraction of two thirds for two thirds of writing.
+    if analysis["surround"] is not None:
+        conservation_payload["surround"] = analysis["surround"]
     if not withheld:
         conservation_payload["residual_components"] = components
     _refuse_text_fields(conservation_payload)

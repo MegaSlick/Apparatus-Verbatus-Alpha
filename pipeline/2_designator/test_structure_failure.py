@@ -41,6 +41,18 @@ from common.stage import EXIT_HELD
 ROOT = Path(__file__).resolve().parents[2]
 
 
+# The sealed dark-surround policy, resolved for one page's own dimensions.
+# Loaded through the designator's own module rather than re-implemented here,
+# so a test page is inferred under exactly the policy a run would use.
+def _shipped_surround_policy(width: int, height: int):
+    grouping_config = _load_designator().grouping_config
+    return grouping_config.resolve_surround_policy(
+        grouping_config.load_grouping_config(ROOT / "config" / "designator_grouping.toml"),
+        width,
+        height,
+    )
+
+
 def _load_designator():
     return load_designator("designator_structure_failure_under_test")
 
@@ -411,18 +423,23 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     designator = _load_designator()
     context = _designator_context(root, designator)
 
-    real_infer = designator.structure.infer_background
+    # `infer_background_evidence`, not `infer_background`: the evidence
+    # function is what `run.py` calls, so patching the thin wrapper would
+    # leave the run untouched and this test would assert its way to green
+    # over a refusal that never happened. The `refused_pages` guard below is
+    # what would catch that, and it is why it is there.
+    real_infer = designator.structure.infer_background_evidence
     refused_pages = []
 
-    def refuse_the_first_page(width, height, rows):
+    def refuse_the_first_page(width, height, rows, **keywords):
         if not refused_pages:
             refused_pages.append(True)
             raise designator.structure.BackgroundInferenceRefusal(
                 "the page is majority ink, so its background cannot be inferred"
             )
-        return real_infer(width, height, rows)
+        return real_infer(width, height, rows, **keywords)
 
-    monkeypatch.setattr(designator.structure, "infer_background", refuse_the_first_page)
+    monkeypatch.setattr(designator.structure, "infer_background_evidence", refuse_the_first_page)
 
     held = designator.initial_pass(context)
 
@@ -479,7 +496,9 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     # The arithmetic the old guard passed, shown rather than described.
     assert max(range(256), key=lambda v: sum(row.count(v) for row in rows)) == 0
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
-        infer_background(width, height, rows)
+        infer_background(
+            width, height, rows, surround_policy=_shipped_surround_policy(width, height)
+        )
     # Defence in depth: even a caller bypassing inference cannot turn the
     # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
@@ -540,7 +559,7 @@ def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
 
     rows = [bytearray([paper] * 8) for _ in range(8)]
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
-        infer_background(8, 8, rows)
+        infer_background(8, 8, rows, surround_policy=_shipped_surround_policy(8, 8))
 
 
 def test_a_background_exactly_at_the_margin_still_infers():
@@ -549,7 +568,7 @@ def test_a_background_exactly_at_the_margin_still_infers():
 
     rows = [bytearray([20] * 8) for _ in range(8)]
     rows[3][3] = 0
-    assert infer_background(8, 8, rows) == 20
+    assert infer_background(8, 8, rows, surround_policy=_shipped_surround_policy(8, 8)) == 20
     assert primary_scan(8, 8, rows, background=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
     ]
@@ -673,7 +692,9 @@ def blank_first_page_run(tmp_path, monkeypatch):
     # these real pixels finds nothing. If a later threshold change made this page
     # scan as inked, every assertion below would still pass for the wrong reason.
     width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
-    background = designator.structure.infer_background(width, height, rows)
+    background = designator.structure.infer_background(
+        width, height, rows, surround_policy=_shipped_surround_policy(width, height)
+    )
     # Resolved from the sealed policy the way the run resolves it, rather than
     # written out as literals: this premise stands in for what `initial_pass`
     # below actually does, and a hand-copied threshold is how the two would

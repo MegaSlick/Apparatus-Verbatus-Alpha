@@ -7,7 +7,9 @@ without disturbing the shared walking-skeleton fixture other stages depend on.
 """
 
 import itertools
+from pathlib import Path
 
+import grouping_config
 import pytest
 from structure import (
     PRIMARY_MARGIN,
@@ -16,6 +18,7 @@ from structure import (
     _ink_threshold,
     _label_components_reference,
     infer_background,
+    infer_background_evidence,
     ink_pixels,
     label_components,
     primary_scan,
@@ -27,6 +30,21 @@ from common.contracts.errors import ContractError
 
 BACKGROUND = 230
 INK = 40
+
+
+# `infer_background` now takes the sealed dark-surround policy, resolved for the
+# page in front of it. These tests drive the *shipped* policy rather than a
+# convenient one, so a page here is inferred exactly as a run would infer it.
+_SHIPPED_GROUPING_CONFIG = (
+    Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
+)
+_SHIPPED_POLICY = grouping_config.load_grouping_config(_SHIPPED_GROUPING_CONFIG)
+
+
+def shipped_surround_policy(width: int, height: int):
+    return grouping_config.resolve_surround_policy(_SHIPPED_POLICY, width, height)
+
+
 GAP_TOLERANCE_PX = 3  # structure.py's retired DEFAULT_GAP_TOLERANCE_PX
 
 
@@ -267,7 +285,12 @@ def test_infer_background_is_the_most_common_pixel_value():
     width, height = 20, 20
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 2, 5, 5, INK)  # a minority of pixels
-    assert infer_background(width, height, rows) == BACKGROUND
+    assert (
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+        == BACKGROUND
+    )
 
 
 def test_infer_background_works_for_a_non_default_paper_colour():
@@ -275,12 +298,17 @@ def test_infer_background_works_for_a_non_default_paper_colour():
     paper = 200
     rows = [bytearray([paper] * width) for _ in range(height)]
     paint_rect(rows, 2, 2, 5, 5, INK)
-    assert infer_background(width, height, rows) == paper
+    assert (
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+        == paper
+    )
 
 
 def test_infer_background_refuses_a_mismatched_scanline_shape():
     with pytest.raises(ContractError, match=r"expected 3 scanlines, got 2"):
-        infer_background(10, 3, blank_rows(10, 2))
+        infer_background(10, 3, blank_rows(10, 2), surround_policy=shipped_surround_policy(10, 3))
 
 
 def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
@@ -302,7 +330,9 @@ def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
     rows += [bytearray([200] * width) for _ in range(4)]
 
     with pytest.raises(ContractError, match=r"the page is majority ink"):
-        infer_background(width, height, rows)
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
 
 
 def test_an_inverted_scan_is_refused_rather_than_read_as_a_blank_page():
@@ -313,7 +343,9 @@ def test_an_inverted_scan_is_refused_rather_than_read_as_a_blank_page():
     rows += [bytearray([220] * width) for _ in range(2)]
 
     with pytest.raises(ContractError, match=r"the page is majority ink"):
-        infer_background(width, height, rows)
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
 
 
 def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused():
@@ -328,7 +360,12 @@ def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused
     paper = 210
     rows = [bytearray([paper] * width) for _ in range(height)]
 
-    assert infer_background(width, height, rows) == paper
+    assert (
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+        == paper
+    )
 
 
 # --- refusals -----------------------------------------------------------------
@@ -462,7 +499,9 @@ def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin
 
     for page in ALL_PAGES:
         width, height, rows = grayscale_rows(render_page(page))
-        background = infer_background(width, height, rows)
+        background = infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
         pixels = ink_pixels(width, height, rows, background=background, margin=margin)
         _both_labellers_agree(pixels, gap_tolerance_px)
 
@@ -566,3 +605,202 @@ def test_the_reference_labeller_is_reachable_and_refuses_the_same_way():
         _label_components_reference({(0, 0)}, gap_tolerance_px=-1)
     with pytest.raises(TypeError):
         _label_components_reference({(0, 0)})
+
+
+# --- the dark surround: a photographed page is not a dark page ------------------
+#
+# Measured 2026-09-05: `infer_background` refused 7 of 7 real photographed
+# register pages on the majority-ink branch, because 18-26% of each frame is
+# black bezel and pure black is therefore the modal pixel. The live path cut all
+# seven into blind fallback slabs with `ink_measurable: false` and reconciled
+# none of their ink (`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). These
+# tests build that shape and the shapes it must still refuse.
+
+
+def photographed_page(
+    width: int,
+    height: int,
+    *,
+    frame_x: int = 30,
+    frame_y: int = 23,
+    paper: int = 205,
+    surround: int = 0,
+    ink: int = 40,
+) -> list[bytearray]:
+    """A dark frame around a lighter interior carrying some writing.
+
+    Deliberately not a picture of a register: an abstract frame, abstract paper
+    tones and an abstract scatter of ink, which is all a shape test needs and all
+    `proof/synthetic_pages.py` allows this project to build.
+
+    **The paper is many tones, not one, and that is the point.** On a real
+    photographed page the surround is the modal pixel only because the paper is
+    spread across dozens of tones in the 180-240 band while the bezel is a single
+    flat value; a synthetic page with one flat paper tone has that tone as its
+    mode and never reaches the branch these tests exist for. So the interior here
+    carries a dominant tone at `paper` and seven neighbours a little darker, and
+    the assertions below check that the mode really is the surround before
+    testing what the surround does.
+    """
+    rows = [bytearray([surround] * width) for _ in range(height)]
+    for y in range(frame_y, height - frame_y):
+        row = rows[y]
+        for x in range(frame_x, width - frame_x):
+            slot = (x * 13 + y * 7) % 11
+            if slot == 0:
+                row[x] = ink
+            elif slot <= 3:
+                row[x] = paper
+            else:
+                row[x] = paper - 10 + (slot - 4)
+    return rows
+
+
+def assert_the_surround_is_the_modal_pixel(width, height, rows) -> None:
+    """The premise every test below rests on, asserted rather than assumed.
+
+    Without this a change to `photographed_page` could make its paper the mode
+    again, and every test here would pass through the ordinary modal branch
+    while claiming to exercise the dark-surround one.
+    """
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    assert max(range(256), key=lambda value: histogram[value]) == 0
+    assert sum(v * c for v, c in enumerate(histogram)) // (width * height) > 0
+
+
+def test_a_photographed_page_infers_its_paper_instead_of_refusing():
+    width, height = 400, 300
+    rows = photographed_page(width, height)
+    assert_the_surround_is_the_modal_pixel(width, height, rows)
+
+    evidence = infer_background_evidence(
+        width, height, rows, surround_policy=shipped_surround_policy(width, height)
+    )
+    assert evidence["background"] == 205
+    assert evidence["source"] == "inferred-interior-mode"
+    surround = evidence["surround"]
+    assert surround["dark_at_or_below"] == 0
+    assert surround["border_dark_bp"] >= 7000
+    assert surround["interior_dark_bp"] <= 3000
+    # The surround is measured, never removed: every one of those pixels is
+    # still on the page and still below the ink threshold, so the scan counts
+    # them. That is the safe direction (GOALS 1) and this is the number that
+    # keeps a reader from taking the resulting ink fraction for writing.
+    assert surround["dark_pixel_count"] == sum(1 for row in rows for value in row if value == 0)
+    assert (
+        len(ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN))
+        > surround["dark_pixel_count"]
+    )
+
+
+def test_the_thin_wrapper_returns_the_same_value_as_the_evidence_function():
+    width, height = 400, 300
+    rows = photographed_page(width, height)
+    policy = shipped_surround_policy(width, height)
+    assert (
+        infer_background(width, height, rows, surround_policy=policy)
+        == infer_background_evidence(width, height, rows, surround_policy=policy)["background"]
+    )
+
+
+def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
+    """The fixture path, unchanged. Every walking-skeleton page takes it, which
+    is why no acceptance pin moves for the branch above."""
+    width, height = 200, 260
+    rows = blank_rows(width, height)
+    paint_rect(rows, 20, 20, 160, 80, INK)
+    evidence = infer_background_evidence(
+        width, height, rows, surround_policy=shipped_surround_policy(width, height)
+    )
+    assert evidence == {"background": BACKGROUND, "source": "inferred-modal", "surround": None}
+
+
+def test_an_inverted_scan_is_still_refused_although_it_is_majority_dark():
+    """The dark is everywhere, not in the frame: border 6578 bp against interior
+    8333 bp on this page, so the border bound refuses it. This is the shape that
+    would be wrongly admitted by a histogram-only repair."""
+    width, height = 200, 260
+    rows = [bytearray([30] * width) for _ in range(height)]
+    for y in range(int(height * 0.8), height):
+        rows[y] = bytearray([220] * width)
+    with pytest.raises(BackgroundInferenceRefusal, match=r"the page is majority ink"):
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+
+
+def test_a_dark_core_inside_a_light_border_is_still_refused():
+    """The inverse arrangement: the dark is in the middle. Border 0 bp."""
+    width, height = 200, 260
+    rows = [bytearray([25] * width) for _ in range(height)]
+    for y in range(height):
+        for x in range(width):
+            if y < 30 or y >= height - 30 or x < 30 or x >= width - 30:
+                rows[y][x] = 210
+    with pytest.raises(BackgroundInferenceRefusal, match=r"the page is majority ink"):
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+
+
+def test_a_uniformly_dark_page_never_reaches_the_surround_test_at_all():
+    """Its mode equals its mean, so the majority-ink branch does not fire and it
+    is refused one branch later by the `PRIMARY_MARGIN` guard -- exactly as
+    before this change. Named because the surround test would otherwise be
+    credited with a refusal it does not make."""
+    width, height = 200, 260
+    rows = [bytearray([0] * width) for _ in range(height)]
+    with pytest.raises(BackgroundInferenceRefusal, match=r"darker than the 20-point ink margin"):
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+
+
+def test_a_dark_surround_whose_interior_is_too_dark_to_threshold_still_refuses():
+    """A framed page whose paper is darker than the ink margin. The shape test
+    passes and the paper value still cannot express a threshold, so the refusal
+    stands -- and it names the surround it found rather than pretending it saw
+    none."""
+    width, height = 400, 300
+    rows = photographed_page(width, height, paper=15, ink=2)
+    assert_the_surround_is_the_modal_pixel(width, height, rows)
+    with pytest.raises(BackgroundInferenceRefusal, match=r"a dark surround was found"):
+        infer_background(
+            width, height, rows, surround_policy=shipped_surround_policy(width, height)
+        )
+
+
+def test_a_band_with_no_interior_to_compare_against_refuses_rather_than_guesses():
+    """`_dark_surround` returns `None` when the band leaves no interior. The
+    sealed loader refuses such a band outright, so this can only be reached by a
+    caller passing its own policy -- and it must not silently infer."""
+    width, height = 400, 300
+    rows = photographed_page(width, height)
+    degenerate = {
+        "band_px_x": width // 2,
+        "band_px_y": height // 2,
+        "min_border_dark_bp": 7000,
+        "max_interior_dark_bp": 3000,
+    }
+    with pytest.raises(BackgroundInferenceRefusal, match=r"the page is majority ink"):
+        infer_background(width, height, rows, surround_policy=degenerate)
+
+
+def test_the_surround_bounds_actually_decide_the_outcome():
+    """Both bounds are load-bearing: moving either one past this page's own
+    measurement flips the answer, so neither is a decoration."""
+    width, height = 400, 300
+    rows = photographed_page(width, height)
+    policy = shipped_surround_policy(width, height)
+    measured = infer_background_evidence(width, height, rows, surround_policy=policy)["surround"]
+
+    too_strict_border = {**policy, "min_border_dark_bp": measured["border_dark_bp"] + 1}
+    with pytest.raises(BackgroundInferenceRefusal):
+        infer_background(width, height, rows, surround_policy=too_strict_border)
+
+    too_strict_interior = {**policy, "max_interior_dark_bp": measured["interior_dark_bp"] - 1}
+    with pytest.raises(BackgroundInferenceRefusal):
+        infer_background(width, height, rows, surround_policy=too_strict_interior)

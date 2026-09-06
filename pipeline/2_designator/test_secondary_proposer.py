@@ -167,7 +167,14 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     records = designator.page_records(context)
     pages = designator.sealed_pages(records)
     page_record = pages[1]
-    width, height, rows, background = designator.page_pixels(context, page_record)
+    width, height, rows, evidence = designator.page_pixels(
+        context,
+        page_record,
+        grouping_policy=designator.grouping_config.load_grouping_config(
+            ROOT / "config" / "designator_grouping.toml"
+        ),
+    )
+    background = evidence["background"]
 
     claimed = designator._claimed_regions_by_page(context)[1]
     # Bottom-right corner of the page: both fixture acts on page 1 (a1, a2,
@@ -255,7 +262,14 @@ def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path,
     designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
     records = designator.page_records(context)
     page_record = designator.sealed_pages(records)[1]
-    width, height, rows, background = designator.page_pixels(context, page_record)
+    width, height, rows, evidence = designator.page_pixels(
+        context,
+        page_record,
+        grouping_policy=designator.grouping_config.load_grouping_config(
+            ROOT / "config" / "designator_grouping.toml"
+        ),
+    )
+    background = evidence["background"]
     rows = [bytearray(row) for row in rows]
     rows[height - 2][width - 2] = 10
     secondary = _published_secondary_provenance(designator, context)
@@ -292,7 +306,14 @@ def test_a_page_with_more_rescue_candidates_than_the_bound_is_held_as_one_item(t
     designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
     records = designator.page_records(context)
     page_record = designator.sealed_pages(records)[1]
-    width, height, rows, background = designator.page_pixels(context, page_record)
+    width, height, rows, evidence = designator.page_pixels(
+        context,
+        page_record,
+        grouping_policy=designator.grouping_config.load_grouping_config(
+            ROOT / "config" / "designator_grouping.toml"
+        ),
+    )
+    background = evidence["background"]
     rows = [bytearray(row) for row in rows]
     rows[height - 2][width - 2] = 10
     policy = designator.grouping_config.load_grouping_config()

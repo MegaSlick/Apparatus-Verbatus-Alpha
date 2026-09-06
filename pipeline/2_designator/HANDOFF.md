@@ -551,8 +551,14 @@ rather than merely recorded.
 trail for *how* this page was read, and they are published here because this is
 the one per-page record that already exists. `background_source` says where the
 ink threshold came from — `inferred-modal` when the page's own modal pixel was
-taken as its paper — so a page whose threshold did not come from its own mode is
-visibly different on disk rather than identical to an ordinary scan.
+taken as its paper, `inferred-interior-mode` when the modal pixel was a
+photographic surround and the paper was taken from the page's own lighter
+population instead — so a page whose threshold did not come from its own mode is
+visibly different on disk rather than identical to an ordinary scan. A page on
+the second branch also carries a `surround` block on its conservation record:
+the band the test ran on, the level it called dark, how many pixels that was,
+and the border and interior fractions it measured. That block is present only on
+such a page, so no existing record's bytes move for it.
 `structure_evidence` says whether the crops on this page came from detection or
 from the predetermined grid. Both were computed in an in-process dict that
 nothing published, which meant neither fact survived the run. Both are `null` on
@@ -1200,8 +1206,8 @@ custody as its own evidence (`structure-answer.raw_response_ref`,
 `custody_ref`) and hands nothing to the witnesses; the Attestatores stage is
 untouched by the live Designator and reads a served seal under its own rows.
 
-**`infer_background`'s majority-paper assumption is now checked from both
-sides, and a page that fails the check is read but not counted.** The premise is
+**`infer_background`'s majority-paper assumption is checked from both sides,
+and since 2026-09-05 it also knows a photographed page from a dark one.** The premise is
 that a scanned register page is overwhelmingly paper, so its modal pixel is the
 paper colour. Two shapes break it and both are refusals now. A page where ink is
 the numeric majority — heavy staining, bleed-through, an inverted or
@@ -1214,6 +1220,48 @@ would be arithmetic rather than a measurement. Solid black used to infer a
 background of 0, threshold -20, and reconcile to zero ink on a visibly black
 page — and on a page with no declared act, nothing caught it and the run exited
 `EXIT_COMPLETE`.
+
+**The third shape, measured on real material, is a photograph rather than a
+scan.** A photographed register opening carries a black surround around the
+paper — 18 to 26% of the frame on the seven real proxies under
+`private/triage/measured/2026-08-22_005469606_62-68` — and pure black is then by
+a wide margin the single most common value, because the paper itself is spread
+across dozens of tones in the 180-240 band. So the modal pixel was 0 on all
+seven, the majority-ink branch refused all seven, and the live path cut every one
+into blind fallback slabs and reconciled none of their ink
+(`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). The premise "the modal
+pixel is paper" is sound for a flatbed scan and false for a photograph.
+
+`structure._dark_surround` asks the one question a histogram cannot answer:
+whether the dark majority is a *frame* around a lighter interior, or the page
+itself. It is a geometric test because the distinction is geometric — an
+inverted scan and a photographed page are both "most of the page is dark", and
+what separates them is where the dark is. Where the border band is dark and the
+interior is not, the paper value is the modal pixel at or above the page's own
+mean; that value still faces the `PRIMARY_MARGIN` guard, and every shape above
+still refuses by name. The three thresholds are sealed in
+`config/designator_grouping.toml`'s `[grouping.surround]`, which is the one block
+in that file with a `calibrated_for_this_corpus = true` provenance and a
+`sample_count` above zero — its own block, because the rest of the file is
+unmeasured defaults and one provenance could not describe both truthfully.
+
+**The surround is measured, never removed.** Every surround pixel stays on the
+page, stays below the ink threshold, and is counted as ink by `primary_scan` and
+reconciled as ink by `conservation.reconcile`. Masking it out would mean deciding
+where the page ends, and a page edge misjudged by thirty pixels would silently
+delete a marginal name — the loss GOALS 1 ranks worst. Counting the bezel is a
+visible over-count that reconciles; excluding it is an invisible loss. What the
+`surround` block on the conservation record buys is the interpretation: on these
+seven pages 30 to 54% of the counted ink is bezel, and without that number a
+reader takes an ink fraction of 0.66 for two thirds of a page of writing.
+
+**What this does not fix, named rather than deferred.** `PRIMARY_MARGIN = 20` is
+still wrong on photographed paper: excluding the bezel entirely, 20 to 51% of
+each of these pages still falls below `background - 20`
+(`TIMING_REPORT_2026-09-05.md` §1c), so component count still *falls* as
+`gap_tolerance_px` rises on real pages and finding 6 still cannot be answered.
+Fixing the background inference was the prerequisite for that measurement, not
+the measurement itself.
 
 What follows a refusal is deliberately *not* a substituted threshold. The page
 is cut into predetermined crops and sent downstream to be read, its

@@ -1440,10 +1440,40 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+#
+# Moved again, 2026-09-05, for `config/designator_grouping.toml` alone.
+# `infer_background` learned to tell a photographed page (dark surround, lighter
+# interior) from a genuinely dark page, and the three thresholds that test runs
+# under are sealed in a new `[grouping.surround]` block with its own provenance.
+# Every run seals that file's bytes, so its digest moved
+# (a56df58d0c7e... -> 968b72aeaca9657d0dc1381a63c0a38b276243f1b2f603b6df9ecd5802b84b72),
+# which moves `run.json`'s
+# `sealed_config_digests`, its `config_digest` and its `self_hash`, and every
+# digest computed over those downstream.
+#
+# **No fixture page reaches the new branch.** Every walking-skeleton page is
+# white synthetic: its modal pixel is its paper, so it takes the same modal path
+# it always took, records the same `background_source: "inferred-modal"`, and
+# publishes no `surround` block at all (`test_structure.py::
+# test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`). The
+# resolved surround policy is deliberately not a field of `GroupingThresholds`
+# either, so `structure-status.resolved_thresholds` is byte-identical
+# (`test_grouping_config.py::
+# test_surround_is_not_a_field_of_the_published_resolved_thresholds`).
+#
+# Checked, not assumed, in this file's own style. Both trees were built from
+# real orchestrator runs -- the `before` tree from a worktree pinned at the
+# preceding commit with its own venv -- and compared leaf by leaf: happy 75
+# changed files / 391 changed JSON leaves, review 87 / 471, and **not one of
+# them is a non-digest field**. Every changed leaf is a 64-hex digest or a
+# content-addressed blob path, plus one renamed blob per scenario in
+# `4_perlector` and `7_armarium` whose own name is its content digest. Snapshot
+# counts and exit codes are unmoved: happy 96 files at exit 0, review 107 at
+# exit 3.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
-REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
+HAPPY_RUN_TREE_DIGEST = "a5da790b65e7af60c73412f18fff6947ebb12855c84dadaddece85cadd809997"
+REVIEW_RUN_TREE_DIGEST = "faabdd9a7675e78a5f5ec18c670a3efca8ca4bef5f49841a82401931a87514c7"
 
 
 def orchestrate(

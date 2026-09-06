@@ -8,7 +8,9 @@ geometry it needs to exercise.
 
 import itertools
 import random
+from pathlib import Path
 
+import grouping_config
 import pytest
 from grouping import assign_columns, find_continuation_candidate, group_page
 from structure import infer_background, primary_scan
@@ -299,7 +301,18 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
     for bounds in (brace_bounds, body_a_bounds, body_b_bounds):
         paint(bounds["x"], bounds["y"], bounds["w"], bounds["h"])
 
-    background_value = infer_background(width, height, rows)
+    background_value = infer_background(
+        width,
+        height,
+        rows,
+        surround_policy=grouping_config.resolve_surround_policy(
+            grouping_config.load_grouping_config(
+                Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
+            ),
+            width,
+            height,
+        ),
+    )
     assert background_value == background, "ink must stay the numeric minority for this test"
     components = primary_scan(
         width, height, rows, background=background_value, gap_tolerance_px=GAP_TOLERANCE_PX

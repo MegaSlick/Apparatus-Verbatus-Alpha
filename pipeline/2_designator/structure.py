@@ -116,8 +116,138 @@ def _ink_threshold(background: int, margin: int) -> int:
     return threshold
 
 
-def infer_background(width: int, height: int, rows: list) -> int:
-    """The page's own background value: its single most common pixel.
+class SurroundPolicy(TypedDict):
+    """The sealed shape test that tells a photographed page from a dark page.
+
+    Resolved per page from `config/designator_grouping.toml`'s
+    `[grouping.surround]` sub-table by `grouping_config.resolve_thresholds`,
+    and passed in whole rather than as four loose integers so a caller cannot
+    supply three of the four. Every field is an integer; `band_px_x` and
+    `band_px_y` are already resolved to this page's own pixels, and the two
+    `_bp` fields are basis points (1/10000) of a *population*, not of a page
+    dimension.
+    """
+
+    band_px_x: int
+    band_px_y: int
+    min_border_dark_bp: int
+    max_interior_dark_bp: int
+
+
+class SurroundEvidence(TypedDict):
+    """What the dark-surround test measured on a page it accepted.
+
+    Published rather than dropped. See `_dark_surround` for why this is a
+    measurement and not a region.
+    """
+
+    band_px_x: int
+    band_px_y: int
+    dark_at_or_below: int
+    dark_pixel_count: int
+    border_dark_bp: int
+    interior_dark_bp: int
+
+
+class BackgroundEvidence(TypedDict):
+    background: int
+    source: str
+    surround: SurroundEvidence | None
+
+
+# The two `source` values `infer_background_evidence` can return. A page that
+# reaches neither raises `BackgroundInferenceRefusal` instead, so there is no
+# third, quieter outcome.
+#
+# These are the strings `run.py` publishes as a page's `background_source`,
+# spelled here rather than translated there. `inferred-modal` predates this
+# module's dark-surround branch and is unchanged, so every existing page record
+# still reads exactly as it did; `run.py`'s own third value, `not-inferable`,
+# belongs to it rather than here, because it names a refusal this function
+# raises and does not return.
+BACKGROUND_SOURCE_MODAL: Final = "inferred-modal"
+BACKGROUND_SOURCE_INTERIOR_MODE: Final = "inferred-interior-mode"
+
+
+def _dark_surround(
+    width: int,
+    height: int,
+    rows: list,
+    level: int,
+    dark_pixel_count: int,
+    policy: SurroundPolicy,
+) -> SurroundEvidence | None:
+    """Is this page's dark majority a photographic surround, or is the page dark?
+
+    The question is geometric, and it has to be: a histogram alone cannot tell a
+    black bezel around a lit page from an inverted scan, because both are "most
+    of the page is dark". What separates them is *where* the dark is. On a
+    photographed register page the dark is a frame: measured over the seven real
+    proxies, 79-86% of a 5%-wide border band is at or below the modal value while
+    only 2-12% of the interior is. On the inverted scan this module's own test
+    uses the relation reverses (border 66%, interior 83%), and on a uniformly
+    dark page both are 100%.
+
+    **This test never removes a pixel from anything.** It decides only which
+    value is reported as paper. The surround stays in the page, stays below the
+    ink threshold, and is therefore counted as ink by `primary_scan` and
+    reconciled as ink by `conservation.reconcile` exactly like any other dark
+    pixel. That is deliberate and it is the direction GOALS 1 requires: masking
+    the surround out would mean deciding where the page ends, and a page edge
+    misjudged by thirty pixels would silently delete a marginal name. Counting
+    the bezel as ink is a visible, reconcilable over-count; excluding it is an
+    invisible loss.
+
+    **What would otherwise be lost is the interpretation, so that is what is
+    recorded.** Without this evidence a reader sees an ink fraction of 0.66 and
+    concludes the page is two-thirds written on. `SurroundEvidence` says how
+    much of that counted ink is surround, at what level, and on what geometry —
+    a measurement rather than a region, because a region would assert a page
+    boundary this build has no calibration to assert (the same class of number
+    as `gap_tolerance_px`).
+
+    Returns `None` when the page has no interior to compare against, or when the
+    shape is not a dark surround — the caller then refuses exactly as before.
+    """
+    band_x, band_y = policy["band_px_x"], policy["band_px_y"]
+    if band_x <= 0 or band_y <= 0 or 2 * band_x >= width or 2 * band_y >= height:
+        return None
+    # `bytes.translate` maps every sample to 1 (at or below the level) or 0 in
+    # C, so this second full-page pass costs a few milliseconds rather than the
+    # seconds a per-pixel Python comparison would -- the same reason the
+    # labeller stopped walking pixels one at a time.
+    table = bytes(1 if value <= level else 0 for value in range(256))
+    interior_dark = 0
+    for y in range(band_y, height - band_y):
+        interior_dark += rows[y][band_x : width - band_x].translate(table).count(1)
+    interior_pixels = (width - 2 * band_x) * (height - 2 * band_y)
+    border_pixels = width * height - interior_pixels
+    border_dark = dark_pixel_count - interior_dark
+    # Floor division, integers only, like every other quantity this module
+    # handles. It rounds `border_dark_bp` down (stricter against the `>=` test)
+    # and `interior_dark_bp` down (looser against the `<=` test); at these
+    # population sizes the difference is one part in ten thousand and the
+    # measured separation is several thousand basis points wide.
+    border_dark_bp = border_dark * 10000 // border_pixels
+    interior_dark_bp = interior_dark * 10000 // interior_pixels
+    if border_dark_bp < policy["min_border_dark_bp"]:
+        return None
+    if interior_dark_bp > policy["max_interior_dark_bp"]:
+        return None
+    return {
+        "band_px_x": band_x,
+        "band_px_y": band_y,
+        "dark_at_or_below": level,
+        "dark_pixel_count": dark_pixel_count,
+        "border_dark_bp": border_dark_bp,
+        "interior_dark_bp": interior_dark_bp,
+    }
+
+
+def infer_background_evidence(
+    width: int, height: int, rows: list, *, surround_policy: SurroundPolicy
+) -> BackgroundEvidence:
+    """The page's own background value, and how it was established.
 
     A scanned register page is overwhelmingly paper, so the modal pixel value
     is the paper colour under any real lighting or scanner, not a fixed
@@ -126,22 +256,21 @@ def infer_background(width: int, height: int, rows: list) -> int:
     rebuild's audit trail names as a defect class in the old pipeline's
     thresholds; inferring it per page needs no such constant at all.
 
-    **The premise above is a premise, and this function now checks it.** Where
+    **The premise above is a premise, and this function checks it.** Where
     ink is the numeric majority of a page -- a heavily inked page, an inverted
     scan, a photographic negative -- the modal pixel is the *ink* colour. The
     threshold below it then admits almost nothing, the page reconciles to zero
     ink, and the stage exits `complete` having found no acts at all. That is a
     page lost in silence, which is the exact shape GOALS 1 forbids: a missed act
     is worse than a poorly read one, and Tyrel's 2026-08-04 ruling 15 says blank
-    is proved and never inferred. Recorded as deferral 06-3, whose own note says
-    to fix it rather than ship it.
+    is proved and never inferred.
 
     The check needs no constant either. Paper is the lighter surface, so an
     inferred background must be at least as light as the page's own mean; when
-    it is darker than the average pixel, the mode is ink and this function has
-    nothing honest to return. Compared as `mode * count >= total` so the
-    arithmetic stays in integers -- every quantity this module handles is an
-    integer, and a float comparison here could pass by accident.
+    it is darker than the average pixel, the mode is ink. Compared as
+    `mode * count >= total` so the arithmetic stays in integers -- every
+    quantity this module handles is an integer, and a float comparison here
+    could pass by accident.
 
     **That comparison alone misses the uniformly dark page**, which is the one
     shape where mode and mean are equal and both wrong. A page of solid black has
@@ -150,14 +279,34 @@ def infer_background(width: int, height: int, rows: list) -> int:
     then -20, no 8-bit sample can be at or below it, the page counts zero ink
     pixels, and the run exits `complete` over a visibly black page -- the same
     silent loss the majority-ink check exists to stop, reached by the one route
-    it does not cover.
+    it does not cover. So a background must also be light enough to preserve
+    `primary_scan`'s declared separation at `PRIMARY_MARGIN`.
 
-    So a background must also be light enough to preserve `primary_scan`'s
-    declared separation at `PRIMARY_MARGIN`: below it, that authoritative
-    structural proposer could classify no pixel as ink. Conservation separately
-    reconciles at the more sensitive `SECONDARY_MARGIN`; a page this guard
-    refuses is still cut and read, records `ink_measurable: false`, and holds the
-    run rather than reporting a measurement it did not make.
+    **And the majority-ink test alone was wrong about a photographed page,
+    measured on 7 of 7 real ones.** A photograph of a register opening carries a
+    black surround around the paper -- 18-26% of the frame on the seven real
+    proxies -- and pure black is then by a wide margin the single most common
+    value, because the paper itself is spread across dozens of tones in the
+    180-240 band. So the modal pixel was 0 on every real page, the majority-ink
+    branch refused every one of them, and the live path cut all seven into blind
+    fallback slabs with `ink_measurable: false` and never reconciled their ink at
+    all (`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). The premise "the
+    modal pixel is paper" is sound for a flatbed scan and false for a photograph.
+
+    The repair is one branch, and it is asked only where the old code was about
+    to refuse. `_dark_surround` asks whether the dark majority is a *frame*
+    around a lighter interior rather than the page itself; where it is, the paper
+    value is the modal pixel **at or above the page's own mean**, which is the
+    same "paper is the lighter surface" premise applied to the population the
+    surround does not dominate. That value still faces the `PRIMARY_MARGIN`
+    guard, and a page with no light interior mode -- an inverted scan, a
+    uniformly dark page, a page whose dark is in the middle rather than the
+    frame -- still refuses by name exactly as it did before.
+
+    Conservation separately reconciles at the more sensitive `SECONDARY_MARGIN`;
+    a page this guard refuses is still cut and read, records
+    `ink_measurable: false`, and holds the run rather than reporting a
+    measurement it did not make.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -174,11 +323,38 @@ def infer_background(width: int, height: int, rows: list) -> int:
     counted = width * height
     total = sum(value * count for value, count in enumerate(histogram))
     if background * counted < total:
+        mean = total // counted
+        surround = _dark_surround(
+            width, height, rows, background, sum(histogram[: background + 1]), surround_policy
+        )
+        if surround is not None:
+            # The modal value among pixels at or above the page's own mean: the
+            # paper population, measured on the whole page rather than on the
+            # interior alone. The surround is entirely at or below `background`,
+            # which is below the mean, so it cannot contribute a candidate here
+            # -- excluding it geometrically would change nothing about this
+            # answer while making it depend on the band width, which the
+            # detection above already spends.
+            paper = max(range(mean, 256), key=lambda value: histogram[value])
+            if paper >= PRIMARY_MARGIN:
+                return {
+                    "background": paper,
+                    "source": BACKGROUND_SOURCE_INTERIOR_MODE,
+                    "surround": surround,
+                }
         raise BackgroundInferenceRefusal(
             f"the most common pixel on this {width}x{height} page is {background}, which is "
-            f"darker than its own mean of {total // counted}: the page is majority ink, so "
+            f"darker than its own mean of {mean}: the page is majority ink, so "
             "its background cannot be inferred and a blank result here would be inferred "
             "rather than proved"
+            + (
+                ""
+                if surround is None
+                else f"; a dark surround was found ({surround['border_dark_bp']} bp of the "
+                f"border band and {surround['interior_dark_bp']} bp of the interior at or "
+                f"below {background}) but the interior's own paper mode is darker than the "
+                f"{PRIMARY_MARGIN}-point ink margin"
+            )
         )
     if background < PRIMARY_MARGIN:
         raise BackgroundInferenceRefusal(
@@ -187,7 +363,23 @@ def infer_background(width: int, height: int, rows: list) -> int:
             "below every 8-bit sample, so no pixel on this page could ever be counted as ink "
             "and a blank result here would be arithmetic rather than a measurement"
         )
-    return background
+    return {"background": background, "source": BACKGROUND_SOURCE_MODAL, "surround": None}
+
+
+def infer_background(
+    width: int, height: int, rows: list, *, surround_policy: SurroundPolicy
+) -> int:
+    """`infer_background_evidence`'s background value alone.
+
+    Kept because most callers -- and every test that builds a page to check one
+    threshold -- want the integer and nothing else. The evidence function is the
+    one `run.py` calls, because a page whose background came from the
+    dark-surround branch has a measurement to publish and dropping it would be
+    the silent half of GOVERNANCE 2.
+    """
+    return infer_background_evidence(width, height, rows, surround_policy=surround_policy)[
+        "background"
+    ]
 
 
 def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: int) -> set:

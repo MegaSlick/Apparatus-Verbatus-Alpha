@@ -11,6 +11,7 @@ starts with a digit). Pytest's default "prepend" import mode puts this
 file's own directory on `sys.path` before collecting it.
 """
 
+import dataclasses
 import tomllib
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -23,6 +24,7 @@ from grouping_config import (
     DEFAULT_GROUPING_CONFIG_PATH,
     GroupingThresholds,
     load_grouping_config,
+    resolve_surround_policy,
     resolve_thresholds,
 )
 
@@ -84,6 +86,14 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert set(config["page_fraction_bp"]) == set(_RETIRED)
     assert config["absolute"] == {"gap_tolerance_px": 3}
     assert config["provenance"]["calibrated_for_this_corpus"] is False
+    assert config["surround"]["band_bp"] == 500
+    assert config["surround"]["min_border_dark_bp"] == 7000
+    assert config["surround"]["max_interior_dark_bp"] == 3000
+    # The one measured block in this file, and the only place in it where the
+    # flag is true. Pinned so a later edit cannot quietly widen the claim: seven
+    # real photographed pages, not zero synthetic ones.
+    assert config["surround"]["provenance"]["calibrated_for_this_corpus"] is True
+    assert config["surround"]["provenance"]["sample_count"] == 7
 
 
 def test_default_config_is_valid_toml_matching_the_loaded_shape():
@@ -95,6 +105,7 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
         "fallback_bands",
         "page_fraction_bp",
         "absolute",
+        "surround",
         "provenance",
     }
 
@@ -217,7 +228,32 @@ caveat = "cv"
 """
 
 
+# `[grouping.surround]`'s own provenance block, written with TOML *literal*
+# (single-quoted) strings and values that differ from `_VALID_PROVENANCE`'s in
+# every field. That is deliberate: the tests below mutate the file-level
+# provenance by string replacement (`caveat = "cv"`, `sample_count = 0`,
+# `source = "`), and with two provenance blocks in one file a shared spelling
+# would make those replacements hit whichever came first. Distinct spellings
+# keep each test aimed at the block it names.
+_VALID_SURROUND = """\
+band_bp = 500
+min_border_dark_bp = 7000
+max_interior_dark_bp = 3000
+
+[grouping.surround.provenance]
+source = 's'
+corpus = 'c'
+sample_unit = 'u'
+sample_count = 7
+statistic = 'st'
+calibrated_for_this_corpus = true
+caveat = 'scv'
+"""
+
+
 def _valid_toml() -> str:
+    # `[grouping.provenance]` stays last: several tests below append a line to
+    # the end of this document to put a field inside it.
     return (
         "[grouping]\n"
         "max_residual_components = 2000\n"
@@ -226,6 +262,7 @@ def _valid_toml() -> str:
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
         "[grouping.absolute]\n"
         "gap_tolerance_px = 3\n\n"
+        "[grouping.surround]\n" + _VALID_SURROUND + "\n"
         "[grouping.provenance]\n" + _VALID_PROVENANCE
     )
 
@@ -513,4 +550,131 @@ def test_non_table_top_level_refused(tmp_path):
     # A TOML document whose [grouping] value is a list, not a table.
     path = _write(tmp_path, "grouping = [1, 2, 3]\n")
     with pytest.raises(ContractError, match="no \\[grouping\\] table"):
+        load_grouping_config(path)
+
+
+# --- [grouping.surround]: the one measured block, and its own closed schema ----
+
+
+def test_surround_resolves_both_bands_from_the_page_it_is_given():
+    """`band_bp` is the one field in this file that resolves against *both*
+    dimensions -- the band is a frame, so it is `band_bp` of the width on the
+    left and right and `band_bp` of the height on top and bottom. That is why it
+    cannot live in `page_fraction_bp`, whose contract is one declared basis per
+    field, and why it is resolved by its own function.
+    """
+    config = load_grouping_config()
+    assert resolve_surround_policy(config, 200, 260) == {
+        "band_px_x": 10,  # round-half-up 5% of 200
+        "band_px_y": 13,  # round-half-up 5% of 260
+        "min_border_dark_bp": 7000,
+        "max_interior_dark_bp": 3000,
+    }
+    # A real photographed proxy's size, resolved the way a run would resolve it.
+    assert resolve_surround_policy(config, 1484, 1103)["band_px_x"] == 74
+    assert resolve_surround_policy(config, 1484, 1103)["band_px_y"] == 55
+
+
+def test_surround_is_not_a_field_of_the_published_resolved_thresholds():
+    """Deliberate, and load-bearing for the fixture pins.
+
+    `run.py` publishes the whole `GroupingThresholds` as a page's
+    `resolved_thresholds`. The surround policy answers a question asked strictly
+    before that record exists -- the background inference runs before any
+    threshold touches any geometry -- so folding it in would put a
+    background-inference input into the structure pass's published geometry and
+    move every existing page record's bytes for a value that pass never used.
+    """
+    assert not hasattr(resolve_thresholds(load_grouping_config(), 200, 260), "surround_policy")
+    assert "surround" not in dataclasses.asdict(
+        resolve_thresholds(load_grouping_config(), 200, 260)
+    )
+
+
+def test_missing_surround_table_refused_as_missing_field(tmp_path):
+    body = _valid_toml().replace("[grouping.surround]\n" + _VALID_SURROUND + "\n", "")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="missing field"):
+        load_grouping_config(path)
+
+
+def test_surround_field_present_but_not_a_table_refused(tmp_path):
+    body = (
+        _valid_toml()
+        .replace("[grouping.surround]\n" + _VALID_SURROUND + "\n", "")
+        .replace("max_residual_components = 2000", "max_residual_components = 2000\nsurround = 1")
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="no \\[grouping.surround\\] table"):
+        load_grouping_config(path)
+
+
+def test_surround_unknown_field_refused(tmp_path):
+    body = _valid_toml().replace("band_bp = 500", "band_bp = 500\nbogus_bp = 1")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="unknown field"):
+        load_grouping_config(path)
+
+
+def test_surround_missing_field_refused(tmp_path):
+    body = _valid_toml().replace("min_border_dark_bp = 7000\n", "")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="missing field"):
+        load_grouping_config(path)
+
+
+def test_surround_missing_its_own_provenance_refused(tmp_path):
+    """Two provenance blocks, both required. The file-level one describes
+    unmeasured defaults with `sample_count = 0`; this one describes three values
+    measured on seven real pages. One block could not say both truthfully."""
+    body = _valid_toml().replace(
+        "[grouping.surround.provenance]\nsource = 's'\n", "[grouping.surround.provenance]\n"
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="missing field"):
+        load_grouping_config(path)
+
+
+def test_surround_provenance_is_held_to_the_same_closed_schema(tmp_path):
+    body = _valid_toml().replace("sample_count = 7", "sample_count = -1")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="sample_count"):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("bad", ["0", "5000", "9000", "-1", "500.0", "true"])
+def test_a_band_that_leaves_no_border_or_no_interior_is_refused(tmp_path, bad):
+    """Both ends refused by the loader rather than silently disarming the test.
+
+    `structure._dark_surround` returns `None` for a band with no border to
+    measure or no interior to compare it against, and a page would then refuse
+    for a reason no config line stated. The refusal belongs here, where the
+    number is written.
+    """
+    body = _valid_toml().replace("band_bp = 500", f"band_bp = {bad}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="band_bp"):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("field", ["min_border_dark_bp", "max_interior_dark_bp"])
+@pytest.mark.parametrize("bad", ["-1", "10001", "0.5", "true"])
+def test_a_population_fraction_outside_zero_to_one_is_refused(tmp_path, field, bad):
+    current = {"min_border_dark_bp": "7000", "max_interior_dark_bp": "3000"}[field]
+    body = _valid_toml().replace(f"{field} = {current}", f"{field} = {bad}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match=field):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("border,interior", [("3000", "3000"), ("2000", "3000"), ("0", "10000")])
+def test_a_border_bound_not_above_the_interior_bound_is_refused(tmp_path, border, interior):
+    """The test asks whether the border is *darker than* the interior. Bounds
+    that do not express that would admit the reverse -- a page whose middle is
+    darker than its edges, which is the dark-page shape this exists to refuse.
+    """
+    body = _valid_toml().replace("min_border_dark_bp = 7000", f"min_border_dark_bp = {border}")
+    body = body.replace("max_interior_dark_bp = 3000", f"max_interior_dark_bp = {interior}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="is not above max_interior_dark_bp"):
         load_grouping_config(path)
