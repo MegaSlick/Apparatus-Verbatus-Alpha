@@ -377,6 +377,16 @@ readiness probe and `smoke.py` do — so every stage that keeps a reading can
 reach the arithmetic that admitted it through the call record it already names,
 without a second reference.
 
+It is sealed at construction, all the way down. A capacity record is not flat —
+`request_fits` returns an `images` list of per-image dictionaries — and every
+builder passes that record straight in while keeping its own reference to it,
+so freezing the outer mapping alone left the nested data live and a later write
+could have made the retained receipt disagree with the evidence the request was
+admitted on. `ChairRequest` takes a detached recursive snapshot instead,
+canonicalized through `canonical_bytes` (a record the writer could not hold is
+refused there and then, as `CHAIR_REQUEST_INVALID`, rather than inside receipt
+serialization after the wire call) and then deep-frozen.
+
 **The reading parser, against the probe parser.** `http.parse_openai_reading`
 is not `parse_openai_answer` reused: a readiness probe must prove the engine
 can answer at all, so it refuses blank content. A witness or reader's

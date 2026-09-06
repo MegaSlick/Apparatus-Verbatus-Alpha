@@ -188,6 +188,68 @@ class RetainBytes(Protocol):
         """Return ``{"relative_path": ..., "sha256": ...}`` for ``data``."""
 
 
+def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
+    """A detached, canonical, deep-frozen snapshot of one capacity record.
+
+    Detached: the whole structure is rebuilt from canonical bytes, so no list
+    or nested mapping the caller still holds is reachable from the request.
+    Canonical: the round trip is through :func:`canonical_bytes`, the one
+    writer every retained artifact goes through, so a record carrying a float,
+    a non-string key, a cycle or an unencodable string is refused now — at the
+    construction the caller can still see — rather than when the call record is
+    serialized after the wire call has already happened. Frozen: mappings
+    become ``MappingProxyType`` and sequences tuples, so a later write anywhere
+    in the structure raises instead of silently rewriting admission evidence.
+    """
+
+    try:
+        detached = json.loads(canonical_bytes(_plain_capacity(value)))
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            "a request's capacity record cannot be written canonically, so it could not be "
+            f"retained beside the call it admitted: {error}",
+        ) from error
+    if not isinstance(detached, dict):
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            "a request's capacity record must be a mapping of the arithmetic one request was "
+            f"admitted on, not {type(detached).__name__}",
+        )
+    return _immutable_json(detached)
+
+
+def _plain_capacity(value: object) -> object:
+    """The same structure in the plain dicts and lists a JSON writer holds.
+
+    Both directions of the snapshot need it: on the way in, because a caller
+    may pass another request's already-frozen record and ``json.dumps`` refuses
+    a ``mappingproxy``; on the way out, because the call record is serialized
+    canonically and must carry the sealed evidence rather than a re-read of the
+    caller's own object. Its own recursion is not separately bounded: on the way
+    in it runs inside :func:`_sealed_capacity`'s guard, which turns a
+    `RecursionError` into the same named refusal `canonical_bytes` gives a
+    structure past its 256-level limit; on the way out it walks a value that
+    already came through that limit.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: _plain_capacity(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_capacity(item) for item in value]
+    return value
+
+
+def _immutable_json(value: object) -> object:
+    """Deep-freeze one already-canonical JSON value."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _immutable_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_immutable_json(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ChairRequest:
     """One reading request, built by the caller and refused, never repaired.
@@ -205,6 +267,21 @@ class ChairRequest:
     copies it onto the retained call record, so a run's receipts carry the
     arithmetic a request was admitted on beside the request itself. ``None``
     where the caller states none.
+
+    **The capacity record is sealed at construction, all the way down.** It
+    used to be frozen one level deep, and a capacity record is not flat: it
+    carries an ``images`` list of per-image dictionaries, and every production
+    builder passes ``request_fits``'s freshly built record straight in and
+    keeps its own reference to the same object. A caller that touched a nested
+    entry afterwards would leave the retained call record disagreeing with the
+    evidence the request was actually admitted on — the arithmetic in the
+    receipt would be one thing and the arithmetic that let the request through
+    another, with nothing able to tell which was which. :func:`_sealed_capacity`
+    takes a detached recursive snapshot instead: canonicalized through the same
+    writer the call record is serialized with (so a record that could not be
+    written is refused here, at the caller's own construction, rather than
+    inside receipt serialization long after the wire call), then deep-frozen.
+    Nothing the caller still holds reaches into it.
     """
 
     kind: str
@@ -218,7 +295,7 @@ class ChairRequest:
         object.__setattr__(self, "messages", tuple(self.messages))
         object.__setattr__(self, "image_sha256s", tuple(self.image_sha256s))
         if self.capacity is not None:
-            object.__setattr__(self, "capacity", MappingProxyType(dict(self.capacity)))
+            object.__setattr__(self, "capacity", _sealed_capacity(self.capacity))
         object.__setattr__(
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
@@ -453,7 +530,10 @@ class ChairClient:
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
             "parse_problem": parse_problem,
-            "capacity": dict(request.capacity) if request.capacity is not None else None,
+            # Thawed out of the sealed snapshot rather than out of whatever the
+            # caller passed: the canonical writer holds dicts and lists, and
+            # what is written is exactly the evidence the request carried.
+            "capacity": _plain_capacity(request.capacity) if request.capacity is not None else None,
         }
         if set(record) != CHAIR_CALL_RECORD_FIELDS:
             raise AssertionError(  # pragma: no cover - closed by construction above

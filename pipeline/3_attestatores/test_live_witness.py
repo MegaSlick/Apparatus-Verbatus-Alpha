@@ -458,7 +458,16 @@ def test_an_ordinary_act_crop_still_fits_the_smallest_row():
     )
     assert built.capacity["image_prompt_tokens"] == 702
     assert built.capacity["fits"] is True
-    assert dict(built.request.capacity) == built.capacity
+    # The request seals a detached, deep-frozen snapshot of the record it was
+    # admitted on (`operations/serving/client.py::_sealed_capacity`): mappings
+    # are `MappingProxyType` and the `images` list is a tuple, so the two are
+    # compared as content rather than as objects.
+    sealed = built.request.capacity
+    assert sealed is not None
+    assert {key: value for key, value in sealed.items() if key != "images"} == {
+        key: value for key, value in built.capacity.items() if key != "images"
+    }
+    assert [dict(image) for image in sealed["images"]] == built.capacity["images"]
 
 
 def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is_sent():

@@ -7,6 +7,7 @@ imports vLLM, starts a server, or contacts a provider.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from pathlib import Path
 from typing import Mapping
@@ -23,6 +24,7 @@ from .client import (
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
+    _plain_capacity,
     serving_mode_for,
 )
 from .config import (
@@ -675,6 +677,75 @@ def test_a_callers_capacity_record_reaches_the_call_record_verbatim(tmp_path: Pa
         response = client.read(_request(capacity=capacity))
     record_bytes = next(data for data in blob_store.written if data != response.raw_response)
     assert json.loads(record_bytes)["capacity"] == capacity
+
+
+def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_record(
+    tmp_path: Path,
+) -> None:
+    """The retained arithmetic is the arithmetic the request was admitted on.
+
+    A capacity record is not flat -- `request_fits` returns an `images` list of
+    per-image dictionaries -- and every production builder passes that record
+    straight into `ChairRequest` while keeping its own reference to it. Freezing
+    only the outer mapping left the nested data live: a caller could rewrite an
+    image's token cost, or drop an image, after the request was built and
+    before the client retained the record, and the receipt would then carry
+    numbers no admission decision was ever made on.
+
+    Both directions are exercised: a rewrite through the caller's own reference
+    changes nothing on the request or in the retained record, and a write
+    through the request's own view raises instead of succeeding quietly.
+    """
+
+    capacity: dict[str, object] = {
+        "schema": "verbatus-request-capacity.v1",
+        "images": [{"width": 2480, "height": 3508, "image_prompt_tokens": 1715}],
+        "image_prompt_tokens": 1715,
+        "prompt_tokens": 790,
+        "answer_budget": 216,
+        "need": 2721,
+        "headroom": 13663,
+        "fits": True,
+    }
+    admitted = copy.deepcopy(capacity)
+    request = _request(capacity=capacity)
+
+    # The caller still holds the object it passed in, and rewrites it.
+    images = capacity["images"]
+    assert isinstance(images, list)
+    images[0]["image_prompt_tokens"] = 1
+    images.append({"width": 1, "height": 1, "image_prompt_tokens": 1})
+    capacity["fits"] = False
+
+    assert request.capacity is not None
+    assert _plain_capacity(request.capacity) == admitted
+    # And the request's own view refuses a write rather than taking one.
+    with pytest.raises(TypeError):
+        request.capacity["images"][0]["image_prompt_tokens"] = 1  # type: ignore[index]
+
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="ok", finish_reason="stop"))
+        response = client.read(request)
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    assert json.loads(record_bytes)["capacity"] == admitted
+
+
+def test_a_capacity_record_the_canonical_writer_cannot_hold_is_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    """Refused where the caller can still see it, not inside serialization.
+
+    `canonical_bytes` refuses floats, non-string keys and cycles, and the call
+    record goes through it. Sealing the snapshot through the same writer moves
+    that refusal to `ChairRequest` construction: before the wire call, with the
+    caller's own frame on the stack, rather than after a pod has answered.
+    """
+
+    with pytest.raises(ChairRequestRefusal):
+        _request(capacity={"schema": "verbatus-request-capacity.v1", "headroom": 1.5})
+    with pytest.raises(ChairRequestRefusal):
+        _request(capacity={"schema": "verbatus-request-capacity.v1", 7: "no"})
 
 
 # --- a vendor's float decoding values, recorded exactly as they were sent -----
