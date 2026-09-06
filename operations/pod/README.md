@@ -540,8 +540,19 @@ check.
   engine memory fraction, context cap, pixel cap and batch size that one model gets. The
   table ships prebuilt profiles for the cards this project actually rents and falls back
   to computed placement for anything else; the report names which plan it chose and why.
-  Its utilization fields are measurements, not a claim that a card is "saturated". It
-  always labels this stage fixture/planning-only; Spec 05 owns a real-assembly claim.
+  Its utilization fields are measurements, not a claim that a card is "saturated". Its
+  `assembly_proven` flag is **derived from what actually ran**, never declared: true only
+  when the card was read by a real driver (`GpuProfile.measured`, set by `SystemGpuProbe`'s
+  successful `nvidia-smi` path alone) *and* at least one chair read the golden page back
+  through an engine that served it (`SmokeResult.served_by`, set by
+  `operations/serving/preflight.py` from the service handle it started and stopped), and
+  the note then names those chairs and that card. An invalid read proves nothing, and the
+  colour of the report is not consulted: a red preflight that nonetheless served one chair
+  on a real card proved that much. The fixture and planning paths stay `False` under the
+  same sentence they always carried; a measured card with no served chair says so in its
+  own words rather than calling a paid measurement fixture-only. The smoke adapter cannot
+  pre-populate the runtime-owned `served_engine` receipt field, so a fake cannot assert its
+  own proof.
 
 The local command surface is `python -m operations.pod.cli`. It requires explicit
 untracked provider and controller-armer factories plus a request file, so this repository

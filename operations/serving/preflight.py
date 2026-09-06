@@ -308,6 +308,15 @@ def _with_service_evidence(
     collision = sorted(reserved & set(receipt))
     if collision:
         raise ValueError(f"smoke receipt cannot pre-populate service evidence fields {collision}")
+    # The engine that answered, named from the receipt of the handle this module
+    # started, proved fixture-bound and stopped -- never from anything the smoke
+    # callable said about itself. `operations.pod.preflight` derives
+    # `PreflightReport.assembly_proven` from this, so it must be a fact about the
+    # lifecycle rather than a label a caller can supply.
+    details = handle.receipt.details
+    served_by = " ".join(
+        part for part in (details.engine, details.engine_version) if isinstance(part, str) and part
+    )
     receipt.update(
         {
             "service_receipt": handle.receipt.to_record(),
@@ -322,7 +331,7 @@ def _with_service_evidence(
             "smoke_fixture_request_count": handle.fixture_requests_completed,
         }
     )
-    return replace(result, receipt=receipt)
+    return replace(result, receipt=receipt, served_by=served_by or None)
 
 
 def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, object]:
