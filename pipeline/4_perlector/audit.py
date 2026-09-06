@@ -5,14 +5,13 @@ receives the re-proof result, which makes a second cascade structurally
 impossible.  Re-proof is location-only: no prompt text may state a wanted
 character or claim the semi-final is wrong.
 
-The validation surface both this stage and the Recensor need
-(`validate_draft`, `validate_finding`, `audit_digest`, `FLAG_CLASSES`,
-`neutral_prompt`, and the `audit_request`/`reproof_plan` pair that makes the
-re-proof plan a delivered instrument rather than a sealed claim about one)
-lives in `common/perlector_audit.py` — a stage may not import another stage's
-uniquely named module (`pipeline/test_stage_import_boundaries.py`) — and is
-re-exported here so this module's public API is unchanged for its own run.py
-and tests.
+The validation surface both this stage and the Recensor need (see the import
+block below, which is the list) lives in `common/perlector_audit.py` — a stage
+may not import another stage's uniquely named module
+(`pipeline/test_stage_import_boundaries.py`) — and is re-exported here so this
+module's public API is unchanged for its own run.py and tests. The
+`audit_request`/`reproof_plan` pair is what makes the re-proof plan a delivered
+instrument rather than a sealed claim about one.
 """
 
 from __future__ import annotations

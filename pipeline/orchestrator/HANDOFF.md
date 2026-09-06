@@ -9,7 +9,7 @@ a word two branches can define differently.
 ## The one sequence
 
 ```
-door → exemplar → designator → attestatores → perlector → recensor
+door → exemplar → ink map → designator → attestatores → perlector → recensor
      → recovery → archetypus → armarium
 ```
 

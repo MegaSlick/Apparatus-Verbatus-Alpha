@@ -1,8 +1,9 @@
-"""R0 falsification tests: floor honesty (D2/D3, brief priority 2).
+"""R0 contract tests: floor honesty (D2/D3, brief priority 2).
 
-Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber runs.
-Every test here must fail RED on the chamber's base commit (main 176b09e) because the
-behaviour it checks is not yet built.
+Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber ran, so
+every test here failed red on the chamber's base commit. The behaviour has since landed:
+`_validate_coverage` carries the granularity fields and `witness_coverage` takes
+attachment facts. The file now guards that behaviour instead of falsifying its absence.
 
 D2 (interim floor arithmetic): fixture-declared attachments COUNT toward the act floor
 in the skeleton. On any path where a page-witness has NO attachment for an act, that
@@ -21,7 +22,7 @@ shortfall, but the receipt records it as health-unrecorded. Receipt rederivation
 
 from __future__ import annotations
 
-import inspect
+from typing import Final
 
 import pytest
 
@@ -43,16 +44,52 @@ def _base_coverage(**overrides) -> dict:
     return coverage
 
 
-def test_coverage_schema_has_no_room_for_a_page_granularity_only_contribution():
-    """D2: an act-level floor met only by page-granularity contributions must be
-    named as such in the receipt, distinct from a genuine act-level completed read.
+# --- Real inputs to the real writer -------------------------------------------
+#
+# The three D2/D3 tests below used to hand `_validate_coverage` a hand-built
+# record and assert only that the field was admitted. A regression that kept the
+# field names and ignored their values passed all three (CodeRabbit, PR #92).
+# They now generate the record from `witness_coverage` itself and assert the
+# value it computes, so ignoring an attachment fact, an unrecorded health flag or
+# an uncovered span turns a test red.
 
-    `_validate_coverage`'s coverage schema is a CLOSED set today (exactly six
-    pre-R0 fields; `set(coverage) != required` refuses anything else outright), so
-    a coverage record that tries to carry this fact is refused wholesale rather
-    than validated against it. This is what "the floor is never lowered" has to
-    mean structurally: there is nowhere yet for the honest, narrower claim to live,
-    so a build that lands D2 must widen this exact schema.
+CHAIRS: Final = {"chair_1": "read", "chair_2": "read", "chair_3": "read"}
+
+
+def _fact(**overrides) -> dict:
+    """One chair's act-level attachment fact: attached, comparable, healthy.
+
+    The default is the honest best case -- the chair attached to this act on
+    presented-region evidence, its reported span is comparable with the act's,
+    and its content health was recorded as untruncated. Each test below varies
+    exactly one field of one chair away from this baseline and asserts the
+    difference that variation makes to the coverage record.
+    """
+    fact = {
+        "attached": True,
+        "comparable": True,
+        "truncated": False,
+        "attachment_basis": "presented-region",
+    }
+    fact.update(overrides)
+    return fact
+
+
+def _coverage(**chair_facts) -> dict:
+    """Generate an act's coverage record: three reading chairs, a floor of 3."""
+    attachments = {chair: _fact() for chair in CHAIRS}
+    attachments.update(chair_facts)
+    return outcomes.witness_coverage(CHAIRS, 3, attachments=attachments)
+
+
+def test_coverage_schema_has_room_for_a_page_granularity_only_contribution():
+    """D2: an act-level floor met only by page-granularity contributions is named
+    as such in the receipt, distinct from a genuine act-level completed read.
+
+    The v2 coverage schema carries `page_granularity_only`, so `_validate_coverage`
+    accepts the field and checks it against the rest of the record rather than
+    refusing the whole record for naming it. This is what "the floor is never
+    lowered" means structurally: the honest, narrower claim has somewhere to live.
     """
     # under_witnessed=True is the internally-consistent value here (audit fix,
     # F-S4): with 3 completed chairs and 1 of them page-granularity-only, only 2
@@ -68,48 +105,94 @@ def test_coverage_schema_has_no_room_for_a_page_granularity_only_contribution():
         _validate_coverage(coverage)
     except SchemaRefusal as error:
         pytest.fail(
-            "the Recensor partition receipt's coverage schema refuses a "
-            f"page-granularity-only field outright ({error}); D2 requires floor "
-            "accounting to be able to record a page-granularity-only contribution "
-            "that never satisfies an act-level floor, and this closed schema has no "
-            "field for it yet"
+            "the Recensor partition receipt's coverage schema refused a "
+            f"page-granularity-only field ({error}); D2 requires floor accounting "
+            "to record a page-granularity-only contribution that never satisfies "
+            "an act-level floor, and the v2 schema carries that field"
         )
 
 
-def test_coverage_schema_distinguishes_health_unrecorded_from_a_healthy_read():
+def test_health_unrecorded_is_counted_and_is_not_a_shortfall():
     """D3: content_health.truncated == None (not recorded) is not a shortfall, but
-    the receipt must still record it as health-unrecorded -- distinct from an
-    ordinary healthy completed read, which the six pre-R0 fields cannot express.
+    the receipt still records it as health-unrecorded -- distinct from an ordinary
+    healthy completed read.
+
+    Generated by `witness_coverage` from real chair facts, and asserted as a
+    difference against the same three chairs with recorded, healthy content: the
+    unrecorded chair moves `health_unrecorded` from 0 to 1 and moves nothing else.
+    A writer that admitted the field but ignored the flag would leave both
+    records identical, which is the regression this asserts against.
     """
-    coverage = _base_coverage(by_outcome={"read": 2, "genuinely-empty": 1}, health_unrecorded=1)
-    try:
-        _validate_coverage(coverage)
-    except SchemaRefusal as error:
-        pytest.fail(
-            "the Recensor partition receipt's coverage schema refuses a "
-            f"health_unrecorded field outright ({error}); D3 requires "
-            "content_health.truncated == None to be visibly distinguished from a "
-            "healthy read, and this closed schema has no field for it yet"
-        )
+    healthy = _coverage()
+    unrecorded = _coverage(chair_1=_fact(truncated=None, health_unrecorded=True))
+
+    assert healthy["health_unrecorded"] == 0
+    assert unrecorded["health_unrecorded"] == 1
+    # Not a shortfall, and not a demotion: unrecorded health says nobody measured
+    # whether the reading was whole, which is a visible gap in the receipt and
+    # never an accusation against the chair.
+    assert (
+        unrecorded["shortfalls"]
+        == healthy["shortfalls"]
+        == {
+            "failed": 0,
+            "truncated": 0,
+            "unaligned": 0,
+        }
+    )
+    assert unrecorded["under_witnessed"] is healthy["under_witnessed"] is False
+    assert unrecorded["page_granularity_only"] == healthy["page_granularity_only"] == 0
+
+    # And the v2 receipt schema carries the record the writer actually produced.
+    for coverage in (healthy, unrecorded):
+        try:
+            _validate_coverage(coverage)
+        except SchemaRefusal as error:
+            pytest.fail(
+                "the Recensor partition receipt's coverage schema refused a record "
+                f"`witness_coverage` itself produced ({error}); D3 requires "
+                "content_health.truncated == None to be visibly distinguished from a "
+                "healthy read, and the v2 schema carries that field"
+            )
 
 
-def test_coverage_schema_admits_an_unaligned_shortfall_class():
-    """D3: `unaligned` derives from attachment absence/uncovered spans and is a
-    named shortfall class alongside `failed` and `truncated` -- no new member is
-    added to the witness OUTCOME vocabulary itself, so this must live in the
-    coverage/receipt accounting rather than in `common/contracts/outcomes.py`'s
-    closed ATTESTATORES vocabulary.
+def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
+    """D3: `unaligned` derives from attachment absence or an uncovered span, and
+    is a named shortfall class alongside `failed` and `truncated` -- no new member
+    is added to the closed ATTESTATORES OUTCOME vocabulary.
+
+    Both derivations are exercised against the real writer: a chair that never
+    attached to this act, and a chair that attached but whose reported span is not
+    comparable with the act's. Each raises `unaligned` by exactly one from the
+    aligned baseline of zero, and neither invents a witness outcome -- `by_outcome`
+    still reads three `read` chairs in every case.
     """
-    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": 1})
-    try:
-        _validate_coverage(coverage)
-    except SchemaRefusal as error:
-        pytest.fail(
-            "the Recensor partition receipt's coverage schema refuses a "
-            f"shortfalls field outright ({error}); D3 requires failed/truncated/"
-            "unaligned to be named shortfall classes the receipt can carry, and "
-            "this closed schema has no field for them yet"
-        )
+    aligned = _coverage()
+    # `comparable` is left True on purpose: the fixture isolates absence of
+    # attachment from span non-comparability, so a `witness_coverage` that
+    # regressed to reading only `comparable` fails here (CodeRabbit round 2 on
+    # PR #92).
+    unattached = _coverage(
+        chair_3=_fact(attached=False, comparable=True, attachment_basis="unattached")
+    )
+    uncovered_span = _coverage(chair_2=_fact(comparable=False))
+
+    assert aligned["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
+    assert unattached["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
+    assert uncovered_span["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
+    # The shortfall lives in the coverage accounting, not in the vocabulary: the
+    # chairs are still three ordinary `read` outcomes.
+    for coverage in (aligned, unattached, uncovered_span):
+        assert coverage["by_outcome"] == {"read": 3}
+        try:
+            _validate_coverage(coverage)
+        except SchemaRefusal as error:
+            pytest.fail(
+                "the Recensor partition receipt's coverage schema refused a record "
+                f"`witness_coverage` itself produced ({error}); D3 requires "
+                "failed/truncated/unaligned to be named shortfall classes the "
+                "receipt can carry, and the v2 schema carries those counts"
+            )
 
 
 # --- CodeRabbit (pre-push CLI, R0 PR loop): the acceptance halves above prove the
@@ -139,24 +222,39 @@ def test_a_non_integer_unaligned_shortfall_is_refused():
         _validate_coverage(coverage)
 
 
-def test_witness_coverage_has_no_signature_room_for_per_act_attachment_facts():
-    """D2: the floor computation itself must take attachment facts into account
-    to tell a genuinely act-witnessing chair from a completed-but-unattached
-    (page-granularity-only) one. `witness_coverage`'s signature today is
-    `(chair_outcomes, configured_floor)` and carries nothing about attachments.
+def test_an_unattached_chair_does_not_satisfy_the_act_level_floor():
+    """D2: the floor computation reads the attachment facts, so a
+    completed-but-unattached chair contributes page granularity and never an
+    act-level read. Asserted as the difference the contract names, not as the
+    presence of a parameter: three `read` chairs against a floor of 3 meet it
+    when all three attached, and fall short the moment one did not.
+
+    "The floor is never lowered" is exactly this: the unattached chair is still
+    completed business, still counted in `by_class`, and still visible in the
+    receipt -- it simply does not buy a place at the act-level floor.
     """
-    signature = inspect.signature(outcomes.witness_coverage)
-    attachment_aware = {"attachments", "act_attachments", "attached_chairs"} & set(
-        signature.parameters
+    attached = _coverage()
+    unattached = _coverage(
+        chair_3=_fact(attached=False, comparable=True, attachment_basis="unattached")
     )
-    assert attachment_aware, (
-        "common/contracts/outcomes.py::witness_coverage has no parameter carrying "
-        "per-chair act-level attachment facts (checked for one of "
-        f"{sorted({'attachments', 'act_attachments', 'attached_chairs'})} in "
-        f"{sorted(signature.parameters)}); D2 requires the floor arithmetic to "
-        "distinguish a completed-but-unattached (page-granularity-only) chair from "
-        "one that actually attached to this act, and nothing here does that yet"
+
+    assert attached["under_witnessed"] is False
+    assert unattached["under_witnessed"] is True
+    assert attached["page_granularity_only"] == 0
+    assert unattached["page_granularity_only"] == 1
+    assert attached["shortfalls"]["unaligned"] == 0
+    assert unattached["shortfalls"]["unaligned"] == 1
+    # The chair is not deleted or demoted out of the partition by falling short.
+    assert (
+        unattached["by_class"]
+        == attached["by_class"]
+        == {
+            "completed": 3,
+            "unresolved": 0,
+            "failed": 0,
+        }
     )
+    assert unattached["configured"] == 3
 
 
 # --- Audit-and-repair regression (F-S4) ------------------------------------------
