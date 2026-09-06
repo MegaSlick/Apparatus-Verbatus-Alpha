@@ -566,7 +566,16 @@ check.
   same sentence they always carried; a measured card with no served chair says so in its
   own words rather than calling a paid measurement fixture-only. The smoke adapter cannot
   pre-populate the runtime-owned `served_engine` receipt field, so a fake cannot assert its
-  own proof.
+  own proof. **Both halves are minted, not declared.** `PreflightRunner` takes the profile
+  from its caller and the smoke reader from its constructor, so `measured` and `served_by`
+  were fields anyone wanting the claim could simply set. Each now travels with an opaque
+  module-private token created in exactly two places — the probe's successful `nvidia-smi`
+  path and the serving module's service-evidence path, which names the engine off a
+  service handle it started, proved fixture-bound and stopped — checked by type, never
+  serialised into any receipt or record, and refused at construction when a caller
+  supplies one. A caller-built `GpuProfile(measured=True)` and a caller-built
+  `SmokeResult(served_by=…)` no longer exist, so `assembly_proven` cannot be reached from
+  outside those two runtimes.
 
 The local command surface is `python -m operations.pod.cli`, with three verbs: `create`,
 `adopt`, and `close`. The first two require explicit untracked provider and

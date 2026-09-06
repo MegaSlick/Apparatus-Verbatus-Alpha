@@ -23,12 +23,21 @@ from pathlib import Path
 from typing import Callable, Final, Mapping
 
 from common.chairs.models import ChairIdentity, is_sha256
+
+# `_mint_runtime_provenance` is deliberately a private name from another
+# module. It mints the opaque token `operations.pod.preflight` checks before a
+# receipt may claim a real assembly was measured, and `_with_service_evidence`
+# below is one of its two minting sites -- the other is that module's own GPU
+# probe. Keeping the mint private is the point: a public helper would be an
+# invitation for any caller to name its own serving engine and publish the
+# claim on the strength of it.
 from operations.pod.preflight import (
     GpuProfile,
     PlacementRefusal,
     PlacementTable,
     PlacementTier,
     SmokeResult,
+    _mint_runtime_provenance,
 )
 
 from .config import ServingProfile
@@ -331,7 +340,19 @@ def _with_service_evidence(
             "smoke_fixture_request_count": handle.fixture_requests_completed,
         }
     )
-    return replace(result, receipt=receipt, served_by=served_by or None)
+    if not served_by:
+        # Nothing to claim: the handle published no engine name, so the read
+        # proves a page came back and nothing about what served it.
+        return replace(result, receipt=receipt, served_by=None, provenance=None)
+    return replace(
+        result,
+        receipt=receipt,
+        served_by=served_by,
+        # Minted here and nowhere else in this package: this line is reachable
+        # only from `ServingSmokeReader.read`, holding a `ServiceHandle` this
+        # module started, proved fixture-bound and will stop in its `finally`.
+        provenance=_mint_runtime_provenance(f"service handle receipt: {served_by}"),
+    )
 
 
 def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, object]:
