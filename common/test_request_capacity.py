@@ -160,14 +160,53 @@ def test_the_measured_crop_and_adapter_ceiling_costs(size, tier, family, expecte
 
 
 def test_a_tiny_image_is_scaled_up_to_the_rows_min_pixels():
-    """The other branch of `smart_resize`: below min_pixels it grows, not shrinks."""
+    """The other branch of `smart_resize`: below min_pixels it grows, not shrinks.
+
+    Pinned as two independent literals rather than as one function checked
+    against the other.  Both `image_prompt_tokens` and `resized_dimensions`
+    call `smart_resize`, so `tokens == (height // 28) * (width // 28)` compared
+    two views of a single result and would have held through a one-sided
+    `ceil`-to-`floor` regression that under-counts a small crop -- the direction
+    that admits a request the row cannot hold.
+
+    The two numbers are computed by hand from the formula rather than read off
+    the code.  An 8x8 image at factor 28: `round(8 / 28) * 28` is 0 on both
+    sides, which is below `min_pixels` 3136, so the grow branch runs with
+    `beta = sqrt(3136 / 64) = 7`, giving `ceil(8 * 7 / 28) * 28 = 56` on each
+    side -- 3136 pixels exactly, the row's floor -- and `(56 // 28) ** 2 = 4`
+    image tokens.
+    """
 
     tokens = image_prompt_tokens(8, 8, min_pixels=MIN_PIXELS, max_pixels=1_806_336, **QWEN25_VL)
-    width, height = resized_dimensions(
-        8, 8, min_pixels=MIN_PIXELS, max_pixels=1_806_336, **QWEN25_VL
-    )
-    assert width * height >= MIN_PIXELS
-    assert tokens == (height // 28) * (width // 28)
+    resized = resized_dimensions(8, 8, min_pixels=MIN_PIXELS, max_pixels=1_806_336, **QWEN25_VL)
+    assert resized == (56, 56)
+    assert resized[0] * resized[1] == MIN_PIXELS
+    assert tokens == 4
+
+
+def test_a_tiny_non_square_crop_is_grown_on_both_sides_at_the_librarys_rounding():
+    """The square case above cannot see the rounding; this one can.
+
+    At 8x8 the grow branch's `8 * 7 / 28` is 2 exactly, so `ceil` and `floor`
+    land on the same 56 and a one-sided regression survives both literals.
+    Executed rather than argued: with `math.ceil` replaced by `math.floor` in
+    the grow branch, 8x8 still resizes to 56x56 for 4 tokens, and 60x20 falls
+    from 112x56 for 8 tokens to 84x28 for 3 -- an under-count of five tokens on
+    a crop the row would then be told it can hold.  So the non-square case is
+    pinned beside the square one.
+
+    By hand at factor 28: `round(20 / 28) * 28 = 28` and `round(60 / 28) * 28 =
+    56`, whose 1,568 pixels are below `min_pixels` 3136, so the grow branch runs
+    with `beta = sqrt(3136 / 1200) = 1.6166`; `ceil(20 * 1.6166 / 28) * 28 = 56`
+    and `ceil(60 * 1.6166 / 28) * 28 = 112`, which is 6,272 pixels and
+    `(56 // 28) * (112 // 28) = 8` image tokens.
+    """
+
+    tokens = image_prompt_tokens(60, 20, min_pixels=MIN_PIXELS, max_pixels=1_806_336, **QWEN25_VL)
+    resized = resized_dimensions(60, 20, min_pixels=MIN_PIXELS, max_pixels=1_806_336, **QWEN25_VL)
+    assert resized == (112, 56)
+    assert resized[0] * resized[1] >= MIN_PIXELS
+    assert tokens == 8
 
 
 def test_an_image_further_from_square_than_the_processor_allows_is_refused_by_name():
