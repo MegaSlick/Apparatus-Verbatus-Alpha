@@ -300,3 +300,23 @@ def test_the_export_verifier_accepts_the_unmeasurable_row_and_refuses_a_measured
             ],
             "subject",
         )
+
+
+@pytest.mark.parametrize(
+    "dimensions",
+    [{"width": 0, "height": 2}, {"width": 40, "height": 0}, {"width": True, "height": 2}],
+    ids=["zero-width", "zero-height", "boolean-width"],
+)
+def test_evidence_with_impossible_dimensions_is_refused_by_the_named_refusal(dimensions):
+    """Not by a ContractError about page geometry, which names the wrong problem.
+
+    The coverage-audit policy is resolved for this page out of the same evidence
+    blob the measure reads, so damaged evidence can fail in the resolution as
+    easily as in the measure. An operator reading the failure needs to be told
+    which artifact to restore, not that a page is zero pixels wide.
+    """
+    armarium = _armarium()
+    evidence = {"schema": "ink-runs.v2", "rows": [[], []], **dimensions}
+    context = _context({INK_MAP: [_ink_record("a", 1, "unclaimed-edge-ink", evidence)]})
+    with pytest.raises(FatalAccounting, match="unreadable retained page-space edge evidence"):
+        armarium.ink_map_page_rows(context, SEALED_ONE, {})

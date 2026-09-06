@@ -761,12 +761,22 @@ def ink_map_page_rows(
                 "or release the page finding from a bare outcome. Restore the sealed Ink Map "
                 "artifact or restart the run before exporting."
             )
-        audit_policy = resolve_coverage_audit_policy(
-            coverage_config, evidence.get("width"), evidence.get("height")
-        )
         try:
-            initial_measure = edge_ink_from_runs(evidence, [], coverage_policy=audit_policy)
-        except (KeyError, TypeError, ValueError) as error:
+            # Inside the try, and `ContractError` inside the caught set: the
+            # policy is resolved for THIS page's own dimensions, which come out
+            # of the same evidence blob the measure reads, so damaged evidence
+            # can fail here as easily as one line later. Resolved outside, a
+            # width of zero left this stage by ContractError naming page
+            # geometry instead of by the named refusal that tells an operator
+            # which artifact to restore.
+            initial_measure = edge_ink_from_runs(
+                evidence,
+                [],
+                coverage_policy=resolve_coverage_audit_policy(
+                    coverage_config, evidence.get("width"), evidence.get("height")
+                ),
+            )
+        except (ContractError, KeyError, TypeError, ValueError) as error:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has unreadable retained page-space edge evidence. "
                 "The Armarium cannot verify the page finding that decides whether edge ink "
@@ -804,7 +814,7 @@ def ink_map_page_rows(
                         finding["evidence"].get("height"),
                     ),
                 )
-            except (KeyError, TypeError, ValueError) as error:
+            except (ContractError, KeyError, TypeError, ValueError) as error:
                 raise FatalAccounting(
                     "ink-map page-space edge evidence cannot be re-measured. The Armarium cannot "
                     "decide whether later crops released the page hold. Restore the sealed Ink "

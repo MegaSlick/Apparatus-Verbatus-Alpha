@@ -530,6 +530,20 @@ def page_spanning_components(
     order) and a page-sized 0/1 mask of their pixels. The mask is what the
     counts below need: a page-spanning component's *bounding box* is the page,
     so nothing can be subtracted by rectangle.
+
+    **What it costs, measured rather than estimated.** One labelling per call,
+    which doubles `residual_ink`: 0.25 to 0.86 seconds became 0.55 to 1.83 over
+    three real pages of 5.4 to 18.4 megapixels, and peak resident memory 95 MB
+    became 207 MB on the largest, because `label_component_runs` materialises
+    one tuple per ink run for the whole page rather than for the one component
+    this function keeps. It is paid four times per page per run -- three at the
+    Ink Map (`residual_ink`, `edge_ink` which delegates to it, and
+    `ink_runs_from_rows`) and once at the Recensor -- so 1.2 to 3.9 seconds a
+    page against a Designator scan that already costs 0.5 to 9.7. Computing the
+    mask once in the Ink Map and handing it to all three would remove two of the
+    three, and it is not done: it would mean an optional mask argument a caller
+    could get wrong in silence, on the measurement that decides whether a page
+    is held. The cost is stated here instead.
     """
     threshold = _ink_threshold(
         background_evidence["background_level"], background_evidence["ink_margin"]
