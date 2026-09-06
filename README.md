@@ -53,7 +53,12 @@ block from `.claude/settings.json`** — one step, no other file needs touching.
 Still in force and not suspended: the git hooks refuse a commit on `main`, a push at
 `main`, and a credential or oversized payload in outgoing history — `sh
 .githooks/install.sh` arms them in a clone, and unsetting `core.hooksPath` removes
-them. GitHub's own rules on `main`, listed above, are outside this repository's reach
+them. The test harness and the gate set the notifier's test-sink topic so no test can
+reach a phone (`operations/notify/README.md`); the gate fails closed if it cannot read that
+constant. **To switch that guard off, delete the `NTFY_TOPIC` block above the pytest line
+in `.githooks/check-all.sh`** and the autouse fixture in the root `conftest.py` — two
+lines, nothing else — and the notifier behaves as before under tests, which is how nine
+fake-balance pushes reached a phone on 2026-09-05. GitHub's own rules on `main`, listed above, are outside this repository's reach
 and no local change affects them.
 
 ## Scope
