@@ -267,10 +267,10 @@ def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_
 def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends():
     """The defect, asserted against the shipped catalogue rather than one row.
 
-    vLLM refuses a request whose prompt plus `max_tokens` exceeds the row's
-    `max_model_len`; a sent bound at or above `max_model_len` cannot be
-    accepted by that row whatever the prompt costs, which is the part this
-    seam can check without a tokenizer.
+    vLLM admits a request when `prompt_tokens + max_tokens <= max_model_len`,
+    so that whole sum is what is asserted here -- against the request's own
+    capacity record, which counted this exact page image and this exact prompt
+    against this exact row.
     """
 
     rows = _sealed_churro_rows()
@@ -281,7 +281,10 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         sent = dict(request.generation_sent)
         assert set(sent) <= {"max_tokens"}
         if "max_tokens" in sent:
-            assert sent["max_tokens"] < row.max_model_len, row.tier
+            capacity = request.capacity
+            assert capacity is not None
+            prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
+            assert prompt + sent["max_tokens"] <= row.max_model_len, row.tier
 
 
 def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():
@@ -295,22 +298,76 @@ def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row()
     assert [row.max_model_len for row in rows] == [8192, 8192, 16384]
 
 
+def _stand_in_row(max_model_len):
+    """A row long enough to exercise the sendable branch. No shipped row is."""
+
+    return SimpleNamespace(max_model_len=max_model_len, recipe="r", chair="attestator_3", tier="t")
+
+
 def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it():
     """A longer row is not refused: the declaration is sendable when it fits."""
 
-    long_row = SimpleNamespace(
-        max_model_len=CHURRO_OUTPUT_TOKENS + 1,
-        recipe="r",
-        chair="attestator_3",
-        tier="t",
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=1
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    # A row exactly as long as the bound holds it only with an empty prompt,
+    # which no real request has: one token of prompt and nothing is sent.
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=0
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=1
+        )
+        == {}
     )
-    assert live_witness.churro_generation_sent(long_row, feeding.churro_generation()) == {
-        "max_tokens": CHURRO_OUTPUT_TOKENS
-    }
-    exact_row = SimpleNamespace(
-        max_model_len=CHURRO_OUTPUT_TOKENS, recipe="r", chair="attestator_3", tier="t"
+
+
+def test_the_bound_is_weighed_against_this_requests_own_prompt_not_against_the_row_alone():
+    """vLLM admits on `prompt + max_tokens <= max_model_len`, so both are counted.
+
+    The boundary the earlier rule got wrong, at exactly one token either side of
+    it. At `max_model_len = 24001` the old rule sent the whole 24,000 because
+    24,000 < 24,001, and the engine refuses that request for any prompt at all:
+    a Churro page carries a 2,280-token image and a 281-token prompt at the
+    smallest tier's `max_pixels`. Nothing is sent there now. A row long enough
+    to hold that prompt beside the bound still gets it.
+    """
+
+    declared = feeding.churro_generation()
+    page_prompt = 2280 + 281
+
+    # The row the old rule would have sent 24,000 to.
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), declared, prompt_tokens=page_prompt
+        )
+        == {}
     )
-    assert live_witness.churro_generation_sent(exact_row, feeding.churro_generation()) == {}
+    # One token short of holding the pair, and one token over: the boundary is
+    # `prompt + bound <= max_model_len`, inclusive.
+    assert (
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt - 1),
+            declared,
+            prompt_tokens=page_prompt,
+        )
+        == {}
+    )
+    assert live_witness.churro_generation_sent(
+        _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt), declared, prompt_tokens=page_prompt
+    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    # And the old rule's own answer at the first of those rows, for the
+    # comparison: it looked at the row alone and sent the bound.
+    assert CHURRO_OUTPUT_TOKENS < CHURRO_OUTPUT_TOKENS + 1
+
+
+@pytest.mark.parametrize("bad", [None, -1, True, "2280", 2280.0])
+def test_a_generation_bound_is_never_decided_against_an_unmeasured_prompt(bad):
+    with pytest.raises(SchemaRefusal):
+        live_witness.churro_generation_sent(
+            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=bad
+        )
 
 
 @pytest.mark.parametrize("value", [None, 0, -1, True, "2048", 2048.0])

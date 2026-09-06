@@ -78,16 +78,31 @@ caps ``max_model_len`` well below it -- 8,192 and 16,384 since the capacity
 unit raised them, 2,048/4,096/8,192 before that -- and vLLM refuses a request whose
 prompt plus ``max_tokens`` exceeds that -- so sending 24,000 made the first
 real call a 400 on a card that bills by the hour. ``churro_generation_sent``
-therefore renames the declared key to vLLM's ``max_tokens`` only when the row's
-own ``max_model_len`` is strictly larger than it, and otherwise sends **no**
-bound at all: with no ``max_tokens`` the engine bounds generation by
-``max_model_len`` itself, which is the answer budget measured by the one
-component that holds the tokenizer and the image. This rule still estimates
-nothing: the prompt cost it now consults (next paragraph) is a measured
-constant bound by digest to the exact text, not a reservation anyone guessed,
-and the sendable bound is decided from the row alone as it always was. A ``"length"`` stop under this rule honestly means the context was
-exhausted, exactly as it already does for the Perlector and the Designator,
-neither of which sends a bound either.
+therefore renames the declared key to vLLM's ``max_tokens`` only when **this
+request's own prompt plus the declared bound** fits the row's ``max_model_len``,
+and otherwise sends **no** bound at all: with no ``max_tokens`` the engine
+bounds generation by ``max_model_len`` itself, which is the answer budget
+measured by the one component that holds the tokenizer and the image.
+
+The prompt is part of that sum because vLLM's admission rule is
+``prompt_tokens + max_tokens <= max_model_len``, not ``max_tokens <
+max_model_len``. Comparing the bound against the row alone was right about
+every row this catalogue ships -- all three Churro contexts are far below
+24,000 -- and wrong about the rule: a row stating 24,001 would have been sent
+the full 24,000 beside a 2,280-token page image, and refused. The count it now
+consults is the request's own measured prompt cost from the capacity record the
+paragraph below builds (``image_prompt_tokens + prompt_tokens``), so nothing
+here estimates: the image cost is ``smart_resize``'s integer arithmetic over
+numbers the row states, and the prompt cost is a measured constant bound by
+digest to the exact text.
+
+**That count is a measured floor, not a guarantee of admission.** It is what
+this repository has measured of the request's prompt; vLLM's own assembly has
+never been observed (``common/request_capacity.py``). So this prevents the
+overrun the arithmetic can see, and a bound it lets through is not thereby
+proved admissible. A ``"length"`` stop under this rule honestly means the
+context was exhausted, exactly as it already does for the Perlector and the
+Designator, neither of which sends a bound either.
 
 **Whether a request fits is a different question from what may be sent, and it
 is asked of every chair here.** The paragraph above bounds Churro's generation;
@@ -413,19 +428,40 @@ def row_context_bound(profile: Any, adapter_name: str) -> int:
     return max_model_len
 
 
-def churro_generation_sent(profile: Any, generation_declared: Mapping[str, Any]) -> dict[str, Any]:
+def churro_generation_sent(
+    profile: Any, generation_declared: Mapping[str, Any], *, prompt_tokens: int
+) -> dict[str, Any]:
     """Churro's declared token bound as the sealed row will actually take it.
 
-    Sent as vLLM's ``max_tokens`` only when the row's ``max_model_len`` is
-    strictly larger than the declared bound; otherwise nothing is sent and the
-    engine bounds generation by ``max_model_len`` itself. See the module
-    docstring's "Churro's token bound" paragraph for why no prompt reservation
-    is estimated here.
+    Sent as vLLM's ``max_tokens`` only when ``prompt_tokens`` plus the declared
+    bound fits the row's ``max_model_len``; otherwise nothing is sent and the
+    engine bounds generation by ``max_model_len`` itself.
+
+    ``prompt_tokens`` is this request's own measured prompt cost -- the capacity
+    record's ``image_prompt_tokens + prompt_tokens``, the image's cost under
+    ``smart_resize`` at the row's own geometry plus the digest-bound measured
+    constant for Churro's prompt. It is a **measured floor**: vLLM's own prompt
+    assembly has never been observed by this repository
+    (``common/request_capacity.py``). So this prevents the overrun the
+    arithmetic can see -- a bound sent beside a prompt that already exhausts the
+    context -- and does not guarantee the engine admits what it does send.
+
+    Comparing the bound against the row alone was the earlier rule. It agreed
+    with this one on every shipped row, because all three Churro contexts are
+    far below 24,000, and disagreed with vLLM: at ``max_model_len = 24001`` it
+    sent the whole 24,000 beside a page image and the engine refused the
+    request. See the module docstring's "Churro's token bound" paragraph.
     """
 
     max_model_len = row_context_bound(profile, "churro.v1")
     declared_bound = generation_declared["max_new_tokens"]
-    if declared_bound < max_model_len:
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens < 0:
+        raise SchemaRefusal(
+            f"a Churro generation bound is decided against this request's own measured prompt "
+            f"cost, which was given as {prompt_tokens!r}; a bound is never sent against a "
+            "prompt count nobody measured"
+        )
+    if prompt_tokens + declared_bound <= max_model_len:
         return {"max_tokens": declared_bound}
     return {}
 
@@ -505,7 +541,15 @@ def page_chair_request(
     )
     if adapter_name == "churro.v1":
         generation_declared: dict[str, Any] = dict(feeding.churro_generation())
-        generation_sent = churro_generation_sent(profile, generation_declared)
+        # The capacity record above already counted this exact request's image
+        # and prompt against this exact row, so the sendable bound is decided
+        # against the prompt that will sit beside it rather than against the
+        # row alone.
+        generation_sent = churro_generation_sent(
+            profile,
+            generation_declared,
+            prompt_tokens=capacity["image_prompt_tokens"] + capacity["prompt_tokens"],
+        )
     else:
         generation_declared = {}
         generation_sent = {}
