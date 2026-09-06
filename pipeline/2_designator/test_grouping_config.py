@@ -95,6 +95,12 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     # real pages from five sources, not zero synthetic ones.
     assert config["background"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["background"]["provenance"]["sample_count"] == 127
+    # The second measured block, and the second place the flag is true. Pinned
+    # for the same reason: 17 real pages, not 127 and not zero. A later edit
+    # that widened either claim would have to move this line.
+    assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
+    assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
+    assert config["page_area_bp"]["provenance"]["sample_count"] == 17
 
 
 def test_default_config_is_valid_toml_matching_the_loaded_shape():
@@ -106,6 +112,7 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
         "fallback_bands",
         "page_fraction_bp",
         "absolute",
+        "page_area_bp",
         "background",
         "provenance",
     }
@@ -135,6 +142,10 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     assert resolved.max_residual_components == 2000
     assert resolved.max_secondary_proposals == 2000
     assert resolved.fallback_bands == 4  # DEFAULT_FALLBACK_BANDS, unconverted
+    # A fraction of the page's AREA, so it passes through unresolved: the same
+    # 5000 at every fixture size, where every `page_fraction_bp` field above
+    # resolves to a different pixel count per page dimension.
+    assert resolved.page_spanning_area_bp == 5000
 
 
 def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
@@ -253,6 +264,24 @@ caveat = 'scv'
 """
 
 
+# `[grouping.page_area_bp]`'s own provenance block. A third distinct spelling,
+# for the reason `_VALID_BACKGROUND`'s comment gives: the tests below mutate one
+# block by string replacement, and three blocks sharing a spelling would make
+# those replacements hit whichever came first.
+_VALID_PAGE_AREA = """\
+page_spanning_area_bp = 5000
+
+[grouping.page_area_bp.provenance]
+source = 'as'
+corpus = 'ac'
+sample_unit = 'au'
+sample_count = 17
+statistic = 'ast'
+calibrated_for_this_corpus = true
+caveat = 'acv'
+"""
+
+
 def _valid_toml() -> str:
     # `[grouping.provenance]` stays last: several tests below append a line to
     # the end of this document to put a field inside it.
@@ -264,6 +293,7 @@ def _valid_toml() -> str:
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
         "[grouping.absolute]\n"
         "gap_tolerance_px = 3\n\n"
+        "[grouping.page_area_bp]\n" + _VALID_PAGE_AREA + "\n"
         "[grouping.background]\n" + _VALID_BACKGROUND + "\n"
         "[grouping.provenance]\n" + _VALID_PROVENANCE
     )
@@ -729,4 +759,103 @@ def test_a_bound_at_the_top_of_its_range_is_refused_as_the_test_switched_off(
     body = _valid_toml().replace(f"{field} = {current}", f"{field} = 10000")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="which refuses nothing"):
+        load_grouping_config(path)
+
+
+# --- [grouping.page_area_bp]: the closed sub-table and its bound -------------
+#
+# The loader's refusals are policy, not plumbing: a value this file admits is a
+# value that decides, on every page of every run, which components the grouping
+# pass may use as connective tissue. Each of these paths is the file refusing a
+# policy nobody could have reviewed, and an untested refusal is a refusal that
+# has never actually been shown to happen.
+
+
+def test_the_page_area_table_is_required(tmp_path):
+    body = _valid_toml().replace("[grouping.page_area_bp]\n", "[grouping.bogus_area]\n", 1)
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="unknown field"):
+        load_grouping_config(path)
+
+
+def test_an_unknown_field_in_the_page_area_table_is_refused(tmp_path):
+    body = _valid_toml().replace(
+        "page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nbogus = 1", 1
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] carries unknown field"):
+        load_grouping_config(path)
+
+
+def test_a_missing_page_spanning_bound_is_refused(tmp_path):
+    body = _valid_toml().replace("page_spanning_area_bp = 5000\n", "", 1)
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] is missing field"):
+        load_grouping_config(path)
+
+
+def test_the_page_area_table_needs_its_own_provenance(tmp_path):
+    body = _valid_toml().replace("[grouping.page_area_bp.provenance]\n", "", 1)
+    # Removing the header leaves this block's provenance fields loose inside
+    # `[grouping.page_area_bp]`, which the closed field set refuses by name --
+    # the same shape as the missing-table refusal and a stronger one, because it
+    # says which fields were not expected.
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] carries unknown field"):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1", "10001", "0.5", "true", "'5000'"])
+def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(tmp_path, bad_value):
+    """Closed at both ends, and neither end is arbitrary.
+
+    At or below zero every component on every page spans the bound, so the pass
+    would withhold the whole page and propose no act while producing a
+    well-formed empty result that reconciles. Past a whole page nothing can ever
+    reach it, so the policy would read as in force while being inert.
+    """
+    body = _valid_toml().replace(
+        "page_spanning_area_bp = 5000", f"page_spanning_area_bp = {bad_value}", 1
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="basis points"):
+        load_grouping_config(path)
+
+
+def test_a_bound_of_a_whole_page_is_legal_and_is_the_top_of_the_range(tmp_path):
+    """10000 means "only a component whose bounding box IS the page".
+
+    Legal rather than refused, because `grouping.partition_page_spanning`
+    compares with `>=`: at 10000 a whole-page component is still withheld, so
+    the top of the range is the tightest the policy goes and not a switch that
+    turns it off. `test_grouping.py::
+    test_the_bound_cannot_be_switched_off_by_setting_it_to_a_whole_page` is the
+    other half of that claim.
+    """
+    body = _valid_toml().replace("page_spanning_area_bp = 5000", "page_spanning_area_bp = 10000", 1)
+    config = load_grouping_config(_write(tmp_path, body))
+    assert config["page_area_bp"]["page_spanning_area_bp"] == 10000
+    assert resolve_thresholds(config, 200, 260).page_spanning_area_bp == 10000
+
+
+def test_the_page_area_provenance_is_held_to_the_same_closed_schema(tmp_path):
+    body = _valid_toml().replace("sample_count = 17\n", "", 1)
+    path = _write(tmp_path, body)
+    with pytest.raises(
+        ContractError, match=r"\[grouping.page_area_bp.provenance\] is missing field"
+    ):
+        load_grouping_config(path)
+
+
+def test_a_forbidden_margin_name_is_refused_inside_the_page_area_table_too(tmp_path):
+    """`primary_margin`/`secondary_margin` may not appear in ANY sub-table.
+
+    The module docstring says "anywhere in this policy", and a new sub-table is
+    exactly where that claim would quietly stop being true.
+    """
+    body = _valid_toml().replace(
+        "page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nprimary_margin = 20", 1
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="primary_margin"):
         load_grouping_config(path)

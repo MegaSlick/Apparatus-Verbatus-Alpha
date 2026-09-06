@@ -12,7 +12,12 @@ from pathlib import Path
 
 import grouping_config
 import pytest
-from grouping import assign_columns, find_continuation_candidate, group_page
+from grouping import (
+    assign_columns,
+    find_continuation_candidate,
+    group_page,
+    partition_page_spanning,
+)
 from structure import infer_background_evidence, primary_scan
 
 from common.contracts.errors import ContractError
@@ -31,6 +36,10 @@ CHAIN_GAP_PX = 6
 ANCHOR_REACH_PX = 2
 BRACE_MIN_HEIGHT_PX = 30
 PAGE_EDGE_REACH_PX = 4
+# The sealed `[grouping.page_area_bp]` value, spelled here rather than loaded so
+# these tests stay a test of the module and not of the config. `test_grouping_
+# config.py` is what holds the two to the same number.
+PAGE_SPANNING_AREA_BP = 5000
 GAP_TOLERANCE_PX = 3
 
 
@@ -63,6 +72,7 @@ def group(components: list[dict], page_w: int = PAGE_W, page_h: int = PAGE_H) ->
         chain_gap_px=CHAIN_GAP_PX,
         anchor_reach_px=ANCHOR_REACH_PX,
         brace_min_height_px=BRACE_MIN_HEIGHT_PX,
+        page_spanning_area_bp=PAGE_SPANNING_AREA_BP,
     )
 
 
@@ -157,6 +167,7 @@ def test_group_page_refuses_a_bad_margin_even_with_no_components(margin_px):
             chain_gap_px=CHAIN_GAP_PX,
             anchor_reach_px=ANCHOR_REACH_PX,
             brace_min_height_px=BRACE_MIN_HEIGHT_PX,
+            page_spanning_area_bp=PAGE_SPANNING_AREA_BP,
         )
 
 
@@ -509,12 +520,18 @@ def test_group_page_refuses_a_non_positive_page(page_w, page_h):
 
 @pytest.mark.parametrize(
     "missing",
-    ["margin_px", "chain_gap_px", "anchor_reach_px", "brace_min_height_px"],
+    [
+        "margin_px",
+        "chain_gap_px",
+        "anchor_reach_px",
+        "brace_min_height_px",
+        "page_spanning_area_bp",
+    ],
 )
 def test_group_page_refuses_a_missing_required_keyword(missing):
     """Every geometric parameter is required now that the module default is gone.
 
-    A caller that forgets one of the four resolved ints fails loudly with
+    A caller that forgets one of the five resolved ints fails loudly with
     `TypeError` at the call, rather than silently running under a value
     nobody reviewed for this page.
     """
@@ -523,6 +540,7 @@ def test_group_page_refuses_a_missing_required_keyword(missing):
         "chain_gap_px": CHAIN_GAP_PX,
         "anchor_reach_px": ANCHOR_REACH_PX,
         "brace_min_height_px": BRACE_MIN_HEIGHT_PX,
+        "page_spanning_area_bp": PAGE_SPANNING_AREA_BP,
     }
     del kwargs[missing]
     with pytest.raises(TypeError):
@@ -546,6 +564,7 @@ def test_group_page_refuses_a_negative_or_non_integer_threshold(name, bad_value)
         "chain_gap_px": CHAIN_GAP_PX,
         "anchor_reach_px": ANCHOR_REACH_PX,
         "brace_min_height_px": BRACE_MIN_HEIGHT_PX,
+        "page_spanning_area_bp": PAGE_SPANNING_AREA_BP,
     }
     kwargs[name] = bad_value
     with pytest.raises(ContractError, match="is not a non-negative integer"):
@@ -679,3 +698,213 @@ def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
 
     with pytest.raises(TypeError):
         continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H), column_overlap_px=1)
+
+
+# --- the page-spanning bound ------------------------------------------------
+#
+# What these pin is the property the module docstring states: a component whose
+# bounding box covers the sealed fraction of the page is withheld from column
+# assignment and body chaining, so it cannot weld two acts together -- and it is
+# withheld from *grouping* only, never removed from anything that counts ink.
+# The measurement behind the bound is in `config/designator_grouping.toml`'s
+# `[grouping.page_area_bp.provenance]`: on all fourteen real photographed pages
+# this project has measured, exactly one component's bounding box was the whole
+# leaf and it held 69.5 to 95.2 percent of every ink pixel the scan counted.
+
+
+def _bezel(page_w: int = PAGE_W, page_h: int = PAGE_H) -> dict:
+    """A component with the page's own bounds: what a photographed bezel labels as."""
+    return component(0, 0, page_w, page_h)
+
+
+def test_a_page_spanning_component_is_withheld_and_a_small_one_is_not():
+    bezel = _bezel()
+    mark = body_component(20, 30)
+    grouped, withheld = partition_page_spanning(
+        [bezel, mark], PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    assert grouped == [mark]
+    assert withheld == [bezel]
+
+
+def test_the_bound_is_inclusive_at_its_own_value_and_exclusive_just_below():
+    """A box exactly on the line is withheld; one basis point under it is not.
+
+    The area is floor-divided, so the box just below the bound reads as under it
+    -- the safe direction for a rule that withholds, because a component that is
+    grouped is still reconciled while one that is withheld is not grouped at all.
+    """
+    # PAGE_W x PAGE_H is 200x300 == 60,000 px. Half of it is 30,000: a
+    # 200x150 box is exactly 5000bp, a 200x149 box is 4966bp.
+    on_the_line = component(0, 0, 200, 150)
+    just_under = component(0, 0, 200, 149)
+    grouped, withheld = partition_page_spanning(
+        [on_the_line, just_under], PAGE_W, PAGE_H, page_spanning_area_bp=5000
+    )
+    assert withheld == [on_the_line]
+    assert grouped == [just_under]
+
+
+def test_a_page_spanning_component_stops_claiming_two_acts_at_the_bound():
+    """The measured failure, reproduced at fixture scale on both sides of the bound.
+
+    A wide band across two anchored acts is what a photographed bezel labels as:
+    it lands in the body column, its y-range covers both acts, and every anchor
+    on the page overlaps it. Just under the bound (200x149 on a 200x300 page,
+    4966bp) it comes back as a group of its own whose bounds swallow both acts
+    and which claims BOTH anchors -- the shape the real pages produced at scale,
+    where one group held 440 body components and 14 anchors and its bounds were
+    the leaf. At the bound (200x150, exactly 5000bp) it is withheld and the two
+    acts are all that come back, identical to grouping them with no band there
+    at all.
+    """
+    acts = [
+        margin_component(20),
+        body_component(20, 30),
+        margin_component(100),
+        body_component(100, 30),
+    ]
+    welding = group([component(0, 10, 200, 149)] + acts)
+    assert len(welding) == 3
+    swallower = next(g for g in welding if len(g["anchors"]) == 2)
+    assert bound_key(swallower) == (0, 10, 200, 149)
+    assert swallower["bounds"]["y"] <= 20
+    assert swallower["bounds"]["y"] + swallower["bounds"]["h"] >= 130
+
+    withheld = group([component(0, 10, 200, 150)] + acts)
+    assert list(map(bound_key, withheld)) == list(map(bound_key, group(acts)))
+    assert len(withheld) == 2
+    assert [g["bounds"]["y"] for g in withheld] == [20, 100]
+
+
+def test_the_bound_cannot_be_switched_off_by_setting_it_to_a_whole_page():
+    """10000 is the largest legal value and it still withholds a whole-page box.
+
+    The comparison is `>=`, so a component whose bounding box IS the page
+    reaches even the top of the range. There is therefore no value of this
+    policy under which a page-spanning component is connective tissue again --
+    which is deliberate: the bound may be tightened or loosened, never disarmed
+    by a config edit that looks like widening it.
+    """
+    assert (
+        group_page(
+            [_bezel()],
+            PAGE_W,
+            PAGE_H,
+            margin_px=MARGIN_PX,
+            chain_gap_px=CHAIN_GAP_PX,
+            anchor_reach_px=ANCHOR_REACH_PX,
+            brace_min_height_px=BRACE_MIN_HEIGHT_PX,
+            page_spanning_area_bp=10000,
+        )
+        == []
+    )
+
+
+def test_a_withheld_component_is_returned_rather_than_dropped():
+    """Withheld is not excluded: both halves come back, and their union is the input.
+
+    This is the property `run.py` publishes the record from, and the reason the
+    word in this module is *withheld*. Nothing here may quietly become a filter
+    -- a component the grouping pass sets aside is still ink, still inside
+    `conservation.reconcile`'s own rescan of the page, and still minted as a
+    held act when no group claims it.
+    """
+    parts = [_bezel(), body_component(20, 30), margin_component(20)]
+    grouped, withheld = partition_page_spanning(
+        parts, PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    assert sorted(map(id, grouped + withheld)) == sorted(map(id, parts))
+
+
+def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fires():
+    """The guaranteed fallback grid is re-armed by this bound.
+
+    `SPEC_FINDINGS.md` 2026-09-06 item 4 recorded that on real pages
+    `group_page` returned bezel-welded groups, so the page read as `detected`
+    and the four-band grid Tyrel ruled for on 2026-08-11 never ran. A page whose
+    only component spans it now returns no groups at all, which is what
+    `run.py` reads as `fallback-tiles`.
+    """
+    assert group([_bezel()]) == []
+
+
+def test_the_partition_is_invariant_under_input_order():
+    """GOVERNANCE 3: a partition, never an election.
+
+    Each component is measured against the page it sits on, independently of
+    every other, so no presentation order can change which side it lands on.
+    """
+    parts = [_bezel(), body_component(20, 30), margin_component(20), body_component(150, 30)]
+    first = partition_page_spanning(
+        parts, PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    second = partition_page_spanning(
+        list(reversed(parts)), PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    assert sorted(map(bound_key, first[0])) == sorted(map(bound_key, second[0]))
+    assert sorted(map(bound_key, first[1])) == sorted(map(bound_key, second[1]))
+
+
+def test_partitioning_an_already_partitioned_page_withholds_nothing_further():
+    """Idempotent, which is what lets `run.py` call it beside `group_page`.
+
+    `run.py` takes the partition itself to publish the withheld half on the
+    page's conservation record, and `group_page` takes it again internally. The
+    two cannot disagree only because a second application is a no-op.
+    """
+    parts = [_bezel(), body_component(20, 30)]
+    grouped, withheld = partition_page_spanning(
+        parts, PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    again, none = partition_page_spanning(
+        grouped, PAGE_W, PAGE_H, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+    )
+    assert again == grouped
+    assert none == []
+    assert withheld  # the premise: something was withheld the first time
+
+
+@pytest.mark.parametrize("bad_value", [0, -1, 10001, 1.5, True, "5000", None])
+def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(bad_value):
+    """Refused at both ends, and refused on an empty page too.
+
+    At or below zero every component on every page spans the bound and the pass
+    would withhold the whole page while returning a well-formed empty result;
+    past a whole page nothing can reach it, so the policy would read as being in
+    force while doing nothing. The empty-page call is the same reason
+    `_check_margin` runs before the empty short-circuit: a sealed policy nobody
+    validated must not pass merely because the page had no ink on it.
+    """
+    kwargs = {
+        "margin_px": MARGIN_PX,
+        "chain_gap_px": CHAIN_GAP_PX,
+        "anchor_reach_px": ANCHOR_REACH_PX,
+        "brace_min_height_px": BRACE_MIN_HEIGHT_PX,
+        "page_spanning_area_bp": bad_value,
+    }
+    for components in ([], [component(0, 0, 5, 5)]):
+        with pytest.raises(ContractError, match="basis points"):
+            group_page(components, PAGE_W, PAGE_H, **kwargs)
+    with pytest.raises(ContractError, match="basis points"):
+        partition_page_spanning([], PAGE_W, PAGE_H, page_spanning_area_bp=bad_value)
+
+
+def test_the_bound_is_a_fraction_of_area_so_it_means_the_same_thing_at_two_scales():
+    """The same component shape is withheld on a fixture page and on a scan.
+
+    A box covering half of a 200x300 page and the same box scaled to a
+    2000x3000 one are one decision, which is the whole reason the value is a
+    basis point of the page's own area rather than a pixel count. A pixel count
+    here would withhold every act on a large page and nothing at all on a small
+    one.
+    """
+    for scale in (1, 10):
+        w, h = PAGE_W * scale, PAGE_H * scale
+        half = component(0, 0, w, h // 2)
+        quarter = component(0, 0, w // 2, h // 2)
+        grouped, withheld = partition_page_spanning(
+            [half, quarter], w, h, page_spanning_area_bp=PAGE_SPANNING_AREA_BP
+        )
+        assert [bound_key({"bounds": c["bounds"]}) for c in withheld] == [(0, 0, w, h // 2)]
+        assert [bound_key({"bounds": c["bounds"]}) for c in grouped] == [(0, 0, w // 2, h // 2)]

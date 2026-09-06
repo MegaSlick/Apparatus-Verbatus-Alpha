@@ -781,6 +781,7 @@ def blank_first_page_run(tmp_path, monkeypatch):
             chain_gap_px=thresholds.chain_gap_px,
             anchor_reach_px=thresholds.anchor_reach_px,
             brace_min_height_px=thresholds.brace_min_height_px,
+            page_spanning_area_bp=thresholds.page_spanning_area_bp,
         )
         == []
     )

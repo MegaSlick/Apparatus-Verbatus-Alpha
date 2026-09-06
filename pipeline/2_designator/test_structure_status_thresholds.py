@@ -117,6 +117,7 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
             "max_residual_components": expected.max_residual_components,
             "max_secondary_proposals": expected.max_secondary_proposals,
             "fallback_bands": expected.fallback_bands,
+            "page_spanning_area_bp": expected.page_spanning_area_bp,
         }
         # Integers only. A float in a canonical payload is a determinism defect,
         # and basis points exist so that this resolution never produces one.
@@ -283,6 +284,7 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "max_residual_components": small.max_residual_components,
         "max_secondary_proposals": small.max_secondary_proposals,
         "fallback_bands": small.fallback_bands,
+        "page_spanning_area_bp": small.page_spanning_area_bp,
     }
     assert large_page["resolved_thresholds"] == {
         "margin_px": large.margin_px,
@@ -296,6 +298,7 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "max_residual_components": large.max_residual_components,
         "max_secondary_proposals": large.max_secondary_proposals,
         "fallback_bands": large.fallback_bands,
+        "page_spanning_area_bp": large.page_spanning_area_bp,
     }
     assert small_page["resolved_thresholds"] != large_page["resolved_thresholds"]
 

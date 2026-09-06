@@ -8,12 +8,17 @@ into `common/stage.py` or `run.py` (that is units C and D's own work); a page
 that wants resolved pixel thresholds calls `resolve_thresholds` itself, once
 it has this module's config and its own page dimensions.
 
-Three closed sub-tables, not one flat table, because the *basis* a threshold
+Four closed sub-tables, not one flat table, because the *basis* a threshold
 resolves against is structural, not a naming convention: `page_fraction_bp`
 values are basis points of the page's own WIDTH (`margin_bp`) or HEIGHT
 (every other field) as declared in the config file's header comment, while
 `absolute` values are raw pixel counts that must never be scaled by page
-size at all. `background` is the third and it carries its own provenance block:
+size at all. `page_area_bp` is the third: a basis point of the page's own AREA,
+which is a fraction of both dimensions at once and so resolves to no pixel
+length at all -- `page_fraction_bp`'s contract is one declared basis per field,
+and a field with two bases cannot be smuggled into it. It carries its own
+provenance block, measured on 17 real pages.
+`background` is the fourth and it carries its own provenance block:
 its `band_bp` is the one length in this file that resolves against *both*
 dimensions, because the band it describes is a frame, and its other three
 fields are fractions of a pixel population, or of the distance between two of
@@ -72,6 +77,12 @@ from geometry import (
 from common.background import (  # noqa: F401
     BACKGROUND_BP_FIELDS as _BACKGROUND_BP_FIELDS,
 )
+
+# One spelling of "a whole page in basis points", shared with the background
+# policy's own bounds rather than written a second time here.
+from common.background import (
+    BASIS_POINTS as _BASIS_POINTS,
+)
 from common.background import (  # noqa: F401
     resolve_background_policy,
     validate_background_table,
@@ -96,6 +107,13 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
 )
 _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 
+# The one field whose basis is the page's own AREA. It is a bound on a
+# *component*, not a length to resolve: `partition_page_spanning` compares a
+# bounding box's area against it in basis points and never converts it to
+# pixels, so it passes through `resolve_thresholds` unresolved exactly as the
+# three bare counts do.
+_PAGE_AREA_BP_FIELDS: Final = ("page_spanning_area_bp",)
+
 # Names that must never appear anywhere in this policy -- see module
 # docstring. Checked explicitly, with a message that names them, rather than
 # left to fall out of the generic "unknown field" refusal, because a reader
@@ -116,6 +134,7 @@ _GROUPING_COUNT_FIELDS: Final = (
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "page_fraction_bp",
     "absolute",
+    "page_area_bp",
     "background",
     "provenance",
 )
@@ -200,6 +219,7 @@ def load_grouping_config(
     absolute = _load_closed_int_table(
         grouping.get("absolute"), _ABSOLUTE_FIELDS, "[grouping.absolute]"
     )
+    page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
     background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
 
@@ -208,6 +228,7 @@ def load_grouping_config(
         **counts,
         "page_fraction_bp": page_fraction_bp,
         "absolute": absolute,
+        "page_area_bp": page_area_bp,
         "background": background,
         "provenance": provenance,
     }
@@ -297,6 +318,56 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     return dict(provenance)
 
 
+def _load_page_area_bp(table: Any) -> dict[str, Any]:
+    """Read `[grouping.page_area_bp]` and its own provenance.
+
+    A provenance block of its own for the reason `[grouping.background]` has
+    one: `sample_count` is 0 for the file's seven unmeasured defaults and 127
+    for the background policy, and this value was measured on 17 pages. Three
+    blocks say three true things; folding any of them together would say a false
+    one.
+
+    **The bound is closed at both ends and neither end is arbitrary.** At or
+    below zero every component on every page is page-spanning, so the grouping
+    pass would withhold the entire page and no act would ever be proposed --
+    refused rather than allowed to produce an empty run that reconciles. Past
+    10000 no component can ever reach it, because a bounding box cannot exceed
+    the page it is measured against, and a bound nothing can reach is a policy
+    that reads as being in force while doing nothing; 10000 itself is legal and
+    means exactly "only a component whose bounding box is the whole page".
+    """
+    if not isinstance(table, dict):
+        raise ContractError("the grouping configuration has no [grouping.page_area_bp] table")
+    _refuse_forbidden_names(table, "[grouping.page_area_bp]")
+    expected = set(_PAGE_AREA_BP_FIELDS) | {"provenance"}
+    unexpected = sorted(set(table) - expected)
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's [grouping.page_area_bp] carries unknown field(s) "
+            f"{unexpected}; an unread policy field cannot be applied"
+        )
+    missing = sorted(expected - set(table))
+    if missing:
+        raise ContractError(
+            f"the grouping configuration's [grouping.page_area_bp] is missing field(s) {missing}"
+        )
+    values = {}
+    for name in _PAGE_AREA_BP_FIELDS:
+        value = table[name]
+        if not _is_plain_int(value) or not (0 < value <= _BASIS_POINTS):
+            raise ContractError(
+                f"the grouping configuration's [grouping.page_area_bp] {name} is {value!r}, "
+                f"which is not an integer in 1..{_BASIS_POINTS} basis points; at or below zero "
+                "every component on every page spans it and the grouping pass would withhold the "
+                "whole page, and past a whole page nothing can ever reach it"
+            )
+        values[name] = value
+    values["provenance"] = _load_provenance(
+        table.get("provenance"), "[grouping.page_area_bp.provenance]"
+    )
+    return values
+
+
 # `[grouping.background]`: how this stage infers a page's paper value, and the
 # one block in this file measured against real material.
 # `band_bp` is a length and scales with the page, but it is the only field here
@@ -370,6 +441,7 @@ class GroupingThresholds:
     max_residual_components: int
     max_secondary_proposals: int
     fallback_bands: int
+    page_spanning_area_bp: int
 
 
 def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> GroupingThresholds:
@@ -379,9 +451,13 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
     resolves against `height` -- the basis each field's config comment
     declares as a design decision (SPEC_C section 2), not a property
     recovered from the retired pixel constant it replaces.
-    `gap_tolerance_px` and the three counts (`max_residual_components`,
-    `max_secondary_proposals`, `fallback_bands`) pass through unresolved: none
-    of them is a page-fraction quantity.
+    `gap_tolerance_px`, the three counts (`max_residual_components`,
+    `max_secondary_proposals`, `fallback_bands`) and `page_spanning_area_bp`
+    pass through unresolved. The first four are not page-fraction quantities at
+    all; the last one is, but its basis is the page's own AREA rather than one
+    of its dimensions, so there is no single length for `_pad_amount` to
+    round against and the comparison stays in basis points at the one place it
+    is made (`grouping.partition_page_spanning`).
 
     Uses `geometry._pad_amount` for every basis-point resolution -- the same
     round-half-up integer rule the padding config already uses -- so this
@@ -404,4 +480,11 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         max_residual_components=config["max_residual_components"],
         max_secondary_proposals=config["max_secondary_proposals"],
         fallback_bands=config["fallback_bands"],
+        # A fraction of the page's own AREA, which is both dimensions at once,
+        # so it passes through unresolved like the three counts above rather
+        # than being turned into a pixel length by `_pad_amount`. Carried on the
+        # resolved set all the same, because every page's `structure-status`
+        # publishes this dataclass and a component withheld from grouping must
+        # be checkable against the bound that withheld it.
+        page_spanning_area_bp=config["page_area_bp"]["page_spanning_area_bp"],
     )

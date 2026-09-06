@@ -154,3 +154,99 @@ def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
         structure.infer_background_evidence(width, height, rows, background_policy=policy)
     with pytest.raises(structure.BackgroundInferenceRefusal):
         residual_ink(width, height, rows, [], background_policy=policy)
+
+
+def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation():
+    """The whole of the 2026-09-06 grouping unit, on one page, through shipped functions.
+
+    The same photographed-shaped page above, driven through
+    `structure.primary_scan`, `grouping.partition_page_spanning`,
+    `grouping.group_page` and `conservation.reconcile` in the order `run.py`
+    drives them. Both halves of the claim are asserted here because either one
+    alone would be a different and wrong change:
+
+      * the frame does not group -- it labels as exactly ONE component whose
+        bounding box is the page, it is the one component withheld, and the only
+        group that comes back is the mark, so nothing on this page is claimed by
+        a rectangle the size of the leaf;
+      * the frame is still ink -- every one of its pixels is inside
+        `total_ink_pixel_count`, and because no group claims it, it is inside
+        `residual_pixel_count`, which `run.py` mints as held acts a reviewer
+        opens. Nothing was removed from the page, from the scan, or from the
+        accounting.
+
+    The residual is what makes the coverage audit non-vacuous again: before this
+    rule the single group's bounds were the page, so claimed was the whole ink
+    set and the residual was zero on every real page measured -- an audit whose
+    denominator, "ink outside declared coverage", was empty by construction.
+    """
+    import conservation
+    import grouping
+    from grouping_config import resolve_thresholds
+
+    width, height, rows = photographed_shaped_page()
+    config = load_grouping_config()
+    policy = resolve_background_policy(config, width, height)
+    thresholds = resolve_thresholds(config, width, height)
+    evidence = structure.infer_background_evidence(width, height, rows, background_policy=policy)
+
+    components = structure.primary_scan(
+        width,
+        height,
+        rows,
+        background=evidence["background"],
+        margin=evidence["ink_margin"],
+        gap_tolerance_px=thresholds.gap_tolerance_px,
+    )
+    # The frame is one component and its bounding box is the leaf. This is the
+    # property the whole rule rests on and it is measured here rather than
+    # assumed: on all fourteen real pages the survey measured, the same thing
+    # was true and the component held 69.5 to 95.2 percent of the counted ink.
+    assert [component["bounds"] for component in components] == [
+        {"x": 0, "y": 0, "w": width, "h": height},
+        {"x": 50, "y": 60, "w": 30, "h": 10},
+    ]
+    frame, mark = components
+    assert frame["pixel_count"] == 20_400
+    assert mark["pixel_count"] == 300
+
+    grouped, withheld = grouping.partition_page_spanning(
+        components, width, height, page_spanning_area_bp=thresholds.page_spanning_area_bp
+    )
+    assert grouped == [mark]
+    assert withheld == [frame]
+
+    groups = grouping.group_page(
+        components,
+        width,
+        height,
+        margin_px=thresholds.margin_px,
+        chain_gap_px=thresholds.chain_gap_px,
+        anchor_reach_px=thresholds.anchor_reach_px,
+        brace_min_height_px=thresholds.brace_min_height_px,
+        page_spanning_area_bp=thresholds.page_spanning_area_bp,
+    )
+    assert [group["bounds"] for group in groups] == [{"x": 50, "y": 60, "w": 30, "h": 10}]
+
+    result = conservation.reconcile(
+        width,
+        height,
+        rows,
+        background=evidence["background"],
+        claimed_bounds=[group["bounds"] for group in groups],
+        gap_tolerance_px=thresholds.gap_tolerance_px,
+        review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
+    )
+    # Conservation rescans at `SECONDARY_MARGIN`, so its total is the 20,700 the
+    # primary scan counted plus the 300 of fainter stroke only it sees.
+    assert result["total_ink_pixel_count"] == 21_000
+    assert result["claimed_pixel_count"] == 300
+    assert result["residual_pixel_count"] == 20_700
+    assert (
+        result["claimed_pixel_count"] + result["residual_pixel_count"]
+        == (result["total_ink_pixel_count"])
+    )
+    # Every withheld pixel is inside the residual: nothing left the accounting.
+    assert result["residual_pixel_count"] >= frame["pixel_count"]
+    assert len(result["residual_components"]) == 3
+    assert len(result["residual_components"]) <= config["max_residual_components"]

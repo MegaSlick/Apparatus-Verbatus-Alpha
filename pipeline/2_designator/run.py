@@ -1245,6 +1245,21 @@ def _analyze_page(
                 gap_tolerance_px=thresholds.gap_tolerance_px,
             )
         )
+        # The partition is taken here as well as inside `group_page`, and the
+        # two cannot disagree: `partition_page_spanning` is pure, so calling it
+        # on the same components under the same bound returns the same split.
+        # What this call is for is the *record* -- `group_page` returns only the
+        # groups, and a component withheld from grouping that appeared nowhere
+        # would be a decision inferable solely from a group that is missing.
+        # Published on the conservation record below, beside the surround
+        # measurement, which is the other thing on this page that is ink by
+        # decision rather than by writing.
+        _grouped, page_spanning = grouping.partition_page_spanning(
+            components,
+            width,
+            height,
+            page_spanning_area_bp=thresholds.page_spanning_area_bp,
+        )
         groups = grouping.group_page(
             components,
             width,
@@ -1253,6 +1268,7 @@ def _analyze_page(
             chain_gap_px=thresholds.chain_gap_px,
             anchor_reach_px=thresholds.anchor_reach_px,
             brace_min_height_px=thresholds.brace_min_height_px,
+            page_spanning_area_bp=thresholds.page_spanning_area_bp,
         )
         # **A page the structure pass found nothing on is cut anyway.** Tyrel
         # ruled 2026-08-11: "If the designator sees no text it should default to
@@ -1305,6 +1321,10 @@ def _analyze_page(
             # distance it was taken from cannot be checked.
             "dark_mode": dark_mode,
             "groups": groups,
+            # The components the grouping pass withheld as page-spanning, in the
+            # scan's own deterministic order. Empty on every page that has no
+            # such component, which is every fixture page in this repository.
+            "page_spanning": page_spanning,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,
             # The raw scanned components, kept beside the groups for the live
@@ -2271,6 +2291,26 @@ def _publish_conservation_and_secondary(
     # writing.
     if analysis["surround"] is not None:
         conservation_payload["surround"] = analysis["surround"]
+    # Present only on a page that had one, absent on every other, exactly like
+    # `surround` above and for the same reason: a key carrying an empty list on
+    # every fixture page would move bytes nothing measured differently.
+    #
+    # What it records is the decision itself. A component at or past the sealed
+    # `page_spanning_area_bp` was withheld from column assignment and body
+    # chaining -- see `grouping.partition_page_spanning` -- and none of its
+    # pixels was removed from anything: they are inside `total_ink_pixel_count`
+    # above and, because no group claims them, inside `residual_pixel_count`
+    # too, where they are minted as a held act. Without this block a reader
+    # holding the record would see a residual the size of a leaf and no
+    # statement anywhere of why the grouping pass declined to claim it.
+    # Indexed, not `.get`: `_analyze_page` sets this key on every path it
+    # takes, the refused-background one included, so a missing key is a bug and
+    # should say so rather than publish nothing.
+    if analysis["page_spanning"]:
+        conservation_payload["page_spanning_components"] = [
+            {"bounds": dict(component["bounds"]), "pixel_count": component["pixel_count"]}
+            for component in analysis["page_spanning"]
+        ]
     if not withheld:
         conservation_payload["residual_components"] = components
     _refuse_text_fields(conservation_payload)

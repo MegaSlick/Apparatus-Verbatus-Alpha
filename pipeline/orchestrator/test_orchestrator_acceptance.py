@@ -1638,10 +1638,56 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # independent temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest`, and the two trees compared file
 # by file.
+# **Grouping without the bezel (`work/grouping-without-the-bezel`).** Both
+# digests move again, and this is the smallest move in this list: one sealed
+# config's bytes and one new field on a record that already existed.
+#
+# The Designator's grouping pass gains a bound. A connected component whose
+# bounding box covers `[grouping.page_area_bp] page_spanning_area_bp` of the
+# page -- 5000 basis points, half a leaf -- is withheld from column assignment
+# and body chaining, because on a photographed register opening the bezel is
+# counted as ink by decision, labels as ONE component whose bounding box is the
+# whole leaf, and welds every other component on the page to it. Measured on 14
+# real pages: `group_page` returned one group with the page's own bounds on every
+# one of them, holding up to 440 body components, and `conservation.reconcile`
+# then minted zero residual because the declared coverage was the leaf.
+#
+# **No fixture page is touched by the bound, and that is measured rather than
+# argued.** The largest component on any walking-skeleton page covers 2996 basis
+# points of a 200x260 page, well under the 5000 bound, so nothing is withheld,
+# no page publishes the new `page_spanning_components` block at all, and every
+# conservation number is identical on both pages of both scenarios: page 1
+# `total_ink_pixel_count` 11,520 / claimed 11,520 / residual 0, page 2 3,840 /
+# 3,840 / 0, both `inferred-modal` at paper 230. Every declared act rectangle is
+# unmoved. That was checked field by field against the baseline trees, not
+# inferred from the leaf census -- an act identity is a 64-hex string too, so a
+# moved crop would have been counted as a digest.
+#
+# What moves is therefore two things and no more. `config/designator_grouping.
+# toml` gains the `[grouping.page_area_bp]` table, its provenance block and a
+# header paragraph, and that file's bytes are sealed into every run by SHA-256,
+# so a comment moves every downstream digest. And `structure-status`'s
+# `resolved_thresholds` gains `page_spanning_area_bp`, because that record
+# publishes `GroupingThresholds` whole and the bound is now on it -- one newly
+# present leaf per page, value 5000, two per scenario.
+#
+# Attributed leaf by leaf (`scripts/leafdiff.py`, which prints any leaf it
+# cannot attribute) against baseline trees built from a worktree pinned at the
+# preceding commit `96ff55722e` under its own name with its own venv, which
+# reproduced the retired digests `81c789e6...` and `5b4a8b93...` exactly before
+# anything was compared. Happy: 75 changed files, 402 changed leaves -- 379 bare
+# 64-hex digests, 21 `relative_path` values naming a content-addressed blob, 2
+# the new field, and **zero anything else**. Review: 87 files, 449 leaves -- 430,
+# 17, 2, and **zero**. Two blobs per scenario are renamed in `4_perlector` and
+# `7_armarium`, each one's name being its own content digest. Snapshot counts and
+# exit codes unmoved: happy 96 files at exit 0, review 107 at exit 3. Both
+# digests measured twice in independent temporary roots at canonical run id "r"
+# through this module's own `orchestrate` and `semantic_snapshot_digest`, and the
+# two trees per scenario compared file for file identical.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "81c789e680fc980560a665b8b14d365d35bdab34c366fe626ae9070ad296b4e4"
-REVIEW_RUN_TREE_DIGEST = "5b4a8b9307f5e8b30662ae6d333a480b332756e2d09f8d15de11229277339a25"
+HAPPY_RUN_TREE_DIGEST = "1a7398afa71d983d47486572c8f206ca0a667b8cfbcfe7a547666d7768765cca"
+REVIEW_RUN_TREE_DIGEST = "558dda5ab8eb74ca11119a8e87e3634c0b89cca25bd02ab88ba6f170b7a08f97"
 
 
 def orchestrate(

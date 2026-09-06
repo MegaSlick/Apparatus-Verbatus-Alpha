@@ -39,6 +39,34 @@
 # provenance caveat below. It is the one field in this file this build cannot
 # honestly set.
 #
+# `[grouping.page_area_bp]` holds `page_spanning_area_bp`, and it is a fourth
+# sub-table rather than an eighth `page_fraction_bp` field because it is a
+# fraction of the page's AREA and never resolves to pixels at all.
+# `page_fraction_bp`'s whole contract is one declared basis per field -- WIDTH or
+# HEIGHT -- and a field that is a fraction of both at once has no place in it;
+# `band_bp` already sits outside that table for the same reason. It carries its
+# own provenance block, with `sample_count = 17`, because unlike the seven
+# unmeasured defaults it was measured against real material and unlike
+# `[grouping.background]`'s four it was measured on seventeen pages rather than
+# on 127.
+#
+#   page_spanning_area_bp  how much of the page one connected component's
+#                          bounding box may cover and still be treated as
+#                          CONNECTIVE TISSUE by the grouping pass. A component
+#                          at or past this bound is withheld from column
+#                          assignment and from body chaining. It is NOT removed
+#                          from the page, from the ink count, or from
+#                          conservation: its pixels stay below the ink
+#                          threshold, stay in `total_ink_pixel_count`, and reach
+#                          `conservation.reconcile` as residual -- which is the
+#                          direction GOALS 1 requires, because a residual is a
+#                          held act a reviewer sees and a silently deleted
+#                          pixel is not. The component itself is published by
+#                          name on the page's conservation record
+#                          (`page_spanning_components`), so what was set aside
+#                          is on the record rather than inferable from a
+#                          missing group
+#
 # `[grouping.background]` holds the policy the per-page background inference runs
 # under. **Three stages read it, not one.** The inference moved to
 # common/background.py on 2026-09-06 so that the Ink Map (pipeline/1_ink_map) and
@@ -184,6 +212,18 @@ fallback_overlap_bp = 308
 
 [grouping.absolute]
 gap_tolerance_px = 3
+
+[grouping.page_area_bp]
+page_spanning_area_bp = 5000
+
+[grouping.page_area_bp.provenance]
+source = "measured on this Mac, 2026-09-06, over 17 real pages: the seven review proxies under private/triage/measured/2026-08-22_005469606_62-68 and the ten photographed register pages the ink-margin unit measured on (four sources: Embrun, Montebello, recordgold_evaluation_val_v1, teklia_dai_cretdhi). Three of the seventeen are refused by [grouping.background] max_ink_bp and are not in any figure below, so every number here is over the 14 pages that infer a paper value. Each page was decoded through common.imaging.grayscale_rows, scanned through the shipped structure.primary_scan at the margin the page derives for itself, labelled through the shipped structure.label_components at the sealed gap_tolerance_px = 3, and grouped through the shipped grouping.group_page; the driver, its raw records and the before/after overlays are named in the session's GROUPING_REPORT.md. No page was copied into this tree and nothing under private/ was modified"
+corpus = "the same 17 real pages the shared-background unit measured the coverage audit on -- 1.5 to 18.4 megapixels, photographed register openings and scans from four parish registers and one expert OCR corpus. EVERY ONE OF THE 14 THAT INFER HAS A WIDE DARK BEZEL, which is the whole limitation of the sample: it contains no photographed page without one, so it cannot show what this bound does on a page whose largest component is a genuine mark. No page here passed through pipeline/1_exemplar"
+sample_unit = "page"
+sample_count = 17
+statistic = "the bounding-box area of every connected component the primary scan finds, as floor-divided basis points of the page's own area, over all 14 measurable pages -- reported as the largest value and the largest value excluding the single page-spanning component, because the bound is placed in a measured gap between those two populations and not at a quantile. Beside it, for the same 14 pages before and after the bound is applied: the number of act groups, the group bounding-box areas in the same basis points, the number of groups whose bounds reach a page edge, and the residual component and pixel counts conservation.reconcile mints against the resulting coverage"
+calibrated_for_this_corpus = true
+caveat = "WHAT THE SAMPLE ESTABLISHES. On all 14 measurable pages exactly ONE component's bounding box covers the whole page: span 10000 basis points of the width AND of the height, bounding box {x:0, y:0, w:page width, h:page height}, holding 69.5 to 95.2 percent of every ink pixel the scan counted (median 85.68). The largest bounding box of any OTHER component on any of the 14 is 472 basis points -- 4.7 percent of a page -- so the gap this bound sits in runs from 472 to 10000 and is 9528 basis points wide, which is the widest gap any value in this file has been placed in. The bound is not, however, free within that gap: the FLOOR is set by this repository's own fixture pages, whose largest component covers 2996 basis points of a 200x260 page and is a legitimate act, so any value at or below 2996 would withhold a real act on the walking skeleton and every fixture measurement would move. 5000 is chosen as half the page: it is 1.7x the fixture floor and 2x below every measured frame, and half a leaf is the largest a single connected act could be argued to be. WHAT CHANGES, MEASURED. Before the bound, group_page returned 10 to 439 groups per page of which exactly one had the page's own bounds -- maximum group area 10000 basis points on all 14 -- and conservation.reconcile minted 0 residual components and 0 residual pixels on all 14, so the coverage audit's denominator, 'ink outside declared coverage', was empty by construction. After it, the group count moves by at most 1 on every page (unchanged on 9, one fewer on 4, one more on 1), the maximum group area falls to 883 to 5258 basis points, the number of groups whose bounds reach a page edge falls from 1 to 0 on all 14, the number of groups covering more than a quarter of the page falls from 1 or 2 to 0 on 9 of the 14, and conservation mints 1 residual component on 11 of the 14 and 71, 113 and 320 on the other three, against the sealed max_residual_components of 2000 -- so no page is held as one and the guaranteed fallback grid does not fire on any of the 14, every one of which still reads as 'detected'. WHAT THE SAMPLE DOES NOT ESTABLISH. It does not establish that 5000 is right rather than 4000 or 8000: every value from 2000 to 9000 gives an identical partition on all 14 pages, because on each of them there is exactly one component in the gap and it covers the entire page. The value is therefore chosen by the fixture floor and by reasoning about what an act can be, not discriminated by this corpus, and that is the honest statement of it. It establishes nothing about a page with no bezel, because it contains none: on a page whose text is dense enough that gap_tolerance_px = 3 welds every line into one component covering more than half the leaf, this bound would withhold that component and the page's writing would reach review as a residual hold rather than as grouped acts. That failure is visible and is in the safe direction -- before this bound the same page produced one whole-page group whose coverage was vacuous and whose crop was the leaf -- but it is a failure and it is not measured here. It establishes nothing about a page admitted through pipeline/1_exemplar, and nothing about what a real structure-pass model would propose, since the walking skeleton has no model to call. FIVE OF THE 14 STILL CARRY A GROUP OVER A QUARTER OF THE PAGE after the bound (3175 to 5258 basis points), and the overlays show what they are: on three review proxies, one Montebello master and one RecordGold evaluation page the group spans one leaf of a two-leaf opening. That is the limit [grouping.background]'s own caveat already names -- one paper value inferred for a frame holding two differently-lit leaves -- reaching grouping rather than a second page-spanning component this bound missed. A per-region background is the repair and it is a different unit. Finally, this bound never removes a pixel from the ink count or from conservation: a component it withholds is still ink, still in total_ink_pixel_count, and reaches conservation as residual, where it is minted as a held act a reviewer opens. Nothing here is a silent loss, and see pipeline/2_designator/grouping.py::partition_page_spanning for why withholding is not the same as excluding"
 
 [grouping.background]
 band_bp = 500

@@ -27,6 +27,11 @@ _THRESHOLDS = {
     "chain_gap_px": 6,
     "anchor_reach_px": 2,
     "brace_min_height_px": 30,
+    # The sealed value, so these two-component pages are grouped under the same
+    # bound a real page is. Both of them build components well under it -- 120x40
+    # on a 200x300 page is 800 basis points against 5000 -- so nothing here is
+    # withheld and both tests still test what they were written to test.
+    "page_spanning_area_bp": 5000,
 }
 
 
