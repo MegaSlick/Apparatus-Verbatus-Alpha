@@ -489,9 +489,9 @@ def page_pixels(
     whose paper was inferred from its interior under a dark photographic
     surround has a measurement to publish, and dropping it on the way back would
     be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
-    grouping config, resolved to *this* page's own dark-surround band here
-    through `grouping_config.resolve_surround_policy` -- the one resolver for
-    that policy, so this call site and any other cannot come to disagree.
+    grouping config, resolved to *this* page's own background-inference policy
+    here through `grouping_config.resolve_background_policy` -- the one resolver
+    for that policy, so this call site and any other cannot come to disagree.
 
     `common.imaging.grayscale_rows`, not `decode_grayscale_png`: the latter
     refuses by design anything this project's own encoder did not write, so
@@ -518,7 +518,7 @@ def page_pixels(
         width,
         height,
         rows,
-        surround_policy=grouping_config.resolve_surround_policy(grouping_policy, width, height),
+        background_policy=grouping_config.resolve_background_policy(grouping_policy, width, height),
     )
     return width, height, rows, evidence
 
@@ -2203,10 +2203,14 @@ def _publish_conservation_and_secondary(
     # nothing measured differently; `background_source` already says which
     # branch inferred this page's paper, so an absent `surround` is not a
     # fact going unrecorded. What it records when present is how much of this
-    # page's counted ink is photographic bezel rather than writing -- the
-    # surround is never removed from the scan or from this reconciliation
-    # (see `structure._dark_surround` for why), so without this a reader
-    # would take an ink fraction of two thirds for two thirds of writing.
+    # page's counted ink is photographic bezel rather than writing. Its two
+    # dark counts bracket that: `border_dark_pixel_count` is a lower bound
+    # (22.5% to 58.1% of the counted ink on the 65 pages of the 127-page
+    # calibration that reach this branch) and `dark_pixel_count` an upper one
+    # (30.3% to 83.6%). The surround is never removed from the scan or from
+    # this reconciliation (see `structure._dark_surround` for why), so without
+    # this a reader would take an ink fraction of two thirds for two thirds of
+    # writing.
     if analysis["surround"] is not None:
         conservation_payload["surround"] = analysis["surround"]
     if not withheld:

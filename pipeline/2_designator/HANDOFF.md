@@ -558,7 +558,9 @@ visibly different on disk rather than identical to an ordinary scan. A page on
 the second branch also carries a `surround` block on its conservation record:
 the band the test ran on, the level it called dark, how many pixels that was,
 and the border and interior fractions it measured. That block is present only on
-such a page, so no existing record's bytes move for it.
+such a page, so no existing record's bytes move for it. It carries two dark
+counts, which bracket the bezel from below and above rather than either one being
+it — see "The surround is measured, never removed" below.
 `structure_evidence` says whether the crops on this page came from detection or
 from the predetermined grid. Both were computed in an in-process dict that
 nothing published, which meant neither fact survived the run. Both are `null` on
@@ -1236,14 +1238,102 @@ pixel is paper" is sound for a flatbed scan and false for a photograph.
 whether the dark majority is a *frame* around a lighter interior, or the page
 itself. It is a geometric test because the distinction is geometric — an
 inverted scan and a photographed page are both "most of the page is dark", and
-what separates them is where the dark is. Where the border band is dark and the
-interior is not, the paper value is the modal pixel at or above the page's own
-mean; that value still faces the `PRIMARY_MARGIN` guard, and every shape above
-still refuses by name. The three thresholds are sealed in
-`config/designator_grouping.toml`'s `[grouping.surround]`, which is the one block
-in that file with a `calibrated_for_this_corpus = true` provenance and a
-`sample_count` above zero — its own block, because the rest of the file is
-unmeasured defaults and one provenance could not describe both truthfully.
+what separates them is where the dark is. Where the interior is not itself dark,
+the paper value is the modal pixel at or above the page's own mean; that value
+still faces the `PRIMARY_MARGIN` guard, and every shape above still refuses by
+name. The thresholds are sealed in `config/designator_grouping.toml`'s
+`[grouping.background]`, which is the one block in that file with a
+`calibrated_for_this_corpus = true` provenance and a `sample_count` above zero —
+its own block, because the rest of the file is unmeasured defaults and one
+provenance could not describe both truthfully.
+
+**The fourth shape is the one the seven-page calibration could not see, and it is
+the quiet one.** On 6 of 127 real pages the modal pixel is 255 — a blown
+highlight, a scanner mount, a saturated margin — which is *lighter* than the
+mean, so the majority-ink question is never asked at all, 255 is taken as paper,
+and 71 to 85% of the page is counted as ink. `group_page` finds structure,
+`conservation.reconcile` balances exactly, residual is zero, and nothing in the
+record marks it. So a fourth question is asked of both branches, and it needs no
+geometry: does the inferred value leave the page a *minority* of ink? A
+background is the surface most of the page is; a value that puts 70% or more of
+its own page below the threshold it implies is not one. That bound is
+`max_ink_bp`, and a page over it is refused by name.
+
+### The background inference, calibrated on 127 pages
+
+This is the committed record `[grouping.background.provenance]`'s `source`
+points at. Measured 2026-09-06 over 60 RecordGold pages, 60 parish master pages
+and the seven review proxies, sampled by the fixed seed
+`designator-survey-2026-09-06`; the fuller write-up, the per-page tables and the
+overlays are in the session's Designator report and in
+`workbench/standing/SPEC_FINDINGS.md`. Pages under `/Users/tyrel/OCR_Gold` and
+`/Users/tyrel/Metis_Research` were read where they lie and never copied into this
+tree. Rows marked **SYNTHETIC** are shape tests built by
+`test_structure.py`/`test_structure_failure.py`, not photographs.
+
+**What each lever is, and what it was measured against.**
+
+| lever | value | rejected alternatives, measured | where it sits |
+|---|---:|---|---|
+| `band_bp` | 500 | 250 and 1000 bp. At the two bounds below, all three give an **identical** accept-or-refuse outcome and an identical paper value on every one of the 127 pages — the band is no longer a lever at all. 500 is kept for the widest interior valley (3,195 bp against 2,067 at 250) and because at 1000 the band is 36% of the page's area and stops being a frame | unchanged from the seven-page calibration |
+| `max_interior_dark_bp` | 5000 | 3000 (the seven-page value) refuses 3 real pages and buys nothing; 6000 admits the dark-core SYNTHETIC control at a 250 bp band | in a measured 3,195 bp valley, 49 bp below its midpoint |
+| `max_ink_bp` | 7000 | 8000 admits 5 of the 6 silent pages; 10000 is the bound switched off and the loader now refuses it | a **policy** bound in a continuum, in the widest gap near the top (6595→7077) and 77 bp nearer the refusing side |
+| ~~`min_border_dark_bp`~~ | *removed* | 7000 refused 52 of 127; 3000–4000 would admit 82%/69% of the majority-ink pages. Removed rather than lowered: it refuses no control the interior bound does not, so no value of it earns its cost | — |
+
+**The interior statistic, at the level midway between the page's dark mode and
+its light mode**, over the 72 of 127 pages that reach the surround test:
+
+| band | real pages (min / median / max) | SYNTHETIC dark-core control | SYNTHETIC inverted scan | valley |
+|---:|---|---:|---:|---|
+| 250 bp | 409 / 1534 / 3923 | 5990 | 8170 | 2,067 bp |
+| **500 bp** | **287 / 955 / 3452** | **6647** | **8333** | **3,195 bp** |
+| 1000 bp | 233 / 790 / 2886 | 8413 | 8750 | 5,527 bp |
+
+The border-band figure at the same level, published and deciding nothing: real
+pages 4852 / 8166 / 10000 at 500 bp, against 6578 for the inverted-scan
+SYNTHETIC control — darker than 9 of the 72 real pages, which is why no bound on
+it can separate them.
+
+**The whole-page ink statistic** at `background - PRIMARY_MARGIN` under the
+inferred paper, over all 127: minimum 281, median 4052, maximum 8502 bp. It is a
+continuum with no gap wider than 505 bp anywhere in it, so `max_ink_bp` is
+placed and not derived. The gaps at the top: 6148 → 6595 (447), **6595 → 7077
+(482)**, 7077 → 7211 (134), then nothing wider than 168 until 7997 → 8502 (505).
+
+**Outcome on the 127, against the seven-page calibration it replaces:**
+
+| source | pages | inferred | `inferred-modal` | `inferred-interior-mode` | refused | refusal rate |
+|---|---:|---:|---:|---:|---:|---:|
+| teklia_dai_cretdhi | 24 | 21 | 9 | 12 | 3 | 12.5% |
+| recordgold_production_train_v1 | 32 | 29 | 11 | 18 | 3 | 9.4% |
+| recordgold_evaluation_val_v1 | 4 | 4 | 0 | 4 | 0 | 0.0% |
+| Embrun | 15 | 13 | 0 | 13 | 2 | 13.3% |
+| Oka | 15 | 15 | 14 | 1 | 0 | 0.0% |
+| Montebello | 15 | 13 | 0 | 13 | 2 | 13.3% |
+| Saint-Jacques | 15 | 15 | 15 | 0 | 0 | 0.0% |
+| control (7 proxies) | 7 | 4 | 0 | 4 | 3 | 42.9% |
+| **all** | **127** | **114** | **49** | **65** | **13** | **10.2%** |
+
+The seven-page calibration refused **52 of 127 (40.9%)**, every one of them by
+`min_border_dark_bp`. This one refuses **13 (10.2%)**, every one of them by
+`max_ink_bp` — that is, every remaining refusal is a page whose inferred paper
+was not a background, which is the failure this stage should be loud about. 48
+pages move from refused to inferred and 9 the other way; the 9 are the 6 silent
+paper-255 pages and 3 of the seven review proxies, whose ink fractions at
+`PRIMARY_MARGIN` (0.7449, 0.7557, 0.7690) are as unreadable as the six.
+
+**Scale invariance, measured rather than argued.** Over the 73 sampled pages that
+carry a DPI tag, resampled to a 300-DPI equivalent with LANCZOS: the outcome is
+unchanged on **72 of 73**, and on those 72 the inferred paper value moves by at
+most **2 grey levels** (median 0). The single page that changes is refused
+natively by `max_ink_bp` and inferred after the resample. The same 73 pairs under
+the seven-page calibration agree on **64 of 73**. The old block's admissibility
+argument — that its three values were population fractions and therefore
+scale-invariant — was wrong in a way worth naming: the fractions were
+scale-invariant and the *level they were measured at*, the page's own modal
+pixel, was not. A LANCZOS resample smooths a hard black spike away and the mode
+moves off it. The level is now a valley between two modes, which is what the 2
+grey levels above are measuring.
 
 **The surround is measured, never removed.** Every surround pixel stays on the
 page, stays below the ink threshold, and is counted as ink by `primary_scan` and
@@ -1251,17 +1341,30 @@ reconciled as ink by `conservation.reconcile`. Masking it out would mean decidin
 where the page ends, and a page edge misjudged by thirty pixels would silently
 delete a marginal name — the loss GOALS 1 ranks worst. Counting the bezel is a
 visible over-count that reconciles; excluding it is an invisible loss. What the
-`surround` block on the conservation record buys is the interpretation: on these
-seven pages 30 to 54% of the counted ink is bezel, and without that number a
-reader takes an ink fraction of 0.66 for two thirds of a page of writing.
+`surround` block on the conservation record buys is the interpretation. It
+carries two counts, and together they *bracket* the bezel rather than either one
+being it: `border_dark_pixel_count` is the dark inside the border band, a lower
+bound because a real frame is usually wider than `band_bp`, and
+`dark_pixel_count` is the whole page at or below the level, an upper bound
+because the page's own deep writing is at or below it too. Over the 65 pages of
+the 127-page calibration that infer through this branch, the bezel is between
+**22.5% and 58.1%** of the counted ink by the lower bound (median 36.6%) and
+between **30.3% and 83.6%** by the upper (median 56.9%). Without those numbers a
+reader takes an ink fraction of 0.66 for two thirds of a page of writing. One
+number here would have been read as the bezel and been wrong in a direction
+nobody could tell, which is why there are two.
 
 **What this does not fix, named rather than deferred.** `PRIMARY_MARGIN = 20` is
-still wrong on photographed paper: excluding the bezel entirely, 20 to 51% of
-each of these pages still falls below `background - 20`
-(`TIMING_REPORT_2026-09-05.md` §1c), so component count still *falls* as
-`gap_tolerance_px` rises on real pages and finding 6 still cannot be answered.
-Fixing the background inference was the prerequisite for that measurement, not
-the measurement itself.
+still wrong on photographed paper, and the 127-page survey confirmed it while
+correcting the model of why: raising the margin to 40 or 60 does *not* fragment
+the page into strokes, because the floor under the ink fraction is the bezel
+(16-38% of a photographed page's area) and no value of this constant can move it.
+Component count therefore still falls as `gap_tolerance_px` rises on real pages,
+and the number cannot be derived from a component-count curve on this material at
+all. It is also the reason `max_ink_bp` refuses three of the seven review
+proxies: at a margin of 20 their ink fractions are not measurements either. The
+honest statement is that 20 is too permissive and no measurement here identifies
+a replacement.
 
 What follows a refusal is deliberately *not* a substituted threshold. The page
 is cut into predetermined crops and sent downstream to be read, its

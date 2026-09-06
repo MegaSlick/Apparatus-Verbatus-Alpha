@@ -305,7 +305,7 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
         width,
         height,
         rows,
-        surround_policy=grouping_config.resolve_surround_policy(
+        background_policy=grouping_config.resolve_background_policy(
             grouping_config.load_grouping_config(
                 Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
             ),

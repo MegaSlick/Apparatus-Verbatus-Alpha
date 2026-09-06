@@ -13,12 +13,20 @@ resolves against is structural, not a naming convention: `page_fraction_bp`
 values are basis points of the page's own WIDTH (`margin_bp`) or HEIGHT
 (every other field) as declared in the config file's header comment, while
 `absolute` values are raw pixel counts that must never be scaled by page
-size at all. `surround` is the third and it carries its own provenance block:
+size at all. `background` is the third and it carries its own provenance block:
 its `band_bp` is the one length in this file that resolves against *both*
 dimensions, because the band it describes is a frame, and its other two fields
 are fractions of a pixel population rather than of a page and never resolve to
 pixels at all. Putting a field in the wrong sub-table is refused by the closed
 schema rather than caught by a comment nobody reads.
+
+That block was called `surround` until 2026-09-06, when it stopped being only a
+surround test: `max_ink_bp` asks whether the value inferred as paper is a
+background of its own page at all, on a page that has no surround and never
+reaches the geometric test. A sub-table named for one of its three fields is the
+misnaming GLOSSARY's "one word per concept" refuses, so it is named for what it
+governs. The *evidence* a framed page publishes is still `surround`, because
+that block really is about the surround.
 
 `primary_margin` and `secondary_margin` are refused by name wherever they
 appear, in either sub-table or at the policy's own top level. They are
@@ -84,7 +92,7 @@ _GROUPING_COUNT_FIELDS: Final = (
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "page_fraction_bp",
     "absolute",
-    "surround",
+    "background",
     "provenance",
 )
 
@@ -165,7 +173,7 @@ def load_grouping_config(
     absolute = _load_closed_int_table(
         grouping.get("absolute"), _ABSOLUTE_FIELDS, "[grouping.absolute]"
     )
-    surround = _load_surround(grouping.get("surround"))
+    background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
 
     return {
@@ -173,7 +181,7 @@ def load_grouping_config(
         **counts,
         "page_fraction_bp": page_fraction_bp,
         "absolute": absolute,
-        "surround": surround,
+        "background": background,
         "provenance": provenance,
     }
 
@@ -219,10 +227,10 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     `where` is the block's own table name, because this policy now carries two
     of them:
     the file's own, over values that are unmeasured walking-skeleton defaults,
-    and `[grouping.surround]`'s, over three values measured on seven real
-    photographed pages. One shared block could not describe both honestly --
-    `sample_count` alone is 0 for one and 7 for the other -- so there are two,
-    and this function holds both to the same schema.
+    and `[grouping.background]`'s, over three values measured on 127 real pages.
+    One shared block could not describe both honestly -- `sample_count` alone is
+    0 for one and 127 for the other -- so there are two, and this function holds
+    both to the same schema.
 
     Identical shape to `geometry._load_padding_provenance`, for the same
     reason: every field is required and checked for shape, so a provenance
@@ -262,46 +270,48 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     return dict(provenance)
 
 
-# `[grouping.surround]`: the shape test that tells a photographed page from a
-# dark page, and the one block in this file measured against real material.
+# `[grouping.background]`: how this stage infers a page's paper value, and the
+# one block in this file measured against real material.
 # `band_bp` is a length and scales with the page, but it is the only field here
 # that resolves against a page dimension and it resolves against BOTH -- the
 # band is a frame, `band_bp` of the width on the left and right and `band_bp` of
 # the height on top and bottom -- so it cannot live in `page_fraction_bp`, whose
 # whole contract is one declared basis per field. The other two are fractions of
-# a *population* rather than of a page, so they never resolve to pixels at all.
-_SURROUND_BP_FIELDS: Final = ("band_bp", "min_border_dark_bp", "max_interior_dark_bp")
+# a *population* rather than of a page, so they never resolve to pixels at all:
+# `max_interior_dark_bp` of the interior band's own pixels, `max_ink_bp` of the
+# whole page's.
+_BACKGROUND_BP_FIELDS: Final = ("band_bp", "max_interior_dark_bp", "max_ink_bp")
 
 
-def _load_surround(table: Any) -> dict[str, Any]:
-    """Read `[grouping.surround]` and its own provenance.
+def _load_background(table: Any) -> dict[str, Any]:
+    """Read `[grouping.background]` and its own provenance.
 
     A provenance block of its own, rather than a line in the file's shared one:
     every other value in this policy is an unmeasured walking-skeleton default
-    with `sample_count = 0`, and folding three values measured on seven real
-    pages into that block would either overstate the rest of the file or
-    understate these. Two blocks say two true things; one would say a false one.
+    with `sample_count = 0`, and folding three values measured on 127 real pages
+    into that block would either overstate the rest of the file or understate
+    these. Two blocks say two true things; one would say a false one.
     """
     if not isinstance(table, dict):
-        raise ContractError("the grouping configuration has no [grouping.surround] table")
-    _refuse_forbidden_names(table, "[grouping.surround]")
-    expected = set(_SURROUND_BP_FIELDS) | {"provenance"}
+        raise ContractError("the grouping configuration has no [grouping.background] table")
+    _refuse_forbidden_names(table, "[grouping.background]")
+    expected = set(_BACKGROUND_BP_FIELDS) | {"provenance"}
     unexpected = sorted(set(table) - expected)
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's [grouping.surround] carries unknown field(s) "
+            f"the grouping configuration's [grouping.background] carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted(expected - set(table))
     if missing:
         raise ContractError(
-            f"the grouping configuration's [grouping.surround] is missing field(s) {missing}"
+            f"the grouping configuration's [grouping.background] is missing field(s) {missing}"
         )
-    values = {name: table[name] for name in _SURROUND_BP_FIELDS}
-    for name in ("min_border_dark_bp", "max_interior_dark_bp"):
+    values = {name: table[name] for name in _BACKGROUND_BP_FIELDS}
+    for name in ("max_interior_dark_bp", "max_ink_bp"):
         if not _is_plain_int(values[name]) or not 0 <= values[name] <= BP_DENOMINATOR:
             raise ContractError(
-                f"the grouping configuration's [grouping.surround] {name} is not a basis-point "
+                f"the grouping configuration's [grouping.background] {name} is not a basis-point "
                 f"integer in 0..{BP_DENOMINATOR}"
             )
     # A band of zero leaves no border to measure and a band at or over half the
@@ -310,29 +320,32 @@ def _load_surround(table: Any) -> dict[str, Any]:
     # either, and a page would then refuse for a reason no config line stated.
     if not _is_plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BP_DENOMINATOR // 2:
         raise ContractError(
-            "the grouping configuration's [grouping.surround] band_bp is not a basis-point "
+            "the grouping configuration's [grouping.background] band_bp is not a basis-point "
             f"integer strictly between 0 and {BP_DENOMINATOR // 2}; a band of zero has no "
             "border to measure and a band of half the page has no interior to compare it against"
         )
-    # The test asks whether the border is darker than the interior. A minimum
-    # border darkness at or below the maximum interior darkness cannot express
-    # that: it would admit a page whose interior is darker than its border, which
-    # is the dark-page shape this test exists to keep refusing.
-    if values["min_border_dark_bp"] <= values["max_interior_dark_bp"]:
-        raise ContractError(
-            "the grouping configuration's [grouping.surround] min_border_dark_bp "
-            f"({values['min_border_dark_bp']}) is not above max_interior_dark_bp "
-            f"({values['max_interior_dark_bp']}); a dark surround is a border darker than the "
-            "interior, and these two bounds as written would admit the reverse"
-        )
+    # Both bounds refuse, and a bound at the top of its range refuses nothing.
+    # `max_interior_dark_bp = 10000` admits a page every one of whose interior
+    # pixels is at or below the level -- an inverted scan and a page of solid
+    # dark alike -- and `max_ink_bp = 10000` admits a background that leaves the
+    # whole page as ink. Either is the test switched off by a value rather than
+    # by a decision, which is the shape this file refuses everywhere else.
+    for name in ("max_interior_dark_bp", "max_ink_bp"):
+        if values[name] == BP_DENOMINATOR:
+            raise ContractError(
+                f"the grouping configuration's [grouping.background] {name} is "
+                f"{BP_DENOMINATOR} basis points, which refuses nothing: a bound at the top of "
+                "its own range is the test turned off, and this policy is sealed into a run "
+                "as something that decides"
+            )
     values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.surround.provenance]"
+        table.get("provenance"), "[grouping.background.provenance]"
     )
     return values
 
 
-def resolve_surround_policy(config: dict[str, Any], width: int, height: int) -> dict[str, int]:
-    """One page's own resolved dark-surround test.
+def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> dict[str, int]:
+    """One page's own resolved background-inference policy.
 
     Separate from `resolve_thresholds` and deliberately *not* a field of
     `GroupingThresholds`. `run.py` publishes the whole `GroupingThresholds` as a
@@ -347,12 +360,12 @@ def resolve_surround_policy(config: dict[str, Any], width: int, height: int) -> 
     carries exactly one rounding rule.
     """
     _validate_dimensions(width, height, "page")
-    surround = config["surround"]
+    background = config["background"]
     return {
-        "band_px_x": _pad_amount(width, surround["band_bp"]),
-        "band_px_y": _pad_amount(height, surround["band_bp"]),
-        "min_border_dark_bp": surround["min_border_dark_bp"],
-        "max_interior_dark_bp": surround["max_interior_dark_bp"],
+        "band_px_x": _pad_amount(width, background["band_bp"]),
+        "band_px_y": _pad_amount(height, background["band_bp"]),
+        "max_interior_dark_bp": background["max_interior_dark_bp"],
+        "max_ink_bp": background["max_ink_bp"],
     }
 
 
