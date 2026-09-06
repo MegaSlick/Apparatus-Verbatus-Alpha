@@ -82,6 +82,17 @@ _PROFILE_FIELDS = {
     "readiness_probe",
     "preflight_state",
 }
+# Optional on a vLLM row, and optional deliberately.  ``patch_size``/
+# ``merge_size`` are the chair's vision-encoder geometry, read from the pinned
+# revision's own ``preprocessor_config.json``; they decide how many prompt
+# tokens one image costs (``common/request_capacity.py``).  vLLM reads them
+# from the model repository, so a row that omits them still launches -- what it
+# cannot do is have a request checked against it before it is sent, and
+# ``request_capacity.row_image_geometry`` refuses by name in that case rather
+# than counting against a default that is wrong for half the roster.  Left
+# optional so a catalogue that has not been measured is incomplete rather than
+# unloadable.
+_OPTIONAL_PROFILE_FIELDS = {"patch_size", "merge_size"}
 _PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PREFLIGHT_IDENTITY_FIELD = "preflight_identity_digest"
 _PREFLIGHT_MARK_FIELDS = frozenset({"preflight_state", _PREFLIGHT_DIGEST_FIELD})
@@ -186,6 +197,11 @@ class ServingProfile:
     preflight_state: str
     preflight_digest: str | None
     preflight_identity_digest: str | None
+    # The chair's vision-encoder geometry, optional on the row and therefore
+    # optional here.  ``None`` means the catalogue has not stated it, which
+    # ``common/request_capacity.py`` refuses by name rather than defaulting.
+    patch_size: int | None = None
+    merge_size: int | None = None
     kind: str = "vllm"
 
     def __post_init__(self) -> None:
@@ -441,7 +457,12 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
             reason=_text(raw["reason"], "reason"),
         )
     unknown = sorted(
-        set(raw) - (_PROFILE_FIELDS | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD})
+        set(raw)
+        - (
+            _PROFILE_FIELDS
+            | _OPTIONAL_PROFILE_FIELDS
+            | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD}
+        )
     )
     missing = sorted(_PROFILE_FIELDS - set(raw))
     if unknown or missing:
@@ -469,6 +490,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
     max_pixels = _positive_int(raw["max_pixels"], "max_pixels")
     if min_pixels > max_pixels:
         raise ServingConfigurationError("min_pixels cannot exceed max_pixels")
+    patch_size = _optional_positive_int(raw, "patch_size")
+    merge_size = _optional_positive_int(raw, "merge_size")
     enable_prefix_caching = _bool(raw["enable_prefix_caching"], "enable_prefix_caching")
     enforce_eager = _bool(raw["enforce_eager"], "enforce_eager")
     trust_remote_code = _bool(raw["trust_remote_code"], "trust_remote_code")
@@ -540,6 +563,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         gpu_memory_utilization=fraction,
         min_pixels=min_pixels,
         max_pixels=max_pixels,
+        patch_size=patch_size,
+        merge_size=merge_size,
         enable_prefix_caching=enable_prefix_caching,
         enforce_eager=enforce_eager,
         trust_remote_code=trust_remote_code,
@@ -738,6 +763,19 @@ def _positive_int(value: Any, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ServingConfigurationError(f"{field} must be a positive integer")
     return value
+
+
+def _optional_positive_int(raw: Mapping[str, Any], field: str) -> int | None:
+    """A row's optional positive integer: absent is ``None``, present is checked.
+
+    Absent is a fact a consumer can refuse on by name; present-but-nonsense is
+    a catalogue defect and is refused here, at load, where every other malformed
+    field is.
+    """
+
+    if field not in raw:
+        return None
+    return _positive_int(raw[field], field)
 
 
 def _nonnegative_int(value: Any, field: str) -> int:
