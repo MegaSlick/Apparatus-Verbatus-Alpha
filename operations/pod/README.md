@@ -554,11 +554,30 @@ check.
   pre-populate the runtime-owned `served_engine` receipt field, so a fake cannot assert its
   own proof.
 
-The local command surface is `python -m operations.pod.cli`. It requires explicit
-untracked provider and controller-armer factories plus a request file, so this repository
-contains neither a credential, a personal provider default, nor an implicit controller
-process. It prints the previewed current price and ceilings before prompting for the exact
-typed confirmation; EOF is a refusal. **`--record-fixture PATH`** routes every provider
+The local command surface is `python -m operations.pod.cli`, with three verbs: `create`,
+`adopt`, and `close`. The first two require explicit untracked provider and
+controller-armer factories plus a request file, so this repository contains neither a
+credential, a personal provider default, nor an implicit controller process. They print
+the previewed current price and ceilings before prompting for the exact typed
+confirmation; EOF is a refusal.
+
+**`close --lease <id>` closes one live lease on purpose**, through
+`supervise.close_lease_now`, which drives the same `_close_lease` a supervisor tick drives
+on an `EXITED` pod — so the standard is the one standard above: exact-pod GET-404,
+independent pod-list absence, non-empty exact-pod billing through the cutoff, and
+`UNVERIFIED CLOSE` for anything short of it, which is reported as such and exits 3, never
+0. It writes the lease's terminal phase, and with `--notify` sends the same close line a
+create sends when it closes its own pod. It arms nothing, so it needs no
+`--controller-armer-factory`; it previews nothing and asks for no typed phrase, because it
+stops spending rather than starting it. It refuses, before any provider call, a lease this
+account does not hold — absent from the lease root, or armed under a different
+`--provider-name` — and a lease some live supervisor still holds, since two closers over
+one pod is what the lease's kernel lock exists to prevent. A configured `--spend` policy is
+required and is not a spend gate here: the shutdown controller's poll interval, deadline
+and billing-cutoff margin are reviewed values, and a close driven on invented timings is
+not the close this repository verifies. Before this verb existed a live pod could be closed
+only by its sealed hard lifetime, by a supervisor tick that happened to see a non-`RUNNING`
+state, or by the provider's console. **`--record-fixture PATH`** routes every provider
 exchange the launch sees — method, path, request body, status, response body, and a
 raised transport failure — through `fixture.py`'s recorder, appended as JSON lines
 (0600, fsynced per line, never truncated) so a drill boot leaves a replayable fixture

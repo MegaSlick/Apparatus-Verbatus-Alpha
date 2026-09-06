@@ -1,4 +1,4 @@
-"""Thin local command surface for the shared create/adopt gate.
+"""Thin local command surface for the shared create/adopt/close gate.
 
 It deliberately requires an explicit, untracked provider factory.  The tracked
 repository neither contains a credential nor chooses a provider account, GPU, or
@@ -17,13 +17,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
-from . import notify_hooks
+from . import notify_hooks, supervise
 from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
+from .lease import LeaseStore
 from .models import PodCreateRequest, require_utc
 from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
+from .shutdown import VerifiedShutdown
 from .spend import load_spend_policy
 
 
@@ -34,7 +36,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--controller-armer-factory",
-        required=True,
+        # Required for `create` and `adopt`, which arm two controllers, and
+        # checked as such below. `close` arms nothing -- it is the verb an
+        # operator reaches for when a pod is billing and something is already
+        # wrong, and making it demand an untracked arming factory it would never
+        # call would be one more thing to get right in exactly that moment.
+        required=False,
         help=(
             "untracked module:callable returning a durable two-controller handshake -- "
             "normally operations.pod.controller_armer.ChannelControllerArmer, given a "
@@ -80,7 +87,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="expected immutable pod/timer contract and hard deadline",
     )
+    close = subparsers.add_parser(
+        "close",
+        help=(
+            "close one live lease now, through the same verified path the supervisor "
+            "uses; no preview and no typed phrase, because this verb stops spending "
+            "rather than starting it"
+        ),
+    )
+    close.add_argument("--lease", required=True, help="exact lease id to close")
+    close.add_argument(
+        "--reason",
+        default="operator asked for an immediate close",
+        help="what to record in the close report and the durable lease",
+    )
     args = parser.parse_args(argv)
+    if args.command in {"create", "adopt"} and not args.controller_armer_factory:
+        parser.error(f"{args.command} requires --controller-armer-factory")
 
     recorder: FixtureRecorder | None = None
     try:
@@ -107,6 +130,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # spend gate made, not only for later ones.
     balance_wiring = _wire_balance_notify(provider, enabled=args.notify)
     try:
+        if args.command == "close":
+            # No preview, no balance reading, no typed phrase, and no arming
+            # seam: this verb stops spending rather than starting it, and it
+            # exists for the moment when a pod is billing and something has
+            # already gone wrong.
+            return _close_command(args, provider)
         runtime = PodRuntime(
             provider,
             provider_name=args.provider_name,
@@ -195,6 +224,125 @@ def main(argv: Sequence[str] | None = None) -> int:
             # own lock, so this loses nothing -- it closes the descriptor on
             # the way out rather than leaving it to interpreter exit.
             recorder.close()
+
+
+def _close_command(args: argparse.Namespace, provider: PodProvider) -> int:
+    """`close --lease <id>`: the supervisor's own close path, asked for on purpose.
+
+    Until this verb existed a live pod could be closed only by its sealed hard
+    lifetime, by a supervisor tick that happened to see a non-`RUNNING`
+    provider state, or by the provider's console -- `operations/pod/README.md`
+    and the first-live-tests plan both name that gap. `supervise.close_lease_now`
+    does the work, so this is the same `VerifiedShutdown` standard the
+    supervisor holds a pod to and not a second implementation of it.
+
+    The spend policy is required, and for one reason: the shutdown controller's
+    poll interval, deadline and billing-cutoff margin are reviewed policy
+    values, and a close driven on invented timings is not the close this
+    repository verifies. It is not a spend gate here -- no ceiling is consulted,
+    because stopping a meter is not a paid action.
+    """
+
+    leases_root: Path = args.leases
+    lease_id: str = args.lease
+    try:
+        policy = load_spend_policy(args.spend)
+    except Exception as error:  # noqa: BLE001 -- a named refusal, never a traceback
+        return _print_close_record(
+            {
+                "state": "refused",
+                "green": False,
+                "lease_id": lease_id,
+                "detail": f"spend policy {args.spend} could not be read: {error}",
+            },
+            2,
+        )
+    if not policy.configured:
+        return _print_close_record(
+            {
+                "state": "refused",
+                "green": False,
+                "lease_id": lease_id,
+                "detail": (
+                    f"spend policy {args.spend} is unconfigured, so this close would run on "
+                    "invented shutdown timings; supply the reviewed policy this lease was "
+                    "launched under. Nothing was touched"
+                ),
+            },
+            2,
+        )
+    # Narrowing, not a check: a configured policy carries every one of these
+    # (`SpendPolicy.__post_init__` refuses one that does not).
+    assert policy.shutdown_deadline_seconds is not None
+    assert policy.shutdown_poll_interval_seconds is not None
+    assert policy.billing_cutoff_margin_seconds is not None
+    shutdown = VerifiedShutdown(
+        provider,
+        timeout_seconds=float(policy.shutdown_deadline_seconds),
+        poll_seconds=float(policy.shutdown_poll_interval_seconds),
+        billing_cutoff_margin_seconds=policy.billing_cutoff_margin_seconds,
+    )
+    try:
+        result, exit_code = supervise.close_lease_now(
+            store=LeaseStore(Path(leases_root) / f"{lease_id}.json"),
+            leases_root=Path(leases_root),
+            lease_id=lease_id,
+            provider_name=args.provider_name,
+            shutdown=shutdown,
+            reason=args.reason,
+        )
+    except supervise.SuperviseRefusal as refusal:
+        return _print_close_record(
+            {
+                "state": "refused",
+                "green": False,
+                "lease_id": lease_id,
+                "detail": refusal.detail,
+            },
+            refusal.exit_code,
+        )
+    close = result.close_report
+    detail = result.detail
+    if close is not None and not close.verified:
+        # The one word the operator surface reserves for this, in the record
+        # and in the exit status alike: an unverified close never reads as
+        # zero, and never reads as "nothing more to do".
+        detail = f"UNVERIFIED CLOSE: {detail}"
+    record: dict[str, object] = {
+        "state": result.state,
+        "green": result.green,
+        "lease_id": lease_id,
+        "detail": detail,
+        "close": close.to_record() if close is not None else None,
+        "lease_phase": result.lease.phase if result.lease is not None else None,
+    }
+    if args.notify and close is not None:
+        record["close_notification"] = _notify_close_line(lease_id, result)
+    return _print_close_record(record, exit_code)
+
+
+def _notify_close_line(lease_id: str, result: "supervise.SuperviseResult") -> str:
+    """The same close line `create` sends, from the same hook, contained the same way."""
+
+    close = result.close_report
+    assert close is not None
+    billed_seconds: object = "unknown"
+    if result.lease is not None:
+        billed_seconds = (close.cutoff_at - result.lease.created_at).total_seconds()
+    try:
+        return notify_hooks.notify_close(
+            lease_id=lease_id,
+            verified_state=close.state.value,
+            billed_seconds=billed_seconds,
+        ).line()
+    except Exception as error:  # noqa: BLE001 -- contained so the close record still prints
+        detail = f"notification raised and was contained: {error!r}"
+        return detail if len(detail) <= 160 else f"{detail[:160]} (reason truncated)"
+
+
+def _print_close_record(record: dict[str, object], exit_code: int) -> int:
+    print(json.dumps(record, sort_keys=True, indent=2), flush=True)
+    return exit_code
 
 
 def _notify_launch_and_close(

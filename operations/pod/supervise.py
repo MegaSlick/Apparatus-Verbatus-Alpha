@@ -71,6 +71,16 @@ FINAL_RECORD_SCHEMA = "pod-supervise-final.v1"
 PROVIDER_EXITED = "provider-exited"
 PROVIDER_UNREACHABLE = "provider-unreachable"
 
+# `close_lease_now`'s own outcomes, spelled the same kebab-case way. The close
+# itself is `_close_lease`, unchanged and shared with the tick above; these
+# name only how an operator-driven close ended.
+OPERATOR_CLOSE = "operator-close"
+"""A close was attempted now, on purpose. Green only when the report verified."""
+LEASE_NOT_HELD = "lease-not-held"
+"""No such lease here, or one written by a different provider account."""
+SUPERVISOR_BUSY = "supervisor-busy"
+"""A live supervisor holds this lease; nothing was touched."""
+
 # Ticks that keep the loop going rather than end it: the lease is still
 # active and there is nothing here for a human to look at yet.
 _CONTINUE_STATES = frozenset(
@@ -582,6 +592,134 @@ def supervise_tick(
     return result
 
 
+def _closed(result: SuperviseResult, *, touched: bool) -> tuple[SuperviseResult, int]:
+    """Pair one close outcome with `run_supervisor`'s own exit-code rule."""
+
+    return result, _exit_code(result, observed_active_lease=touched)
+
+
+def close_lease_now(
+    *,
+    store: LeaseStore,
+    leases_root: Path,
+    lease_id: str,
+    provider_name: str,
+    shutdown: VerifiedShutdown,
+    reason: str,
+    now: Callable[[], datetime] = utc_now,
+    lock_acquirer: Callable[[Path], bool] = _acquire_lock,
+) -> tuple[SuperviseResult, int]:
+    """Close one live lease on purpose, through the supervisor's own close path.
+
+    Until this existed a real pod could only be closed by the sealed hard
+    lifetime, by a supervisor tick that happened to observe a non-`RUNNING`
+    provider state, or by the provider's own console: `cli.py` had `create` and
+    `adopt` and nothing else, and the operator surface's `close` is
+    fixture-only. That is a gap on the one path GOVERNANCE 8 cares about, and
+    the plan for the first live boots says so.
+
+    Nothing here is a second close implementation. `_close_lease` -- the same
+    function `supervise_tick` drives on an `EXITED` pod -- does the work, so
+    the verification standard is `VerifiedShutdown`'s one standard: exact-pod
+    GET-404, independent pod-list absence, and non-empty exact-pod billing
+    through the requested cutoff, with anything short of that `UNVERIFIED` and
+    never zero.
+
+    Two refusals come before any provider call:
+
+    * a lease this account does not hold -- absent from this root, or written
+      under a different ``provider_name`` -- is `LEASE_NOT_HELD`. All paid
+      actions for one provider account share one lease root, so a lease
+      recorded against another provider is not this command's to close;
+    * a lease some live supervisor already holds is `SUPERVISOR_BUSY`. The
+      kernel lock is the same one `establish_identity` takes, so "a supervisor
+      is guarding this pod" and "this command may close it" cannot both be
+      true at once, and the guard survives a crash without any recorded pid.
+
+    A lease already in a terminal phase reports that phase and makes no
+    provider call either.
+
+    Returns the result and `run_supervisor`'s own exit code, on the same
+    convention `cli.py` uses: 0 guarded, 2 a refusal that touched nothing, 3 go
+    and look. An `UNVERIFIED` close is 3, never 0.
+
+    The owner token comes from the durable lease itself rather than from the
+    supervisor identity file: the lock above has already established that no
+    live supervisor holds this lease, and the lease record is what
+    `LeaseStore.record_close` checks against. A lease whose current owner is a
+    dead supervisor is therefore still closeable -- which is the situation this
+    verb exists for.
+    """
+
+    try:
+        lease = store.load()
+    except Exception as error:
+        raise SuperviseRefusal(
+            f"lease root {leases_root} could not be read: {error}", exit_code=2
+        ) from error
+    if lease is None:
+        return _closed(
+            SuperviseResult(
+                LEASE_NOT_HELD,
+                f"no lease {lease_id!r} exists under {leases_root}; no provider call was made",
+            ),
+            touched=False,
+        )
+    if lease.provider_name != provider_name:
+        return _closed(
+            SuperviseResult(
+                LEASE_NOT_HELD,
+                (
+                    f"lease {lease_id!r} was armed against provider {lease.provider_name!r}, not "
+                    f"{provider_name!r}; this account does not hold it and no provider call was "
+                    "made"
+                ),
+                lease=lease,
+            ),
+            touched=False,
+        )
+    if not lease.active:
+        return _closed(
+            SuperviseResult(
+                "closed-verified" if lease.phase == "closed-verified" else "close-unverified",
+                f"lease already reached terminal phase {lease.phase!r}; no provider call was made",
+                lease=lease,
+            ),
+            touched=False,
+        )
+    lock_path = _lock_path(leases_root, lease_id)
+    if not lock_acquirer(lock_path):
+        return _closed(
+            SuperviseResult(
+                SUPERVISOR_BUSY,
+                (
+                    f"a live supervisor already owns lease {lease_id!r} (lock {lock_path} is "
+                    "held); it holds the close path for this pod -- stop it first, or let it "
+                    "close the pod itself. Nothing was touched"
+                ),
+                lease=lease,
+            ),
+            touched=False,
+        )
+    try:
+        return _closed(
+            _close_lease(
+                store,
+                shutdown,
+                lease,
+                owner_token=lease.owner_token,
+                state=OPERATOR_CLOSE,
+                reason=reason,
+                now=now,
+            ),
+            touched=True,
+        )
+    finally:
+        # Give the lease back: a supervisor started afterwards -- to guard an
+        # unverified close -- must be able to take this lock.
+        release_lock(leases_root, lease_id)
+
+
 def _exit_code(result: SuperviseResult, *, observed_active_lease: bool = False) -> int:
     """The `cli.py` convention: 0 guarded, 2 nothing touched, 3 go and look.
 
@@ -594,7 +732,7 @@ def _exit_code(result: SuperviseResult, *, observed_active_lease: bool = False) 
     path returns its own exit code directly and never reaches here.
     """
 
-    if result.state in {"no-lease", "owner-heartbeat-fresh"}:
+    if result.state in {"no-lease", "owner-heartbeat-fresh", LEASE_NOT_HELD, SUPERVISOR_BUSY}:
         return 3 if observed_active_lease else 2
     if result.state == "lease-record-failure" and result.close_report is None:
         return 3 if observed_active_lease else 2
