@@ -9,12 +9,78 @@
 # fitted, or answered on real silicon.  A serving manager refuses an unproven
 # row before it opens a process.
 #
+# WHAT IS NO LONGER MERELY UNPROVEN.  Every `max_model_len` in this file was
+# once 2,048 / 4,096 / 8,192 by tier, and that set was not unproven -- it was
+# measurably wrong.  A 300-dpi A4 page costs 1,715 prompt tokens on the
+# Qwen3-VL chairs and 2,280 on the Qwen2.5-VL chairs at the 24 GB tier's
+# `max_pixels`, before a word of prompt is counted; against 2,048 the request
+# is refused by the engine with HTTP 400 and no reading at all, and it was
+# refused for every chair at that tier.  At the 48 GB tier Churro's page prompt
+# alone was 4,309 against 4,096, and the Perlector's 5,296.  Those are
+# arithmetic, not predictions: `common/request_capacity.py` computes them from
+# the fields below, and `common/test_request_capacity.py` pins them against the
+# per-chair processor measurement they were taken from.
+#
+# So the numbers moved rather than the wording.  Every row now states a
+# `max_model_len` that holds a whole A4 page at its own `max_pixels`, plus that
+# chair's measured prompt, plus that chair's measured answer over a dense
+# 800-word page: 8,192 everywhere, and 16,384 for Churro at 80 GB+ (whose page
+# prompt alone is 6,974) and for the Perlector at EVERY tier.  The Perlector's
+# act request carries a region crop *and* a page render per capture view, so an
+# ordinary two-view act costs 14,014 tokens even at the 24 GB tier's
+# `max_pixels` and no 8,192 row could serve one.
+# `operations/serving/test_serving_catalogue_capacity.py` reads this file and
+# asserts that every row it ships passes -- at one and at two capture views for
+# the Perlector -- and that none exceeds its tier's `context_cap`.
+#
+# ONE MEASURED SHAPE STILL DOES NOT FIT, and it is recorded rather than papered
+# over: a two-capture-view *page-fallback* act -- an act whose bounds are the
+# whole page, seen from two captures -- sends four page-sized images, which at
+# the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
+# prompt.  It fits at 24 GB and 48 GB and cannot fit 16,384 at 80 GB+; the
+# pinned case in the capacity test says so by name.  The Perlector refuses that
+# request on the laptop, with the arithmetic, rather than discovering it
+# against a billing card.
+#
+# `max_num_batched_tokens` is a quarter of each row's own `max_model_len`,
+# which is the ratio every row carried before the contexts were raised
+# (2,048/512, 4,096/1,024, 8,192/2,048).  It was left behind when they moved,
+# which would have held a raised row to its old per-batch budget.  Whether vLLM
+# 0.27.1 will schedule a single multimodal item larger than that budget --
+# these rows send one image group of up to 6,693 tokens against a 2,048-token
+# batch budget -- is a POD QUESTION.  Nothing here has run an engine, the
+# ratio is restored because it is the one the rows were written with, and the
+# first authorized boot is what settles it.
+#
+# `max_pixels` is deliberately NOT reduced to fit.  To make the 24 GB Churro
+# row fit 2,048 tokens it would have to fall to roughly 262,000 -- a 470x700
+# page -- and 18th-century French handwriting at 470 px wide is not a
+# transcription task.  Cutting pixels to fit a context trades a measurable
+# refusal for an unmeasurable misreading, which GOALS 2 does not permit; the
+# lever that works is the context.
+#
+# WHAT IS STILL UNPROVEN, AND IT IS THE WHOLE OF IT: whether a card at each
+# tier has the VRAM for these contexts.  Raising `max_model_len` moves KV-cache
+# memory, and nothing here has been measured on real silicon -- these rows say
+# what a request *needs*, and only a pod can say what a card *has*.  A row that
+# starts and answers is still an unproven row until preflight says otherwise.
+#
 # Rows cover every configured chair in models-real.toml at every tier in
 # pod_placement.toml.  The secondary proposer has no row because it is absent
 # there by Tyrel's ruling of 2026-08-12, and an absent chair needs no coverage.
 # The common stage parser seals the selected catalogue's exact bytes, so using
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
+#
+# `patch_size`/`merge_size` are the chair's vision-encoder geometry, read from
+# the pinned revision's own `preprocessor_config.json`.  They are not vLLM
+# flags -- vLLM reads them from the model repository -- and they are recorded
+# here because they are what decides how many prompt tokens one image costs
+# (`common/request_capacity.py`), which no other field in this row can say.
+# The two families differ: Chandra and the Perlector are Qwen3-VL, patch 16,
+# 1,024 px per image token; DAI and Churro are Qwen2.5-VL, patch 14, 784 px per
+# image token.  A row that omits them still launches; what it cannot do is have
+# a request checked against it before it is sent.
 #
 # `request_timeout_seconds` bounds one non-streaming reading request, which
 # returns nothing until generation completes.  Witness rows carry 600s,
@@ -36,12 +102,14 @@ served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 2048
+max_model_len = 8192
 max_num_seqs = 1
-max_num_batched_tokens = 512
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -65,12 +133,14 @@ served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 4096
+max_model_len = 8192
 max_num_seqs = 2
-max_num_batched_tokens = 1024
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -100,6 +170,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -123,12 +195,14 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 2048
+max_model_len = 8192
 max_num_seqs = 1
-max_num_batched_tokens = 512
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -152,12 +226,14 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 4096
+max_model_len = 8192
 max_num_seqs = 2
-max_num_batched_tokens = 1024
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -187,6 +263,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -212,12 +290,14 @@ served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 2048
+max_model_len = 8192
 max_num_seqs = 1
-max_num_batched_tokens = 512
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -241,12 +321,14 @@ served_model_id = "attestator-2-dai"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 4096
+max_model_len = 8192
 max_num_seqs = 2
-max_num_batched_tokens = 1024
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -276,6 +358,8 @@ max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -299,12 +383,14 @@ served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 2048
+max_model_len = 8192
 max_num_seqs = 1
-max_num_batched_tokens = 512
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -328,12 +414,14 @@ served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 4096
+max_model_len = 8192
 max_num_seqs = 2
-max_num_batched_tokens = 1024
+max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -357,12 +445,14 @@ served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 16384
 max_num_seqs = 4
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 14
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -386,12 +476,14 @@ served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 2048
+max_model_len = 16384
 max_num_seqs = 1
-max_num_batched_tokens = 512
+max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
 max_pixels = 1806336
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -415,12 +507,14 @@ served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 4096
+max_model_len = 16384
 max_num_seqs = 2
-max_num_batched_tokens = 1024
+max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
 max_pixels = 3211264
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true
@@ -444,12 +538,14 @@ served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 16384
 max_num_seqs = 4
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
 max_pixels = 5299200
+patch_size = 16
+merge_size = 2
 enable_prefix_caching = true
 enforce_eager = false
 trust_remote_code = true

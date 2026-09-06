@@ -1440,10 +1440,65 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+#
+# Request-capacity re-pin: `config/pod_placement.toml`'s `context_cap` moved
+# with the serving rows -- 2,048/4,096/8,192 to 8,192/16,384/16,384 -- because a
+# 300-dpi page costs a Qwen-VL chair between 1,715 and 6,693 prompt tokens and
+# the old caps admitted no row that could serve one. Unit 17 seals that file
+# byte-for-byte into every run's `config_digest`, so both scenario trees legally
+# move without gaining an artifact, exactly as its own ledger entry above
+# records for this file.
+#
+# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
+# the preceding commit's bytes and every other change on this branch in place,
+# the happy tree reproduced 6dadabc8... at 96 files and exit 0 -- so the whole
+# move is those bytes, and nothing else on this branch reaches a fixture run.
+# (It does not: the capacity check runs only on the live path, and the real
+# serving catalogue these rows live beside is never sealed into either
+# scenario.)
+#
+# Checked leaf by leaf against that same reverted tree: happy 75 changed files
+# and 397 changed JSON leaves, **not one of them a non-digest field** -- every
+# changed leaf is a 64-hex digest or a content-addressed blob path, plus one
+# renamed blob each in `4_perlector` and `7_armarium` whose own name is its
+# content digest. Counts and exits are unmoved: happy 96 at exit 0, review 107
+# at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
+# Reviewer re-pin, and the cause is again `config/pod_placement.toml` alone.
+# An independent reader of the capacity unit found that the Perlector's own
+# request -- a region crop and a page render per capture view -- costs 14,014
+# tokens at an ordinary two-view act even at the 24 GB tier's `max_pixels`, so
+# the 8,192 that row stated could not serve it. The row moved to 16,384 and the
+# tier's `context_cap` moved with it, or preflight would refuse the row. That
+# file is sealed byte-for-byte into every run's `config_digest` (Unit 17), so
+# both scenario trees move again without gaining an artifact.
+#
+# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
+# the branch tip's bytes and every other change in place, happy reproduced
+# ef81b27f... at 96 files and exit 0 and review reproduced 6c3f5a42... at 107
+# files and exit 3 -- the two pins this entry replaces -- so the whole move is
+# those bytes. Nothing else applied here reaches a fixture run: the per-attempt
+# capacity refusal in the Attestatores and the Perlector's answer reserve are
+# both on the live path, which no scenario takes, and the real serving
+# catalogue is never sealed into either.
+#
+# Checked leaf by leaf against that same reverted tree: happy 75 changed files
+# and 397 changed JSON leaves, review 87 and 444, and not one of them a
+# non-digest field -- every changed leaf is a 64-hex digest or a
+# content-addressed blob path, plus one renamed blob per scenario in
+# `4_perlector` and `7_armarium` whose own name is its content digest. Counts
+# and exits are unmoved: happy 96 at exit 0, review 107 at exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "6dadabc84f40c67ea9f1160feb5c49526b57bc0db6be23e7abc91acd46899e70"
-REVIEW_RUN_TREE_DIGEST = "7c4f31d2af5bcb7636c7a34de0d4a5b4b01a1513334c6eb0a4b0ca7c3085bcd1"
+HAPPY_RUN_TREE_DIGEST = "ea0651138240e5d3a4dca781bb2846c95723ee89a2e150e4244ba5fa9c96afc6"
+REVIEW_RUN_TREE_DIGEST = "8a1027f3bc7a542c13f86bd25dd9d1e6c4207c8f358d571c7dd81332fcda2fab"
 
 
 def orchestrate(

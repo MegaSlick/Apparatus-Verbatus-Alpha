@@ -64,6 +64,11 @@ from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.contracts.stages import DESIGNATOR
 from common.decoding import load_decoding_policy
 from common.imaging import Bounds
+from common.request_capacity import (
+    dense_page_answer_budget,
+    request_fits,
+    sealed_prompt_tokens,
+)
 from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
@@ -100,8 +105,25 @@ HELD_NO_INK_OVERLAP: Final = "structure-answer-no-ink-overlap"
 # later reader are entitled to that binding, and a page minted without it would
 # be a rectangle attributed to a call nothing ties it to (GOVERNANCE 6).
 HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
+# The request does not fit the sealed serving row this chair runs under: the
+# page's own image tokens, plus this prompt, plus a real answer, exceed the
+# row's `max_model_len` (`common/request_capacity.py`).  Held before anything
+# goes on the wire, because the engine's answer to such a request is HTTP 400
+# and no reading at all.  A hold rather than a run refusal for the same reason
+# every other code here is one: another page may be smaller, and abandoning the
+# run would cost every page that fits (GOALS 1).  The page is *never* silently
+# downscaled to make it fit -- 300 dpi is what `config/pdf_render.toml` argues
+# is needed to read the ink, and trading a measurable refusal for an
+# unmeasurable misreading is not this pass's decision to make.
+HELD_REQUEST_TOO_LARGE: Final = "structure-request-too-large"
 STRUCTURE_HELD_CODES: Final = frozenset(
-    {HELD_CUT_OFF, HELD_CALL_UNUSABLE, HELD_NO_INK_OVERLAP, HELD_RESPONSE_NOT_RETAINED}
+    {
+        HELD_CUT_OFF,
+        HELD_CALL_UNUSABLE,
+        HELD_NO_INK_OVERLAP,
+        HELD_RESPONSE_NOT_RETAINED,
+        HELD_REQUEST_TOO_LARGE,
+    }
     | {f"structure-answer-{outcome}" for outcome in structure_answer.PARSE_OUTCOMES}
 )
 
@@ -350,12 +372,51 @@ def _data_uri(image_bytes: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
 
 
-def page_request(page_bytes: bytes, source_sha256: str) -> ChairRequest:
+def structure_prompt_tokens() -> int:
+    """The measured prompt-token cost of this pass's own prompt, digest-checked.
+
+    No tokenizer runs here (`common/request_capacity.py` says why one cannot,
+    offline, in this environment).  The constant was measured against the
+    structure chair's own tokenizer and chat template at the revision
+    `config/models-real.toml` pins, and it is bound to a digest of exactly the
+    text `structure_prompt.messages()` returns -- so editing the prompt refuses
+    rather than leaving a stale count in force.
+    """
+
+    return sealed_prompt_tokens(
+        DESIGNATOR_CHAIR, *(message["content"] for message in structure_prompt.messages())
+    )
+
+
+def page_capacity(profile: Any, page_w: int, page_h: int) -> dict[str, Any]:
+    """Whether one whole-page structure request fits the sealed serving row.
+
+    The page is the only image this request carries, and it goes at its sealed
+    size: this pass never resizes what it shows the chair.  The answer budget
+    is the measured cost of this chair's own structure JSON over a dense
+    (800-word, six-act) page -- a row that cannot hold that cannot mark out a
+    real register page, whatever it does with a sparse one.
+    """
+
+    return request_fits(
+        profile,
+        [(page_w, page_h)],
+        structure_prompt_tokens(),
+        dense_page_answer_budget(DESIGNATOR_CHAIR),
+    )
+
+
+def page_request(
+    page_bytes: bytes, source_sha256: str, *, capacity: Mapping[str, Any] | None = None
+) -> ChairRequest:
     """One whole-page structure request: the sealed prompt plus the sealed page.
 
     The image digest claimed beside the request is the Exemplar's own
     `source_sha256`, so the client's digest check binds the request to the
     sealed page rather than to whatever bytes happened to be read.
+
+    ``capacity`` is the record this request was admitted on; the client copies
+    it onto the retained call record so a run's receipts carry the arithmetic.
     """
     system, user = structure_prompt.messages()
     messages = (
@@ -374,6 +435,7 @@ def page_request(page_bytes: bytes, source_sha256: str) -> ChairRequest:
         image_sha256s=(source_sha256,),
         generation_declared={},
         generation_sent={},
+        capacity=capacity,
     )
 
 
@@ -506,6 +568,73 @@ def _act_record(act: structure_answer.ParsedAct) -> dict[str, Any]:
     }
 
 
+def _refused_page_answer(
+    client: ChairClient,
+    *,
+    page_id: str,
+    ordinal: int,
+    page_w: int,
+    page_h: int,
+    capacity: Mapping[str, Any],
+    temperature: int | float,
+    decoding_config_sha256: str,
+    provenance: Mapping[str, Any],
+) -> "PageAnswer":
+    """The record for a page whose request never went on the wire.
+
+    Every field that describes a response is null, and says so by being null
+    rather than by being absent: no call was made, so there is no call record,
+    no retained body, no custody binding, no stop word and no parse outcome.
+    What the record does carry is the receipt of the chair that would have
+    answered, the served model id the row names, and the whole capacity record
+    -- which is the entire evidence for the hold and is enough to reproduce it.
+    """
+
+    record = {
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "page_w": page_w,
+        "page_h": page_h,
+        "prompt_version": structure_prompt.STRUCTURE_PROMPT_VERSION,
+        "prompt_sha256": structure_prompt.prompt_sha256(),
+        "answer_schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+        "call_record_ref": None,
+        "raw_response_ref": None,
+        "custody_ref": None,
+        "custody_problem": None,
+        "receipt_ref": dict(client.handle.receipt_reference),
+        "request_sha256": None,
+        "finish_reason": None,
+        "served_model_id": client.handle.profile.served_model_id,
+        "call_problem": None,
+        "parse_state": STRUCTURE_ANSWER_REFUSED,
+        "parse_outcome": None,
+        "disposition": DISPOSITION_HELD,
+        "reason_code": HELD_REQUEST_TOO_LARGE,
+        "act_count": 0,
+        "acts": [],
+        "findings": [],
+        "quantization": structure_answer.QUANTIZATION_RULE,
+        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "decoding": {
+            "policy": STRUCTURE_DECODING_POLICY,
+            "temperature": temperature,
+            "decoding_config_sha256": decoding_config_sha256,
+        },
+        "provenance": dict(provenance),
+        "capacity": dict(capacity),
+    }
+    return PageAnswer(
+        ordinal=ordinal,
+        page_id=page_id,
+        disposition=DISPOSITION_HELD,
+        reason_code=HELD_REQUEST_TOO_LARGE,
+        mint=(),
+        record=record,
+    )
+
+
 def ask_page(
     context: Any,
     client: ChairClient,
@@ -520,8 +649,13 @@ def ask_page(
 ) -> PageAnswer:
     """Ask the chair about one sealed page and decide what the answer does to it.
 
-    In the order the contract fixes: the request is built and sent through the
-    client (which retains the raw bytes and the call record before parsing);
+    In the order the contract fixes: the request's *capacity* against the
+    sealed serving row is computed first, and a page whose image tokens plus
+    this prompt plus a real answer cannot fit the row's `max_model_len` is held
+    under `HELD_REQUEST_TOO_LARGE` with nothing built and nothing sent -- the
+    engine's answer to such a request is HTTP 400 and no reading, so it is
+    refused here rather than on a card that bills by the hour. Then the request
+    is built and sent through the client (which retains the raw bytes and the call record before parsing);
     the response is bound under custody to the chair's receipt
     (`common/chandra_custody.py`'s one-receipt binding, published on the record
     as `custody_ref`); then the answer is
@@ -539,7 +673,26 @@ def ask_page(
     page_id = page_record["subject_id"]
     payload = page_record["payload"]
     page_w, page_h = analysis["width"], analysis["height"]
-    request = page_request(page_bytes, payload["source_sha256"])
+    # Before anything is built or sent: does this page's request fit the sealed
+    # row at all? A page whose image tokens plus this prompt plus a real answer
+    # exceed `max_model_len` is refused by the engine with HTTP 400 and no
+    # reading, so it is held here instead -- on this laptop, for free, with the
+    # arithmetic published (GOVERNANCE 2: the refusal is visible, and it names
+    # numbers rather than a guess).
+    capacity = page_capacity(client.handle.profile, page_w, page_h)
+    if not capacity["fits"]:
+        return _refused_page_answer(
+            client,
+            page_id=page_id,
+            ordinal=ordinal,
+            page_w=page_w,
+            page_h=page_h,
+            capacity=capacity,
+            temperature=temperature,
+            decoding_config_sha256=decoding_config_sha256,
+            provenance=provenance,
+        )
+    request = page_request(page_bytes, payload["source_sha256"], capacity=capacity)
     try:
         response: ChairResponse = client.read(request)
     except (ServingError, EndpointUnavailable) as error:
@@ -655,6 +808,9 @@ def ask_page(
             "decoding_config_sha256": decoding_config_sha256,
         },
         "provenance": dict(provenance),
+        # The arithmetic this request was admitted on, published beside the
+        # answer it produced. Present on every live page record, fit or held.
+        "capacity": capacity,
     }
     return PageAnswer(
         ordinal=ordinal,

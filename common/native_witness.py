@@ -62,10 +62,23 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
-# The serving request is already bounded at 24,000 generated tokens.  Four MiB
-# still allows more than 174 UTF-8 response bytes per requested token -- far
-# beyond an OCR transcription -- while giving the XML parser and the post-hoc
-# repetition scan a hard ceiling when a provider ignores that request bound.
+# Churro's *declared* output bound: its carried HuggingFace-generate
+# `max_new_tokens`, retained on every request's `generation_declared` and in
+# every retained Churro model view as the record of what Churro would have been
+# asked for.  It is no longer, by itself, what goes on the wire.  Every sealed
+# Churro serving row caps `max_model_len` well below it (8,192 at 24 GB and
+# 48 GB and 16,384 at 80 GB+ in `config/serving_recipes_real.toml`, since the
+# request-capacity unit raised them from 2,048/4,096/8,192; every one of the
+# six numbers is far under 24,000, which is what this comment turns on), and
+# vLLM refuses a request whose prompt
+# plus `max_tokens` exceeds the row's context, so
+# `pipeline/3_attestatores/live_witness.py::churro_generation_sent` sends this
+# value only where the sealed row is strictly longer than it and otherwise
+# sends no bound at all, leaving the row's own `max_model_len` to bound
+# generation.  Four MiB still allows more than 174 UTF-8 response bytes per
+# declared token -- far beyond an OCR transcription -- while giving the XML
+# parser and the post-hoc repetition scan a hard ceiling whatever bound the
+# request carried.
 CHURRO_OUTPUT_TOKENS: Final = 24_000
 CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
 _CHURRO_REPETITION_WINDOW: Final = 24
