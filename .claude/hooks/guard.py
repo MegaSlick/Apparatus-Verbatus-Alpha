@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The repository guard: six refusals for the session, a seventh for an agent, quiet otherwise.
+"""The repository guard: six refusals for the session, two more for an agent, quiet otherwise.
 
 This file replaced a 2,294-line predecessor that had three verdicts — deny, ask,
 silence — and spent most of its life asking. Over three days it made 639 decisions,
@@ -25,16 +25,22 @@ guard he cannot unwire is a defect.
 4. Deleting a remote ref, or the repository itself.
 5. Putting a credential into git.
 6. Switching the git hooks off, which are the backstop for all of the above.
-7. **A spawned agent** editing a governed path — the one rule that is not the same for
-   both audiences, and the reason built-in agent types can be used here at all.
+7. **A spawned agent** editing a governed path — one of the two rules that are not the
+   same for both audiences, and the reason built-in agent types can be used here at all.
+8. **A spawned agent** pushing, opening a pull request, or merging one.
 
 Tyrel named the first five. The sixth is one past that and says so where it is defined;
 CLAUDE.md requires it, and without it one flag stands between a session and every hook
-at once. The seventh is the balance struck when Claude Code's own agent types were let
-back in: they hold `Bash`, they carry no project instruction, and hard rule 10 needs a
-mechanical half exactly where the reader of the rule is absent. Six of the seven are
-unrecoverable, or close enough that the difference is a bad night; the seventh is
-recoverable and is there because the actor cannot be reasoned with. Everything else passes in silence, including things the old guard asked about:
+at once. The seventh and the eighth are the balance struck when Claude Code's own agent
+types were let back in: they hold `Bash`, they carry no project instruction, and hard
+rules 10 and 12 need a mechanical half exactly where the reader of the rule is absent.
+Six of the eight are unrecoverable, or close enough that the difference is a bad night;
+the seventh and eighth are recoverable and are there because the actor cannot be reasoned
+with. The eighth arrived when host worktree seats became the ordinary build seat: a
+chamber could not push because the container had no route out, and a seat in a worktree
+on this machine holds the session's own credentials and allow list. What was mechanical
+by accident is mechanical on purpose now. Everything else passes in silence, including
+things the old guard asked about: a *session's*
 ordinary pushes, `gh` calls, RunPod commands, edits to governed documents. Those are
 now governed by CLAUDE.md and by the session having read it — which is the trade this
 project made when it moved agents into containers. A rule a session has read is a
@@ -491,7 +497,7 @@ def operands(arguments: list[str]) -> list[str]:
     return [token for token in arguments if not token.startswith("-")]
 
 
-# -------------------------------------------- the six refusals, and a seventh for agents
+# ------------------------------------ the six refusals, and a seventh and eighth for agents
 
 
 def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
@@ -1017,6 +1023,195 @@ def agent_editing_governance(tool: str, tool_input: Any, payload: dict[str, Any]
     return None
 
 
+# `gh api` options that swallow the token after them. Without this list the value of
+# `-X` lands where the path is expected — `gh api -X POST repos/o/r/pulls` would be read
+# as a call to a resource named `POST` — and the check below would judge the wrong token.
+# `-f`, `-F`, `--field`, `--raw-field` and `--input` are separated out because they also
+# change the *default* method: `gh api` sends GET until a body is attached, and POST
+# after. Lowercasing conflates `-f` with `-F`; both take a value, so nothing is lost.
+_GH_API_BODY_OPTIONS = frozenset({"-f", "--field", "--raw-field", "--input"})
+_GH_API_TAKES_A_VALUE = frozenset(
+    {
+        "-x",
+        "--method",
+        "-h",
+        "--header",
+        "-q",
+        "--jq",
+        "-t",
+        "--template",
+        "--cache",
+        "--hostname",
+        "-p",
+        "--preview",
+        "--slurp-file",
+    }
+)
+
+# Judged by target, not by shape: a path that names the pull-request collection under a
+# method that writes. `POST .../pulls` opens one and `PUT .../pulls/N/merge` merges one;
+# `GET .../pulls` lists them and is ordinary reading, which is why the method is read at
+# all rather than matching the path alone.
+API_OPENS_A_PULL_REQUEST = re.compile(r"repos/[^/]+/[^/]+/pulls")
+API_MERGES_A_PULL_REQUEST = re.compile(r"repos/[^/]+/[^/]+/pulls/\d+/merge")
+# `POST .../merges` is the merge that never mentions a pull request: it merges one branch
+# into another directly, so an agent could put its own work on `main` without opening
+# anything. Found by CodeRabbit on pull request 93 alongside the auto-merge mutations.
+API_MERGES_A_BRANCH = re.compile(r"repos/[^/]+/[^/]+/merges")
+# `PUT .../pulls/N/update-branch` is a merge *into* the head branch rather than out of it,
+# so it is not landing work on `main` — but it is still GitHub writing a commit onto a
+# remote branch at the agent's word, which is the act hard rule 12 denies it, and it is a
+# step in the session's own merge sequence. Refused; `POST .../pulls/N/requested_reviewers`
+# and the other pull-request writes an agent needs for review are not.
+API_UPDATES_A_PULL_REQUEST_BRANCH = re.compile(r"repos/[^/]+/[^/]+/pulls/\d+/update-branch")
+
+# The GraphQL spellings of the same acts. `enablePullRequestAutoMerge` and
+# `enqueuePullRequest` merge as soon as the requirements are met, which is merging with a
+# delay rather than not merging, and `markPullRequestReadyForReview` is what `gh pr ready`
+# sends. Everything else GraphQL does here — reading review threads, comments, check runs,
+# and `disablePullRequestAutoMerge`, which takes a merge *off* the queue — is not.
+GRAPHQL_PULL_REQUEST_MUTATION = re.compile(
+    r"\b(?:(?:merge|create|enqueue)pullrequest"
+    r"|enablepullrequestautomerge"
+    r"|markpullrequestreadyforreview)\b",
+    re.IGNORECASE,
+)
+
+# `gh pr <verb>` spellings that push work at `main` or take it there. `ready` is here
+# because marking a draft ready is what makes a pull request mergeable, and the settings
+# file already treats it as consequential.
+GH_PR_VERBS = frozenset({"create", "merge", "ready"})
+
+
+def gh_api_target(tokens: list[str]) -> tuple[str, str] | None:
+    """The (method, path) of a `gh api` call, or None when this is not one.
+
+    Options that take a value are skipped before the first operand is read, for the same
+    reason `after_global_options` exists at line 444: a value standing where a path is
+    expected turns the judgement below into a judgement of the wrong token. The method is
+    the explicit `-X`/`--method` when given, POST when a body option is present, GET
+    otherwise — which is `gh api`'s own rule.
+
+    A short option may carry its value attached — `-XPUT`, `-ftitle=x` — and `tokenize`
+    hands those over as one token because that is what the shell does. Read here rather
+    than in `tokenize`, which the other seven refusals share: splitting `-XPUT` there
+    would change what `git push -uorigin` and every other attached spelling look like to
+    checks that never asked for it. `gh api -XPUT repos/o/r/pulls/5/merge` was a merge
+    this function called a GET until CodeRabbit found it on pull request 93.
+    """
+    if not tokens or tokens[0].lower() != "api":
+        return None
+    method = ""
+    has_body = False
+    path = ""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        lowered = token.lower()
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            # `-H` is here for its value only: an attached header is not a body, and
+            # skipping it keeps it from being read as the path. Lowercasing conflates
+            # `-f` with `-F` exactly as the separated spellings above do.
+            attached = lowered[:2]
+            if attached in ("-x", "-f", "-h"):
+                if attached == "-x":
+                    method = token[2:].lstrip("=").lower()
+                elif attached == "-f":
+                    has_body = True
+                index += 1
+                continue
+        head, _, value = lowered.partition("=")
+        if head in ("-x", "--method") and value:
+            method = value
+        elif head in _GH_API_BODY_OPTIONS and value:
+            has_body = True
+        elif lowered in ("-x", "--method") and index + 1 < len(tokens):
+            method = tokens[index + 1].lower()
+            index += 2
+            continue
+        elif lowered in _GH_API_BODY_OPTIONS:
+            has_body = True
+            index += 2
+            continue
+        elif lowered in _GH_API_TAKES_A_VALUE:
+            index += 2
+            continue
+        elif not token.startswith("-") and not path:
+            path = token
+        index += 1
+    if not path:
+        return None
+    cleaned = re.sub(r"^https?://[^/]+/", "/", path.split("?", 1)[0].strip().lower())
+    return (method or ("post" if has_body else "get")), cleaned.strip("/")
+
+
+def agent_pushing_or_merging(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    """8. A *spawned agent* pushing, opening a pull request, or merging. Silent for the session.
+
+    The second asymmetry, and the one that keeps hard rule 12 true now that a build seat
+    can run in a worktree on this machine instead of in a container. A chamber never
+    pushed because it had no route out; a worktree seat inherits the session's
+    credentials and its allow list, so "an agent never pushes" was a sentence with
+    nothing behind it. The session is untouched: hard rules 4 and 14 are its to exercise.
+
+    **The inventory, so the README can cite it rather than paraphrase it.** Refused for an
+    agent: `git push` in every spelling the rest of this file already reads; `gh pr
+    create`, `gh pr merge`, `gh pr ready`; the REST calls `POST .../pulls`, `PUT
+    .../pulls/N/merge`, `PUT .../pulls/N/update-branch` and `POST .../merges`; and the
+    GraphQL mutations `mergePullRequest`, `createPullRequest`, `enablePullRequestAutoMerge`,
+    `enqueuePullRequest` and `markPullRequestReadyForReview`. Silent for an agent: every
+    read of the same resources, `git fetch`, `git bundle`, `gh pr view`/`diff`/`checks`/
+    `comment`/`list`, `POST .../pulls/N/requested_reviewers`, and the whole of it for the
+    main session.
+    """
+    agent = subagent_name(payload)
+    if not agent or tool != "Bash":
+        return None
+    refusal = (
+        f"Hard rule 12 bars subagent {agent} from pushing, opening a pull request, or "
+        "merging one — hard rules 4 and 14 reserve those for the accountable session. "
+        "Leave the work committed on your branch and say so in your report; the main "
+        "session pushes it."
+    )
+    command = normalize(bash_command(tool_input))
+    # Read through `git_calls` (line 472) so every spelling the rest of the file already
+    # recognizes is covered at once: `git -C <dir> push`, a force-push, `rtk proxy git
+    # push`, a subshell, a `then` clause. `git bundle create` is subcommand `bundle` and
+    # is deliberately not a push — a bundle is how a chamber hands work back.
+    for action, _arguments in git_calls(command):
+        if action == "push":
+            return "deny", refusal
+    for tail in invocations(GH, command):
+        tokens = tokenize(tail)
+        # An adjacent pair rather than `tokens[:2]`, so a global option before the
+        # subcommand — `gh -R owner/repo pr merge 85` — does not hide it.
+        names = [token.lower() for token in operands(tokens)]
+        pairs = zip(names, names[1:], strict=False)
+        if any(first == "pr" and second in GH_PR_VERBS for first, second in pairs):
+            return "deny", refusal
+        target = gh_api_target(tokens)
+        if target is None:
+            continue
+        method, path = target
+        if path == "graphql":
+            # Searched across the whole command, not the tail: a mutation is usually
+            # written as a multi-line quoted argument, and `invocation`'s tail stops at
+            # the first newline. A read-only threads query matches neither name.
+            if GRAPHQL_PULL_REQUEST_MUTATION.search(command):
+                return "deny", refusal
+            continue
+        if method == "post" and (
+            API_OPENS_A_PULL_REQUEST.fullmatch(path) or API_MERGES_A_BRANCH.fullmatch(path)
+        ):
+            return "deny", refusal
+        if method == "put" and (
+            API_MERGES_A_PULL_REQUEST.fullmatch(path)
+            or API_UPDATES_A_PULL_REQUEST_BRANCH.fullmatch(path)
+        ):
+            return "deny", refusal
+    return None
+
+
 CHECKS = (
     landing_on_main,
     recursive_delete,
@@ -1025,6 +1220,7 @@ CHECKS = (
     credential_into_git,
     switching_the_hooks_off,
     agent_editing_governance,
+    agent_pushing_or_merging,
 )
 
 

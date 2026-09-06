@@ -11,7 +11,7 @@ import copy
 import unicodedata
 from typing import Any, Callable, Final
 
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.physical_act_partition import source_ledger_from_run
 
@@ -39,7 +39,7 @@ _FORBIDDEN: Final = (
 
 
 def _sha(value: Any, what: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or set(value) - set("0123456789abcdef"):
+    if not is_sha256(value):
         raise SchemaRefusal(f"cross-capture autopsia: {what} is not a lowercase SHA-256")
     return value
 

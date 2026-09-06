@@ -1,8 +1,9 @@
-"""R0 falsification tests: reserved kind names and the closed-ordinal confidence rule.
+"""R0 contract tests: reserved kind names and the closed-ordinal confidence rule.
 
 Written blind, from /out/R0_CONTRACT_NOTE.md (v2) and the resolved v2.1 stack, before
-the R0 build chamber runs. Every test here must fail RED on the chamber's base commit
-(main 176b09e) because the refusal it checks is not yet built.
+the R0 build chamber ran, so every test here failed red on the chamber's base commit.
+The refusals have since landed -- `_RESERVED_KINDS`, `ReservedKindRefusal`, and the
+closed-ordinal confidence check -- and the file now guards them.
 
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
     lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
