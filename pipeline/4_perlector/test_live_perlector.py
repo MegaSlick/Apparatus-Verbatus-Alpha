@@ -122,7 +122,16 @@ def _live_row(identity) -> dict[str, Any]:
         "dtype": "bfloat16",
         "seed": 0,
         "required_packages": {"vllm": "0.test"},
-        "max_model_len": 2048,
+        # The 16,384 the shipped real catalogue states for this chair at every
+        # tier (`config/serving_recipes_real.toml`). It was 2,048 while the
+        # reader admitted on a prompt *floor* of 790; the seam now admits on the
+        # measured upper bound, and this suite's own four-image dossier costs
+        # 1,732 prompt tokens by it -- 2,080 with the images and the reserve,
+        # which 2,048 cannot hold. Raising the stand-in row toward the row it
+        # stands in for is the same disposition the capacity unit took for the
+        # real catalogue: raise the context, never shrink what the chair is
+        # shown.
+        "max_model_len": 16384,
         "max_num_seqs": 1,
         "max_num_batched_tokens": 512,
         "gpu_memory_utilization": "0.58",
