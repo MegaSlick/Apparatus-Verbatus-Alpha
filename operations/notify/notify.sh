@@ -242,6 +242,13 @@ then
   if [ "$event" = start ]; then
     record_start_delivery
   fi
+  # The 2026-09-06 finding: this script printed nothing on success, so a
+  # session reading silence after a stalled earlier command could not tell
+  # "delivered" from "hung" and sent the same ping twice. One line on stderr
+  # closes that: silence is never again evidence of anything. Stdout is
+  # untouched -- the bridges key on the exit code and on `NOTIFY_SUPPRESSED`
+  # there, and this line never reaches that stream.
+  echo "notify: delivered ($event)" >&2
   exit 0
 fi
 

@@ -212,6 +212,48 @@ def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
     assert result.stdout == ""
 
 
+@pytest.mark.full
+@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
+def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
+    """The 2026-09-06 fix: silence on success let a session read a stalled prior
+    command as a lost ping and resend it -- three `done` pings for one close.
+    Every event that actually reaches the server now says so, on stderr, once."""
+
+    script, env = notify_repo
+    result = run(script, env, event)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("notify: delivered") == 1
+    assert f"notify: delivered ({event})" in result.stderr
+
+
+def test_a_failed_delivery_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    env["FAKE_STATUS"] = "503"
+    result = run(script, env)
+    assert result.returncode == 1
+    assert "NOT DELIVERED" in result.stderr
+    assert "notify: delivered" not in result.stderr
+
+
+def test_the_test_sink_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    env["NTFY_TOPIC"] = "verbatus-test-sink"
+    result = run(script, env)
+    assert result.returncode == 0, result.stderr
+    assert "notify: delivered" not in result.stderr
+
+
+def test_a_suppressed_start_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    seed_stamp(script, seconds_ago=60)
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert "suppressed" in result.stderr
+    # The suppression line itself says a start "was already delivered"; the
+    # claim under test is the delivery line, not the word.
+    assert "notify: delivered" not in result.stderr
+
+
 def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
     """A near-miss must still notify. A prefix or substring rule would make one
     mistyped character in the real topic silently stop every notification, which
