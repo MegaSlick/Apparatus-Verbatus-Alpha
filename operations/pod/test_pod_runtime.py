@@ -1524,6 +1524,52 @@ def test_a_price_move_between_preview_and_confirmation_names_itself(tmp_path: Pa
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
+FIXTURE_PLACEMENT_TOML = "\n".join(
+    (
+        'schema = "pod-placement.v1"',
+        "",
+        "[dtype_floor]",
+        'bfloat16 = "8.0"',
+        "",
+        "[[tiers]]",
+        'id = "fixture-48gb"',
+        "min_vram_gib = 40",
+        "max_vram_gib_exclusive = 80",
+        'residency = "single"',
+        'detector_device = "cpu"',
+        "",
+        "[tiers.recipe]",
+        'engine_memory_fraction = "0.90"',
+        "context_cap = 2048",
+        "pixel_cap = 1344",
+        "batch_size = 1",
+        "",
+        "[[card_profile]]",
+        'name = "fixture 48 GiB"',
+        'gpu_type_id = "fake-48gb"',
+        "vram_gib = 48",
+        'hourly_usd = "0.77"',
+        'tier = "fixture-48gb"',
+        'note = "the fake provider\'s only card; reviewed here so a CLI drill has a table"',
+        "",
+    )
+)
+"""A reviewed card table for the fake card these CLI drills rent.
+
+`cli.py` holds every create to `config/pod_placement.toml` unless `--placement`
+names another table, and the real table has no `fake-48gb` row -- correctly, it
+lists cards that exist. A drill that rents an imaginary card names an imaginary
+table, and the gate is exercised rather than switched off: the card is listed,
+and its reviewed $0.77/h fits the $1.00/h ceiling these drills configure.
+"""
+
+
+def fixture_placement(tmp_path: Path) -> Path:
+    path = tmp_path / "pod_placement.toml"
+    path.write_text(FIXTURE_PLACEMENT_TOML, encoding="utf-8")
+    return path
+
+
 def test_cli_prints_preview_before_collecting_typed_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1588,6 +1634,8 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -1702,6 +1750,8 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -6338,6 +6388,8 @@ def _drive_cli(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -7020,6 +7072,40 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
     assert printed["state"] == "refused"
     assert "FakeProvider cannot" in printed["detail"]
     assert not fixture_path.exists()
+    assert provider.create_requests == []
+
+
+def test_cli_record_fixture_refuses_a_recorder_that_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other way the flag fails, on a provider that *can* record.
+
+    `FixtureRecorder` creates the parent directory, opens the file and narrows
+    its mode, so it raises `OSError` -- here because a regular file sits where
+    the fixture's parent directory belongs. Only `ValueError` was caught, so
+    this raised out of `cli.main` before the preview: a traceback where this
+    command promises a named refusal. `create` refuses, because nothing is paid
+    yet and an operator who asked for evidence should get evidence or a reason.
+    """
+
+    clock = Clock()
+    provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("a file where the fixture's parent directory should be", encoding="utf-8")
+
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["--record-fixture", str(blocked / "fixture.jsonl"), "create", "--request"],
+    )
+
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert "could not be attached" in printed["detail"]
+    assert str(blocked / "fixture.jsonl") in printed["detail"]
     assert provider.create_requests == []
 
 
