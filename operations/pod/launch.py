@@ -1094,11 +1094,14 @@ class PodRuntime:
 
         Two conditions, both refusing by name:
 
-        * the request's `gpu_type` must be a row of the reviewed table. Matched
-          through `profile_for`, so either the row's `name` or its `gpu_type_id`
-          is accepted -- `boot_a_request.py` renders the request with the
-          `gpu_type_id`, and the operator reads about the card by its `name`, so
-          refusing either spelling would refuse the tree's own rendered request;
+        * the request's `gpu_type` must be a row of the reviewed table, matched
+          on `gpu_type_id` alone (`PlacementTable.profile_for_gpu_type_id`).
+          `gpu_type_id` is the only spelling that has ever gone to the API:
+          `boot_a_request.py` renders `"gpu_type": card.gpu_type_id`, and the
+          table's `name` column is prose for the operator. Accepting the name
+          too would allowlist a string no provider is known to take, so a create
+          could pass this gate and then fail at the API -- or rent something
+          else;
         * that row's reviewed hourly price must fit under `max_hourly_usd`, net
           of the volume's hourly rate when the estimate has supplied one. This
           binds the *reviewed* price rather than the quoted one, which is the
@@ -1114,7 +1117,7 @@ class PodRuntime:
         table = self.placement_table
         if table is None:
             return None
-        profile = table.profile_for(request.gpu_type)
+        profile = table.profile_for_gpu_type_id(request.gpu_type)
         if profile is None:
             reviewed = (
                 ", ".join(f"{row.name!r} ({row.gpu_type_id!r})" for row in table.card_profiles)

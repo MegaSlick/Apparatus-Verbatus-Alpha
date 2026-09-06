@@ -33,10 +33,18 @@ from .models import PodCreateRequest
 from .preflight import load_placement_table
 from .spend import SpendPolicy
 
-REVIEWED_TABLE = Path("config/pod_placement.toml")
+# Resolved from this file, not from the cwd. These tests assert against the
+# repository's own shipped table -- that is the point of the gate -- and a
+# bare relative path finds it only when pytest happens to be started from the
+# repository root. Run from anywhere else it would silently read some other
+# file, or none.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+REVIEWED_TABLE = REPOSITORY_ROOT / "config" / "pod_placement.toml"
+SPEND_POLICY_PATH = REPOSITORY_ROOT / "config" / "spend.toml"
 
 # The Stage 1 card, by the exact string `boot_a_request.py` renders into the
-# request, and its reviewed price in the table above.
+# request -- the row's `gpu_type_id`, which is the only spelling the API is
+# ever sent -- and its reviewed price in the table above.
 A5000 = "NVIDIA RTX A5000"
 A5000_ROW_NAME = "RTX A5000"
 # The most expensive reviewed row: listed, and far above the Stage 1 ceiling.
@@ -115,9 +123,53 @@ def armer() -> ChannelControllerArmer:
         channel=_SilentChannel(),
         supervisor_argv=default_supervisor_argv(
             provider_factory="untracked.drill_provider:factory",
-            spend=Path("config/spend.toml"),
+            spend=SPEND_POLICY_PATH,
         ),
     )
+
+
+CONFIGURED_SPEND_TOML = "\n".join(
+    [
+        'schema = "pod-spend.v3"',
+        'state = "configured"',
+        'currency = "USD"',
+        'max_hourly_usd = "1.00"',
+        'max_estimated_metered_cost_usd = "5.00"',
+        'account_balance_floor_usd = "50.00"',
+        'account_balance_alert_usd = "75.00"',
+        "hard_lifetime_seconds = 3600",
+        "laptop_heartbeat_timeout_seconds = 30",
+        "shutdown_poll_interval_seconds = 1",
+        "shutdown_deadline_seconds = 8",
+        "billing_cutoff_margin_seconds = 3600",
+        "",
+    ]
+)
+"""A configured test policy for the `cli.main` drills. `config/spend.toml` is
+Tyrel's and stays unconfigured."""
+
+
+def write_request(tmp_path: Path, ask: PodCreateRequest) -> Path:
+    """The request JSON `cli.py create` reads, written from a built request."""
+
+    path = tmp_path / "request.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": ask.name,
+                "gpu_type": ask.gpu_type,
+                "image": ask.image,
+                "template": ask.template,
+                "volume_id": ask.volume_id,
+                "volume_mount_path": ask.volume_mount_path,
+                "docker_start_cmd": list(ask.docker_start_cmd),
+                "hard_deadline": ask.hard_deadline.isoformat(),
+                "repository_commit": ask.repository_commit,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def provider_for(card: str) -> FakeProvider:
@@ -225,7 +277,11 @@ def test_a_runtime_with_no_reviewed_table_enforces_no_allowlist(tmp_path: Path) 
 def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No `--placement` passed: the shipped table is the allowlist regardless.
+    """The shipped reviewed table is the allowlist, named the way the default names it.
+
+    `--placement` is passed here only so the table is resolved from the
+    repository root rather than from whatever directory pytest was started in;
+    the value is `cli.py`'s own default file.
 
     Exit 2 is this surface's "refused, and nothing was paid"; the fake never
     saw a verb.
@@ -233,44 +289,8 @@ def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
 
     provider = provider_for("fake-48gb")
     spend_path = tmp_path / "spend.toml"
-    spend_path.write_text(
-        "\n".join(
-            [
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "5.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 8",
-                "billing_cutoff_margin_seconds = 3600",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    ask = request("fake-48gb")
-    request_path = tmp_path / "request.json"
-    request_path.write_text(
-        json.dumps(
-            {
-                "name": ask.name,
-                "gpu_type": ask.gpu_type,
-                "image": ask.image,
-                "template": ask.template,
-                "volume_id": ask.volume_id,
-                "volume_mount_path": ask.volume_mount_path,
-                "docker_start_cmd": list(ask.docker_start_cmd),
-                "hard_deadline": ask.hard_deadline.isoformat(),
-                "repository_commit": ask.repository_commit,
-            }
-        ),
-        encoding="utf-8",
-    )
+    spend_path.write_text(CONFIGURED_SPEND_TOML, encoding="utf-8")
+    request_path = write_request(tmp_path, request("fake-48gb"))
     monkeypatch.setattr(cli, "_provider", lambda _reference: provider)
     monkeypatch.setattr(cli, "_controller_armer", lambda _reference: armer())
     monkeypatch.setattr(
@@ -289,6 +309,8 @@ def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
             str(tmp_path / "leases"),
             "--provider-name",
             "fake",
+            "--placement",
+            str(REVIEWED_TABLE),
             "create",
             "--request",
             str(request_path),
@@ -301,3 +323,76 @@ def test_the_cli_holds_a_create_to_the_reviewed_table_by_default(
     assert "is not a reviewed card" in printed["detail"]
     assert printed["preview"] is None
     assert provider.calls == []
+
+
+def test_the_human_row_name_is_not_an_allowlist_entry(tmp_path: Path) -> None:
+    """`gpu_type_id` is the allowlist; `name` is prose for the operator.
+
+    `boot_a_request.py` renders `"gpu_type": card.gpu_type_id`, and that string
+    is the only spelling of a card this repository has ever put in a request
+    body. Accepting `"RTX A5000"` too would allowlist a value no provider is
+    known to take: a create could pass this gate and then fail at the API, or
+    -- the worse outcome -- be resolved to some other card. So the gate matches
+    what is actually sent, and the refusal still prints both columns so the
+    operator can see which string to use.
+    """
+
+    provider = provider_for(A5000_ROW_NAME)
+
+    result = runtime(tmp_path, provider, max_hourly="1.00").preview_create(request(A5000_ROW_NAME))
+
+    assert result.state is LaunchState.REFUSED_CARD
+    assert f"gpu_type {A5000_ROW_NAME!r} is not a reviewed card" in result.detail
+    assert A5000 in result.detail, "the refusal must name the spelling that does work"
+    assert provider.calls == []
+
+
+def test_an_unreadable_placement_table_refuses_the_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The gate fails closed: a table that cannot be parsed is not an empty allowlist.
+
+    This is the branch that decides whether a damaged or truncated
+    `config/pod_placement.toml` turns the card gate off. It must not: exit 2 is
+    "refused, and nothing was paid", and the fake is asked for no verb at all --
+    not even the unpriced estimate.
+    """
+
+    provider = provider_for(A5000)
+    damaged = tmp_path / "damaged-placement.toml"
+    damaged.write_text('schema = "pod-placement.v1"\n[[tiers]\n', encoding="utf-8")
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(CONFIGURED_SPEND_TOML, encoding="utf-8")
+    request_path = write_request(tmp_path, request(A5000))
+    monkeypatch.setattr(cli, "_provider", lambda _reference: provider)
+    monkeypatch.setattr(cli, "_controller_armer", lambda _reference: armer())
+    monkeypatch.setattr(
+        "builtins.input", lambda _prompt: pytest.fail("an unreadable table asked for a phrase")
+    )
+
+    exit_code = cli.main(
+        [
+            "--provider-factory",
+            "unused:factory",
+            "--controller-armer-factory",
+            "unused:factory",
+            "--spend",
+            str(spend_path),
+            "--leases",
+            str(tmp_path / "leases"),
+            "--provider-name",
+            "fake",
+            "--placement",
+            str(damaged),
+            "create",
+            "--request",
+            str(request_path),
+        ]
+    )
+
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert str(damaged) in str(printed["detail"])
+    assert "no paid action occurred" in str(printed["detail"])
+    assert provider.calls == [], "an unreadable table still reached the provider"

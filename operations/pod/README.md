@@ -467,9 +467,11 @@ check.
   returned — a created pod that bills above it is closed immediately rather than left
   running. **Which card may be rented is its own gate, and it is `config/pod_placement.toml`
   that says so.** A create refuses, before any provider call at all, a `gpu_type` that is
-  not a reviewed row of the placement table the runtime was given (matched on either the
-  row's `name` or its `gpu_type_id`, since `boot_a_request.py` renders the request with the
-  latter), and refuses again — after the estimate and still before anything is created — a
+  not a reviewed row of the placement table the runtime was given (matched on the row's
+  `gpu_type_id` alone: that is the only spelling this repository has ever sent to the API —
+  `boot_a_request.py` renders `"gpu_type": card.gpu_type_id` — while the table's `name`
+  column is prose for the operator, so accepting it too would allowlist a string no
+  provider is known to take), and refuses again — after the estimate and still before anything is created — a
   row whose *reviewed* price exceeds `max_hourly_usd` net of the volume rate the provider
   quoted. That binds the reviewed price, which the returned-price ceiling above cannot do:
   a card quoted cheaply today is still the card the table priced. Both refusals name the

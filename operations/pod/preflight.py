@@ -305,6 +305,28 @@ class PlacementTable:
                 return profile
         return None
 
+    def profile_for_gpu_type_id(self, gpu_type_id: str | None) -> CardProfile | None:
+        """The reviewed row a request's `gpu_type` names, matched on `gpu_type_id` alone.
+
+        Distinct from `profile_for`, and deliberately stricter. `profile_for`
+        resolves a card a *probe* reported and accepts either spelling, because
+        a probe reports whatever the driver calls the card. This one resolves
+        the string a `PodCreateRequest` will send to the provider's API, and
+        only `gpu_type_id` is ever sent: `boot_a_request.py` renders
+        `"gpu_type": card.gpu_type_id`, and the `name` column exists so an
+        operator can read about the card in prose. Accepting the human name
+        here would make an allowlist entry out of a string that has never
+        reached the API and that no provider is known to accept -- a create
+        that passed the gate and then failed, or worse, rented something else.
+        """
+
+        if not gpu_type_id:
+            return None
+        for profile in self.card_profiles:
+            if profile.gpu_type_id == gpu_type_id:
+                return profile
+        return None
+
     def tier_named(self, identifier: str) -> PlacementTier:
         for tier in self.tiers:
             if tier.identifier == identifier:
