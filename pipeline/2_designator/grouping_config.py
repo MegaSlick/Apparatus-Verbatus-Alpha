@@ -315,7 +315,7 @@ def _load_background(table: Any) -> dict[str, Any]:
 
     A provenance block of its own, rather than a line in the file's shared one:
     every other value in this policy is an unmeasured walking-skeleton default
-    with `sample_count = 0`, and folding three values measured on 127 real pages
+    with `sample_count = 0`, and folding four values measured on 127 real pages
     into that block would either overstate the rest of the file or understate
     these. Two blocks say two true things; one would say a false one.
     """

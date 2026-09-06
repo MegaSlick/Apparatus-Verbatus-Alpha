@@ -127,15 +127,27 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
         # of the page's size at all -- so it sits beside them rather than inside
         # `resolved_thresholds`, and it is re-derived here from this page's own
         # pixels rather than copied off the record under test.
+        background_policy = grouping_config.resolve_background_policy(policy, width, height)
         evidence = structure.infer_background_evidence(
-            width,
-            height,
-            _rows,
-            background_policy=grouping_config.resolve_background_policy(policy, width, height),
+            width, height, _rows, background_policy=background_policy
         )
         assert status["ink_margin"] == evidence["ink_margin"]
         assert status["ink_threshold"] == evidence["background"] - evidence["ink_margin"]
         assert isinstance(status["ink_margin"], int) and not isinstance(status["ink_margin"], bool)
+
+        # `dark_mode` is the other end of the distance the margin is a fraction
+        # of, and it is on the record for that reason: with it and the sealed
+        # `ink_margin_bp` the margin is recomputable, and without it the margin
+        # is a number whose derivation was dropped. Every fixture page takes the
+        # plain modal branch and publishes no `surround` block, so this record is
+        # the only place it appears at all.
+        assert status["dark_mode"] == evidence["dark_mode"]
+        assert status["ink_margin"] == max(
+            structure.PRIMARY_MARGIN,
+            (evidence["background"] - status["dark_mode"])
+            * background_policy["ink_margin_bp"]
+            // 10000,
+        ), "the published pair recomputes the published margin"
 
 
 def _page_image_path(context, ordinal: int) -> str:
@@ -205,8 +217,10 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     assert held["page_height"] is None
     assert held["resolved_thresholds"] is None
     assert held["background_source"] is None and held["structure_evidence"] is None
-    # Same reason, same page: no pass ran here, so there is no margin it ran at.
+    # Same reason, same page: no pass ran here, so there is no margin it ran at
+    # and no mode it was derived from.
     assert held["ink_margin"] is None and held["ink_threshold"] is None
+    assert held["dark_mode"] is None
 
     scanned = context.payloads[2]
     assert scanned["state"] == "scanned"
@@ -215,6 +229,7 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     assert scanned["resolved_thresholds"]["margin_px"] == thresholds.margin_px
     assert scanned["ink_margin"] == 46
     assert scanned["ink_threshold"] == 230 - 46
+    assert scanned["dark_mode"] == 90
 
 
 def test_two_pages_of_different_size_each_publish_their_own_numbers():
@@ -294,4 +309,8 @@ _ANALYSIS_FIELDS = {
     "structure_evidence": "detected",
     "background": 230,
     "ink_margin": 46,
+    # The walking-skeleton page's own two modes: paper 230, ink 90. 46 is
+    # `(230 - 90) * 3333 // 10000`, which is what makes the pair on the record
+    # checkable rather than two numbers that happen to sit beside each other.
+    "dark_mode": 90,
 }

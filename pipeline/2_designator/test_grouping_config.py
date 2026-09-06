@@ -558,7 +558,7 @@ def test_non_table_top_level_refused(tmp_path):
 # --- [grouping.background]: the one measured block, and its own closed schema ----
 
 
-def test_surround_resolves_both_bands_from_the_page_it_is_given():
+def test_background_resolves_both_bands_from_the_page_it_is_given():
     """`band_bp` is the one field in this file that resolves against *both*
     dimensions -- the band is a frame, so it is `band_bp` of the width on the
     left and right and `band_bp` of the height on top and bottom. That is why it
@@ -581,11 +581,11 @@ def test_surround_resolves_both_bands_from_the_page_it_is_given():
     assert resolve_background_policy(config, 1484, 1103)["band_px_y"] == 55
 
 
-def test_surround_is_not_a_field_of_the_published_resolved_thresholds():
+def test_background_is_not_a_field_of_the_published_resolved_thresholds():
     """Deliberate, and load-bearing for the fixture pins.
 
     `run.py` publishes the whole `GroupingThresholds` as a page's
-    `resolved_thresholds`. The surround policy answers a question asked strictly
+    `resolved_thresholds`. The background policy answers a question asked strictly
     before that record exists -- the background inference runs before any
     threshold touches any geometry -- so folding it in would put a
     background-inference input into the structure pass's published geometry and
@@ -599,14 +599,14 @@ def test_surround_is_not_a_field_of_the_published_resolved_thresholds():
     )
 
 
-def test_missing_surround_table_refused_as_missing_field(tmp_path):
+def test_missing_background_table_refused_as_missing_field(tmp_path):
     body = _valid_toml().replace("[grouping.background]\n" + _VALID_BACKGROUND + "\n", "")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="missing field"):
         load_grouping_config(path)
 
 
-def test_surround_field_present_but_not_a_table_refused(tmp_path):
+def test_background_field_present_but_not_a_table_refused(tmp_path):
     body = (
         _valid_toml()
         .replace("[grouping.background]\n" + _VALID_BACKGROUND + "\n", "")
@@ -617,21 +617,21 @@ def test_surround_field_present_but_not_a_table_refused(tmp_path):
         load_grouping_config(path)
 
 
-def test_surround_unknown_field_refused(tmp_path):
+def test_background_unknown_field_refused(tmp_path):
     body = _valid_toml().replace("band_bp = 500", "band_bp = 500\nbogus_bp = 1")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="unknown field"):
         load_grouping_config(path)
 
 
-def test_surround_missing_field_refused(tmp_path):
+def test_background_missing_field_refused(tmp_path):
     body = _valid_toml().replace("max_ink_bp = 7000\n", "")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="missing field"):
         load_grouping_config(path)
 
 
-def test_surround_missing_its_own_provenance_refused(tmp_path):
+def test_background_missing_its_own_provenance_refused(tmp_path):
     """Two provenance blocks, both required. The file-level one describes
     unmeasured defaults with `sample_count = 0`; this one describes three values
     measured on 127 real pages. One block could not say both truthfully."""
@@ -643,7 +643,7 @@ def test_surround_missing_its_own_provenance_refused(tmp_path):
         load_grouping_config(path)
 
 
-def test_surround_provenance_is_held_to_the_same_closed_schema(tmp_path):
+def test_background_provenance_is_held_to_the_same_closed_schema(tmp_path):
     body = _valid_toml().replace("sample_count = 7", "sample_count = -1")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="sample_count"):

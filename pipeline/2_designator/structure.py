@@ -172,11 +172,11 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
     `paper - dark_mode` is that distance, and both ends are already in hand --
     `infer_background_evidence` computes them to place the surround test. The
     threshold sits `ink_margin_bp` of the way down from the paper mode toward
-    the dark mode. At the sealed 3333 basis points that is one third of the way,
-    which puts the threshold two thirds of the way *up* from the dark mode --
-    strictly above the midpoint the surround test measures at, by (paper -
-    dark_mode) / 6, which is what keeps every pixel the surround block counts a
-    pixel this threshold also counts.
+    the dark mode. At the sealed 3333 basis points that is one third of the way
+    to within a basis point, which puts the threshold two thirds of the way *up*
+    from the dark mode -- strictly above the midpoint the surround test measures
+    at, by very nearly (paper - dark_mode) / 6, which is what keeps every pixel
+    the surround block counts a pixel this threshold also counts.
 
     **Floored at `PRIMARY_MARGIN`, and the floor is not decoration.** At the
     sealed fraction the floor binds wherever the two modes are 60 grey levels
@@ -187,6 +187,21 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
     the whole change monotone in the
     conservative direction: no page's threshold ever rises, so no page can start
     counting as ink anything it does not count as ink today.
+
+    **What this cannot do: one page, two lightings.** The derivation places the
+    threshold for the page's *dominant* paper population, and a frame holding
+    two leaves lit differently has two. Measured on real material rather than on
+    a shape test: the review proxy `da9e07ec...` of the 127-page calibration is a
+    two-leaf opening whose right leaf is genuinely darker than the single value
+    inferred for the whole frame, so at that page's own derived threshold the
+    left leaf and the covering sheet come out of the ink set correctly and the
+    right leaf is counted as ink edge to edge (overlay
+    `changed4_proxy_da9e07ec.png` in the session's Designator report). **Nothing
+    detects it.** The page infers, reconciles and publishes like any other, no
+    bound refuses it, and its own ink fraction is the only place the failure
+    shows -- the same shape as the light-surround limit
+    `infer_background_evidence` names, one level up. A per-region background is
+    the repair and it is a different unit.
 
     Integers only, floor division, like every other quantity here. `paper >=
     dark_mode` holds by construction -- `dark_mode` is the modal value at or
@@ -502,9 +517,9 @@ def infer_background_evidence(
 
     So the inferred value, from whichever branch, faces one last question that
     needs no geometry: **does it leave the page a minority of ink?** A background
-    is by definition the surface most of the page is; a value that puts 70% or
-    more of its own page at or below the ink threshold is not describing the
-    page's surface, and the ink fraction it implies would reconcile without
+    is by definition the surface most of the page is; a value that puts *more
+    than* 70% of its own page at or below the ink threshold is not describing
+    the page's surface, and the ink fraction it implies would reconcile without
     meaning anything. The bound is `max_ink_bp` in the sealed policy, measured at
     `PRIMARY_MARGIN` -- the floor under the derived margin, which is the most
     permissive threshold this page's scan can ever apply. A page it refuses is
@@ -525,6 +540,30 @@ def infer_background_evidence(
     maximum of 6595 among the pages it admits, exactly as they did before this
     unit. The bound and the derivation ask different questions and must be
     measured at different levels.
+
+    **Two shapes this inference is known to get wrong, and neither is caught.**
+    Both are recorded rather than repaired, because a limit nobody has written
+    down is the failure GOVERNANCE 2 is about.
+
+    * **A surround within about 15 grey levels of the paper** is inferred *as*
+      the paper: the frame wins the mode, clears the majority-ink test, and the
+      ink fraction it implies is inside `max_ink_bp`. The consequence is a paper
+      value that much too high. Measured on a SYNTHETIC page and pinned by
+      `test_structure.py::
+      test_a_light_surround_close_to_the_paper_tone_is_not_caught_and_that_is_recorded`,
+      which asserts the wrong answer so it cannot change unnoticed.
+    * **A frame holding two leaves lit differently gets one paper value**, and
+      the darker leaf is then counted as ink edge to edge while the lighter one
+      reads correctly. Found on real material -- the review proxy `da9e07ec...`
+      of the 127-page calibration, overlay `changed4_proxy_da9e07ec.png` in the
+      session's Designator report -- and not on a shape test. See
+      `_derived_ink_margin`, which places the threshold for the page's dominant
+      paper population and cannot place it for two. A per-region background is
+      the repair and it is a different unit.
+
+    In both cases the page infers, reconciles and publishes like any other; the
+    page's own ink fraction is the only place either failure shows, and nothing
+    in the record marks it as wrong.
 
     Conservation separately reconciles at the more sensitive `SECONDARY_MARGIN`,
     which is not derived; a page this guard refuses is still cut and read,

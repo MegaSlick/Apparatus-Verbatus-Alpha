@@ -862,9 +862,10 @@ def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
     The two derivation fields are asserted as arithmetic rather than as
     literals: this page's dark population peaks at `INK` and its light one at
     `BACKGROUND`, and the sealed fraction of that distance is the margin. What
-    matters for the fixtures is the line below it -- a synthetic page's ink and
-    paper are 190 grey levels apart, so the floor and the derived margin select
-    the identical pixels and nothing downstream can tell them apart.
+    matters for the fixtures is the line below it -- this page's ink and paper
+    are 190 grey levels apart and the walking-skeleton pages' are 140, and on
+    both distances the floor and the derived margin select the identical pixels,
+    so nothing downstream can tell them apart.
     """
     width, height = 200, 260
     rows = blank_rows(width, height)
@@ -1282,8 +1283,11 @@ def test_a_light_surround_close_to_the_paper_tone_is_not_caught_and_that_is_reco
     the paper: the mode is the frame, the frame clears the majority-ink test,
     and the ink fraction it implies is 0.46 -- inside `max_ink_bp`. Nothing in
     this design catches it. The consequence is a paper value 15 too high and an
-    ink fraction correspondingly inflated, which is visible in the page's own
-    record rather than silent, but it is not refused and the caveat says so.
+    ink fraction correspondingly inflated, and the record is where the wrong
+    value is *preserved* rather than where it is *visible*: the page publishes
+    220 as its paper and nothing beside it says the number is wrong. A reader
+    who already suspects the page can check it; nothing brings the page to that
+    reader. It is not refused, and the caveat says so.
     """
     width, height = 400, 300
     rows = photographed_page(width, height, surround=220)

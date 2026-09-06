@@ -1459,7 +1459,7 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # resolved surround policy is deliberately not a field of `GroupingThresholds`
 # either, so `structure-status.resolved_thresholds` is byte-identical
 # (`test_grouping_config.py::
-# test_surround_is_not_a_field_of_the_published_resolved_thresholds`).
+# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
 #
 # Checked, not assumed, in this file's own style. Both trees were built from
 # real orchestrator runs -- the `before` tree from a worktree pinned at the
@@ -1505,7 +1505,7 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # and the ink-bound tests beside it). The resolved policy is still not a field of
 # `GroupingThresholds`, so `resolved_thresholds` is byte-identical
 # (`test_grouping_config.py::
-# test_surround_is_not_a_field_of_the_published_resolved_thresholds`).
+# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
 #
 # Proved the same way and attributed leaf by leaf, baseline built from a
 # worktree pinned at the preceding commit under its own name with its own venv:
@@ -1530,8 +1530,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #    `ink_threshold`. **This is the first move on this branch that changes a
 #    leaf which is not a digest**, and the leaf comparison names them rather
 #    than tolerating them: 4 newly-present leaves per scenario, all four carrying
-#    `ink_margin = 46` and `ink_threshold = 184` — the margin every
-#    walking-skeleton page derives and the threshold it implies.
+#    `ink_margin = 46` and `ink_threshold = 184` — the margin every page in these
+#    two scenarios derives and the threshold it implies. Not every
+#    walking-skeleton page: the ink-free third page's two modes coincide, so it
+#    derives the floor of 20, and it appears in neither scenario.
 #
 # **No fixture page's cut moves for any of it.** The primary scan now runs at the
 # margin each page derives from the distance between its own two grey-level
@@ -1554,10 +1556,50 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `4_perlector` and `7_armarium`, each one's name being its own content digest.
 # Snapshot counts and exit codes unmoved: happy 96 files at exit 0, review 107 at
 # exit 3.
+#
+# And a sixth time, 2026-09-06, applying a second reader's findings against the
+# unit above. Two things move it, both of the kinds already described.
+#
+# 1. `config/designator_grouping.toml`'s `[grouping.background]` caveat is
+#    corrected -- `band_bp = 500`'s stated reason was refuted by the table three
+#    lines below it (1000 bp has the widest valley of the three, not 500; the
+#    real reason is that at 1000 the band is 36% of the page and stops being a
+#    frame), the scale-invariance figure now names the 67 pairs that infer both
+#    ways rather than all 72, the limit found on the `da9e07ec...` review proxy
+#    is added to what the sample does not establish, and a missing sentence break
+#    is repaired. Sealed bytes, so the same digest cascade follows.
+# 2. `structure-status` publishes a third field, `dark_mode`. The record already
+#    carried `ink_margin`, and `structure.BackgroundEvidence`'s docstring
+#    promises a reader can recompute that margin from `background`, `dark_mode`
+#    and the sealed `ink_margin_bp` -- but `dark_mode` reached the tree only
+#    inside the `surround` block, which the 49 modal-branch pages of the
+#    127-page calibration do not publish, and which no walking-skeleton page
+#    publishes at all. On those pages the margin was a number with its
+#    derivation dropped. It is 2 newly-present leaves per scenario, both
+#    `dark_mode = 90`: the ink tone of both pages of both scenarios, and the
+#    other end of the 140-level distance whose sealed third is the margin 46
+#    already on the record.
+#
+# **No fixture page's cut moves**, for the same reason as the fifth move: the
+# scan runs at the same derived margin it already ran at and nothing about the
+# inference changed. The only new leaf is a recording.
+#
+# Measured the same way and to the same standard: both scenarios built twice in
+# two independent temporary roots, which agreed exactly on both digests, and
+# compared leaf by leaf against the trees the fifth move left behind -- trees
+# that reproduce the two pins above exactly, which is what makes them a
+# baseline. Happy 75 changed files / 380 changed leaves, review 87 / 447. Every
+# one is accounted for: 366 and 428 are bare 64-hex digests, 12 and 17 are
+# `relative_path` values naming a content-addressed blob, 2 and 2 are the new
+# field, and **zero are anything else** (`scripts/leafdiff_values.py`, which
+# prints any leaf it cannot attribute and printed none). Two blobs per scenario
+# are renamed in `4_perlector` and `7_armarium`, each one's name being its own
+# content digest. Snapshot counts and exit codes unmoved: happy 96 files at exit
+# 0, review 107 at exit 3.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "f22e586d4a18095dff271707caa507d197065070a53408a4bfa161330607583c"
-REVIEW_RUN_TREE_DIGEST = "8ca511f49e44357d517a3fc98e1d0a436b6b7f8081ebed07d52f26dbed5c6e5f"
+HAPPY_RUN_TREE_DIGEST = "9100c2c2b6721d17b6447c5c20d4df30944b87c7d7bf660ad42fe65f4fae4623"
+REVIEW_RUN_TREE_DIGEST = "d71e94635719a5b71ffd4c1153e4e29c0825083b3e496d930939272435c27aab"
 
 
 def orchestrate(

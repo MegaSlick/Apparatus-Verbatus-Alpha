@@ -1122,11 +1122,25 @@ def publish_structure_status(
                 # unlike a module constant it cannot be recovered from the
                 # sealed policy alone -- and `ink_threshold` is the integer the
                 # scan compared every pixel against, spelled out rather than
-                # left as arithmetic a reader has to redo. Both are null on a
-                # page held before the structure pass analysed it and on one
+                # left as arithmetic a reader has to redo. All three are null on
+                # a page held before the structure pass analysed it and on one
                 # whose background could not be inferred, for the reason the
                 # geometry below is: this record answers for a pass that ran.
+                #
+                # `dark_mode` is the third because the other two are not enough
+                # to check either. `structure.BackgroundEvidence`'s own
+                # docstring promises a reader holding `background`, `dark_mode`
+                # and the sealed `ink_margin_bp` can recompute the margin
+                # exactly; the `surround` block on the conservation record
+                # carries `dark_mode` too, but only for pages that reach the
+                # surround branch -- 65 of the 114 inferred pages of the
+                # 127-page calibration, with the other 49 taking the plain modal
+                # branch and publishing no surround block at all. On those the
+                # promise was false: the margin was a number with its own
+                # derivation dropped. The derivation runs on both branches, so
+                # its input is recorded on both.
                 "ink_margin": analysis["ink_margin"] if analysis else None,
+                "dark_mode": analysis["dark_mode"] if analysis else None,
                 "ink_threshold": (
                     None
                     if analysis is None or analysis["ink_margin"] is None
@@ -1205,6 +1219,11 @@ def _analyze_page(
             # value the record publishes have to be one integer, not two
             # derivations that agree today.
             ink_margin = evidence["ink_margin"]
+            # The other end of the distance the margin above is a fraction of.
+            # Carried for the same reason and published for a different one: the
+            # `surround` block already records it, but only on pages that reach
+            # the surround branch, and the derivation runs on both.
+            dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
@@ -1212,6 +1231,7 @@ def _analyze_page(
             background_source = "not-inferable"
             surround = None
             ink_margin = None
+            dark_mode = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
         components = (
             []
@@ -1279,6 +1299,11 @@ def _analyze_page(
             # chair's rectangle against the ink this page's scan actually
             # counted.
             "ink_margin": ink_margin,
+            # This page's dark-population mode, `None` on the same pages
+            # `ink_margin` is `None` on and for the same reason. Cached beside
+            # the margin because the record publishes both: a margin without the
+            # distance it was taken from cannot be checked.
+            "dark_mode": dark_mode,
             "groups": groups,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,

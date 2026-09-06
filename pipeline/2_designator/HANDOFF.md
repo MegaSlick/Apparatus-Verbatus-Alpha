@@ -527,24 +527,35 @@ different fact about the *act*, not this per-page structural pass record.
 ```text
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 background_source | null, structure_evidence | null
-ink_margin | null, ink_threshold | null
+ink_margin | null, ink_threshold | null, dark_mode | null
 page_width | null, page_height | null
 resolved_thresholds | null (every field of GroupingThresholds)
 provenance (the resolved Designator chair)
 structure_answer_ref            # live path only: the page's retained answer
 ```
 
-`ink_margin` and `ink_threshold` say how this page's ink was thresholded, beside
-`background_source`'s account of how its paper was established. They are not
-fields of `resolved_thresholds` because they are not a function of the page's
-*size*: the margin is a sealed fraction of the distance between the page's own
-two grey-level population modes, so it cannot be recovered from the sealed
-policy and the page's dimensions the way every resolved threshold can. It is
-recorded because it is the divider under every ink count this stage publishes
-for the page, and a divider that is inferred and then dropped is the silent half
-of GOVERNANCE 2. Both are null wherever `resolved_thresholds` is, and also on a
-page whose background could not be inferred at all — no scan ran there, so there
-is no margin it ran at.
+`ink_margin`, `ink_threshold` and `dark_mode` say how this page's ink was
+thresholded, beside `background_source`'s account of how its paper was
+established. They are not fields of `resolved_thresholds` because they are not a
+function of the page's *size*: the margin is a sealed fraction of the distance
+between the page's own two grey-level population modes, so it cannot be
+recovered from the sealed policy and the page's dimensions the way every
+resolved threshold can. It is recorded because it is the divider under every ink
+count this stage publishes for the page, and a divider that is inferred and then
+dropped is the silent half of GOVERNANCE 2. All three are null wherever
+`resolved_thresholds` is, and also on a page whose background could not be
+inferred at all — no scan ran there, so there is no margin it ran at.
+
+`dark_mode` is on this record because the other two are not enough to check
+either. It is the derivation's own other input, so a reader holding
+`background`, `dark_mode` and the sealed `ink_margin_bp` recomputes the margin
+exactly and can say what every ink count on this page was taken at. The
+`surround` block on the `conservation` record carries `dark_mode` as well, but
+only for pages that reach the surround branch — 65 of the 114 inferred pages of
+the 127-page calibration, the other 49 taking the plain modal branch and
+publishing no surround block at all. On those 49 the margin was published with
+its derivation dropped. The derivation runs on both branches, so its input is
+recorded on both.
 
 On the live path every page's status carries `structure_answer_ref`, the
 digest-checked reference to that page's `structure-answer` record, and
@@ -1166,6 +1177,30 @@ rectangle pairs, not pages, so sample size clears it comfortably. Sample size
 was never the obstacle here, provenance is, and provenance is not a number a
 larger sample can fix.
 
+**The Ink Map's and the Recensor's own paper value is still the raw histogram
+mode, so their coverage audit is vacuous on a photographed page — the next
+cross-stage unit.** `common/residual_ink.py::_background_level` returns the
+page's single most common pixel value and `residual_ink` then calls a pixel ink
+only if it is `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` levels below it. On a
+photographed register opening the most common value is the bezel — 0 or near it
+on every one of the 127 calibration pages that reaches the surround branch — so
+that predicate is satisfied by almost nothing, the residual ink of a page full of
+writing computes to approximately zero, and the independent coverage proof that
+exists to catch a missed region passes by construction rather than by
+measurement. Both consumers are affected: `pipeline/1_ink_map/run.py` and
+`pipeline/5_recensor/run.py` call the same function. **This stage's own
+inference has moved and theirs has not**, which is why it is named here: since
+2026-09-06 the Designator distinguishes a photographed page from a dark one,
+derives its paper value from the two population modes, and refuses by name a
+value that is not a background of its own page (`[grouping.background]`), while
+the audit that is meant to be independent of it still uses the statistic the
+Designator retired. Closing it means deciding whether that audit should share
+this stage's inference — which would cost it the independence that is the whole
+point of a second opinion — or grow its own, calibrated on the same real
+material. That is a cross-stage decision and this handoff does not make it; what
+this handoff records is that until it is made, a green residual-ink audit on a
+photographed page is not evidence of coverage.
+
 **A page-fallback tile's per-tile `rationale` still says "no ink to group"
 even on the live path.** The record-level `reason` on `page-fallback` now
 tells the live and fixture premises apart (see `kind="page-fallback"` above),
@@ -1268,7 +1303,7 @@ and 71 to 85% of the page is counted as ink. `group_page` finds structure,
 `conservation.reconcile` balances exactly, residual is zero, and nothing in the
 record marks it. So a fourth question is asked of both branches, and it needs no
 geometry: does the inferred value leave the page a *minority* of ink? A
-background is the surface most of the page is; a value that puts 70% or more of
+background is the surface most of the page is; a value that puts more than 70% of
 its own page below the threshold it implies is not one. That bound is
 `max_ink_bp`, and a page over it is refused by name.
 
@@ -1288,7 +1323,7 @@ tree. Rows marked **SYNTHETIC** are shape tests built by
 
 | lever | value | rejected alternatives, measured | where it sits |
 |---|---:|---|---|
-| `band_bp` | 500 | 250 and 1000 bp. At the two bounds below, all three give an **identical** accept-or-refuse outcome and an identical paper value on every one of the 127 pages — the band is no longer a lever at all. 500 is kept for the widest interior valley (3,195 bp against 2,067 at 250) and because at 1000 the band is 36% of the page's area and stops being a frame | unchanged from the seven-page calibration |
+| `band_bp` | 500 | 250 and 1000 bp. At the two bounds below, all three give an **identical** accept-or-refuse outcome and an identical paper value on every one of the 127 pages — the band is no longer a lever at all. 1000 is rejected because the band is then 20% of each dimension and 36% of the page's area and has stopped being a frame: it averages bezel against paper, and the real pages' border figure collapses from a median of 8166 to 5025. **Not for its valley** — 1000 has the widest of the three (5,527 bp), as the table below says. Against 250 the valley does decide: 2,067 bp with the dark-core SYNTHETIC control at 5990, so a 6000 bound would already admit it | unchanged from the seven-page calibration |
 | `max_interior_dark_bp` | 5000 | 3000 (the seven-page value) refuses 3 real pages and buys nothing; 6000 admits the dark-core SYNTHETIC control at a 250 bp band | in a measured 3,195 bp valley, 49 bp below its midpoint |
 | `max_ink_bp` | 7000 | 8000 admits 5 of the 6 silent pages; 10000 is the bound switched off and the loader now refuses it | a **policy** bound in a continuum, in the widest gap near the top (6595→7077) and 77 bp nearer the refusing side |
 | ~~`min_border_dark_bp`~~ | *removed* | 7000 refused 52 of 127; 3000–4000 would admit 82%/69% of the majority-ink pages. Removed rather than lowered: it refuses no control the interior bound does not, so no value of it earns its cost | — |
@@ -1544,18 +1579,38 @@ every refusal `paper-is-not-a-background`, the same 13 files as before this unit
 That is by construction: the bound is probed at the floor and the floor did not
 move.
 
+**A frame holding two differently-lit leaves gets one paper value, and the
+darker leaf reads as ink.** This is a limit of the design and it was found on
+real material rather than on a shape test: the review proxy `da9e07ec…` is a
+two-leaf opening whose right leaf is genuinely darker than the single value
+inferred for the whole frame, so at that page's own derived threshold the left
+leaf and the covering sheet fall out of the ink set correctly and the right leaf
+is counted as ink edge to edge (overlay `changed4_proxy_da9e07ec.png` in the
+session's Designator report; its ink fraction moves 0.6595 → 0.3579 and stops
+there). The derivation makes the threshold right for the page's *dominant* paper
+population and cannot make it right for two of them. **Nothing detects the
+case**: the page infers, reconciles and publishes like any other, no bound
+refuses it, and its ink fraction is the only place the failure shows — which
+makes this the same shape as the light-surround limit the sealed caveat already
+names, one level up. A per-region background is the repair, and it is a
+different unit.
+
 **What moved downstream, and what did not.** `structure-status` gains
-`ink_margin` and `ink_threshold`; `structure_pass.touches_ink` reads the page's
+`ink_margin`, `ink_threshold` and `dark_mode` — the third added on a reader's
+finding against this unit, because the first two cannot be checked without it
+on the 49 pages of the calibration that publish no `surround` block; `structure_pass.touches_ink` reads the page's
 own margin instead of the constant, which is what lets the `model-only` signal
 fire at all on photographed material (at a fixed 20, a median of 39% of a real
 page sits below the threshold, so every rectangle a chair can draw touches ink). **No fixture page's cut moves.** All three walking-skeleton pages
 take the plain modal branch, derive 46, 46 and 20, and select pixel-for-pixel the
 same ink set as the floor did, because a synthetic page's paper and ink are 140
 grey levels apart. The acceptance run-tree digests move for the sealed config's
-bytes and for the two new record fields, and for nothing else: 382 and 468
-changed leaves across the two scenarios, of which 4 each are `ink_margin = 46`
-and `ink_threshold = 184` and every other one is a digest or a
-content-addressed blob path, with zero unattributed.
+bytes and for the new record fields, and for nothing else: 382 and 468 changed
+leaves across the two scenarios, of which 4 each are `ink_margin = 46` and
+`ink_threshold = 184` and every other one is a digest or a content-addressed
+blob path, with zero unattributed. `dark_mode` moved them once more, on its own
+measurement — 380 and 447 changed leaves, of which 2 each are `dark_mode = 90`
+and zero are anything but a digest or a blob path.
 
 **What `gap_tolerance_px = 3` does now, and what it still does not.** With the
 margin right, the gap sweep can be read for the first time: at the derived
