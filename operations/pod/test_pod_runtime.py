@@ -1524,6 +1524,52 @@ def test_a_price_move_between_preview_and_confirmation_names_itself(tmp_path: Pa
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
+FIXTURE_PLACEMENT_TOML = "\n".join(
+    (
+        'schema = "pod-placement.v1"',
+        "",
+        "[dtype_floor]",
+        'bfloat16 = "8.0"',
+        "",
+        "[[tiers]]",
+        'id = "fixture-48gb"',
+        "min_vram_gib = 40",
+        "max_vram_gib_exclusive = 80",
+        'residency = "single"',
+        'detector_device = "cpu"',
+        "",
+        "[tiers.recipe]",
+        'engine_memory_fraction = "0.90"',
+        "context_cap = 2048",
+        "pixel_cap = 1344",
+        "batch_size = 1",
+        "",
+        "[[card_profile]]",
+        'name = "fixture 48 GiB"',
+        'gpu_type_id = "fake-48gb"',
+        "vram_gib = 48",
+        'hourly_usd = "0.77"',
+        'tier = "fixture-48gb"',
+        'note = "the fake provider\'s only card; reviewed here so a CLI drill has a table"',
+        "",
+    )
+)
+"""A reviewed card table for the fake card these CLI drills rent.
+
+`cli.py` holds every create to `config/pod_placement.toml` unless `--placement`
+names another table, and the real table has no `fake-48gb` row -- correctly, it
+lists cards that exist. A drill that rents an imaginary card names an imaginary
+table, and the gate is exercised rather than switched off: the card is listed,
+and its reviewed $0.77/h fits the $1.00/h ceiling these drills configure.
+"""
+
+
+def fixture_placement(tmp_path: Path) -> Path:
+    path = tmp_path / "pod_placement.toml"
+    path.write_text(FIXTURE_PLACEMENT_TOML, encoding="utf-8")
+    return path
+
+
 def test_cli_prints_preview_before_collecting_typed_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1588,6 +1634,8 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -1702,6 +1750,8 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -6338,6 +6388,8 @@ def _drive_cli(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",

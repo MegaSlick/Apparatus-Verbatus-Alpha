@@ -24,6 +24,7 @@ from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .lease import LeaseStore
 from .models import PodCreateRequest, require_utc
 from .notify_bridge import Notifier, shell_notifier, silent
+from .preflight import PlacementRefusal, load_placement_table
 from .provider import PodProvider
 from .shutdown import VerifiedShutdown
 from .spend import load_spend_policy
@@ -52,6 +53,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--spend", type=Path, default=Path("config/spend.toml"))
+    parser.add_argument(
+        "--placement",
+        type=Path,
+        default=Path("config/pod_placement.toml"),
+        help=(
+            "the reviewed card table a create is held to: the request's gpu_type must "
+            "name one of its rows and that row's reviewed price must fit under "
+            "max_hourly_usd, before any provider call"
+        ),
+    )
     parser.add_argument("--leases", type=Path, required=True)
     parser.add_argument("--provider-name", required=True)
     parser.add_argument(
@@ -136,11 +147,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             # exists for the moment when a pod is billing and something has
             # already gone wrong.
             return _close_command(args, provider)
+        try:
+            placement = load_placement_table(args.placement)
+        except PlacementRefusal as error:
+            # The card allowlist is a gate, so an unreadable table refuses the
+            # launch rather than quietly turning the gate off.
+            print(
+                json.dumps(
+                    {
+                        "state": "refused",
+                        "green": False,
+                        "detail": (
+                            f"the reviewed card table {args.placement} could not be read: "
+                            f"{error}; no paid action occurred"
+                        ),
+                    },
+                    sort_keys=True,
+                    indent=2,
+                ),
+                flush=True,
+            )
+            return 2
         runtime = PodRuntime(
             provider,
             provider_name=args.provider_name,
             spend_policy=load_spend_policy(args.spend),
             lease_root=args.leases,
+            placement_table=placement,
             controller_armer=_controller_armer(args.controller_armer_factory),
             notifier=_notifier(args.notify),
         )

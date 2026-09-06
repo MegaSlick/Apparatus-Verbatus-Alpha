@@ -465,7 +465,19 @@ check.
   lifetime ceiling checks include both pod and attached volume while the hard lifetime is
   running, and the ceiling is applied a second time to the price the provider *actually*
   returned — a created pod that bills above it is closed immediately rather than left
-  running. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
+  running. **Which card may be rented is its own gate, and it is `config/pod_placement.toml`
+  that says so.** A create refuses, before any provider call at all, a `gpu_type` that is
+  not a reviewed row of the placement table the runtime was given (matched on either the
+  row's `name` or its `gpu_type_id`, since `boot_a_request.py` renders the request with the
+  latter), and refuses again — after the estimate and still before anything is created — a
+  row whose *reviewed* price exceeds `max_hourly_usd` net of the volume rate the provider
+  quoted. That binds the reviewed price, which the returned-price ceiling above cannot do:
+  a card quoted cheaply today is still the card the table priced. Both refusals name the
+  row and the ceiling and are `refused-card`. `cli.py` passes `config/pod_placement.toml`
+  unless `--placement` names another table, and an unreadable table refuses the launch
+  rather than turning the gate off; a `PodRuntime` constructed with no table — an offline
+  drill — enforces no allowlist. `adopt` is deliberately not gated this way: the pod
+  already exists, and refusing to adopt it would leave it billing unguarded. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
   until Tyrel supplies a reviewed policy. A configured policy must set a
   `billing_cutoff_margin_seconds` value within the code-owned 0–3600-second envelope;
   the exact value is sealed into both shutdown controllers and the pending-create
