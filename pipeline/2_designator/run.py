@@ -1116,6 +1116,22 @@ def publish_structure_status(
                 "state": "held" if reason_code else "scanned",
                 "reason_code": reason_code,
                 "background_source": analysis["background_source"] if analysis else None,
+                # How this page's ink was thresholded, beside how its paper was
+                # established. `ink_margin` is derived per page from the
+                # distance between the page's own two population modes, so
+                # unlike a module constant it cannot be recovered from the
+                # sealed policy alone -- and `ink_threshold` is the integer the
+                # scan compared every pixel against, spelled out rather than
+                # left as arithmetic a reader has to redo. Both are null on a
+                # page held before the structure pass analysed it and on one
+                # whose background could not be inferred, for the reason the
+                # geometry below is: this record answers for a pass that ran.
+                "ink_margin": analysis["ink_margin"] if analysis else None,
+                "ink_threshold": (
+                    None
+                    if analysis is None or analysis["ink_margin"] is None
+                    else analysis["background"] - analysis["ink_margin"]
+                ),
                 "structure_evidence": evidence,
                 # Null on a page held before the structure pass analysed it,
                 # for the same reason the two fields above are: this record
@@ -1182,12 +1198,20 @@ def _analyze_page(
             background = evidence["background"]
             background_source = evidence["source"]
             surround = evidence["surround"]
+            # The margin this page derived for itself, from the distance
+            # between its own two population modes and the sealed
+            # `ink_margin_bp` (`structure._derived_ink_margin`). It is carried
+            # rather than recomputed because the value the scan runs at and the
+            # value the record publishes have to be one integer, not two
+            # derivations that agree today.
+            ink_margin = evidence["ink_margin"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
             surround = None
+            ink_margin = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
         components = (
             []
@@ -1197,6 +1221,7 @@ def _analyze_page(
                 height,
                 rows,
                 background=background,
+                margin=ink_margin,
                 gap_tolerance_px=thresholds.gap_tolerance_px,
             )
         )
@@ -1246,6 +1271,14 @@ def _analyze_page(
             # lives and the surround is the part of that ink which is bezel
             # rather than writing.
             "surround": surround,
+            # This page's own derived ink margin, and `None` on a page whose
+            # background could not be inferred -- where no threshold was
+            # resolved, no scan ran, and naming a margin would be a resolution
+            # reported as an execution. `structure_pass.touches_ink` reads it
+            # rather than a module constant, so the live ink tripwire tests a
+            # chair's rectangle against the ink this page's scan actually
+            # counted.
+            "ink_margin": ink_margin,
             "groups": groups,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,
@@ -2205,9 +2238,9 @@ def _publish_conservation_and_secondary(
     # fact going unrecorded. What it records when present is how much of this
     # page's counted ink is photographic bezel rather than writing. Its two
     # dark counts bracket that: `border_dark_pixel_count` is a lower bound
-    # (22.5% to 58.1% of the counted ink on the 65 pages of the 127-page
-    # calibration that reach this branch) and `dark_pixel_count` an upper one
-    # (30.3% to 83.6%). The surround is never removed from the scan or from
+    # (34.1% to 79.7% of the counted ink on the 65 pages of the 127-page
+    # calibration that reach this branch, at the margin each page derives for
+    # itself) and `dark_pixel_count` an upper one (78.5% to 96.9%). The surround is never removed from the scan or from
     # this reconciliation (see `structure._dark_surround` for why), so without
     # this a reader would take an ink fraction of two thirds for two thirds of
     # writing.

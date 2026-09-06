@@ -52,7 +52,6 @@ from pathlib import Path
 from typing import Any, Final, Mapping
 
 import geometry
-import structure
 import structure_prompt
 
 from common import structure_answer
@@ -442,11 +441,23 @@ def touches_ink(rectangle: Mapping[str, int], analysis: Mapping[str, Any]) -> bo
     components' boxes only bound where the pixels are looked for, so a
     rectangle over blank paper costs nothing to test and a page the scan found
     no ink on returns False without reading a pixel.
+
+    **The threshold is this page's own, not `structure.PRIMARY_MARGIN`.** It
+    used to be the constant, and on photographed material that made the tripwire
+    unable to fire: a fixed 20 grey levels below the paper *mode* left a median
+    of 39% of a real page below the threshold, so every rectangle a chair could
+    draw touched ink and the `model-only` signal was true by construction rather
+    than by measurement. `analysis["ink_margin"]` is the
+    margin the page derived for itself and the one `primary_scan` counted its
+    components at, so this test now asks the same question of a rectangle that
+    the scan asked of the page. It is `None` exactly where `background` is --
+    the page whose background could not be inferred, which returns False on the
+    line above.
     """
     background = analysis["background"]
     if background is None:
         return False
-    threshold = background - structure.PRIMARY_MARGIN
+    threshold = background - analysis["ink_margin"]
     rows = analysis["rows"]
     for component in analysis["components"]:
         box = component["bounds"]

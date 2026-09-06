@@ -1516,10 +1516,48 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # scenario are renamed in `4_perlector` and `7_armarium`, each one's name being
 # its own content digest. Snapshot counts and exit codes unmoved: happy 96 files
 # at exit 0, review 107 at exit 3.
+#
+# And a fifth time, 2026-09-06, for the Designator's ink margin. Two things move
+# this one and they are different in kind, so they are attributed separately.
+#
+# 1. `config/designator_grouping.toml` gains `[grouping.background] ink_margin_bp
+#    = 3333` with a rewritten provenance and header, and its bytes are sealed at
+#    run creation like every other config's
+#    (c5c009796e0a... -> the file's own digest in the run's
+#    `sealed_config_digests`), which moves `config_digest`, `self_hash` and every
+#    digest computed over them.
+# 2. `structure-status` publishes two new fields, `ink_margin` and
+#    `ink_threshold`. **This is the first move on this branch that changes a
+#    leaf which is not a digest**, and the leaf comparison names them rather
+#    than tolerating them: 4 newly-present leaves per scenario, all four carrying
+#    `ink_margin = 46` and `ink_threshold = 184` — the margin every
+#    walking-skeleton page derives and the threshold it implies.
+#
+# **No fixture page's cut moves for any of it.** The primary scan now runs at the
+# margin each page derives from the distance between its own two grey-level
+# population modes rather than at `structure.PRIMARY_MARGIN`. On a synthetic page
+# that is the same pixel set: paper is 230, ink is 40 and 90, the derived margin
+# is 46 and the floor is 20, and every ink value is far below both thresholds
+# (`test_structure.py::test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`
+# asserts the two scans return the identical set). Components, groups, crops and
+# every act identity are therefore unmoved, and what is left is the digest
+# cascade plus the two recorded integers.
+#
+# Proved the same way, baseline built from a worktree pinned at the preceding
+# commit `60de02fca7` under its own name with its own venv, and that baseline
+# reproduced both previous pins exactly before anything was compared: happy 75
+# changed files / 382 changed leaves, review 87 / 468. Every one is accounted for
+# — 366 and 438 are bare 64-hex digests, 12 and 26 are `relative_path` values
+# naming a content-addressed blob, 4 and 4 are the two new fields above, and
+# **zero are anything else** (`scripts/leafdiff_values.py`, which prints any leaf
+# it cannot attribute and printed none). Two blobs per scenario are renamed in
+# `4_perlector` and `7_armarium`, each one's name being its own content digest.
+# Snapshot counts and exit codes unmoved: happy 96 files at exit 0, review 107 at
+# exit 3.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "f058d05c06b8e8fff7dbc46d37033db6c5727b8d3f7e0e82a082aacccbdebfd5"
-REVIEW_RUN_TREE_DIGEST = "03be1e57dfebf7d064588372d6ecc18ad79bbe2206eb77311411c6b6b3f5ae46"
+HAPPY_RUN_TREE_DIGEST = "f22e586d4a18095dff271707caa507d197065070a53408a4bfa161330607583c"
+REVIEW_RUN_TREE_DIGEST = "8ca511f49e44357d517a3fc98e1d0a436b6b7f8081ebed07d52f26dbed5c6e5f"
 
 
 def orchestrate(

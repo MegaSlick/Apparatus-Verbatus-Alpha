@@ -502,7 +502,7 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     # Defence in depth: even a caller bypassing inference cannot turn the
     # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
-        primary_scan(width, height, rows, background=0, gap_tolerance_px=3)
+        primary_scan(width, height, rows, background=0, margin=PRIMARY_MARGIN, gap_tolerance_px=3)
     assert PRIMARY_MARGIN == 20
 
 
@@ -614,12 +614,20 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_surround_test():
 
 def test_a_background_exactly_at_the_margin_still_infers():
     """The bound is where it is claimed to be: at 20, pure black is still ink."""
-    from structure import infer_background, primary_scan
+    from structure import infer_background_evidence, primary_scan
 
     rows = [bytearray([20] * 8) for _ in range(8)]
     rows[3][3] = 0
-    assert infer_background(8, 8, rows, background_policy=_shipped_background_policy(8, 8)) == 20
-    assert primary_scan(8, 8, rows, background=20, gap_tolerance_px=3) == [
+    evidence = infer_background_evidence(
+        8, 8, rows, background_policy=_shipped_background_policy(8, 8)
+    )
+    assert evidence["background"] == 20
+    # This page's two modes are 0 and 20, so a third of the distance between
+    # them is 6 and the floor is what the derivation returns. That is the shape
+    # the bound is claimed at: at a margin of 20 under a paper value of 20, pure
+    # black is exactly at the threshold and still counts.
+    assert evidence["ink_margin"] == 20
+    assert primary_scan(8, 8, rows, background=20, margin=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
     ]
 
@@ -742,9 +750,10 @@ def blank_first_page_run(tmp_path, monkeypatch):
     # these real pixels finds nothing. If a later threshold change made this page
     # scan as inked, every assertion below would still pass for the wrong reason.
     width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
-    background = designator.structure.infer_background(
+    evidence = designator.structure.infer_background_evidence(
         width, height, rows, background_policy=_shipped_background_policy(width, height)
     )
+    background = evidence["background"]
     # Resolved from the sealed policy the way the run resolves it, rather than
     # written out as literals: this premise stands in for what `initial_pass`
     # below actually does, and a hand-copied threshold is how the two would
@@ -758,6 +767,7 @@ def blank_first_page_run(tmp_path, monkeypatch):
             height,
             rows,
             background=background,
+            margin=evidence["ink_margin"],
             gap_tolerance_px=thresholds.gap_tolerance_px,
         )
         == []

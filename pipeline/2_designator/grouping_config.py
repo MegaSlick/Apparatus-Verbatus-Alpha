@@ -15,28 +15,41 @@ values are basis points of the page's own WIDTH (`margin_bp`) or HEIGHT
 `absolute` values are raw pixel counts that must never be scaled by page
 size at all. `background` is the third and it carries its own provenance block:
 its `band_bp` is the one length in this file that resolves against *both*
-dimensions, because the band it describes is a frame, and its other two fields
-are fractions of a pixel population rather than of a page and never resolve to
-pixels at all. Putting a field in the wrong sub-table is refused by the closed
-schema rather than caught by a comment nobody reads.
+dimensions, because the band it describes is a frame, and its other three
+fields are fractions of a pixel population, or of the distance between two of
+them, rather than of a page, and never resolve to pixels at all. Putting a
+field in the wrong sub-table is refused by the closed schema rather than caught
+by a comment nobody reads.
 
 That block was called `surround` until 2026-09-06, when it stopped being only a
 surround test: `max_ink_bp` asks whether the value inferred as paper is a
 background of its own page at all, on a page that has no surround and never
-reaches the geometric test. A sub-table named for one of its three fields is the
-misnaming GLOSSARY's "one word per concept" refuses, so it is named for what it
-governs. The *evidence* a framed page publishes is still `surround`, because
-that block really is about the surround.
+reaches the geometric test. `ink_margin_bp` joined it the same day for the same
+reason: it derives each page's own ink threshold and has nothing to do with a
+surround either. A sub-table named for one of its four fields is the misnaming
+GLOSSARY's "one word per concept" refuses, so it is named for what it governs.
+The *evidence* a framed page publishes is still `surround`, because that block
+really is about the surround.
 
 `primary_margin` and `secondary_margin` are refused by name wherever they
 appear, in either sub-table or at the policy's own top level. They are
-`structure.PRIMARY_MARGIN` and `structure.SECONDARY_MARGIN` -- 8-bit ink
-intensity offsets, not page geometry -- and stay Python module constants
+`structure.PRIMARY_MARGIN` and `structure.SECONDARY_MARGIN` -- absolute 8-bit
+ink-intensity offsets, not page geometry -- and stay Python module constants
 because `common/test_designator_recensor_ink_calibration.py` is an AST pin
 that reads `SECONDARY_MARGIN` as a source literal in `structure.py` and
 cross-checks it against the Recensor's own contrast constant. A per-run
 config value for either name would make that cross-stage invariant
 unenforceable statically.
+
+**`ink_margin_bp` is not that field and does not weaken that rule.** It is a
+fraction of the distance between a page's own two population modes, so it
+carries no grey level of its own and cannot be read as an offset: the same
+sealed 3333 derives a margin of 46 on this repository's fixture page and 71 on a
+photographed register opening, because those two pages have different contrast
+and not because anything in the file changed.
+The invariant the AST pin protects is between the Recensor's contrast constant
+and `SECONDARY_MARGIN`, and `SECONDARY_MARGIN` is not derived -- so the pin
+still reads two literals and compares them, exactly as it did.
 """
 
 import tomllib
@@ -102,9 +115,12 @@ def _refuse_forbidden_names(fields: dict, where: str) -> None:
     if found:
         raise ContractError(
             f"the grouping configuration's {where} carries forbidden field(s) {found}; "
-            "primary_margin/secondary_margin are ink-intensity offsets pinned as Python "
-            "module constants in structure.py by common/test_designator_recensor_ink_calibration.py "
-            "and may never become a per-run config value"
+            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
+            "as Python module constants in structure.py by "
+            "common/test_designator_recensor_ink_calibration.py and may never become a per-run "
+            "config value. What is sealed instead is [grouping.background] ink_margin_bp, the "
+            "fraction of a page's own two-mode distance that derives its margin: a population "
+            "fraction, which scales with the page, and not an offset"
         )
 
 
@@ -227,7 +243,7 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     `where` is the block's own table name, because this policy now carries two
     of them:
     the file's own, over values that are unmeasured walking-skeleton defaults,
-    and `[grouping.background]`'s, over three values measured on 127 real pages.
+    and `[grouping.background]`'s, over four values measured on 127 real pages.
     One shared block could not describe both honestly -- `sample_count` alone is
     0 for one and 127 for the other -- so there are two, and this function holds
     both to the same schema.
@@ -280,7 +296,18 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
 # a *population* rather than of a page, so they never resolve to pixels at all:
 # `max_interior_dark_bp` of the interior band's own pixels, `max_ink_bp` of the
 # whole page's.
-_BACKGROUND_BP_FIELDS: Final = ("band_bp", "max_interior_dark_bp", "max_ink_bp")
+# `ink_margin_bp` is the fourth and it is not a bound at all: it is the fraction
+# of the distance between the page's own two population modes that
+# `structure._derived_ink_margin` deducts from the paper value to get this
+# page's ink threshold. It is a fraction of a *population distance*, which is
+# why it belongs here and an absolute ink offset never can -- see
+# `_FORBIDDEN_NAMES`.
+_BACKGROUND_BP_FIELDS: Final = (
+    "band_bp",
+    "max_interior_dark_bp",
+    "max_ink_bp",
+    "ink_margin_bp",
+)
 
 
 def _load_background(table: Any) -> dict[str, Any]:
@@ -314,6 +341,30 @@ def _load_background(table: Any) -> dict[str, Any]:
                 f"the grouping configuration's [grouping.background] {name} is not a basis-point "
                 f"integer in 0..{BP_DENOMINATOR}"
             )
+    # `ink_margin_bp` is bounded strictly below half its range, and the bound is
+    # structural rather than a taste. `structure._dark_surround` measures at the
+    # midpoint of the page's two modes and its result is only readable as "this
+    # much of the counted ink is bezel" while every pixel it counts is a pixel
+    # the scan counts too -- which holds exactly while the derived threshold
+    # stays at or above that midpoint, i.e. while this fraction stays under
+    # 5000. At 5000 the two coincide and the surround block measures the whole
+    # of the page's ink; past it the block would count pixels the scan does not,
+    # and its two published counts would stop bracketing anything. Zero is
+    # refused for the reason the two bounds above are: a fraction of zero is the
+    # derivation switched off by a value rather than by a decision, leaving
+    # every page on the floor.
+    if (
+        not _is_plain_int(values["ink_margin_bp"])
+        or not 0 < values["ink_margin_bp"] < BP_DENOMINATOR // 2
+    ):
+        raise ContractError(
+            "the grouping configuration's [grouping.background] ink_margin_bp is not a "
+            f"basis-point integer strictly between 0 and {BP_DENOMINATOR // 2}; zero derives "
+            "no margin at all and leaves every page on structure.PRIMARY_MARGIN, and half or "
+            "more puts this page's ink threshold at or below the level the surround test "
+            "measures at, where that test's two dark counts stop being subsets of the ink "
+            "they are published as fractions of"
+        )
     # A band of zero leaves no border to measure and a band at or over half the
     # page leaves no interior, so both ends are refused rather than silently
     # turning the test off -- `structure._dark_surround` would return `None` for
@@ -366,6 +417,7 @@ def resolve_background_policy(config: dict[str, Any], width: int, height: int) -
         "band_px_y": _pad_amount(height, background["band_bp"]),
         "max_interior_dark_bp": background["max_interior_dark_bp"],
         "max_ink_bp": background["max_ink_bp"],
+        "ink_margin_bp": background["ink_margin_bp"],
     }
 
 

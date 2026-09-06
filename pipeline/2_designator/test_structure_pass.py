@@ -855,6 +855,102 @@ def test_a_body_the_client_cannot_read_holds_the_page_as_unusable(live_run, tmp_
     assert payload["finish_reason"] is None
 
 
+# --- the ink tripwire runs at the page's own threshold ------------------------
+
+
+def _photographed_page():
+    """A page shaped like a photographed leaf: a dark surround, paper spread
+    over forty-five grey levels with its peak at the top of them, and one small
+    mark of real ink in the middle.
+
+    Built here rather than taken from a fixture because every fixture page in
+    this repository has flat paper and a 140-level separation, which is exactly
+    the shape that hid this defect: at flat paper the floor margin and the
+    page's own margin select the identical pixels.
+    """
+    width, height = 200, 160
+    rows = [bytearray([0] * width) for _ in range(height)]
+    for y in range(20, height - 20):
+        row = rows[y]
+        for x in range(20, width - 20):
+            # Paper over sixty grey levels with its peak at 220. The `min` is
+            # what gives the population a mode: a flat spread would leave the
+            # inferred paper decided by whichever value the argmax reached
+            # first, and this test would be about tie-breaking.
+            row[x] = min(220, 175 + ((x * 7 + y * 11) % 65))
+    for y in range(70, 80):
+        for x in range(90, 110):
+            rows[y][x] = 30  # the only writing on the page
+    return width, height, rows
+
+
+def _analysis_at(margin: int):
+    import structure
+
+    width, height, rows = _photographed_page()
+    import grouping_config
+
+    policy = grouping_config.resolve_background_policy(
+        grouping_config.load_grouping_config(
+            Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
+        ),
+        width,
+        height,
+    )
+    evidence = structure.infer_background_evidence(width, height, rows, background_policy=policy)
+    resolved = evidence["ink_margin"] if margin is None else margin
+    return evidence, {
+        "background": evidence["background"],
+        "ink_margin": resolved,
+        "rows": rows,
+        "components": structure.label_components(
+            structure.ink_pixels(
+                width, height, rows, background=evidence["background"], margin=resolved
+            ),
+            gap_tolerance_px=3,
+        ),
+    }
+
+
+def test_the_ink_tripwire_tests_a_rectangle_at_the_pages_own_threshold():
+    """The reader's finding, pinned.
+
+    At the floor margin the threshold sits inside this page's own paper
+    population, so a rectangle over blank paper touches "ink", every rectangle a
+    chair could draw touches ink, and the `model-only` signal cannot fire at all
+    -- it is true by construction rather than by measurement. At the margin the
+    page derives for itself the paper is paper: a rectangle over blank paper
+    returns False and one over the writing returns True.
+
+    The margin is taken from the shipped inference rather than written out, so
+    this is the threshold a run would actually use on a page of this shape.
+    """
+    designator = load_designator("designator_touches_ink")
+    blank = {"x": 30, "y": 30, "w": 40, "h": 20}
+    writing = {"x": 88, "y": 68, "w": 24, "h": 14}
+
+    evidence, derived = _analysis_at(None)
+    assert evidence["source"] == "inferred-interior-mode"
+    assert derived["ink_margin"] > designator.structure.PRIMARY_MARGIN
+
+    _evidence, at_floor = _analysis_at(designator.structure.PRIMARY_MARGIN)
+    assert designator.structure_pass.touches_ink(blank, at_floor) is True
+    assert designator.structure_pass.touches_ink(writing, at_floor) is True
+
+    assert designator.structure_pass.touches_ink(blank, derived) is False
+    assert designator.structure_pass.touches_ink(writing, derived) is True
+
+
+def test_the_ink_tripwire_returns_false_on_a_page_with_no_background():
+    """`ink_margin` is `None` exactly where `background` is, and the background
+    check above it is what stops the subtraction from ever seeing that `None`."""
+    designator = load_designator("designator_touches_ink_unmeasured")
+    analysis = {"background": None, "ink_margin": None, "rows": [], "components": []}
+    assert (
+        designator.structure_pass.touches_ink({"x": 0, "y": 0, "w": 5, "h": 5}, analysis) is False
+    )
+
+
 def test_rectangles_touching_none_of_the_scanned_ink_hold_the_page(live_run, tmp_path, monkeypatch):
     """The coordinate-space tripwire: the scan found ink, the chair drew on paper."""
     root, catalogue = live_run

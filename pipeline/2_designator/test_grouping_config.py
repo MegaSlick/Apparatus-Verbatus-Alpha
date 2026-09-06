@@ -89,6 +89,7 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["background"]["band_bp"] == 500
     assert config["background"]["max_interior_dark_bp"] == 5000
     assert config["background"]["max_ink_bp"] == 7000
+    assert config["background"]["ink_margin_bp"] == 3333
     # The one measured block in this file, and the only place in it where the
     # flag is true. Pinned so a later edit cannot quietly widen the claim: 127
     # real pages from five sources, not zero synthetic ones.
@@ -239,6 +240,7 @@ _VALID_BACKGROUND = """\
 band_bp = 500
 max_interior_dark_bp = 5000
 max_ink_bp = 7000
+ink_margin_bp = 3333
 
 [grouping.background.provenance]
 source = 's'
@@ -569,6 +571,10 @@ def test_surround_resolves_both_bands_from_the_page_it_is_given():
         "band_px_y": 13,  # round-half-up 5% of 260
         "max_interior_dark_bp": 5000,
         "max_ink_bp": 7000,
+        # A fraction of the distance between the page's own two population
+        # modes, so it resolves to itself: unlike `band_bp` it has no page
+        # dimension to be a fraction of.
+        "ink_margin_bp": 3333,
     }
     # A real photographed proxy's size, resolved the way a run would resolve it.
     assert resolve_background_policy(config, 1484, 1103)["band_px_x"] == 74
@@ -667,6 +673,44 @@ def test_a_population_fraction_outside_zero_to_one_is_refused(tmp_path, field, b
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match=field):
         load_grouping_config(path)
+
+
+@pytest.mark.parametrize("bad", ["-1", "10001", "0.5", "true"])
+def test_an_ink_margin_fraction_outside_zero_to_one_is_refused(tmp_path, bad):
+    body = _valid_toml().replace("ink_margin_bp = 3333", f"ink_margin_bp = {bad}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="ink_margin_bp"):
+        load_grouping_config(path)
+
+
+@pytest.mark.parametrize("bad", ["0", "5000", "5001", "9999"])
+def test_an_ink_margin_fraction_at_or_past_half_its_range_is_refused(tmp_path, bad):
+    """The bound on `ink_margin_bp` is structural, not a matter of taste.
+
+    Zero derives no margin at all and leaves every page on
+    `structure.PRIMARY_MARGIN`, which is the derivation switched off by a value.
+    At 5000 the derived ink threshold coincides with the level
+    `structure._dark_surround` measures at, and past it the threshold falls
+    below that level -- at which point the surround block's two dark counts stop
+    being subsets of the ink they are published as fractions of, and
+    `SurroundEvidence`'s whole "this much of the counted ink is bezel" reading
+    becomes false.
+    """
+    body = _valid_toml().replace("ink_margin_bp = 3333", f"ink_margin_bp = {bad}")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="strictly between 0 and 5000"):
+        load_grouping_config(path)
+
+
+def test_the_sealed_ink_margin_fraction_is_under_half_its_range():
+    """The shipped value satisfies the bound above, checked on the shipped file.
+
+    The parametrized refusals prove the loader stops a bad value; this proves
+    the value in `config/designator_grouping.toml` is not one, which is a
+    different claim and the one a run depends on.
+    """
+    config = load_grouping_config()
+    assert 0 < config["background"]["ink_margin_bp"] < 5000
 
 
 @pytest.mark.parametrize(

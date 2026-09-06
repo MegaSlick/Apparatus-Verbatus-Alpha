@@ -65,10 +65,45 @@ class Component(TypedDict):
 # the ink threshold: a pixel at or below `background - margin` counts as ink.
 # `SECONDARY_MARGIN` is smaller, which makes `background - margin` a *higher*
 # threshold -- numerically closer to the background value -- so it also
-# catches fainter marks `PRIMARY_MARGIN` misses: the whole "adds recall"
+# catches fainter marks the primary scan misses: the whole "adds recall"
 # property, expressed as one number.
+#
+# **`PRIMARY_MARGIN` is no longer the margin the primary scan runs at.** It is
+# the *floor* under a margin the page supplies for itself
+# (`_derived_ink_margin`), and it is the level the background-plausibility probe
+# in `_settle_background_evidence` is measured at -- which is the same statement
+# twice, because the floor is the most permissive threshold the scan can ever
+# apply. Measured on 127 real pages: 20 grey levels below the paper *mode* is
+# well inside the paper *population* of a photographed page, whose tones spread
+# over dozens of levels, so a fixed 20 counted a median of 39% of a real page as
+# ink -- 23% even after the measured surround is taken out of both the ink and
+# the page (`DESIGNATOR_SURVEY_2026-09-06.md` sections 5 and 6, and the tables in
+# HANDOFF.md under "The ink margin, derived on 127 pages").
+# On this repository's synthetic pages the two are indistinguishable: paper is
+# one flat tone and ink is another, 140 grey levels below it on both pages that
+# carry any, so the floor threshold and the derived one select the identical
+# pixel set. Measured on all three walking-skeleton pages, which is why no
+# fixture page's cut moves for any of this.
+#
+# `SECONDARY_MARGIN` is deliberately *not* derived and stays 2. It is the
+# sensitive instrument: `secondary_scan` exists to add recall and only recall,
+# and `conservation.reconcile` uses it as the denominator that makes a mark the
+# grouping pass missed appear as residual rather than as an absence. A derived
+# margin there would trade a visible over-count for a possible silent loss,
+# which is the one direction GOALS 1 forbids. Two properties follow and both are
+# pinned: the secondary scan is strictly more sensitive than the primary on
+# *every* page (2 is below the floor, so no page can invert them), and the
+# cross-stage containment with the Recensor's own contrast constant stays a
+# comparison of two source literals that
+# `common/test_designator_recensor_ink_calibration.py` can read statically.
 PRIMARY_MARGIN: Final = 20
 SECONDARY_MARGIN: Final = 2
+
+# The denominator of every basis-point fraction this module is handed. The
+# sealed policy states `ink_margin_bp` in the same basis points
+# `config/designator_grouping.toml` uses everywhere else; spelling the
+# denominator once here keeps the arithmetic in one place.
+BASIS_POINTS: Final = 10000
 
 # `gap_tolerance_px` used to carry a module default here. It no longer does:
 # it is the one threshold this build cannot honestly scale by page dimension
@@ -116,6 +151,59 @@ def _ink_threshold(background: int, margin: int) -> int:
     return threshold
 
 
+def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
+    """How far below this page's paper value its own ink threshold sits.
+
+    **The page supplies the distance; the sealed policy supplies only the
+    fraction of it.** A photographed register page's paper is not one tone: it
+    is a broad population spread over dozens of grey levels by lighting, page
+    curl and the camera's own response, and the modal value is merely that
+    population's peak. A fixed offset of 20 below the peak therefore lands
+    *inside* the paper, and on 127 real pages it left a **median of 39%** of the
+    page below the ink threshold and, with the measured surround taken out of
+    both the ink and the page, a **median of 23% of the paper region** -- a
+    number that reconciles perfectly and describes nothing
+    (`DESIGNATOR_SURVEY_2026-09-06.md` section 6, and the tables in HANDOFF.md).
+    A written register page is a few percent ink. The distance between
+    the page's own two population modes is the scale that fixed offset was
+    missing: it is large on a photograph with a black surround and small on a
+    flat scan, exactly as the paper's own spread is.
+
+    `paper - dark_mode` is that distance, and both ends are already in hand --
+    `infer_background_evidence` computes them to place the surround test. The
+    threshold sits `ink_margin_bp` of the way down from the paper mode toward
+    the dark mode. At the sealed 3333 basis points that is one third of the way,
+    which puts the threshold two thirds of the way *up* from the dark mode --
+    strictly above the midpoint the surround test measures at, by (paper -
+    dark_mode) / 6, which is what keeps every pixel the surround block counts a
+    pixel this threshold also counts.
+
+    **Floored at `PRIMARY_MARGIN`, and the floor is not decoration.** At the
+    sealed fraction the floor binds wherever the two modes are 60 grey levels
+    apart or fewer; ten of the 127 calibration pages are, and on those ten the
+    gap is 22 levels or fewer. A third of that is a threshold so close to the
+    paper mode that the page has no separation to measure with. The floor holds
+    those pages at exactly the behaviour they had before this unit, and it makes
+    the whole change monotone in the
+    conservative direction: no page's threshold ever rises, so no page can start
+    counting as ink anything it does not count as ink today.
+
+    Integers only, floor division, like every other quantity here. `paper >=
+    dark_mode` holds by construction -- `dark_mode` is the modal value at or
+    below the page's mean and `paper` the modal value at or above it -- so the
+    product is never negative; the guard is here because a caller could pass the
+    two the other way round and a negative margin would silently *raise* the
+    threshold above the paper value.
+    """
+    if paper < dark_mode:
+        raise ContractError(
+            f"a paper mode of {paper} below this page's dark mode of {dark_mode} is not a "
+            "page's own two populations; the ink margin derived from it would raise the "
+            "threshold above the paper value rather than lowering it"
+        )
+    return max(PRIMARY_MARGIN, (paper - dark_mode) * ink_margin_bp // BASIS_POINTS)
+
+
 class BackgroundPolicy(TypedDict):
     """The sealed policy the background inference runs under.
 
@@ -137,12 +225,21 @@ class BackgroundPolicy(TypedDict):
     in `pipeline/2_designator/HANDOFF.md`). `max_ink_bp` replaces it, and it
     asks a different question -- not where this page's dark is, but whether the
     value inferred as paper is a background of this page at all.
+
+    `ink_margin_bp` is the fourth field and the only one that is not a bound. It
+    is the fraction -- of the distance between this page's two population modes,
+    not of any page dimension -- that `_derived_ink_margin` deducts from the
+    paper value to get the threshold the scan applies. It is a *population*
+    fraction like the two `_bp` bounds above, which is why it can live in a
+    sealed policy at all: an absolute ink offset is refused by
+    `grouping_config._FORBIDDEN_NAMES` by name and always will be.
     """
 
     band_px_x: int
     band_px_y: int
     max_interior_dark_bp: int
     max_ink_bp: int
+    ink_margin_bp: int
 
 
 class SurroundEvidence(TypedDict):
@@ -165,11 +262,20 @@ class SurroundEvidence(TypedDict):
     bound, because the page's own deep writing is at or below it too. One
     number would have been read as the bezel and been wrong in a direction
     nobody could tell. Over the 65 pages of the 127-page calibration that infer
-    through this branch, the surround is between **22.5% and 58.1%** of the ink
-    the page goes on to count by the lower bound (median 36.6%) and between
-    **30.3% and 83.6%** by the upper (median 56.9%). Both counts are subsets of
-    that counted ink by construction: `_dark_surround` caps the level at the ink
-    threshold.
+    through this branch, at the ink margin each page derives for itself, the
+    surround is between **34.1% and 79.7%** of the ink the page goes on to count
+    by the lower bound (median 58.6%) and between **78.5% and 96.9%** by the
+    upper (median 88.8%). Both counts are subsets of that counted ink by
+    construction: `_dark_surround` caps the level at the ink threshold.
+
+    **Those two ranges moved when the margin became a derivation, and the
+    direction is the point.** At the retired fixed margin of 20 they were
+    22.5-58.1% and 30.3-83.6%, because the denominator then included a quarter
+    to two thirds of the page's own paper counted as ink. With the paper out of
+    it, what the scan counts on a photographed leaf is *mostly bezel* -- a
+    median of 89% of it by the upper bound -- which is exactly why this block is
+    published rather than dropped. A reader handed an ink fraction of 0.24 with
+    no surround beside it would take a quarter of the page for writing.
     """
 
     band_px_x: int
@@ -183,9 +289,23 @@ class SurroundEvidence(TypedDict):
 
 
 class BackgroundEvidence(TypedDict):
+    """This page's paper value, how it was established, and what it will be
+    thresholded at.
+
+    `dark_mode` and `ink_margin` are here on *both* branches, unlike `surround`,
+    because they are the derivation's own inputs and output rather than a
+    geometric measurement of a frame. A reader holding `background`, `dark_mode`
+    and the sealed `ink_margin_bp` can recompute `ink_margin` exactly, and with
+    it the threshold every ink count on this page was taken at. Without them the
+    ink fraction of a page would be a number whose divider was inferred and then
+    dropped, which is the silent half of GOVERNANCE 2.
+    """
+
     background: int
     source: str
     surround: SurroundEvidence | None
+    dark_mode: int
+    ink_margin: int
 
 
 # The two `source` values `infer_background_evidence` can return. A page that
@@ -291,8 +411,8 @@ def _dark_surround(
     # handles. It rounds `interior_dark_bp` down, which is the looser direction
     # against the `<=` bound below; at these population sizes that is one part
     # in ten thousand against a measured valley 3,195 basis points wide.
-    border_dark_bp = border_dark * 10000 // border_pixels
-    interior_dark_bp = interior_dark * 10000 // interior_pixels
+    border_dark_bp = border_dark * BASIS_POINTS // border_pixels
+    interior_dark_bp = interior_dark * BASIS_POINTS // interior_pixels
     if interior_dark_bp > policy["max_interior_dark_bp"]:
         return None
     return {
@@ -342,8 +462,9 @@ def infer_background_evidence(
     then -20, no 8-bit sample can be at or below it, the page counts zero ink
     pixels, and the run exits `complete` over a visibly black page -- the same
     silent loss the majority-ink check exists to stop, reached by the one route
-    it does not cover. So a background must also be light enough to preserve
-    `primary_scan`'s declared separation at `PRIMARY_MARGIN`.
+    it does not cover. So a background must also be light enough to express an
+    ink threshold at the floor margin `PRIMARY_MARGIN`, which is the least this
+    page's own derived margin can be.
 
     **And the majority-ink test alone was wrong about a photographed page,
     measured on 7 of 7 real ones.** A photograph of a register opening carries a
@@ -385,14 +506,29 @@ def infer_background_evidence(
     more of its own page at or below the ink threshold is not describing the
     page's surface, and the ink fraction it implies would reconcile without
     meaning anything. The bound is `max_ink_bp` in the sealed policy, measured at
-    `PRIMARY_MARGIN` because that is the threshold the scan will actually apply.
-    A page it refuses is refused by name, is still cut and still read, and
-    records `ink_measurable: false` -- the visible failure GOVERNANCE 10 asks
-    for, in place of a number that cannot be read.
+    `PRIMARY_MARGIN` -- the floor under the derived margin, which is the most
+    permissive threshold this page's scan can ever apply. A page it refuses is
+    refused by name, is still cut and still read, and records
+    `ink_measurable: false` -- the visible failure GOVERNANCE 10 asks for, in
+    place of a number that cannot be read.
 
-    Conservation separately reconciles at the more sensitive `SECONDARY_MARGIN`;
-    a page this guard refuses is still cut and read, records
-    `ink_measurable: false`, and holds the run rather than reporting a
+    **That probe is measured at the floor rather than at the page's own derived
+    threshold, and that is a decision with a measurement behind it.** Asked at
+    the derived threshold the bound stops working entirely: the derivation reads
+    the same wrong paper value the bound is watching for, moves the threshold
+    down with it, and hands back an ink fraction that looks ordinary. Measured
+    on the six pages whose modal branch inferred a paper of 255 -- the exact
+    silent failure this bound exists to catch -- the whole-page ink figure at
+    the derived threshold is 2239 to 3498 basis points against a median of 2434
+    over the other 121, completely interleaved, so no value of `max_ink_bp`
+    separates them there. At the floor they measure 7077 to 8502 against a
+    maximum of 6595 among the pages it admits, exactly as they did before this
+    unit. The bound and the derivation ask different questions and must be
+    measured at different levels.
+
+    Conservation separately reconciles at the more sensitive `SECONDARY_MARGIN`,
+    which is not derived; a page this guard refuses is still cut and read,
+    records `ink_measurable: false`, and holds the run rather than reporting a
     measurement it did not make.
     """
     if width <= 0 or height <= 0:
@@ -409,34 +545,48 @@ def infer_background_evidence(
     background = max(range(256), key=lambda value: histogram[value])
     counted = width * height
     total = sum(value * count for value, count in enumerate(histogram))
+    mean = total // counted
+    # The page's two population modes, computed on both branches because the
+    # derived ink margin needs both on both. The modal value at or above the
+    # page's own mean is the paper population's peak, measured on the whole page
+    # rather than on the interior alone -- on a photographed page the surround is
+    # entirely below the mean, so it cannot contribute a candidate here, and
+    # excluding it geometrically would change nothing about this answer while
+    # making it depend on the band width. Its mirror at or below the mean is the
+    # dark population's own peak.
+    #
+    # On the plain modal branch `paper` and `background` are the same value: a
+    # background that survives `background * counted >= total` is at or above
+    # the mean, so the page's global mode is also the mode of the population at
+    # or above the mean. Pinned rather than assumed, in
+    # `test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch`.
+    paper = max(range(mean, 256), key=lambda value: histogram[value])
+    dark_mode = max(range(0, mean + 1), key=lambda value: histogram[value])
+    ink_margin = _derived_ink_margin(paper, dark_mode, background_policy["ink_margin_bp"])
     if background * counted < total:
-        mean = total // counted
-        # The modal value among pixels at or above the page's own mean: the
-        # paper population, measured on the whole page rather than on the
-        # interior alone. The surround is entirely at or below `background`,
-        # which is below the mean, so it cannot contribute a candidate here
-        # -- excluding it geometrically would change nothing about this
-        # answer while making it depend on the band width, which the
-        # detection below already spends.
-        paper = max(range(mean, 256), key=lambda value: histogram[value])
-        # ...and its mirror, the modal value among pixels at or below the mean:
-        # the dark population's own peak. The level the surround test measures
-        # at is the integer midpoint of the two, which is a valley rather than
-        # either spike -- the whole reason the test survives a resample that
-        # smooths the black spike away and moves the plain mode off it.
-        dark_mode = max(range(0, mean + 1), key=lambda value: histogram[value])
-        # Capped at the ink threshold so that every pixel the surround block
-        # counts is a pixel the scan will count as ink -- which is what makes
-        # "this much of the counted ink is bezel" a true sentence rather than an
-        # arithmetic that happens to work out. The cap does not bind on any of
-        # the 127 calibration pages: the smallest slack between the midpoint and
-        # the threshold there is 59 grey levels. It binds only where the dark and
-        # light populations are not separated at all, and it moves the level
-        # down, which is the admitting direction. Floored at 0 because a paper
-        # value below the margin implies a negative threshold, and this level
-        # indexes a histogram: the page it happens on is refused three lines
-        # later, but not before this slice is taken.
-        level = min((dark_mode + paper) // 2, max(0, paper - PRIMARY_MARGIN))
+        # The surround test measures at the integer midpoint of the two modes,
+        # which is a valley rather than either spike -- the whole reason it
+        # survives a resample that smooths the black spike away and moves the
+        # plain mode off it.
+        #
+        # Capped at this page's own ink threshold so that every pixel the
+        # surround block counts is a pixel the scan will count as ink -- which is
+        # what makes "this much of the counted ink is bezel" a true sentence
+        # rather than an arithmetic that happens to work out. With a derived
+        # margin the cap is provably slack wherever the derivation is not itself
+        # floored: the threshold sits (paper - dark_mode) * (1 - ink_margin_bp
+        # /10000) above the dark mode and the midpoint at half of it, so at any
+        # `ink_margin_bp` below 5000 the threshold is strictly the higher of the
+        # two. So it can bind only where the floor is what the derivation
+        # returned *and* the two modes are less than 2 * PRIMARY_MARGIN apart --
+        # a page with no contrast to scale by. On the 127 calibration pages it
+        # binds on 10, all of them from one source and all with 22 grey levels
+        # or fewer between their modes, and it moves the level down, which is
+        # the admitting direction. Floored at 0 because a paper value below the
+        # margin implies a negative threshold, and this level indexes a
+        # histogram: the page it happens on is refused three lines later, but
+        # not before this slice is taken.
+        level = min((dark_mode + paper) // 2, max(0, paper - ink_margin))
         # Keyword-only past `rows`: `level`, `dark_mode` and the dark pixel
         # count are three integers in a row, and a transposition of any two of
         # them would produce a wrong answer rather than an error.
@@ -450,11 +600,13 @@ def infer_background_evidence(
             policy=background_policy,
         )
         if surround is not None and paper >= PRIMARY_MARGIN:
-            return _refuse_a_paper_value_that_is_not_a_background(
+            return _settle_background_evidence(
                 {
                     "background": paper,
                     "source": BACKGROUND_SOURCE_INTERIOR_MODE,
                     "surround": surround,
+                    "dark_mode": dark_mode,
+                    "ink_margin": ink_margin,
                 },
                 width=width,
                 height=height,
@@ -483,8 +635,14 @@ def infer_background_evidence(
             "below every 8-bit sample, so no pixel on this page could ever be counted as ink "
             "and a blank result here would be arithmetic rather than a measurement"
         )
-    return _refuse_a_paper_value_that_is_not_a_background(
-        {"background": background, "source": BACKGROUND_SOURCE_MODAL, "surround": None},
+    return _settle_background_evidence(
+        {
+            "background": background,
+            "source": BACKGROUND_SOURCE_MODAL,
+            "surround": None,
+            "dark_mode": dark_mode,
+            "ink_margin": ink_margin,
+        },
         width=width,
         height=height,
         histogram=histogram,
@@ -493,7 +651,7 @@ def infer_background_evidence(
     )
 
 
-def _refuse_a_paper_value_that_is_not_a_background(
+def _settle_background_evidence(
     evidence: BackgroundEvidence,
     *,
     width: int,
@@ -513,8 +671,18 @@ def _refuse_a_paper_value_that_is_not_a_background(
     branch produced it, and the ink fraction it implies reconciles perfectly
     while meaning nothing -- the silent failure `DESIGNATOR_SURVEY_2026-09-06.md`
     §5 found on 6 of 127 pages and the seven-page calibration could not have
-    seen. Measured at `PRIMARY_MARGIN` because that is the threshold
-    `primary_scan` will actually apply to this page.
+    seen.
+
+    **Measured at `PRIMARY_MARGIN`, which is the floor under this page's derived
+    margin and therefore the most permissive threshold `primary_scan` could
+    apply to it.** Asking it at the page's own derived threshold instead would
+    switch the bound off: the derivation takes the same wrong paper value as its
+    upper end and slides the threshold down with it, so the six pages this bound
+    exists for measure 2239-3498 bp there, inside the ordinary range. See
+    `infer_background_evidence` for the measurement. No page is *scanned* at
+    `PRIMARY_MARGIN` any more; what the constant is now is the one level every
+    page shares, which is exactly what a bound comparing pages across a corpus
+    needs and a per-page scan does not.
 
     A refusal here is the ordinary `BackgroundInferenceRefusal`: the page is
     still cut, still read, and records `ink_measurable: false`. It loses this
@@ -523,7 +691,7 @@ def _refuse_a_paper_value_that_is_not_a_background(
     10 prices lower than a measurement that cannot be read.
     """
     threshold = _ink_threshold(evidence["background"], PRIMARY_MARGIN)
-    ink_bp = sum(histogram[: threshold + 1]) * 10000 // counted
+    ink_bp = sum(histogram[: threshold + 1]) * BASIS_POINTS // counted
     if ink_bp > policy["max_ink_bp"]:
         raise BackgroundInferenceRefusal(
             f"the value {evidence['background']} inferred as this {width}x{height} page's "
@@ -907,14 +1075,24 @@ def scan_ink_components(
 
 
 def primary_scan(
-    width: int, height: int, rows: list, *, background: int, gap_tolerance_px: int
+    width: int, height: int, rows: list, *, background: int, margin: int, gap_tolerance_px: int
 ) -> list[Component]:
+    """The primary proposer's scan, at the margin this page derived for itself.
+
+    `margin` has no default and never will. It used to be `PRIMARY_MARGIN`, and
+    the constant is still the floor under every value this is now passed --
+    `infer_background_evidence` publishes it as `ink_margin` on the evidence,
+    and `run.py` hands that same integer here and to the page's published
+    record. A caller that forgets it fails loudly rather than running the whole
+    page under a threshold nobody resolved, which is the rule
+    `gap_tolerance_px` above is already here under.
+    """
     return scan_ink_components(
         width,
         height,
         rows,
         background=background,
-        margin=PRIMARY_MARGIN,
+        margin=margin,
         gap_tolerance_px=gap_tolerance_px,
     )
 

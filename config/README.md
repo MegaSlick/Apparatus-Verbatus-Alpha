@@ -253,11 +253,14 @@ predetermined fallback grid cuts a page into, a cardinality rather than a length
 (a taller page gets taller bands, not more of them; its `fallback_overlap_bp`
 scales instead). Two more values do not enter the file at all.
 `structure.PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python
-constants: they are 8-bit ink-intensity offsets, not geometry, and
+constants: they are *absolute* 8-bit ink-intensity offsets, not geometry, and
 `common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` as a
 source literal against the Recensor's own contrast constant. A per-run value for either
 would make that cross-stage invariant unenforceable statically, so the file's closed
-schema refuses both names outright.
+schema refuses both names outright. `[grouping.background] ink_margin_bp` is not one of
+them: it is the fraction of the distance between a page's own two grey-level population
+modes that derives the margin the primary scan runs at, floored at `PRIMARY_MARGIN`,
+and it carries no grey level of its own.
 
 Unlike `recovery.toml` and `formats.toml` above, this policy is meant to be re-read at
 its point of use rather than carried already parsed, exactly as `designator-padding`

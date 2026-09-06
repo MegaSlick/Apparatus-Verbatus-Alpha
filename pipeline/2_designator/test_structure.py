@@ -15,6 +15,7 @@ from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
+    _derived_ink_margin,
     _ink_threshold,
     _label_components_reference,
     infer_background,
@@ -256,8 +257,19 @@ def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
         "the fixture must actually miss the primary threshold"
     )
     paint_rect(rows, 5, 5, 3, 3, faint)
+    # `PRIMARY_MARGIN` is the floor under every margin a page can derive for
+    # itself, so a mark this scan misses at the floor is missed at every margin
+    # a run could hand it. That is what makes "the secondary adds recall" a
+    # statement about the pair rather than about one calibration.
     assert (
-        primary_scan(width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX)
+        primary_scan(
+            width,
+            height,
+            rows,
+            background=BACKGROUND,
+            margin=PRIMARY_MARGIN,
+            gap_tolerance_px=GAP_TOLERANCE_PX,
+        )
         == []
     )
     found = secondary_scan(
@@ -272,7 +284,12 @@ def test_primary_and_secondary_agree_on_clearly_inked_marks():
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 2, 6, 6, INK)
     assert primary_scan(
-        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=PRIMARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     ) == secondary_scan(
         width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
     )
@@ -462,7 +479,19 @@ def test_label_components_refuses_a_missing_gap_tolerance_keyword():
 
 def test_primary_scan_refuses_a_missing_gap_tolerance_keyword():
     with pytest.raises(TypeError):
-        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)
+        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=PRIMARY_MARGIN)
+
+
+def test_primary_scan_refuses_a_missing_margin_keyword():
+    """A caller that forgets the page's own margin fails loudly.
+
+    The same rule `gap_tolerance_px` above is here under, and the reason is the
+    same: `PRIMARY_MARGIN` used to be a default here, and a default would mean a
+    page silently scanned at the floor while its record published the margin it
+    derived. Two different thresholds, one of them written down.
+    """
+    with pytest.raises(TypeError):
+        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, gap_tolerance_px=3)
 
 
 def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
@@ -828,14 +857,218 @@ def test_the_thin_wrapper_returns_the_same_value_as_the_evidence_function():
 
 def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
     """The fixture path, unchanged. Every walking-skeleton page takes it, which
-    is why no acceptance pin moves for the branch above."""
+    is why no acceptance pin moves for the branch above.
+
+    The two derivation fields are asserted as arithmetic rather than as
+    literals: this page's dark population peaks at `INK` and its light one at
+    `BACKGROUND`, and the sealed fraction of that distance is the margin. What
+    matters for the fixtures is the line below it -- a synthetic page's ink and
+    paper are 190 grey levels apart, so the floor and the derived margin select
+    the identical pixels and nothing downstream can tell them apart.
+    """
     width, height = 200, 260
     rows = blank_rows(width, height)
     paint_rect(rows, 20, 20, 160, 80, INK)
-    evidence = infer_background_evidence(
-        width, height, rows, background_policy=shipped_background_policy(width, height)
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    expected_margin = (BACKGROUND - INK) * policy["ink_margin_bp"] // 10000
+    assert evidence == {
+        "background": BACKGROUND,
+        "source": "inferred-modal",
+        "surround": None,
+        "dark_mode": INK,
+        "ink_margin": expected_margin,
+    }
+    assert expected_margin > PRIMARY_MARGIN, "this page must exercise the derivation, not the floor"
+    assert ink_pixels(
+        width, height, rows, background=BACKGROUND, margin=expected_margin
+    ) == ink_pixels(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
+
+
+# --- the ink margin the page derives for itself --------------------------------
+#
+# `PRIMARY_MARGIN` was the threshold the primary scan ran at until 2026-09-06.
+# On 127 real pages a fixed 20 grey levels below the paper *mode* landed inside
+# the paper *population* -- a photographed leaf's tones spread over dozens of
+# levels -- so between 28% and 66% of every real page counted as ink and the
+# number could not be read (`DESIGNATOR_SURVEY_2026-09-06.md` section 6). The
+# margin is now a sealed fraction of the distance between the page's own two
+# population modes, and `PRIMARY_MARGIN` is its floor.
+
+
+def test_the_ink_margin_is_a_sealed_fraction_of_the_pages_own_two_modes():
+    width, height = 400, 300
+    rows = photographed_page(width, height)  # frame 0, paper 205, ink 40
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    assert evidence["background"] == 205
+    assert evidence["dark_mode"] == 0
+    # Not a literal: the sealed fraction of this page's own 205-level span.
+    assert evidence["ink_margin"] == (205 - 0) * policy["ink_margin_bp"] // 10000
+    assert evidence["ink_margin"] > PRIMARY_MARGIN
+
+
+def test_the_ink_margin_is_floored_at_primary_margin_where_the_two_modes_are_close():
+    """A page whose populations are barely apart has no separation to scale by.
+
+    Ten of the 127 calibration pages are here. The floor holds them at exactly
+    the threshold they had before this unit, and it makes the whole change
+    one-directional: a derived margin is never smaller than 20, so no page can
+    start counting as ink anything it did not count as ink before.
+    """
+    width, height = 200, 260
+    rows = blank_rows(width, height, background=200)
+    paint_rect(rows, 20, 20, 40, 40, 190)  # ten levels down: a page with no contrast
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    assert evidence["background"] == 200
+    assert evidence["dark_mode"] == 190
+    assert (200 - 190) * policy["ink_margin_bp"] // 10000 < PRIMARY_MARGIN
+    assert evidence["ink_margin"] == PRIMARY_MARGIN
+
+
+def test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch():
+    """The derivation reads `paper`; the modal branch publishes `background`.
+
+    They are the same integer there and the code relies on it: a background that
+    survives `mode * counted >= total` is at or above the page's own mean, so
+    the global mode is also the mode of the population at or above the mean.
+    Asserted on a page rather than argued, so a change to either selection
+    cannot leave the two silently different.
+    """
+    width, height = 200, 260
+    rows = blank_rows(width, height)
+    paint_rect(rows, 20, 20, 160, 80, INK)
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    mean = sum(v * c for v, c in enumerate(histogram)) // (width * height)
+    assert max(range(256), key=lambda v: histogram[v]) == max(
+        range(mean, 256), key=lambda v: histogram[v]
     )
-    assert evidence == {"background": BACKGROUND, "source": "inferred-modal", "surround": None}
+
+
+def test_a_paper_mode_below_the_dark_mode_is_refused_by_name():
+    """The derivation's own precondition, guarded rather than assumed.
+
+    `infer_background_evidence` can never produce this pair, but a caller could:
+    the two modes are ordinary integers and transposing them would produce a
+    negative margin, which *raises* the threshold above the paper value instead
+    of lowering it -- a scan that counts almost the whole page as ink, quietly.
+    """
+    with pytest.raises(ContractError, match="not a page's own two populations"):
+        _derived_ink_margin(40, 205, 3333)
+
+
+def test_the_derived_threshold_never_falls_below_the_surround_level():
+    """`SurroundEvidence`'s two counts are published as fractions of the ink.
+
+    That reading is only true while every pixel the surround block counts is a
+    pixel the scan counts too, which holds exactly while the derived threshold
+    stays at or above the midpoint of the two modes. The loader refuses any
+    `ink_margin_bp` at or past 5000 for this reason; here is the property it
+    buys, on a page that actually reaches the branch.
+    """
+    width, height = 400, 300
+    rows = photographed_page(width, height)
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    surround = evidence["surround"]
+    threshold = evidence["background"] - evidence["ink_margin"]
+    assert surround["dark_at_or_below"] <= threshold
+    ink = ink_pixels(
+        width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
+    )
+    assert surround["dark_pixel_count"] <= len(ink)
+    assert surround["border_dark_pixel_count"] <= len(ink)
+
+
+def test_a_page_whose_paper_spreads_over_many_tones_counts_far_less_of_itself_as_ink():
+    """The measurement this unit exists for, on a shape test.
+
+    `photographed_page`'s interior carries paper at seven tones between 195 and
+    205 -- a tenth of the spread a real photographed leaf has, and enough to
+    reach the branch. Widen it to sixty levels, as lighting and page curl do on
+    a real one, and the floor margin puts most of the paper below the ink
+    threshold while the derived margin puts none of it there.
+    """
+    width, height = 400, 300
+    rows = photographed_page(width, height, paper=205, ink=40)
+    # Re-tone the interior so the paper population spans 145..205 with its peak
+    # at 205, instead of the seven tones `photographed_page` paints. The `min`
+    # is what gives the population a mode rather than a plateau: a near-uniform
+    # spread would leave `paper` decided by whichever value the argmax reached
+    # first, and this test would then be about tie-breaking.
+    for y in range(23, height - 23):
+        row = rows[y]
+        for x in range(30, width - 30):
+            if row[x] != 40:
+                row[x] = min(205, 145 + ((x * 13 + y * 7) % 80))
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    assert evidence["background"] == 205, "the premise: the paper population's peak"
+    counted = width * height
+    at_floor = len(
+        ink_pixels(width, height, rows, background=evidence["background"], margin=PRIMARY_MARGIN)
+    )
+    at_derived = len(
+        ink_pixels(
+            width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
+        )
+    )
+    # The floor counts the paper: over half the page, on a page whose frame and
+    # writing together are barely a third of it.
+    assert at_floor == sum(1 for row in rows for value in row if value <= 205 - PRIMARY_MARGIN)
+    assert at_floor > counted * 0.6
+    # The derived margin counts the frame and the writing and nothing else.
+    assert at_derived == sum(1 for row in rows for value in row if value <= 40)
+    assert at_derived < counted * 0.4
+
+
+def test_the_background_probe_is_measured_at_the_floor_not_at_the_derived_threshold():
+    """The bound that catches a wrong paper value must not read that value twice.
+
+    This is the shape 6 of the 127 calibration pages have: a saturated highlight
+    is the single most common value on a page whose real paper is spread across
+    dozens of tones, so the modal branch takes the highlight for paper. At the
+    *floor* threshold that value leaves 80% of the page below the ink threshold
+    and `max_ink_bp` refuses it by name. At the page's own *derived* threshold it
+    leaves 68%, inside the bound -- because the derivation reads the same wrong
+    paper value as its upper end and slides the threshold down with it. That is
+    the failure the bound exists for, made invisible, and it is why the probe
+    stays at the floor.
+    """
+    width, height = 200, 260
+    rows = []
+    for y in range(height):
+        if y < 65:  # 25% of the page: a photographic surround
+            rows.append(bytearray((x % 11) for x in range(width)))
+        elif y < 117:  # 20%: a blown highlight, and the page's modal value
+            rows.append(bytearray([255] * width))
+        else:  # 55%: the real paper, spread over forty tones
+            rows.append(bytearray(140 + ((x * 7 + y * 13) % 41) for x in range(width)))
+    policy = shipped_background_policy(width, height)
+    counted = width * height
+
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    assert max(range(256), key=lambda v: histogram[v]) == 255, "the premise: the highlight wins"
+    mean = sum(v * c for v, c in enumerate(histogram)) // counted
+    assert 255 >= mean, "the premise: so the majority-ink question is never asked"
+    dark_mode = max(range(0, mean + 1), key=lambda v: histogram[v])
+    derived = _derived_ink_margin(255, dark_mode, policy["ink_margin_bp"])
+    assert derived > PRIMARY_MARGIN
+
+    at_floor = sum(histogram[: 255 - PRIMARY_MARGIN + 1]) * 10000 // counted
+    at_derived = sum(histogram[: 255 - derived + 1]) * 10000 // counted
+    assert at_floor > policy["max_ink_bp"], "the bound must fire where it is asked"
+    assert at_derived <= policy["max_ink_bp"], "and not where the derivation would ask it"
+
+    with pytest.raises(BackgroundInferenceRefusal, match="is not a measurement of paper"):
+        infer_background(width, height, rows, background_policy=policy)
 
 
 def test_an_inverted_scan_is_still_refused_although_it_is_majority_dark():

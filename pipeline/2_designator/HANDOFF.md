@@ -527,11 +527,24 @@ different fact about the *act*, not this per-page structural pass record.
 ```text
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 background_source | null, structure_evidence | null
+ink_margin | null, ink_threshold | null
 page_width | null, page_height | null
 resolved_thresholds | null (every field of GroupingThresholds)
 provenance (the resolved Designator chair)
 structure_answer_ref            # live path only: the page's retained answer
 ```
+
+`ink_margin` and `ink_threshold` say how this page's ink was thresholded, beside
+`background_source`'s account of how its paper was established. They are not
+fields of `resolved_thresholds` because they are not a function of the page's
+*size*: the margin is a sealed fraction of the distance between the page's own
+two grey-level population modes, so it cannot be recovered from the sealed
+policy and the page's dimensions the way every resolved threshold can. It is
+recorded because it is the divider under every ink count this stage publishes
+for the page, and a divider that is inferred and then dropped is the silent half
+of GOVERNANCE 2. Both are null wherever `resolved_thresholds` is, and also on a
+page whose background could not be inferred at all — no scan ran there, so there
+is no margin it ran at.
 
 On the live path every page's status carries `structure_answer_ref`, the
 digest-checked reference to that page's `structure-answer` record, and
@@ -1347,24 +1360,233 @@ being it: `border_dark_pixel_count` is the dark inside the border band, a lower
 bound because a real frame is usually wider than `band_bp`, and
 `dark_pixel_count` is the whole page at or below the level, an upper bound
 because the page's own deep writing is at or below it too. Over the 65 pages of
-the 127-page calibration that infer through this branch, the bezel is between
-**22.5% and 58.1%** of the counted ink by the lower bound (median 36.6%) and
-between **30.3% and 83.6%** by the upper (median 56.9%). Without those numbers a
-reader takes an ink fraction of 0.66 for two thirds of a page of writing. One
-number here would have been read as the bezel and been wrong in a direction
-nobody could tell, which is why there are two.
+the 127-page calibration that infer through this branch, at the derived ink
+margin, the bezel is between **34.1% and 79.7%** of the counted ink by the lower
+bound (median 58.6%) and between **78.5% and 96.9%** by the upper (median 88.8%).
+Both figures rose when the margin was derived, and rose for the right reason: the
+denominator is now the ink the page actually has rather than the ink plus a
+quarter of its own paper. At the retired fixed margin of 20 the same pages
+measured 22.5%-58.1% (median 36.6%) and 30.3%-83.6% (median 56.9%).
+Without those numbers a reader takes an ink fraction of two thirds for two thirds
+of a page of writing. One number here would have been read as the bezel and been
+wrong in a direction nobody could tell, which is why there are two.
 
-**What this does not fix, named rather than deferred.** `PRIMARY_MARGIN = 20` is
-still wrong on photographed paper, and the 127-page survey confirmed it while
-correcting the model of why: raising the margin to 40 or 60 does *not* fragment
-the page into strokes, because the floor under the ink fraction is the bezel
-(16-38% of a photographed page's area) and no value of this constant can move it.
-Component count therefore still falls as `gap_tolerance_px` rises on real pages,
-and the number cannot be derived from a component-count curve on this material at
-all. It is also the reason `max_ink_bp` refuses three of the seven review
-proxies: at a margin of 20 their ink fractions are not measurements either. The
-honest statement is that 20 is too permissive and no measurement here identifies
-a replacement.
+**What the same 127 pages then fixed** is the constant this section used to end
+by naming: `PRIMARY_MARGIN = 20` is no longer the margin the scan runs at. It is
+the floor under a per-page derivation and the level `max_ink_bp` is probed at.
+The next section is that measurement.
+
+### The ink margin, derived on 127 pages
+
+`[grouping.background] ink_margin_bp = 3333`. The page's ink threshold is
+`background - _derived_ink_margin(background, dark_mode, ink_margin_bp)`, that
+is `max(PRIMARY_MARGIN, (paper_mode - dark_mode) * 3333 // 10000)` below its own
+paper value. Measured on the same 127 pages, the same sample and seed, through
+the same driver.
+
+**What was wrong.** A photographed register leaf's paper is not one tone. It is a
+population spread over dozens of grey levels by lighting, page curl and the
+camera's response, and the modal value is that population's *peak*, not its
+edge. An offset of 20 below the peak therefore lands inside the paper. Over the
+127 pages at the old constant, the whole-page ink fraction ran 0.028 to 0.66 with
+a median of 0.39, and even with the surround's own upper-bound dark count taken
+out of both the ink and the page — the paper region, the part a register page's
+writing is actually on — the ink fraction there was still a median of 23%. A
+written page is a few percent ink. 23% is not a measurement of writing; it is a
+measurement of paper being called ink.
+
+**Why a fraction of the two modes, and not a valley.** The obvious repair is the
+classical one: put the threshold in the valley between the ink population and the
+paper population. There is no such valley on this material, and that is a
+finding rather than a difficulty. On every photographed page in the sample the
+histogram has exactly two peaks — the bezel and the paper — with a long, smooth,
+monotonically rising ramp between them where the writing lives. The minimum-density
+level between the page's two modes therefore sits just *above the bezel*, around
+grey level 55-75, which is a page-boundary threshold and not an ink one: at it the
+scan would count the frame and drop most of the writing. The writing is not a
+mode. It is a few percent of the pixels smeared under the paper peak's own left
+skirt, and no density statistic separates it from that skirt.
+
+What the two modes *do* give is the page's own **scale**. The distance between
+them is large on a photograph with a black surround and small on a flat scan,
+in the same proportion as the paper population's own spread, so a fixed fraction
+of it tracks the paper's width where a fixed offset cannot. That is the whole
+claim, and the table below is what it is worth.
+
+**Why the fraction is 3333 and not its neighbours.** Two measurements decide it,
+and a third rules out the extremes.
+
+* **The paper-region ink fraction** — the ink left after the surround block's own
+  upper-bound dark count is taken out of both the ink and the page. This is the
+  number that has to be one a register page can plausibly have. Over the ten
+  photographed pages of the survey's own margin sweep, driven live through the
+  shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at 3333**,
+  1.6%-4.2% at 3750, 1.2%-3.1% at 4000. At 2500 the densest page in the sample
+  puts a seventh of its paper region below the ink threshold, which is more ink
+  than a page of handwriting has; at 4000 even that page reads as sparse, which
+  is the ink-loss direction.
+* **The component count at the sealed `gap_tolerance_px = 3`** — checked for the
+  two failures a wrong margin produces, and showing neither at 3333. The median
+  over the same ten pages is 2721 / 2557 / **2653** / 2982 / 3197 across
+  2500-4000: flat at the bottom through 3000-3333 and rising past it, which is
+  fragmentation beginning. It is a weak discriminator between 3000 and 3333 and
+  it is reported as one.
+* **Whether tightening loses writing or paper.** Going from 2500 to 3333 removes
+  39-53% of the paper-region ink pixels on all ten pages while the component
+  count moves by -24% to +35%, rising on three of them. Whole faint marks
+  disappearing would take the count down with the pixels; components appearing
+  instead is a welded mass separating. What is being removed is the paper skirt.
+
+3000 and 3333 are not separated by any of the three, and the report says so. 3333
+is chosen for the paper-region placement and because it is one third, which is a
+number the code can state without a second one beside it.
+
+**The floor is `PRIMARY_MARGIN` and it is load-bearing.** At 3333 it binds
+wherever the two modes are 60 grey levels apart or fewer. Ten of the 127 pages
+are — all from one source, all with 22 levels or fewer between their modes — and
+on those the derivation has no separation to scale by. The floor also makes the
+whole change one-directional: no page's derived margin is smaller than 20, so no
+page's threshold rises and no page can start counting as ink anything it did not
+count as ink before.
+
+**The bound `ink_margin_bp` is held under, and why it is structural.** The loader
+refuses any value at or past 5000. `_dark_surround` measures at the midpoint of
+the two modes and publishes two dark counts *as fractions of the ink the page
+goes on to count*; that reading is true exactly while the derived threshold stays
+at or above the midpoint, which is exactly while the fraction stays under 5000.
+At 5000 the two coincide; past it the surround block would be counting pixels the
+scan does not. Zero is refused for the reason the two bounds beside it are: it is
+the derivation switched off by a value rather than by a decision.
+
+**Scale invariance, measured.** Over the same 73 DPI-tagged pages resampled to a
+300-DPI equivalent with LANCZOS, the derived margin moves by **at most 8 grey
+levels** (median 0) and the paper-region ink fraction by at most 0.51 percentage
+points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
+unit's 72 of 73, because the bound that decides it is not measured at the derived
+threshold — see the next paragraph.
+
+**`max_ink_bp` is probed at the floor, and that is a decision with a measurement
+behind it.** Asked at the page's own derived threshold the bound stops working:
+the derivation takes the same wrong paper value as its upper end and slides the
+threshold down with it. On the six pages whose modal branch inferred a paper of
+255 — the exact silent failure that bound exists for — the whole-page ink figure
+at the derived threshold is 2239-3498 bp against a median of 2434 over the other
+121, completely interleaved, so no value of `max_ink_bp` separates them there. At
+the floor they measure 7077-8502 against a maximum of 6595 among the pages it
+admits. The bound and the derivation ask different questions and are measured at
+different levels; the constant `PRIMARY_MARGIN` is what the first one needs — a
+level every page shares.
+
+**`SECONDARY_MARGIN` is not derived, by decision.** It stays 2, and so does
+`conservation.reconcile`'s margin, which defaults to it. The primary margin
+governs what this stage *proposes*; the secondary margin and the conservation
+denominator govern what it cannot *lose*, and erring sensitive there is the
+direction GOALS 1 requires — a mark the grouping pass missed appears as a
+residual component rather than as an absence. Deriving those too would trade a
+visible over-count for a possible silent loss. Two properties follow and both are
+still pinned: the secondary scan is strictly more sensitive than the primary on
+every page, because 2 is below the floor and no page can invert them; and the
+cross-stage containment with the Recensor's `MINIMUM_CONTRAST_BELOW_BACKGROUND`
+stays a comparison of two source literals that
+`common/test_designator_recensor_ink_calibration.py` reads statically.
+
+**The cost of that decision, stated rather than buried.** Conservation at a margin
+of 2 counts a photographed page as almost entirely ink — the measured
+distribution is in the table below — so on real material its residual accounting
+is an over-count by a very large factor, and it was already that before this unit.
+Nothing here makes it worse and nothing here fixes it. What this unit changes is
+that the two numbers no longer look alike: the primary scan's ink fraction is now
+a measurement of the page and conservation's is not, and a reader comparing them
+will see the difference rather than two plausible numbers that disagree.
+
+**What the 127 pages measure, before and after.** Both runs went through the
+shipped pass, one page per process, on the same pages in the same order.
+
+| statistic | min | p25 | median | p75 | p90 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| paper-region ink fraction, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
+| paper-region ink fraction, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
+| whole-page ink fraction, fixed margin 20 | 0.0282 | 0.3448 | 0.3946 | 0.4630 | 0.5365 | 0.6595 |
+| whole-page ink fraction, derived margin | 0.0282 | 0.2097 | 0.2421 | 0.2752 | 0.3470 | 0.4728 |
+
+The paper region is the page with the surround block's own upper-bound dark count
+taken out of both the ink and the page — the part a register's writing is on. The
+whole-page figure stays high because the bezel is still counted as ink, on
+purpose: it is a visible over-count that reconciles, where masking it out would
+mean deciding where the page ends.
+
+Per source, on the 114 inferred pages:
+
+| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | paper-region ink, derived |
+|---|---|---|---|---|---|---|
+| teklia_dai_cretdhi | 172 / 212 / 231 | 0 / 0 / 22 | 57 / 69 / 75 | 0.2626 / 0.3710 / 0.6149 | 0.1875 / 0.2117 / 0.3899 | 0.0165 / 0.0356 / 0.0962 |
+| recordgold_production_train_v1 | 157 / 212 / 245 | 0 / 1 / 23 | 52 / 69 / 80 | 0.2816 / 0.3946 / 0.5365 | 0.1780 / 0.2481 / 0.4080 | 0.0192 / 0.0474 / 0.0696 |
+| recordgold_evaluation_val_v1 | 216 / 223 / 224 | 0 / 0 / 1 | 71 / 74 / 74 | 0.3062 / 0.4221 / 0.5624 | 0.2145 / 0.2437 / 0.2767 | 0.0221 / 0.0432 / 0.0490 |
+| Embrun | 171 / 217 / 230 | 0 / 0 / 0 | 56 / 72 / 76 | 0.1635 / 0.3886 / 0.5688 | 0.1270 / 0.2310 / 0.4096 | 0.0045 / 0.0369 / 0.0797 |
+| Oka | 176 / 189 / 252 | 0 / 176 / 247 | 20 / 20 / 66 | 0.0282 / 0.2137 / 0.5245 | 0.0282 / 0.2039 / 0.4571 | 0.0383 (one page) |
+| Montebello | 188 / 209 / 216 | 0 / 0 / 0 | 62 / 69 / 71 | 0.3263 / 0.3892 / 0.5818 | 0.1534 / 0.2633 / 0.4728 | 0.0249 / 0.0356 / 0.0678 |
+| Saint-Jacques | 185 / 197 / 208 | 9 / 10 / 26 | 56 / 62 / 65 | 0.3753 / 0.4722 / 0.5838 | 0.1837 / 0.2404 / 0.4581 | n/a (modal branch) |
+| control (7 proxies) | 189 / 196 / 196 | 0 / 0 / 0 | 62 / 65 / 65 | 0.4756 / 0.5218 / 0.6595 | 0.2991 / 0.3391 / 0.3579 | 0.0308 / 0.0549 / 0.0722 |
+
+Oka is the source the floor is for: 10 of its 15 pages have 22 grey levels or
+fewer between their two modes and derive the floor margin of 20, so their ink
+fraction barely moves. Saint-Jacques takes the plain modal branch on all 15, so
+it has no surround block and no paper region to report; its whole-page figure is
+the relevant one, and it halves.
+
+**Components at the sealed `gap_tolerance_px = 3`**, over the 114 inferred pages:
+**87 / 2,772 / 24,617** against **87 / 6,237 / 24,617** at the fixed margin — the
+median more than halves, and the extremes are the two Oka pages that derive the
+floor and therefore do not move at all.
+
+**The refusal outcome is unchanged, page for page.** 114 inferred, 13 refused,
+every refusal `paper-is-not-a-background`, the same 13 files as before this unit.
+That is by construction: the bound is probed at the floor and the floor did not
+move.
+
+**What moved downstream, and what did not.** `structure-status` gains
+`ink_margin` and `ink_threshold`; `structure_pass.touches_ink` reads the page's
+own margin instead of the constant, which is what lets the `model-only` signal
+fire at all on photographed material (at a fixed 20, a median of 39% of a real
+page sits below the threshold, so every rectangle a chair can draw touches ink). **No fixture page's cut moves.** All three walking-skeleton pages
+take the plain modal branch, derive 46, 46 and 20, and select pixel-for-pixel the
+same ink set as the floor did, because a synthetic page's paper and ink are 140
+grey levels apart. The acceptance run-tree digests move for the sealed config's
+bytes and for the two new record fields, and for nothing else: 382 and 468
+changed leaves across the two scenarios, of which 4 each are `ink_margin = 46`
+and `ink_threshold = 184` and every other one is a digest or a
+content-addressed blob path, with zero unattributed.
+
+**What `gap_tolerance_px = 3` does now, and what it still does not.** With the
+margin right, the gap sweep can be read for the first time: at the derived
+margin the component count is monotone in the gap on all ten photographed pages
+across 2/3/5/8/12/20/30 and on all 114 inferred pages across 2/3/5/8, where at
+the fixed margin the survey found the curve confounded by a welded paper-and-ink
+mass. Over the ten pages, at the derived margin:
+
+| gap | components (min/med/max) | median component width, px | p90 component width, px | labelling seconds |
+|---:|---|---|---|---|
+| 2 | 2293 / 3619 / 9871 | 2 / 4 / 10 | 10 / 60 / 110 | 0.71 / 2.17 / 5.04 |
+| **3 (sealed)** | **1720 / 2653 / 5913** | **2 / 5 / 16** | **17 / 76 / 127** | 0.83 / 2.18 / 5.46 |
+| 5 | 1024 / 1713 / 2933 | 2 / 5 / 23 | 42 / 120 / 170 | 0.90 / 2.62 / 5.72 |
+| 8 | 553 / 887 / 1356 | 3 / 6 / 50 | 69 / 157 / 239 | 1.11 / 3.08 / 6.29 |
+| 12 | 305 / 416 / 713 | 3 / 9 / 78 | 55 / 221 / 298 | 1.43 / 3.30 / 7.00 |
+| 20 | 79 / 133 / 230 | 2 / 5 / 40 | 41 / 134 / 406 | 1.80 / 4.64 / 9.30 |
+| 30 | 13 / 49 / 83 | 2 / 3 / 12 | 27 / 70 / 274 | 2.45 / 5.95 / 14.56 |
+
+**Gap 3 does not group a word, and no gap does.** These pages are 2,800-5,100
+pixels wide and a word in these hands is a few hundred pixels; at gap 3 the
+median component is **5 pixels wide** and the ninetieth percentile is 76, so half
+of what the labeller returns is a stroke fragment and nine tenths of it is
+sub-word. Widening does not fix that: the count falls because the large
+components merge into a handful of page-scale blobs, not because the small ones
+become words. By gap 20 the whole page is a few huge components plus a hundred
+surviving specks, and the median width has gone *down*. Whatever groups a word on
+this material, it is not the connectivity radius, and `grouping.group_page` is
+the pass that has to do it. Nothing here argues for moving 3: no value in the
+range measured reaches the objective, labelling cost across 2 to 8 stays inside a
+factor of 1.5, and the sealed value keeps the smallest components the sweep
+produces.
 
 What follows a refusal is deliberately *not* a substituted threshold. The page
 is cut into predetermined crops and sent downstream to be read, its
@@ -1490,12 +1712,17 @@ fixture geometry changed. Three are bare counts: `max_residual_components`,
 `max_secondary_proposals` and `fallback_bands`.
 
 Two do **not** move and never will. `structure.PRIMARY_MARGIN` and
-`SECONDARY_MARGIN` are 8-bit ink-intensity offsets, not geometry;
+`SECONDARY_MARGIN` are *absolute* 8-bit ink-intensity offsets, not geometry;
 `common/test_designator_recensor_ink_calibration.py` is an AST pin that reads
 `SECONDARY_MARGIN` as a source literal and cross-checks it against the
 Recensor's own contrast constant, and a per-run value would make that
 cross-stage invariant unenforceable statically. The config's closed schema
-refuses both names wherever they are written.
+refuses both names wherever they are written. What the config *does* carry, since
+the ink margin became a per-page derivation, is `[grouping.background]
+ink_margin_bp` — a fraction of the distance between a page's own two grey-level
+population modes, not an offset, which is why it can be sealed while those two
+cannot. `SECONDARY_MARGIN` is not derived from it and the pin still compares two
+literals.
 
 **`gap_tolerance_px` stays absolute at 3, and must never be scaled — do not
 "fix" this by reflex.** It is a stroke-connectivity radius, not a page-layout
