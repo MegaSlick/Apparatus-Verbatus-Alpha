@@ -15,7 +15,7 @@ import unicodedata
 from collections import defaultdict
 from typing import Any, Final
 
-from common.contracts.canonical import self_hash, self_hash_refusal, verify_self_hash
+from common.contracts.canonical import is_sha256, self_hash, self_hash_refusal, verify_self_hash
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -118,11 +118,7 @@ def _finding_sort_key(row: dict[str, str]) -> tuple[str, str]:
 
 
 def _sha(value: Any, what: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(c not in "0123456789abcdef" for c in value)
-    ):
+    if not is_sha256(value):
         raise SchemaRefusal(f"physical-act partition: {what} must be a lowercase SHA-256")
     return value
 

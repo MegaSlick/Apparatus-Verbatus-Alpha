@@ -54,8 +54,9 @@ from common.stage import WITNESS_READING_OUTCOMES
 #
 # So this constant is kept as a cheap prefilter for the case it was first
 # written for -- a witness stuck in a repetition loop until its token cap,
-# `pipeline/3_attestatores/run.py` enforcing no ceiling on report length, a
-# 32k-token cap running well over a hundred thousand characters -- but it is
+# `pipeline/3_attestatores/run.py` enforcing no ceiling on report length, and
+# the 24,000-token cap of `common/native_witness.py::CHURRO_OUTPUT_TOKENS`
+# running well over a hundred thousand characters -- but it is
 # no longer the thing that actually bounds wall-clock time. `MAX_COMPARISON_SECONDS`
 # below is. Alpha testing over real reports is what would tune either number.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
@@ -233,11 +234,14 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
 
     Computed after the reading is fixed. A chair that failed or never ran has
     no opinion to depart from, and is recorded as having none rather than as
-    agreeing -- silence is not assent. A chair whose format cannot be reduced to
-    a comparison view, whose report is large enough to refuse outright
-    (`MAX_COMPARISON_CHARACTER_PAIRS`), or whose alignment simply did not finish
-    within `MAX_COMPARISON_SECONDS`, is recorded `compared: "unknown"`: not
-    guessed at, and not silently dropped from the record either.
+    agreeing -- silence is not assent. `compared: "unknown"` is what a chair that
+    did report but could not be compared receives, and it has five causes:
+    retained testimony that is not text, a declared format that cannot be reduced
+    to a comparison view, a page witness unattached to this act and carrying no
+    `comparison_reported`, a report large enough to refuse outright
+    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that did not finish
+    within `MAX_COMPARISON_SECONDS`. Never guessed at, and never silently dropped
+    from the record either.
     """
     reading_view = comparison_view(reading)
     rows = []
