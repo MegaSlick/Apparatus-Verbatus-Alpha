@@ -46,6 +46,7 @@ import fcntl
 import importlib
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -56,7 +57,7 @@ from typing import Callable, Sequence
 from . import durable
 from .controllers import LaptopSupervisor, record_from_lease
 from .lease import LeaseStore, PodLease
-from .models import require_utc, utc_now
+from .models import Presence, ProviderStatus, require_utc, utc_now
 from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
 from .shutdown import CloseReport, VerifiedShutdown
@@ -70,6 +71,24 @@ FINAL_RECORD_SCHEMA = "pod-supervise-final.v1"
 # `LaptopSupervisor.run_once`, spelled the same kebab-case way.
 PROVIDER_EXITED = "provider-exited"
 PROVIDER_UNREACHABLE = "provider-unreachable"
+
+# `close_lease_now`'s own outcomes, spelled the same kebab-case way. The close
+# itself is `_close_lease`, unchanged and shared with the tick above; these
+# name only how an operator-driven close ended.
+OPERATOR_CLOSE = "operator-close"
+"""A close was attempted now, on purpose. Green only when the report verified."""
+LEASE_NOT_HELD = "lease-not-held"
+"""No such lease here, or one written by a different provider account."""
+SUPERVISOR_BUSY = "supervisor-busy"
+"""A live supervisor holds this lease; nothing was touched."""
+POD_ABSENT_UNCLOSED = "pod-absent-before-terminate"
+"""The provider reported this pod absent before any terminate was issued.
+
+Not a close, and deliberately not `close-unverified`: see
+`_absence_before_any_terminate` for why writing a terminal phase here would be
+the more expensive mistake.
+"""
+
 
 # Ticks that keep the loop going rather than end it: the lease is still
 # active and there is nothing here for a human to look at yet.
@@ -102,6 +121,32 @@ class SuperviseRefusal(RuntimeError):
         super().__init__(detail)
         self.detail = detail
         self.exit_code = exit_code
+
+
+# A lease id is 32 lowercase hexadecimal characters (`PodLease.__post_init__`
+# is the authority; this is the same expression, applied one layer earlier).
+# Every path this module builds -- the lease file, the lock, the identity file,
+# the final record -- interpolates the id a caller supplied on a command line,
+# so it is checked before any of them is built rather than after.
+_LEASE_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def require_lease_id(lease_id: object) -> str:
+    """Refuse a `--lease` that is not a lease id, before any path is built.
+
+    `--lease ../../etc/passwd` is not a lease this root holds; nor is the id of
+    a lease file someone renamed. Both would otherwise be interpolated straight
+    into a path. Exit 2: no path was built, no provider was called, and nothing
+    was touched.
+    """
+
+    if not isinstance(lease_id, str) or not _LEASE_ID.fullmatch(lease_id):
+        raise SuperviseRefusal(
+            f"lease id {lease_id!r} is not 32 lowercase hexadecimal characters, so it names "
+            "no lease this root can hold; no path was built and nothing was touched",
+            exit_code=2,
+        )
+    return lease_id
 
 
 def _stamp(value: datetime) -> str:
@@ -582,6 +627,236 @@ def supervise_tick(
     return result
 
 
+def _closed(result: SuperviseResult, *, touched: bool) -> tuple[SuperviseResult, int]:
+    """Pair one close outcome with `run_supervisor`'s own exit-code rule."""
+
+    return result, _exit_code(result, observed_active_lease=touched)
+
+
+def _absence_before_any_terminate(
+    shutdown: VerifiedShutdown, lease: PodLease
+) -> SuperviseResult | None:
+    """Refuse a close whose provider has never heard of the pod. `None` to proceed.
+
+    ``--provider-name`` is a *label* written into the lease, not a proof of
+    account: the lease records the string the operator typed, and nothing
+    reconciles it against the credentials behind ``--provider-factory``. So a
+    factory pointing at the wrong account passes every check above, and then
+    `VerifiedShutdown.close` -- whose first act is always a terminate -- would
+    terminate nothing, observe a perfectly genuine GET-404 and list absence
+    against an account that never held the pod, find no billing for it, and
+    return `UNVERIFIED`. `_close_lease` writes that into the lease as
+    `close-unverified`, and a `close-unverified` lease is no longer
+    `PodLease.active`, so `run_supervisor` will not guard it. The laptop
+    supervisor -- the only automatic backstop for a pod nobody is watching --
+    would be disarmed for a pod that is still running and still billing.
+
+    Hence the asymmetry this function exists to enforce: **only a close that
+    actually issued a terminate may reach `close-unverified`.** An absence
+    observed before any terminate is not close evidence at all, so it writes no
+    lease phase; it refuses, names the account possibility, and leaves the lease
+    active for the supervisor to keep guarding. Exit 3, because a pod may well
+    be out there under a different account and a human has to go and look.
+
+    A provider that cannot answer, or that answers anything but a claim of
+    absence, is not a reason to refuse: the close proceeds and the ordinary
+    verified path judges it. Only a positive "there is no such pod here" stops
+    it -- and no absence *proof* is asked for (`VerifiedShutdown` requires the
+    GET-404), because this is a refusal to act, not a claim that the pod is
+    gone.
+
+    The provider is read off ``shutdown`` on purpose rather than passed
+    separately: the account probed here must be the same account the terminate
+    would go to, and taking it from anywhere else would let the two differ,
+    which is the entire failure being guarded against.
+    """
+
+    pod_id = lease.pod_id
+    if pod_id is None:
+        return None
+    try:
+        status = shutdown.provider.status(pod_id)
+    except Exception:  # noqa: BLE001 -- unanswerable is not absence; close normally
+        return None
+    if not isinstance(status, ProviderStatus) or status.pod_id != pod_id:
+        return None
+    if status.presence is not Presence.ABSENT:
+        return None
+    return SuperviseResult(
+        POD_ABSENT_UNCLOSED,
+        (
+            f"the provider this close would terminate reports pod {pod_id!r} already absent, "
+            "before any terminate was issued. Either the pod is genuinely gone, or -- the "
+            "possibility this refuses for -- --provider-factory names a different account "
+            "from the one that created it: --provider-name is a label recorded in the lease, "
+            "not a proof of account. Recording a close here would write close-unverified and "
+            f"disarm the supervisor still guarding lease {lease.lease_id!r} over a pod that "
+            "may be running and billing. Nothing was terminated and the lease is unchanged; "
+            "confirm the account behind --provider-factory and look at the provider console "
+            "for this pod"
+        ),
+        lease=lease,
+    )
+
+
+def close_lease_now(
+    *,
+    store: LeaseStore,
+    leases_root: Path,
+    lease_id: str,
+    provider_name: str,
+    shutdown: VerifiedShutdown,
+    reason: str,
+    now: Callable[[], datetime] = utc_now,
+    lock_acquirer: Callable[[Path], bool] = _acquire_lock,
+) -> tuple[SuperviseResult, int]:
+    """Close one live lease on purpose, through the supervisor's own close path.
+
+    Until this existed a real pod could only be closed by the sealed hard
+    lifetime, by a supervisor tick that happened to observe a non-`RUNNING`
+    provider state, or by the provider's own console: `cli.py` had `create` and
+    `adopt` and nothing else, and the operator surface's `close` is
+    fixture-only. That is a gap on the one path GOVERNANCE 8 cares about, and
+    the plan for the first live boots says so.
+
+    Nothing here is a second close implementation. `_close_lease` -- the same
+    function `supervise_tick` drives on an `EXITED` pod -- does the work, so
+    the verification standard is `VerifiedShutdown`'s one standard: exact-pod
+    GET-404, independent pod-list absence, and non-empty exact-pod billing
+    through the requested cutoff, with anything short of that `UNVERIFIED` and
+    never zero.
+
+    These refusals come before any terminate:
+
+    * a ``lease_id`` that is not 32 lowercase hexadecimal characters is refused
+      by `require_lease_id` before this function builds a single path;
+    * a lease file that could not be read at all is exit 3, not exit 2. An
+      unreadable lease may still be guarding a pod that is billing, and "go and
+      look" is the only honest thing to say about a file we could not open; the
+      refusal names the exact path to look at;
+    * a lease whose own recorded ``lease_id`` is not the one asked for is
+      refused too. That is a renamed or hand-edited file, and closing on it
+      would terminate a pod under another lease's identity;
+    * a lease this account does not hold -- absent from this root, or written
+      under a different ``provider_name`` -- is `LEASE_NOT_HELD`. All paid
+      actions for one provider account share one lease root, so a lease
+      recorded against another provider is not this command's to close;
+    * a lease some live supervisor already holds is `SUPERVISOR_BUSY`. The
+      kernel lock is the same one `establish_identity` takes, so "a supervisor
+      is guarding this pod" and "this command may close it" cannot both be
+      true at once, and the guard survives a crash without any recorded pid;
+    * a pod the provider reports **absent before any terminate was issued** is
+      `POD_ABSENT_UNCLOSED`, and the lease is left exactly as it was --
+      `_absence_before_any_terminate` carries the reasoning.
+
+    A lease already in a terminal phase reports that phase and makes no
+    provider call either.
+
+    Returns the result and `run_supervisor`'s own exit code, on the same
+    convention `cli.py` uses: 0 guarded, 2 a refusal that touched nothing, 3 go
+    and look. An `UNVERIFIED` close is 3, never 0.
+
+    The owner token comes from the durable lease itself rather than from the
+    supervisor identity file: the lock above has already established that no
+    live supervisor holds this lease, and the lease record is what
+    `LeaseStore.record_close` checks against. A lease whose current owner is a
+    dead supervisor is therefore still closeable -- which is the situation this
+    verb exists for.
+    """
+
+    require_lease_id(lease_id)
+    try:
+        lease = store.load()
+    except Exception as error:
+        # Exit 3, not 2. A lease file that exists and cannot be read is not
+        # "nothing was paid": it is the durable record of a paid action that
+        # this command could not open, and the pod it names may be billing
+        # right now. Name the exact path, because that is the file a human has
+        # to go and look at.
+        raise SuperviseRefusal(
+            f"lease {lease_id!r} could not be read from {store.path}: {error}; a pod may still "
+            "be billing under it -- go and look at that file and at the provider console",
+            exit_code=3,
+        ) from error
+    if lease is not None and lease.lease_id != lease_id:
+        # The file was found at `<root>/<lease_id>.json` but calls itself
+        # something else, which means it was renamed or hand-edited. Closing on
+        # it would terminate a pod under an identity this command was not asked
+        # for, and `LeaseStore.record_close` would then write the close into
+        # the wrong lease. Exit 3: two lease identities are in play and only a
+        # human can say which pod is live.
+        raise SuperviseRefusal(
+            f"lease file {store.path} records lease_id {lease.lease_id!r}, not the {lease_id!r} "
+            "asked for; the file was renamed or edited. Nothing was terminated -- reconcile the "
+            "lease root against the provider console before closing",
+            exit_code=3,
+        )
+    if lease is None:
+        return _closed(
+            SuperviseResult(
+                LEASE_NOT_HELD,
+                f"no lease {lease_id!r} exists under {leases_root}; no provider call was made",
+            ),
+            touched=False,
+        )
+    if lease.provider_name != provider_name:
+        return _closed(
+            SuperviseResult(
+                LEASE_NOT_HELD,
+                (
+                    f"lease {lease_id!r} was armed against provider {lease.provider_name!r}, not "
+                    f"{provider_name!r}; this account does not hold it and no provider call was "
+                    "made"
+                ),
+                lease=lease,
+            ),
+            touched=False,
+        )
+    if not lease.active:
+        return _closed(
+            SuperviseResult(
+                "closed-verified" if lease.phase == "closed-verified" else "close-unverified",
+                f"lease already reached terminal phase {lease.phase!r}; no provider call was made",
+                lease=lease,
+            ),
+            touched=False,
+        )
+    lock_path = _lock_path(leases_root, lease_id)
+    if not lock_acquirer(lock_path):
+        return _closed(
+            SuperviseResult(
+                SUPERVISOR_BUSY,
+                (
+                    f"a live supervisor already owns lease {lease_id!r} (lock {lock_path} is "
+                    "held); it holds the close path for this pod -- stop it first, or let it "
+                    "close the pod itself. Nothing was touched"
+                ),
+                lease=lease,
+            ),
+            touched=False,
+        )
+    try:
+        absent = _absence_before_any_terminate(shutdown, lease)
+        if absent is not None:
+            return _closed(absent, touched=False)
+        return _closed(
+            _close_lease(
+                store,
+                shutdown,
+                lease,
+                owner_token=lease.owner_token,
+                state=OPERATOR_CLOSE,
+                reason=reason,
+                now=now,
+            ),
+            touched=True,
+        )
+    finally:
+        # Give the lease back: a supervisor started afterwards -- to guard an
+        # unverified close -- must be able to take this lock.
+        release_lock(leases_root, lease_id)
+
+
 def _exit_code(result: SuperviseResult, *, observed_active_lease: bool = False) -> int:
     """The `cli.py` convention: 0 guarded, 2 nothing touched, 3 go and look.
 
@@ -589,12 +864,16 @@ def _exit_code(result: SuperviseResult, *, observed_active_lease: bool = False) 
     a durable lease that goes missing or unreadable: found and confirmed
     active by *this run* before it vanished (a pod may still be out there
     billing -- 3, go and look) versus never found at all, or a pre-loop
-    refusal that made no provider call (nothing to look at -- 2). Only
-    `run_supervisor` ever passes ``True``; every pre-loop `SuperviseRefusal`
-    path returns its own exit code directly and never reaches here.
+    refusal that made no provider call (nothing to look at -- 2).
+
+    Two callers pass ``True``: `run_supervisor`'s own loop, and
+    `close_lease_now` for the one outcome where it actually drove
+    `_close_lease`. Every `SuperviseRefusal` -- pre-loop in `run_supervisor`,
+    and the lease-id, unreadable-lease and identity-mismatch refusals in
+    `close_lease_now` -- carries its own exit code and never reaches here.
     """
 
-    if result.state in {"no-lease", "owner-heartbeat-fresh"}:
+    if result.state in {"no-lease", "owner-heartbeat-fresh", LEASE_NOT_HELD, SUPERVISOR_BUSY}:
         return 3 if observed_active_lease else 2
     if result.state == "lease-record-failure" and result.close_report is None:
         return 3 if observed_active_lease else 2
@@ -619,14 +898,20 @@ def _write_final_record(
     a second driver's own outcome (e.g. a BUSY refusal while a first driver
     is still live) is itself a fact GOVERNANCE 2 requires kept, and a shared
     fixed name would let a later run's record silently replace it.
+
+    An id that is not a lease id names the file the anonymous way and keeps the
+    offending string in the payload instead. The refusals above catch such an
+    id first, but this is the one function that interpolates a caller's string
+    into a *filename*, and it must not depend on a caller having checked.
     """
 
     supervisors_dir = Path(leases_root) / "supervisors"
     supervisors_dir.mkdir(parents=True, exist_ok=True)
     stamp = _stamp(now).replace(":", "")
+    named = lease_id if isinstance(lease_id, str) and _LEASE_ID.fullmatch(lease_id) else None
     name = (
-        f"supervisor-{lease_id}-final-{os.getpid()}-{stamp}.json"
-        if lease_id
+        f"supervisor-{named}-final-{os.getpid()}-{stamp}.json"
+        if named
         else f"supervisor-final-{os.getpid()}-{stamp}.json"
     )
     path = supervisors_dir / name
@@ -777,6 +1062,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     leases_root: Path = args.leases
     lease_id: str = args.lease
     try:
+        # Before the store path, the lock path, or the identity path is built
+        # from it. The same guard the operator-driven close takes.
+        require_lease_id(lease_id)
         policy = load_spend_policy(args.spend)
         if not policy.configured:
             raise SuperviseRefusal(
