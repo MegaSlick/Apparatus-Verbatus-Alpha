@@ -50,7 +50,7 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
     bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
     tree = RunTree.create(
         tmp_path,
-        "seat-boundary",
+        "chair-boundary",
         source_manifest=[],
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
