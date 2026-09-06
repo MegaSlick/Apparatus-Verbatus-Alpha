@@ -46,6 +46,11 @@ build-backend = "setuptools.build_meta"
 # which builds the chamber image and the everyday non-frozen environment.
 test = [
     "pytest==9.1.1",
+    # Distributes the suite across worker processes. The gate and CI both export
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so this plugin does nothing until an
+    # invocation names it with `-p xdist`; installing it changes no run that does
+    # not ask for it.
+    "pytest-xdist==3.8.0",
     "ruff==0.15.4",
     "PyYAML==6.0.3",
     "shellcheck-py==0.11.0.1",
