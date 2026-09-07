@@ -369,9 +369,11 @@ def _presented_image_bytes(context: Any, presented: Mapping[str, Any]) -> bytes:
     """Read back exactly the bytes an adapter's own presentation names.
 
     ARCHITECTURE invariant 3: the exact image shown must be reproducible from
-    what was recorded. `adapter.present` may publish its own derived crop
-    (DAI); reading the bytes back by the path it names and checking the
-    digest it names is what makes that claim checked here rather than assumed.
+    what was recorded. `adapter.present` may publish an image of its own --
+    DAI's act crop-and-resize, Chandra's whole-page vendor `scale_to_fit` --
+    and only Churro binds the bytes it was handed. Reading the bytes back by
+    the path the presentation names and checking the digest it names is what
+    makes that claim checked here rather than assumed.
     """
 
     image_bytes = context.tree.read_bytes(presented["image_path"])
@@ -613,21 +615,35 @@ def page_chair_request(
 ) -> ChairRequest:
     """Build one page-scoped (Churro or Chandra) reading request from a whole page.
 
-    ``presentation`` is exactly what `run.py::presentation_for_page` returns;
-    both page-scoped adapters present the exact image they were given
-    unchanged (`witness_adapters._present`, `chandra.present`).
+    ``presentation`` is exactly what `run.py::presentation_for_page` returns,
+    and the two page-scoped adapters do **not** treat it alike. `churro.present`
+    binds the image it was given unchanged; `chandra.present` runs the vendor's
+    own `scale_to_fit` over a whole-page presentation and publishes the resized
+    blob (`chandra-scale-to-fit.v1`), so a 2480x3508 sealed page reaches the
+    wire as 2100x2968 under a different digest. Everything below therefore
+    reads the bytes, the digest and the size off what ``adapter.present``
+    returned, never off ``presentation``.
 
     ``profile`` is the sealed serving row this chair runs under
     (``ChairClient.handle.profile``). Two separate questions are asked of it,
-    and they are not the same question. Only Churro sends a generation bound at
-    all, and only that branch consults the row for *what may be sent*
-    (`churro_generation_sent`). Whether the request **fits** is asked for both
-    page chairs alike, before either is built: a whole 300-dpi page costs 1,715
-    image tokens on Chandra and 2,280 on Churro at the smallest tier's
-    `max_pixels`, and neither fitted the 2,048-token rows this catalogue
-    shipped before the contexts were raised, with a prompt and an answer
-    beside them. Chandra sending no generation bound does not make its
-    request short enough; it only means nothing here could have shortened it.
+    and they are not the same question. **What may be sent** is asked for both
+    page chairs alike, through `generation_bound_sent` against this request's
+    own capacity record: a ``max_tokens`` goes out only where the chair's
+    declared bound is strictly below what the row leaves, so the adapter's name
+    decides nothing here and the row decides everything. At every row in the
+    shipped real catalogue that leaves both declarations -- Chandra's 12,384
+    and Churro's 20,000 -- above the room a page and its prompt leave, so
+    neither page chair sends a bound today; that is a fact about the catalogue,
+    not about either adapter, and a longer-context row would change it without
+    a line moving here. **Whether the request fits** is asked before either is
+    built: a whole 300-dpi page costs 1,715 image tokens on Chandra and 2,280
+    on Churro at the smallest tier's `max_pixels` -- Chandra's vendor resize
+    does not move that number, because 2100x2968 is still over that
+    `max_pixels` and the engine's own `smart_resize` caps both sizes to the
+    same grid -- and neither fitted the 2,048-token rows this catalogue shipped
+    before the contexts were raised, with a prompt and an answer beside them.
+    Sending no bound does not make a request short enough; it only means
+    nothing here could have shortened it.
     """
 
     presented = adapter.present(context, dict(presentation))
