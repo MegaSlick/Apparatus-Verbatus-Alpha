@@ -1126,7 +1126,19 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
         # rescale of one image, and the transparent sample is a sample.
         transparency = display.info.get("transparency")
         if isinstance(transparency, int) and not isinstance(transparency, bool):
-            display.info["transparency"] = min(255, max(0, int(transparency * scale)))
+            # Refused rather than clamped, which is the same rule
+            # `_transparency_to_decoded_range` follows one screen up: a record
+            # outside the range its own mode can hold is a record nobody can
+            # account for, and `min`/`max` turned it into a *different* sample
+            # that would have marked a pixel the file never named. A valid
+            # `I;16*` page cannot reach this — PNG parses tRNS as two bytes —
+            # so the refusal costs no act and the clamp bought no page.
+            if not 0 <= transparency <= 65535:
+                raise ValueError(
+                    f"a crop in mode {mode!r} names sample {transparency} as transparent, "
+                    "which its own 16-bit samples cannot hold"
+                )
+            display.info["transparency"] = int(transparency * scale)
         return display
     # Genuinely undecided rather than quietly guessed, and refused in the same
     # words wherever a sealed page is read: `_refuse_undefined_sample_range` is

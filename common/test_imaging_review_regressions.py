@@ -453,6 +453,20 @@ def test_a_sub_byte_grey_page_marks_the_pixel_its_own_tRNS_named(
         assert rgba[7] == 255, "and the other one is not"
 
 
+def test_a_16bit_record_outside_its_own_range_is_refused_rather_than_clamped() -> None:
+    """The display path's half of the rule the crop path now states.
+
+    A record no 16-bit sample can hold was clamped to 0 or 255, which marks a
+    pixel the file never named — a reading change made silently, where the two
+    conversions beside it refuse by name. Found by CodeRabbit reviewing this fix.
+    """
+    image = Image.frombytes("I;16", (2, 1), struct.pack("<2H", 0, 65535))
+    image.info["transparency"] = 70000
+
+    with pytest.raises(ValueError, match="cannot hold"):
+        _to_display_mode(image)
+
+
 def _palette_page(alphas: tuple[int, ...], indices: tuple[int, ...]) -> Image.Image:
     image = Image.new("P", (len(indices), 1))
     palette = bytearray()
