@@ -1780,8 +1780,46 @@ def _perlector_dissent():
 # (happy) and 107/3 (review).
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "1a5648fdaee522f8ebf612168fe87577abbf4c375b33e7171bd352ae76a079c9"
-REVIEW_RUN_TREE_DIGEST = "fdfbcadaeeaf7b1abd4cbabbb559d109c161a46699d58faa573399c969ffb163"
+# Merge re-pin (`origin/main` c9890bab8e -- Unit 12's churro-native layout --
+# into `work/alignment-matcher`). Both parents moved these pins for different
+# causes, so neither parent's literals describe this tree; one entry replaces
+# the two.
+#
+#   Cause (from this branch). Hostile review C: `config/alignment.toml` raises
+#   `timeout_seconds` from 5 to 25. A fired alignment deadline is `unaligned`,
+#   an unaligned page witness is not `comparable`, and an incomparable chair
+#   leaves the act's witness floor -- so a deadline a real page can reach
+#   records a slow comparison as coverage that is missing (GOALS 1). A
+#   7,500-character page whose acts repeat one formula verbatim measures
+#   10.1 s, already past five. `common/stage.py` seals that file's bytes into
+#   every run's `config_digest`, so both trees move without gaining an artifact
+#   or changing a decision.
+#
+#   The other parent's cause is already recorded above and is unchanged by the
+#   merge: this branch touches no artifact that Unit 12 produced.
+#
+# Attributed by measurement, not by argument. A tree was built here from
+# `origin/main` c9890bab8e itself, and it reproduced that commit's own literals
+# exactly (5b225fa3... and 1936f76c...), so the comparison is against a tree
+# that is what it claims to be. Leaf by leaf against it, this tree changes 75
+# files / 391 leaves (happy) and 87 / 471 (review), and **not one changed leaf
+# is a non-digest field**: 373 and 442 are 64-hex digests, the remaining 18 and
+# 29 are content-addressed blob paths, plus one renamed blob each in
+# `4_perlector` and `7_armarium` per scenario whose own name is its content
+# digest. In `run.json` exactly three leaves differ:
+# `sealed_config_digests.alignment` -- 925d16d0... -> b5563846..., which is the
+# sha256 of `config/alignment.toml` before and after this branch's edit -- and
+# the `config_digest` and `self_hash` computed over it. The cause arrives
+# alone, and the merge introduces no third cause of its own. Snapshot counts
+# and exit codes are unmoved at happy 96 / exit 0 and review 107 / exit 3.
+#
+# Both values below measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers; the two roots agreed exactly on both
+# scenarios.
+HAPPY_RUN_TREE_DIGEST = "08c97c8e235329c62800e20f8b54358c2c505f4eb504d7522772d5458b329dae"
+# Re-pinned by the same alignment-deadline byte named above the happy digest.
+REVIEW_RUN_TREE_DIGEST = "5476a8f038eb3a98fff295a7c43110cfb22959d7b2cc6be28b3b2fa299b5737d"
 
 
 def orchestrate(
@@ -3678,9 +3716,15 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     assert export["aggregate"]["status"] == "complete"
     assert export["aggregate"]["reasons"] == []
 
-    reviews_by_key = {
-        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
-    }
+    review_records = artifacts(tree, RECENSOR, "review")
+    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
+    # Counted before anything is read out of it: a second review for one act is
+    # an accounting failure, and a lookup keyed by `act_key` would silently keep
+    # whichever of the two the manifest happened to list last.
+    assert len(reviews_by_key) == len(review_records)
+    # And the whole key set: an extra review under a third key would hide behind
+    # a count that only catches a repeated one.
+    assert set(reviews_by_key) == {"a1", "a2"}
     assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
     rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
     assert [row["page_ordinal"] for row in rows] == [2]
@@ -3696,15 +3740,17 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     # Unmeasured is not a hold and not a route input: a2 is delivered.
     assert reviews_by_key["a2"]["outcome"] == "accepted"
 
-    entries = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in (
-            tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])
-            for entry in tree.build_manifest(ARMARIUM)["artifacts"]
-            if entry["kind"] == "manifest-entry"
-        )
-    }
+    entry_payloads = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    entries = {payload["act_key"]: payload for payload in entry_payloads}
     delivered = {item["act_key"]: item for item in export["delivered"]}
+    # The same count, for the same reason, on both restatements.
+    assert len(entries) == len(entry_payloads)
+    assert len(delivered) == len(export["delivered"])
+    assert set(entries) == set(delivered) == {"a1", "a2"}
     for restatement in (entries, delivered):
         assert restatement["a1"]["testimony_content_coverage_continuation"] == []
         assert restatement["a2"]["testimony_content_coverage_continuation"] == rows

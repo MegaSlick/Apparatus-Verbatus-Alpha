@@ -287,6 +287,97 @@ zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignmen
 for two acts one chair cannot tell apart (which is also what a block
 overlapping two acts produces, named rather than resolved).
 
+### The matcher, and why the deadline is 25 seconds
+
+`common/alignment.py::_matching_blocks` is `difflib.SequenceMatcher(autojunk=
+False)`'s Ratcliff-Obershelp blocks -- longest common contiguous block first,
+then the same search recursively either side of it. That objective is
+load-bearing here, not incidental. A page of register acts repeats the same
+opening formula, so a witness that read only the second of two acts is a genuine
+ambiguity, and the two ways of resolving it attach the *same number* of
+characters: the whole reading against the second act, or the shared opening
+against the first act plus the remainder against the second. Only the first says
+what the witness did.
+
+**RapidFuzz's Indel/LCS opcodes were tried in that seat and refused on
+measurement (hostile review C, 2026-09-07).** They are four orders of magnitude
+faster -- the slowest input the sealed pair bound admits, 283.9 s below, takes
+0.011 s under them -- and
+on identical or near-identical page text they return byte-for-byte the same
+blocks (26 blocks, 7,508 matched characters on a 1,200-word page fixture). But
+LCS maximizes matched characters and breaks ties towards the earliest match, so
+it takes the second reading of the ambiguity above. The pipeline's own
+`confirmed-blank` scenario failed on exactly that: the witness's act-two opening
+was attributed to act one, twelve characters of page text fell outside every act
+attachment, the Recensor read that as incomplete testimony coverage, and both
+acts were held instead of the blank being sealed. A coverage-maximizing
+objective is the wrong objective for attaching a reading to an anchor.
+`common/test_alignment.py` pins that case by name so the swap is not retried
+blind, alongside the fidelity and monotonicity properties the same work
+established.
+
+What hostile review C got right is the deadline, and that is what changed. An
+unaligned page witness is not `comparable`, so it leaves the act's witness floor
+-- which means a deadline short enough to fire on real work records a *slow
+comparison* as coverage that is missing (GOALS 1). `config/alignment.toml` now
+carries 25 s rather than 5 s.
+
+The number is chosen from the legitimate ceiling, not from the pathological one,
+because measurement showed the pathological one cannot be cleared. Timings on
+this laptop, `align_to_anchor` through the shipped bounds:
+
+| Input, at or near the sealed ceiling | Wall clock |
+|---|---|
+| 7,500-character page, names varying between acts | 2.0 s |
+| 7,500-character page, one act's formula repeated verbatim | **10.1 s** |
+| single-character chair response, 10,000 x 10,000 | 7.0 s |
+| genuinely random two-letter pair, 10,000 x 10,000 | 14.7 s |
+| two *different* repeated phrases, 10,000 x 10,000 | **283.9 s** |
+
+Two of those rows are new and both matter. The fully formulaic page is the one
+that decides the number: a scribe copying one form produces exactly that text,
+and at 10.1 s it was already past the old five seconds -- so the five-second
+deadline could fire on a page that had been read perfectly well, and record it
+as an act nobody corroborated. Twenty-five seconds puts real material safely
+inside with load headroom.
+
+The 284-second row is the one that decides what is still open.
+TIMING_REPORT_2026-09-05 put the worst admissible input at 17.5 s, but its
+degenerate cases were all *self*-similar (and one of its two rows was
+accidentally the same single-character string, from a generator that rebuilt its
+`random.Random(1)` on every draw). Two different low-entropy responses are far
+worse, and 284 s is what the sealed pair ceiling actually admits. **No deadline
+value closes hostile review C**: raising it far enough to never fire would mean
+minutes per (page, chair) on a billing pod, and lowering `max_character_pairs`
+far enough to exclude the case would refuse legitimate pages, since a real page
+at 10,000 x 10,000 already sits at the ceiling. The deadline is now honest about
+real material and remains an honest non-verdict on degenerate material; closing
+the case needs the matcher, and the matcher needs the design below.
+
+**What would close it, and is not built here.** Ratcliff-Obershelp first under
+the deadline; on a fired deadline, a bounded LCS pass (RapidFuzz Indel, ~10 ms
+at the ceiling) instead of returning `unaligned`, with the record disclosing
+which matcher produced the spans. Every page any fixture or real reading
+produces today is decided by Ratcliff-Obershelp exactly as now, so no verdict and
+no run-tree digest moves; only inputs that already fail get an answer instead of
+a shortfall, and the LCS tie-break flaw above lands only where no attachment was
+well defined anyway. It needs a `matcher` key on the aligned attachment record
+and a widening of the closed-set check in `pipeline/5_recensor/run.py`, which is a
+published record shape, so it is named here rather than made.
+
+The hole hostile review C named off the main thread is unchanged and still open:
+where `SIGALRM` cannot arm, `max_character_pairs` is the only guard, and it
+admits a 284-second comparison.
+
+A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
+The name has to say that this module's own backstop gave up, because nothing may
+read it as a measurement of the witness. The Recensor holds the act rather than
+counting the chair, which is the right direction -- no comparison was made, so
+none may be claimed (GOVERNANCE 10) -- but
+`common/contracts/outcomes.py::witness_coverage` still counts it in the same
+`shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
+a change to a published coverage record and is not made here.
+
 Only acts whose primary page is this one are anchored; a continuation's tail
 has no anchor line by design. An act no reported block overlaps, or whose
 overlapping blocks carry no normalizable text, is `act-anchor-line-not-located`:
@@ -316,8 +407,8 @@ retired both halves: the vendor's own registry answer for this model is a single
 system instruction, and Churro-DS carries no geometry at all, so a coordinate
 channel was a channel the weights were never taught to fill. Churro therefore
 reports no geometry, its only observation is the `bounds_source="presented"`
-echo routing and coverage exclude, and it reads, aligns and stays unattached.
-What closes the attachment is the Perlector's `anchor-line` basis for a page
+echo routing and coverage exclude, and it reads and aligns without reporting a
+rectangle. What attaches it is the Perlector's `anchor-line` basis for a page
 witness whose alignment for an act is `aligned` with a located span (U12 of the
 vendor systems design), not a channel asked of a model that cannot fill it.
 
@@ -609,42 +700,41 @@ in a whole run: the real stage programs to the Designator, this stage's three
 live witness chairs, a live Perlector, and then the Recensor, Archetypus and
 Armarium over what both wrote — the first time any stage after the Perlector has
 read a live tree. They read it: the run seals a terminal export, and it is
-**held for review** (`EXIT_HELD` at the Recensor and the Armarium,
-`payload/delivered == []`). Each act counts **two** witnesses of a floor of
-three. Chandra reads under its grammar, attached by its own block geometry and
-aligned against the anchor derived from its own response; DAI reads its crops,
-basis `presented-region`; Churro reads the whole page, is located against
-Chandra's anchor with a real span, and stays `attachment_basis "unattached"` —
-`HistoricalDocument` has no coordinate vocabulary anywhere, so nothing binds its
-span to an act, and `comparable` follows `attached`.
+**delivered** (`EXIT_COMPLETE` at the Recensor, the Archetypus and the
+Armarium). Each act counts **three** witnesses of a floor of three. Chandra
+reads under its grammar, attached by its own block geometry and aligned against
+the anchor derived from its own response; DAI reads its crops, basis
+`presented-region`; Churro reads the whole page, reports no geometry at all --
+`HistoricalDocument` has no coordinate vocabulary anywhere -- and attaches on
+the `anchor-line` basis, because it is located against Chandra's anchor with a
+real span.
 
-**That is this unit's own doing, and it is the honest state of the tree.** Unit
+**Both halves of that were once holds, and neither was closed by asking.** Unit
 12 asked this chair for block rectangles in a modified carry of a prompt the
 model was never trained on, and those rectangles were what attached it. The
 coordinate channel is retired with the prompt that asked for it, because a
-`box_1000` per block is a channel Churro-DS's weights were never taught to fill
-(GOVERNANCE 10). What closes the hold is not asking a model for a channel it
-cannot answer: it is U12, admitting the Perlector's existing `anchor-line` basis
-for a page witness whose alignment for an act is `aligned` with a located span.
+`box_1000` per block is a channel Churro-3B's weights were never taught to fill
+(GOVERNANCE 10). What closed the hold is U12, admitting the Perlector's existing
+`anchor-line` basis for a page witness whose alignment for an act is `aligned`
+with a located span.
 
-**Two holds, and the e2e asserts each by name before the aggregate.** The
-witness floor is one: `coverage/under_witnessed` true, `shortfalls`
-`{failed: 0, truncated: 0, unaligned: 1}`. The second is
+**Both halves are still asserted by name, before the aggregate.** The witness
+floor is one: `coverage/under_witnessed` false, `shortfalls`
+`{failed: 0, truncated: 0, unaligned: 0}`. The second is
 `testimony_content_coverage`: the Recensor diffs each page witness's retained
 page text against the union of its attached-and-aligned spans, so an unattached
-page witness's WHOLE page text is uncovered and the page holds for that reason
-too, independently of the floor. Chandra covers its page (0 uncovered
-non-whitespace); Churro covers none of it (63). A bare `reasons != []` would
-pass identically whichever half had broken, so neither is asserted through the
-other.
+page witness's WHOLE page text would be uncovered and the page would hold for
+that reason too, independently of the floor. With attachment reached, both page
+chairs cover their page (0 uncovered non-whitespace each). A bare
+`reasons == []` would fail identically whichever half had broken, so neither is
+asserted through the other.
 
 **What that does and does not claim.** One scripted run over a fixture whose
-page text is exactly its two acts reaches `held-for-review` for exactly these
-two reasons. Nothing follows about a real page (GOVERNANCE 10, hard rule 1). A
-real register carries headers, folio numbers and marginalia no proposal covers;
-Churro will transcribe them, and that page would hold on content coverage even
-once attachment lands. That is the rule working (GOALS 1, GOVERNANCE 2), not a
-regression to repair by loosening a floor.
+page text is exactly its two acts reaches `delivered`. Nothing follows about a
+real page (GOVERNANCE 10, hard rule 1). A real register carries headers, folio
+numbers and marginalia no proposal covers; Churro will transcribe them, and that
+page will hold on content coverage. That is the rule working (GOALS 1,
+GOVERNANCE 2), not a regression to repair by loosening a floor.
 
 **The offline posture still delivers, and the two diverge on one declared row.**
 `proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
@@ -1351,7 +1441,7 @@ claim a page the ink does not support, or drop one the ink does.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
   `no-raw-counterpart-for-aligned-span`,
-  `character-limit`, `character-pair-limit`, `timeout`,
+  `character-limit`, `character-pair-limit`, `alignment-deadline-exceeded`,
   `no-common-anchor-text` (the aligner's own reasons pass through
   verbatim), `non-reading-page-testimonium-<outcome>` for a native page
   capture that produced no reading, `non-reading-act-attempt-<outcome>`

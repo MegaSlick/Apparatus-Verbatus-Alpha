@@ -58,6 +58,65 @@ def _alarm(signum: int, frame: Any) -> None:
     raise _TimedOut()
 
 
+# Named so a reader of a retained record cannot mistake the instrument giving up
+# for a measurement of the witness. `timeout` alone read as a property of the
+# chair ("the witness timed out"); what actually happened is that this module's
+# own wall-clock backstop fired before it could say anything about coverage, and
+# the difference decides whether a shortfall is evidence or an absent
+# measurement (GOVERNANCE 10).
+DEADLINE_REASON: Final = "alignment-deadline-exceeded"
+
+
+def _matching_blocks(witness_text: str, anchor_text: str) -> list[tuple[int, int, int]]:
+    """Return `(witness_start, anchor_start, size)` for every matched run.
+
+    `difflib.SequenceMatcher`'s Ratcliff-Obershelp blocks -- longest common
+    contiguous block first, then the same search recursively to its left and to
+    its right -- with the terminating zero-size block dropped. Blocks are
+    strictly ordered and non-overlapping on both sides, which is the property
+    `pipeline/3_attestatores/run.py` relies on when it clips a page alignment to
+    one act's anchor range: a witness offset can only be attributed to an act
+    whose anchor range surrounds it in the same order.
+
+    `autojunk=False` is deliberate. The heuristic it disables treats any element
+    appearing in more than 1% of the second sequence as junk, and in French
+    register prose that is most of the alphabet, so leaving it on would refuse
+    to match ordinary ink. It is also what makes the matcher slow on degenerate
+    input; the wall-clock backstop below exists because of it.
+
+    **RapidFuzz's Indel/LCS opcodes were tried here and refused, on measurement
+    (hostile review C, 2026-09-07).** They are four orders of magnitude faster
+    -- the slowest input the sealed pair bound admits goes from 283.9 s to
+    0.011 s -- and on identical or near-identical page text they return exactly
+    these blocks. But LCS maximizes matched *characters*, and where that ties, it
+    breaks the tie towards the earliest match. Register acts open with the same
+    formula, so a witness that read only the second of two acts ties: the whole
+    reading against the second act's anchor range (what this returns), or the
+    shared opening against the FIRST act plus the remainder against the second
+    (what LCS returns). Both attach 40 of 40 characters; only one of them says
+    what the witness actually read. The pipeline's own `confirmed-blank`
+    scenario failed on exactly that -- the witness's act-two opening was
+    attributed to act one, twelve characters of the page fell outside every act
+    attachment, and both acts were held instead of the blank being sealed. A
+    coverage-maximizing objective is the wrong objective for attaching a reading
+    to an anchor; "longest verbatim agreement wins" is the right one, and it is
+    the one that is load-bearing here. `common/test_alignment.py` pins that case
+    by name so the swap is not retried blind.
+
+    No normalization of its own: the comparison is over the Python `str`
+    codepoints `markup_text_view` produced, so case, NFC/NFD distinctions and
+    astral characters survive, and the returned offsets index the same
+    normalized text the offset map was built against.
+    """
+    return [
+        (block.a, block.b, block.size)
+        for block in SequenceMatcher(
+            a=witness_text, b=anchor_text, autojunk=False
+        ).get_matching_blocks()
+        if block.size
+    ]
+
+
 def markup_text_view(raw: str) -> dict[str, Any]:
     """Return plain text plus a raw-offset map and explicit stripping loss.
 
@@ -259,12 +318,31 @@ def load_alignment_limits(
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:
     """Align a witness comparison view to an anchor, or explicitly `unaligned`.
 
-    The character and pair bounds always apply before SequenceMatcher runs. The
+    The character and pair bounds always apply before the matcher runs. The
     wall-clock deadline applies only where this call owns the process real-time
     timer (main thread, POSIX `SIGALRM`, no timer already armed); elsewhere the
     comparison runs unbounded under the caller's own deadline, with the pair
     bound still refusing the pathological case. No input is clipped: a limit or
     a fired deadline produces a retained unaligned result with its reason.
+
+    A fired deadline is `DEADLINE_REASON`, and it is a non-verdict: this module
+    made no measurement of coverage, and nothing downstream may read it as one.
+    It is still `unaligned` rather than a partial map, because publishing spans
+    a timed-out comparison never finished would be worse than saying nothing
+    (GOVERNANCE 2/10).
+
+    **The deadline is sized from the legitimate ceiling, not the pathological
+    one, and it does not clear the pathological one.** An unaligned page witness
+    is not `comparable`, so it leaves the act's witness floor: a deadline short
+    enough to fire on real work records a slow comparison as coverage that is
+    missing (GOALS 1, hostile review C). A 7,500-character page whose acts
+    repeat one formula verbatim -- a scribe copying one form -- measures 10.1 s,
+    already past the five seconds this config used to carry, so 25 s is what it
+    now carries. Two *different* low-entropy chair responses at exactly
+    `max_character_pairs` measure 283.9 s and still reach the deadline; no value
+    closes that without costing minutes per (page, chair). Closing it needs the
+    matcher, and `pipeline/3_attestatores/HANDOFF.md` records both the
+    measurements and the design that would.
     """
     witness = markup_text_view(witness_raw)
     anchor = markup_text_view(anchor_raw)
@@ -299,35 +377,38 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
                 signal.signal(signal.SIGALRM, previous)
                 raise
             alarm_armed = True
-        blocks = SequenceMatcher(
-            a=witness_text, b=anchor_text, autojunk=False
-        ).get_matching_blocks()
+        blocks = _matching_blocks(witness_text, anchor_text)
         # Cancelled inside the `try`, not only in the `finally` -- the same
         # window `pipeline/4_perlector/dissent.py::_aligned_within_deadline`
         # already closes for its own SIGALRM, still open here. An alarm firing
-        # after `get_matching_blocks` returned but before the `finally` ran
-        # raised `_TimedOut` from inside the `finally`, past the `except` above,
-        # so a *successful* alignment propagated an internal exception out of a
+        # after `_matching_blocks` returned but before the `finally` ran raised
+        # `_TimedOut` from inside the `finally`, past the `except` above, so a
+        # *successful* alignment propagated an internal exception out of a
         # function whose whole contract is to return an `unaligned` record
         # instead. Cancelling here does not close the window completely: a
         # firing in the remaining instructions is caught by the `except` and
-        # recorded as `timeout`, which understates a finished alignment rather
-        # than crashing the stage. That is the safe direction of the two.
+        # recorded as the deadline reason, which understates a finished
+        # alignment rather than crashing the stage. That is the safe direction
+        # of the two.
         if alarm_armed:
             signal.alarm(0)
     except _TimedOut:
-        return {"status": "unaligned", "reason": "timeout", "witness": witness, "anchor": anchor}
+        return {
+            "status": "unaligned",
+            "reason": DEADLINE_REASON,
+            "witness": witness,
+            "anchor": anchor,
+        }
     finally:
         if alarm_armed:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous)
     spans = [
         {
-            "witness": {"start": block.a, "end": block.a + block.size},
-            "anchor": {"start": block.b, "end": block.b + block.size},
+            "witness": {"start": witness_start, "end": witness_start + size},
+            "anchor": {"start": anchor_start, "end": anchor_start + size},
         }
-        for block in blocks
-        if block.size
+        for witness_start, anchor_start, size in blocks
     ]
     if not spans:
         return {
