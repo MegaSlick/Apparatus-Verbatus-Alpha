@@ -415,8 +415,10 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
     surface.upload(source, sealed_manifest=manifest)
 
     assert any("fixture volume" in line for line in messages)
-    hostnames = ((u.hostname or "").rstrip(".") for u in _urls_in(messages))
-    assert not any(host == "runpod.io" or host.endswith(".runpod.io") for host in hostnames)
+    # A fixture-only rehearsal names no real destination at all, so no URL of
+    # any host should appear here -- a runpod.io-only blacklist would still
+    # pass if some other, unnamed remote endpoint leaked into the messages.
+    assert _urls_in(messages) == []
 
 
 # -- the read channel -------------------------------------------------------
