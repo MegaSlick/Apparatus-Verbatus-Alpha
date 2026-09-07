@@ -25,7 +25,7 @@ schedules a chair, and never touches ``run.py`` -- that is U6's job.
    envelope -- while every adapter's native parser (``feeding.validate_dai_text``,
    ``common.native_witness.validate_churro_xml``, ``chandra.parse``) expects the
    model's own output bytes, exactly as the fixture declares them
-   (``row["raw_xml"]``, a fixture Chandra JSON body). ``response.content`` is
+   (``row["raw_xml"]``, a fixture Chandra placeholder body). ``response.content`` is
    the field ``operations.serving.http.parse_openai_reading`` already extracted
    for exactly this purpose. Retaining the envelope here would hand every
    native parser JSON it cannot read and turn a working reading into a bogus
@@ -190,7 +190,7 @@ DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = {
 }
 
 
-def _format_capabilities_for(adapter: Any) -> Mapping[str, bool]:
+def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
     """What this adapter's own grammar can carry, or the old blanket default.
 
     A live witness never self-reports a format capability from the response
@@ -233,7 +233,11 @@ def _format_capabilities_for(adapter: Any) -> Mapping[str, bool]:
                 f"adapter {adapter!r} declares format_capabilities.{field} as "
                 f"{capabilities[field]!r}, not a boolean"
             )
-    return capabilities
+    # Copied, never handed on: an adapter declares this once as a read-only
+    # mapping so one shared default cannot be mutated into every undeclared
+    # adapter at once, and a `mappingproxy` in a Testimonium is a value the
+    # record's own serializer has never been asked to write.
+    return dict(capabilities)
 
 
 # The allow-listed subset of `feeding.dai_generation()` vLLM's OpenAI-compatible
@@ -396,16 +400,10 @@ def _prompt_texts(prompt: Mapping[str, Any]) -> tuple[str, ...]:
     if set(prompt) == {"system", "user"}:
         return (prompt["system"], prompt["user"])
     if set(prompt) == {"user"}:
-        # Chandra's design-fixed shape (VENDOR_SYSTEMS_DESIGN_2026-09-06.md:
-        # `{"user": str}`, no system turn): a single user turn, one text
-        # part to measure. Accepted alongside {"instruction"} below because
-        # U9 (the Chandra adapter unit) has not yet retired the interim
-        # shape this seam was built against.
+        # Chandra's shape: the vendor's own `OCR_LAYOUT_PROMPT` bytes as a
+        # single user turn with no system message, which is what
+        # `chandra/model/vllm.py` builds. One text part to measure.
         return (prompt["user"],)
-    if set(prompt) == {"instruction"}:
-        # Interim shape: `chandra.py::prompt` still returns this until U9
-        # lands. Kept only until that unit retires it in favor of {"user"}.
-        return (prompt["instruction"],)
     if set(prompt) == {"system"}:
         # Churro's registry-fixed shape (design's "Churro {system}"): the
         # whole instruction is the system turn and the user turn carries no
@@ -414,7 +412,7 @@ def _prompt_texts(prompt: Mapping[str, Any]) -> tuple[str, ...]:
     raise SchemaRefusal(
         f"a witness adapter returned an unrecognized prompt shape {sorted(prompt)}; this seam "
         "knows the churro.v1/dai.v1 system/user framing, churro.v1's system-only framing, "
-        "chandra.v1's single user turn, and chandra.v1's interim single instruction"
+        "and chandra.v1's single user turn"
     )
 
 
@@ -560,7 +558,7 @@ def _page_messages(
 ) -> tuple[Mapping[str, object], ...]:
     """The message tuple for one page-scoped request, dispatched on prompt shape.
 
-    Four shapes, closed and exact -- a fifth is refused rather than guessed
+    Three shapes, closed and exact -- a fourth is refused rather than guessed
     at. Extracted from `page_chair_request` so this dispatch (and, in
     particular, a new shape) is provable without a sealed row or a measured
     prompt-token constant standing in the way: it is pure, and every one of
@@ -569,14 +567,10 @@ def _page_messages(
     * ``{"system", "user"}`` -- Churro's carried two-message framing
       (`feeding.churro_prompt`/`feeding.churro_layout_prompt`): a system turn
       and a user turn carrying the image and the vendor's own user text.
-    * ``{"user"}`` -- Chandra's design-fixed framing
-      (VENDOR_SYSTEMS_DESIGN_2026-09-06.md: ``{"user": str}``, no system
-      turn): a single user turn carrying the image and the adapter's text,
-      no system message.
-    * ``{"instruction"}`` -- Chandra's interim single-instruction framing
-      (`chandra.prompt`), kept only until U9 retires it in favor of
-      ``{"user"}`` above; no vendor wire schema exists to name a
-      system/user split for it (module docstring).
+    * ``{"user"}`` -- Chandra's framing (`chandra.prompt`): a single user turn
+      carrying the image and the vendor's own ``OCR_LAYOUT_PROMPT`` bytes, with
+      no system message at all -- the shape `chandra/model/vllm.py:64-76`
+      builds.
     * ``{"system"}`` -- Churro's registry-fixed framing (design's "Churro
       {system}"): the whole instruction sits in the system turn and the user
       turn carries the image alone -- `providers/specs.py::churro_3b_profile()`
@@ -593,8 +587,6 @@ def _page_messages(
         )
     if set(prompt) == {"user"}:
         return ({"role": "user", "content": _user_content(prompt["user"], image_bytes)},)
-    if set(prompt) == {"instruction"}:
-        return ({"role": "user", "content": _user_content(prompt["instruction"], image_bytes)},)
     if set(prompt) == {"system"}:
         return (
             {"role": "system", "content": _system_content(prompt["system"])},
@@ -606,8 +598,7 @@ def _page_messages(
     raise SchemaRefusal(
         f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "
         f"{sorted(prompt)}; this seam knows the churro.v1 system/user framing, churro.v1's "
-        "system-only framing, chandra.v1's single user turn, and chandra.v1's interim single "
-        "instruction"
+        "system-only framing, and chandra.v1's single user turn"
     )
 
 
@@ -656,12 +647,14 @@ def page_chair_request(
         scope="page",
         what=f"the {adapter_name} request for page {presentation.get('source_page_ordinal')!r}",
     )
-    # Only Churro carries a vendor generation view to retain as evidence
-    # (`feeding.churro_generation`); Chandra's repository ships no sampling
-    # parameters at all, so there is nothing of its own to declare. Beside it
-    # go the fields each occupant needs that `generation_config = "vllm"` would
-    # otherwise decide for it: Churro's own shipped repetition penalty, and
-    # Chandra's thinking-mode flag.
+    # Both page chairs carry a vendor generation view to retain as evidence:
+    # Churro's `max_new_tokens` (`feeding.churro_generation`) and Chandra's own
+    # `chandra/settings.py::MAX_OUTPUT_TOKENS` (`feeding.chandra_generation`).
+    # Neither is by itself what goes on the wire -- `generation_bound_sent`
+    # below sends a value only where the declared bound is what binds, strictly
+    # below what the sealed row leaves. Beside them go the fields each occupant
+    # needs that `generation_config = "vllm"` would otherwise decide for it:
+    # Churro's own shipped repetition penalty, and Chandra's thinking-mode flag.
     #
     # Dispatched by name and **total**, so a third page adapter is refused here
     # rather than quietly handed the other one's vendor fields. The prompt-shape
@@ -673,7 +666,7 @@ def page_chair_request(
         generation_declared = dict(feeding.churro_generation())
         wire_fields: dict[str, Any] = dict(feeding.churro_wire_decoding())
     elif adapter_name == "chandra.v1":
-        generation_declared = {}
+        generation_declared = dict(feeding.chandra_generation())
         wire_fields = chandra_wire_fields()
     else:
         raise SchemaRefusal(
@@ -929,11 +922,11 @@ def live_attempt_from_response(
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
         parser=parser,
-        # These bytes came off a chair that answered. The flag reaches exactly
-        # one parser: Chandra's, which accepts the committed fixture's own
-        # placeholder schema offline and refuses it here, because a served
-        # chair answering in a shape `chandra.prompt()` never asked for is a
-        # named surprise rather than a reading (CodeRabbit round 1, T7).
+        # These bytes came off a chair that answered. The flag decides exactly
+        # one thing at the retention seam: Chandra's fixture-placeholder parser
+        # may not run for a served chair, because a served chair answering in a
+        # shape `chandra.prompt()` never asked for is a named surprise rather
+        # than a reading (CodeRabbit round 1, T7).
         served=True,
     )
     parsed = capture["parse"]
@@ -1008,14 +1001,14 @@ def captured_page_attempt(
     is ``failed`` with "not a confirmed blank page" rather than the emptier
     and wrong ``genuinely-empty``; an unparseable response is ``failed`` with
     its bytes retained. Runs for both page-scoped adapters today (``churro.v1``,
-    ``chandra.v1``). Chandra parses the closed shape its own prompt asks for
-    (`pipeline/3_attestatores/chandra_response.py`) or the fixture placeholder;
-    every other body -- Chandra's native output mode has no vendor specimen to
-    parse against -- lands on the unparseable branch, naming its shape
-    (``unverified-response-schema`` and the rest of that module's closed set).
-    A parsed Chandra response also carries its bytes forward as
-    ``observation_payload``, because `run.py` derives the page's block geometry
-    from those same bytes rather than from the text.
+    ``chandra.v1``). Chandra reads the vendor's own layout grammar
+    (`common/chandra_layout.py`, the answer `chandra.prompt` asks for); a body
+    that yields no top-level block lands on the ``unrecognized-shape`` branch
+    naming which of the two ways that happened (``no-layout-blocks`` for prose,
+    ``blocks-not-at-top-level`` for a wrapped answer, and the rest of that
+    module's closed set). A parsed Chandra response also carries its bytes
+    forward as ``observation_payload``, because `run.py` derives the page's
+    block geometry from those same bytes rather than from the text.
 
     Churro parses the closed shape `feeding.churro_layout_prompt` asks for
     (`common/churro_response.py`) or the trained `<output>` envelope it was
@@ -1046,8 +1039,12 @@ def captured_page_attempt(
         # the branch its own record was written under.
         parser = "churro"
     elif adapter_name == "chandra.v1":
-        generation_declared = {}
-        parser = "json"
+        generation_declared = dict(feeding.chandra_generation())
+        # `"html"`, the vendor's own layout grammar. The name selects the parser
+        # (`feeding._RUNNABLE_PARSERS`): the committed fixture's placeholder
+        # keeps `"json"` and is refused for a served chair outright, so a live
+        # reading can only ever be taken in the grammar the chair was asked in.
+        parser = "html"
     else:
         raise SchemaRefusal(
             f"captured_page_attempt has no capture recipe for adapter {adapter_name!r}; "
@@ -1069,11 +1066,11 @@ def captured_page_attempt(
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
         parser=parser,
-        # These bytes came off a chair that answered. The flag reaches exactly
-        # one parser: Chandra's, which accepts the committed fixture's own
-        # placeholder schema offline and refuses it here, because a served
-        # chair answering in a shape `chandra.prompt()` never asked for is a
-        # named surprise rather than a reading (CodeRabbit round 1, T7).
+        # These bytes came off a chair that answered. The flag decides exactly
+        # one thing at the retention seam: Chandra's fixture-placeholder parser
+        # may not run for a served chair, because a served chair answering in a
+        # shape `chandra.prompt()` never asked for is a named surprise rather
+        # than a reading (CodeRabbit round 1, T7).
         served=True,
     )
     parsed = capture["parse"]

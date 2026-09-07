@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from PIL import Image
 
-from common import native_witness
+from common import chandra_layout, native_witness
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -71,15 +71,25 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     # the relabel-proof wrapper the test below proves out.
     assert spec.retain is adapters.churro.retain
     chandra = adapters.resolve_runnable_adapter("chandra.v1")
-    assert set(chandra.prompt()) == {"instruction"}
-    # Both declared shapes parse to text: the wire contract the prompt asks for
-    # and the committed fixture's placeholder.
+    # One user turn carrying the vendor's own carried prompt bytes, and no
+    # system turn -- the shape `chandra/model/vllm.py` builds.
+    assert set(chandra.prompt()) == {"user"}
+    assert chandra.prompt() == {"user": chandra_layout.OCR_LAYOUT_PROMPT}
+    # The registry slot binds the LIVE grammar and only that: the vendor layout
+    # answer parses to its page text here, while the committed fixture's JSON
+    # placeholder is a shape this reader can place nothing in and is read only
+    # through the separate `parse_fixture_placeholder` the fixture posture names.
     assert (
-        chandra.parse(b'{"schema":"verbatus-chandra-page-response.v1","text":"wire text"}')
-        == "wire text"
+        chandra.parse(b'<div data-bbox="0 0 500 500" data-label="Text">layout text</div>')
+        == "layout text"
     )
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}'
+    ) == {"parse_outcome": "no-layout-blocks"}
     assert (
-        chandra.parse(b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}')
+        adapters.chandra.parse_fixture_placeholder(
+            b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}'
+        )
         == "text"
     )
     assert chandra.retain is adapters.chandra.retain
@@ -306,7 +316,35 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "quantization",
         "takes_page_size",
         "resolve_framing",
+        "format_capabilities",
+        "fixture_parse",
     }
+    # The reader each adapter's fixture posture uses where its declared rows are
+    # not in the grammar a served chair answers in. Chandra alone has one until
+    # U16 re-declares `proof/skeleton_fixture.toml`'s rows in the vendor
+    # grammar; the other two read their fixture rows through the same parser
+    # their live answers take, so they declare none rather than an alias.
+    assert {name: entry.fixture_parse for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
+        "chandra.v1": adapters.chandra.parse_fixture_placeholder,
+        "churro.v1": None,
+        "dai.v1": None,
+    }
+    # What each adapter's own grammar can carry, read off the registry entry the
+    # same way. Chandra declares its own -- its answer is labelled blocks each
+    # carrying a `data-bbox`, and it has no vocabulary for uncertainty at all --
+    # while the two that have not yet declared theirs record exactly the blanket
+    # value every live attempt recorded before adapters could declare one.
+    assert {
+        name: dict(entry.format_capabilities) for name, entry in adapters.RUNNABLE_ADAPTERS.items()
+    } == {
+        "chandra.v1": {"can_express_uncertainty": False, "can_express_layout": True},
+        "churro.v1": {"can_express_uncertainty": False, "can_express_layout": False},
+        "dai.v1": {"can_express_uncertainty": False, "can_express_layout": False},
+    }
+    assert (
+        adapters.RUNNABLE_ADAPTERS["churro.v1"].format_capabilities
+        is adapters.FALLBACK_FORMAT_CAPABILITIES
+    )
     assert (
         adapters.RUNNABLE_ADAPTERS["churro.v1"].resolve_framing is adapters.churro.resolve_framing
     )

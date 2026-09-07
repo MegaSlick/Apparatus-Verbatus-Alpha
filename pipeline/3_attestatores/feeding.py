@@ -16,10 +16,11 @@ from itertools import groupby
 from threading import RLock
 from typing import Any, Callable, Final, Iterator
 
-from common import churro_response
-from common.contracts.canonical import digest_of
+from common import chandra_layout, churro_response
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     derive_churro_capture,
@@ -29,6 +30,7 @@ from common.native_witness import (
 from common.native_witness import (
     detect_churro_repetition as detect_repetition,
 )
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 DAI_MAX_WIDTH_PX = 1_500
 DAI_MAX_HEIGHT_PX = 4_096
@@ -60,6 +62,17 @@ _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
 _RUNNABLE_PARSERS = frozenset(
     {
+        # Chandra's two postures, the same way Churro's two are named. `html` is
+        # the live path's: the vendor's own layout grammar
+        # (`common/chandra_layout.py`), which is what a served chair is asked for
+        # and the only shape a live reading is ever taken from. `json` is the
+        # committed fixture's placeholder alone -- `fixture-chandra-response.v1`,
+        # a shape this repository invented for a fixture that asks nothing of
+        # anybody -- kept because the fixture's declared bytes are pinned into
+        # its own digests until U16 re-declares those rows in the vendor grammar.
+        # `retain_model_view` refuses `json` for a *served* chair, so retained
+        # history cannot become a live reading by taking the wrong branch.
+        ("chandra.v1", "html"),
         ("chandra.v1", "json"),
         # Churro's two postures, and the name selects the parser rather than
         # labelling one dispatcher: `xml` is the committed fixture's, reaching
@@ -238,6 +251,27 @@ def churro_layout_prompt() -> dict[str, str]:
 def churro_generation() -> dict[str, int]:
     """The predeclared operational bound, not a content or repetition control."""
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+
+
+def chandra_generation() -> dict[str, int]:
+    """Chandra's own declared answer bound, retained as the vendor's own number.
+
+    ``chandra/settings.py``'s ``MAX_OUTPUT_TOKENS = 12384`` at the pinned commit
+    -- the value every vendor caller passes as its generation limit. It is
+    *declared* evidence, not by itself what goes on the wire: as for Churro,
+    ``common/request_capacity.py::sendable_max_tokens`` sends
+    ``min(this, max_model_len - image - prompt)`` against this request's own
+    capacity record, and the vendor's own pair overruns the vendor's own
+    container (12,384 + a 6,045-token A4 image against
+    ``--max-model-len 18000``), so the clamp is ours and the record says which
+    of the two bound a given call.
+
+    This module states it once by reading
+    ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS``, the one table the wire
+    value is computed from, exactly as ``CHURRO_OUTPUT_TOKENS`` does -- a second
+    literal here could drift from the number the bound seam actually applies.
+    """
+    return {"max_new_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_1"]}
 
 
 def churro_wire_decoding() -> dict[str, float]:
@@ -586,6 +620,38 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     return target_width, target_height
 
 
+def sealed_page_bytes(context: Any, page_id: str, *, what: str) -> bytes:
+    """The sealed Exemplar page's exact bytes, read once and digest-bound.
+
+    Two adapters cut their own presented image out of a sealed page -- DAI's
+    act crop and Chandra's whole-page vendor resize -- and both must read it the
+    same way: through `read_artifact`, which verifies the record's inputs, and
+    then against the *one* byte object the imaging call will use, so a
+    filesystem swap cannot cross the interval between the check and the use.
+    Written once here rather than twice in `witness_adapters.py`, because the
+    two copies would agree only for as long as both were edited together.
+
+    ``what`` names the adapter in every refusal, so an operator reading one is
+    sent to the chair whose presentation could not be built rather than to
+    whichever adapter happened to own the shared code.
+    """
+
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    payload = page.get("payload")
+    image_path = payload.get("image_path") if isinstance(payload, dict) else None
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal(f"{what}'s sealed source page has no image path to crop")
+    try:
+        page_bytes = context.tree.read_bytes(image_path)
+    except OSError as error:
+        raise SchemaRefusal(f"{what} sealed page bytes could not be read: {error}") from error
+    if digest_bytes(page_bytes) != payload.get("source_sha256"):
+        raise SchemaRefusal(
+            f"{what} sealed page bytes changed between artifact verification and crop use"
+        )
+    return page_bytes
+
+
 def retain_model_view(
     tree: Any,
     *,
@@ -599,12 +665,11 @@ def retain_model_view(
     """Retain a reproducible view and raw response, including parser failure bytes.
 
     ``served`` says the bytes came off a chair that actually answered rather
-    than out of the committed fixture. It reaches exactly one parser --
-    Chandra's, which accepts the fixture's own placeholder schema on the
-    offline posture and must not on the live one (CodeRabbit round 1, T7) --
-    and changes nothing else here. Retention itself is posture-blind, and
-    stays so: the bytes are published to the tree before any parser runs, so a
-    refusal names a surprise without losing it.
+    than out of the committed fixture. It decides exactly one thing -- whether
+    Chandra's fixture-placeholder parser may run at all (CodeRabbit round 1,
+    T7) -- and changes nothing else here. Retention itself is posture-blind,
+    and stays so: the bytes are published to the tree before any parser runs,
+    so a refusal names a surprise without losing it.
     """
     if not isinstance(adapter, str) or not adapter:
         raise SchemaRefusal("model-view adapter is blank")
@@ -617,6 +682,20 @@ def retain_model_view(
     # is the shape GOVERNANCE 2 refuses. Ask for a parse that runs, or ask for none.
     if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
         raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
+    # A served chair answering in the committed fixture's own placeholder schema
+    # is answering a question nobody put to it, and reading that as a page of
+    # text would publish a reading whose shape this repository never verified
+    # against anything (GOVERNANCE 10). The refusal is at the seam rather than
+    # inside the parser because the parser name is what the record will carry:
+    # a live capture written under `json` could never be re-derived as the live
+    # grammar it was actually asked in. The bytes are retained by the caller's
+    # own route either way, so nothing is lost by refusing here.
+    if served and adapter == "chandra.v1" and parser == "json":
+        raise SchemaRefusal(
+            "a served chandra.v1 response cannot be retained under the committed fixture's "
+            "placeholder parser 'json'; a live reading is taken only in the vendor layout "
+            "grammar ('html')"
+        )
     if adapter == "dai.v1":
         validate_dai_model_view(view)
     raw_digest, published = tree.put_blob(ATTESTATORES, raw_response)
@@ -646,22 +725,42 @@ def retain_model_view(
                 repetition_detector=detect_repetition,
             )
         )
-    elif adapter == "chandra.v1" and parser == "json":
+    elif adapter == "chandra.v1" and parser in {"html", "json"}:
         # Import locally: the runnable sibling module imports this retention
-        # seam, while its parser must remain the one owner of Chandra's shapes
-        # (the wire contract in `chandra_response`, and the fixture placeholder).
-        from chandra import parse as parse_chandra
+        # seam, while it must remain the one owner of Chandra's two shapes --
+        # the vendor layout grammar, and the committed fixture's placeholder.
+        import chandra
 
-        parsed = parse_chandra(raw_response, served=served)
+        if parser == "html":
+            # Which vendor pin the prompt bytes beside this reading were taken
+            # from, recorded whatever the answer turned out to be: the pin is a
+            # fact about the request, not about whether the response parsed
+            # (GOVERNANCE 6).
+            record["vendor_identity"] = chandra.vendor_identity()
+            parsed_layout = chandra.parse_layout(raw_response)
+            parsed: Any
+            if chandra_layout.is_refusal(parsed_layout):
+                parsed = {"parse_outcome": parsed_layout["parse_outcome"]}
+            else:
+                parsed = parsed_layout["page_text"]
+                # The grammar's own findings travel with the reading. They are
+                # the whole of what the vendor's parser would have printed to a
+                # stdout nobody retains -- a malformed box, a retained blank
+                # page, text outside every block, a block count that does not
+                # reconcile -- and each one names a fact about this response
+                # that the page text alone cannot show (GOVERNANCE 2).
+                record["findings"] = list(parsed_layout["findings"])
+        else:
+            parsed = chandra.parse_fixture_placeholder(raw_response)
         if isinstance(parsed, dict) and set(parsed) == {"parse_outcome"}:
             record["parse"] = {
                 "state": "unrecognized-shape",
-                "parser": "json",
+                "parser": parser,
                 "outcome": parsed["parse_outcome"],
             }
             record["stop_reason"] = "partial-parse-unrecognized-shape"
         else:
-            record["parse"] = {"state": "parsed", "parser": "json", "text": parsed}
+            record["parse"] = {"state": "parsed", "parser": parser, "text": parsed}
     elif adapter == "dai.v1" and parser == "text":
         try:
             record["parse"] = {

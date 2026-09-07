@@ -292,21 +292,24 @@ def mark_out(designated: SimpleNamespace, run_root: Path, work: Path, answers=No
 
 
 def chandra_page(blocks) -> str:
-    """One page's Chandra answer in the shape its own prompt asks for.
+    """One page's Chandra answer in the vendor's own layout grammar.
 
-    The block geometry is built from the same page-pixel rectangles the
-    structure chair drew, through the same normalized conversion both readings
-    of a page share (`common.structure_answer`), so a block lands exactly on
-    the act it reports rather than approximately near it.
+    Top-level divs carrying a `data-bbox` normalized 0-1000, which is what
+    `chandra/prompts.py::OCR_LAYOUT_PROMPT` asks for and what
+    `common/chandra_layout.py` reads. The block geometry is built from the same
+    page-pixel rectangles the structure chair drew, through the same normalized
+    conversion both readings of a page share (`common.structure_answer`), so a
+    block lands exactly on the act it reports rather than approximately near it.
+
+    Only newlines separate the divs: character data outside every top-level
+    block is ink no block carries, and the grammar reports it as a finding
+    rather than silently dropping it.
     """
-    return json.dumps(
-        {
-            "schema": "verbatus-chandra-page-response.v1",
-            "blocks": [
-                {"box_1000": structure_box_1000(bounds, PAGE_WIDTH, PAGE_HEIGHT), "text": text}
-                for bounds, text in blocks
-            ],
-        }
+    return "\n".join(
+        '<div data-bbox="{} {} {} {}" data-label="Text">{}</div>'.format(
+            *structure_box_1000(bounds, PAGE_WIDTH, PAGE_HEIGHT), text
+        )
+        for bounds, text in blocks
     )
 
 

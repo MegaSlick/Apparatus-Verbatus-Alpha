@@ -212,6 +212,14 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
     response declared in Chandra's JSON for a chair bound to Churro is a
     declaration the stage will refuse at run time, and the reason it is wrong is
     the binding, not the bytes.
+
+    And of the reader that adapter's *fixture* posture actually uses, where it
+    has one. Chandra's live grammar is the vendor's HTML layout answer, while
+    this fixture's rows declare its own `fixture-chandra-response.v1`
+    placeholder -- retained history whose bytes are pinned into the fixture's
+    digests until U16 re-declares them. `RunnableAdapter.fixture_parse` is what
+    the registry says about that, so this asks the registry rather than the
+    adapter's name (`pipeline/3_attestatores/witness_adapters.py`).
     """
     checked = 0
     for table, row in response_rows(skeleton):
@@ -219,12 +227,13 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
         if raw is None:
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
+        read = adapter.fixture_parse or adapter.parse
         # An adapter may refuse in either of its two vocabularies: a named parse
         # outcome or a `SchemaRefusal`. Both are the same finding here, and
         # letting the second escape would report a bare exception where this
         # module is supposed to name the declaration that caused it.
         try:
-            parsed: Any = adapter.parse(raw.encode("utf-8"))
+            parsed: Any = read(raw.encode("utf-8"))
         except SchemaRefusal as refusal:
             parsed = refusal
         assert isinstance(parsed, str), (
@@ -459,13 +468,19 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
     raw bytes that payload was parsed out of. When a scenario rewrote one and not
     the other, the fixture declared two different readings for one attempt and
     the geometry belonged to neither.
+
+    Read through the reader the fixture posture itself uses -- the registry's
+    `fixture_parse` where an adapter has one -- for the reason the readability
+    guard above gives: Chandra's live grammar is the vendor's HTML layout
+    answer, and these rows declare its own placeholder.
     """
     checked = 0
     for row in skeleton["testimony"]:
         if "raw_response" not in row or not isinstance(row["payload"], str):
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
-        text = adapter.parse(row["raw_response"].encode("utf-8"))
+        read = adapter.fixture_parse or adapter.parse
+        text = read(row["raw_response"].encode("utf-8"))
         assert text == row["payload"], (
             f"testimony row {row!r} retains {text!r} but declares payload {row['payload']!r}"
         )
@@ -474,7 +489,8 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
         if "raw_response" not in row:
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
-        text = adapter.parse(row["raw_response"].encode("utf-8"))
+        read = adapter.fixture_parse or adapter.parse
+        text = read(row["raw_response"].encode("utf-8"))
         assert text == "", (
             f"witness_empty row {row!r} declares a completed empty response but retains {text!r}"
         )

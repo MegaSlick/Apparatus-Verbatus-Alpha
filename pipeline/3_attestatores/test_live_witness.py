@@ -617,7 +617,10 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
     """
 
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
-    assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["instruction"]) == 256
+    # The vendor's own carried prompt bytes, re-measured for them: 593 over the
+    # 2,161-character `OCR_LAYOUT_PROMPT`, where this repository's retired
+    # instruction cost 256 over 934 characters.
+    assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["user"]) == 593
     dai = feeding.dai_prompt()
     assert sealed_prompt_tokens("attestator_2", dai["system"], dai["user"]) == 84
     # Churro carries a constant per declared framing, because a run can ask it
@@ -633,7 +636,7 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
     assert "the prompt changed after it was measured" in str(expired.value)
 
 
-def test_page_chair_request_builds_chandras_single_instruction_framing():
+def test_page_chair_request_builds_chandras_single_user_turn():
     context = SimpleNamespace(tree=_FakeTree())
     image_bytes = _png(51, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
@@ -649,10 +652,11 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
     (message,) = request.messages
     assert message["role"] == "user"
     assert message["content"][0]["type"] == "image_url"
-    assert message["content"][1] == {"type": "text", "text": chandra_module.prompt()["instruction"]}
-    # Chandra's repository ships no sampling parameters, so there is nothing of
-    # its own to declare.
-    assert request.generation_declared == {}
+    assert message["content"][1] == {"type": "text", "text": chandra_module.prompt()["user"]}
+    # `chandra/settings.py::MAX_OUTPUT_TOKENS` at the pinned commit: the
+    # vendor's own declared answer bound, retained as evidence whether or not
+    # it is what binds on the wire.
+    assert request.generation_declared == {"max_new_tokens": 12384}
     capacity = request.capacity
     room = capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"]
     # The row is what binds here -- 12,384 is far above what it leaves -- so no
@@ -694,13 +698,13 @@ def test_page_messages_builds_churros_registry_fixed_system_only_framing():
     assert live_witness._prompt_texts({"system": system_text}) == (system_text,)
 
 
-def test_page_messages_builds_chandras_design_fixed_user_only_framing():
-    """The design's fixed Chandra shape (VENDOR_SYSTEMS_DESIGN_2026-09-06.md:
-    `{"user": str}`, no system turn), prepared here so U9's adapter unit has a
-    seam to send it into once it retires `chandra.py`'s interim
-    `{"instruction"}` return. Exercised directly against `_page_messages` --
-    not through `page_chair_request` -- for the same reason as the Churro
-    system-only case above: no shipped adapter sends this shape yet.
+def test_page_messages_builds_chandras_user_only_framing():
+    """Chandra's shape: one user turn, image part first, and no system message.
+
+    Exercised directly against `_page_messages` with a stand-in text, so the
+    dispatch is provable without a sealed row or a measured prompt-token
+    constant; `test_page_chair_request_builds_chandras_single_user_turn` above
+    is the same shape built end to end from the adapter's real carried bytes.
     """
 
     image_bytes = _png(13, 8)
@@ -1976,17 +1980,16 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
     assert blob_store.has(response.response_sha256)
 
 
-def test_captured_page_attempt_real_chandra_adapter_reads_the_wire_contract(tmp_path: Path):
-    """Chandra live: a body in the shape its own prompt asks for is a reading.
+def test_captured_page_attempt_real_chandra_adapter_reads_the_vendor_grammar(tmp_path: Path):
+    """Chandra live: a body in the vendor's own layout grammar is a reading.
 
-    The page text is the block texts joined, and the bytes ride along as
-    `observation_payload` so `run.py` can derive the page's block geometry
-    from the very response the text came from.
+    The page text is the block texts joined by the shared delivered-text rule,
+    and the bytes ride along as `observation_payload` so `run.py` can derive
+    the page's block geometry from the very response the text came from.
     """
     body = (
-        '{"schema":"verbatus-chandra-page-response.v1","blocks":['
-        '{"box_1000":[100,77,900,385],"text":"SYNTHETIC ACT ONE"},'
-        '{"box_1000":[100,462,900,846],"text":"SYNTHETIC ACT TWO"}]}'
+        '<div data-bbox="100 77 900 385" data-label="Text">SYNTHETIC ACT ONE</div>\n'
+        '<div data-bbox="100 462 900 846" data-label="Text">SYNTHETIC ACT TWO</div>'
     )
     response, _, blob_store = _read_one(
         tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop")
@@ -2001,10 +2004,18 @@ def test_captured_page_attempt_real_chandra_adapter_reads_the_wire_contract(tmp_
     assert attempt.native_payload == "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO"
     assert attempt.native_capture["parse"] == {
         "state": "parsed",
-        "parser": "json",
+        "parser": "html",
         "text": "SYNTHETIC ACT ONE\nSYNTHETIC ACT TWO",
     }
-    assert attempt.native_capture["view"] == {"prompt": adapter.prompt()}
+    assert attempt.native_capture["view"] == {
+        "prompt": adapter.prompt(),
+        "generation": {"max_new_tokens": 12384},
+    }
+    # The vendor pin the prompt bytes came from travels with the reading, beside
+    # the model identity GOVERNANCE 6 already requires.
+    assert attempt.native_capture["vendor_identity"] == chandra.vendor_identity()
+    # A clean page reports nothing the grammar could not resolve.
+    assert attempt.native_capture["findings"] == []
     assert attempt.observation_payload == body.encode("utf-8")
     assert attempt.health["truncated"] is False
     assert attempt.raw_response_kind == "model-output"
@@ -2014,13 +2025,13 @@ def test_captured_page_attempt_real_chandra_adapter_reads_the_wire_contract(tmp_
 def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecognized_shape(
     tmp_path: Path,
 ):
-    """Chandra live: a body in neither declared shape -- a real model's own
-    markdown/JSON output, say -- lands as a named, honest failure with its bytes
-    retained, never a fabricated reading."""
+    """Chandra live: a body the layout grammar can place nothing in -- a real
+    model's own markdown output, say -- lands as a named, honest failure with
+    its bytes retained, never a fabricated reading."""
     response, _, blob_store = _read_one(
         tmp_path,
         script=ScriptedAnswer(
-            content='{"schema":"a-real-vendor-schema.v1","markdown":"hi","blocks":[]}',
+            content="## A markdown heading, and no layout block anywhere in it.",
             finish_reason="stop",
         ),
     )
@@ -2031,18 +2042,24 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecogni
     )
 
     assert attempt.outcome == "failed"
-    assert "unverified-response-schema" in attempt.reason
+    assert "no-layout-blocks" in attempt.reason
     assert blob_store.has(response.response_sha256)
     # U8's fourth gap: the adapter's own account of those bytes is now
     # attachable. It reached `unrecognized-shape` -- the parser ran, read the
     # whole body, and could place no shape it knows -- which the shared capture
     # contract admits, so the retained model view stays beside the blob it
-    # describes instead of being dropped for want of a state name.
+    # describes instead of being dropped for want of a state name. The outcome
+    # separates the two ways an answer yields no block: `no-layout-blocks` is
+    # an answer with no `<div>` in it at all, and `blocks-not-at-top-level` an
+    # answer that wrapped every one of them.
     assert attempt.native_capture["parse"] == {
         "state": "unrecognized-shape",
-        "parser": "json",
-        "outcome": "unverified-response-schema",
+        "parser": "html",
+        "outcome": "no-layout-blocks",
     }
+    # The vendor pin is recorded whatever the answer turned out to be: it is a
+    # fact about the request, not about whether the response parsed.
+    assert attempt.native_capture["vendor_identity"] == chandra.vendor_identity()
     # Whether the shared contract accepts this capture is proven against a real
     # run tree in `test_attestatores_live_pass.py`, not here: this module's
     # `_FakeTree` addresses blobs by its own path scheme, which
@@ -2059,18 +2076,17 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
 
     `fixture-chandra-response.v1` is the committed fixture's own placeholder,
     declared in `proof/skeleton_fixture.toml` and asked for by nothing:
-    `chandra.prompt()` asks a served chair for
-    `verbatus-chandra-page-response.v1` and only that. One parser derives the
-    retained model view in both postures, and until this fix it had no posture
-    to tell them apart, so a live body in the placeholder shape was read as a
-    page of text -- a reading whose wire shape this repository never verified
-    against anything, published as though it had been (GOVERNANCE 10).
+    `chandra.prompt()` asks a served chair for the vendor's layout grammar and
+    only that. Two things keep the two apart now. The live capture is written
+    under the `html` parser, which reads the vendor grammar and can place
+    nothing in a JSON object -- so the placeholder body lands as
+    `no-layout-blocks`, a named surprise beside its retained bytes. And the
+    retention seam refuses the placeholder parser outright for a served chair,
+    so no route exists by which retained history could be read back as a live
+    reading (GOVERNANCE 10).
 
-    The bytes are retained before the parser runs, so nothing is lost by the
-    refusal: the attempt fails with `unverified-response-schema` beside the
-    blob that carries it, which is exactly what the closed outcome set is for.
-    The offline posture passes no flag and keeps the acceptance the fixture's
-    pinned bytes depend on -- `test_chandra_adapter.py` and
+    The offline posture keeps the acceptance the fixture's pinned bytes depend
+    on, through `parse_fixture_placeholder` -- `test_chandra_adapter.py` and
     `test_attestatores_retention.py` are that half.
     """
     body = f'{{"schema":"{CHANDRA_FIXTURE_SCHEMA}","markdown":"chandra text","blocks":[]}}'
@@ -2085,8 +2101,8 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     assert attempt.outcome == "failed"
     assert attempt.native_capture["parse"] == {
         "state": "unrecognized-shape",
-        "parser": "json",
-        "outcome": "unverified-response-schema",
+        "parser": "html",
+        "outcome": "no-layout-blocks",
     }
     # The bytes stay beside the record that could not read them: read the
     # referenced blob back rather than trusting that a reference exists
@@ -2097,8 +2113,15 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     assert attempt.raw_response_ref["sha256"] == digest_bytes(body.encode("utf-8"))
     assert attempt.raw_response_kind == "model-output"
     # The same body still parses on the offline posture, where the fixture's
-    # pinned bytes depend on it: one flag, one difference.
-    assert chandra.parse(body.encode("utf-8")) == "chandra text"
-    assert chandra.parse(body.encode("utf-8"), served=True) == {
-        "parse_outcome": "unverified-response-schema"
-    }
+    # pinned bytes depend on it -- through the placeholder reader, which is the
+    # only thing that reads it, and which a served chair can never reach.
+    assert chandra.parse_fixture_placeholder(body.encode("utf-8")) == "chandra text"
+    with pytest.raises(SchemaRefusal, match="placeholder parser"):
+        chandra.retain(
+            tree,
+            view={"prompt": chandra.prompt()},
+            raw_response=body.encode("utf-8"),
+            transport_stop_reason="stop",
+            parser="json",
+            served=True,
+        )

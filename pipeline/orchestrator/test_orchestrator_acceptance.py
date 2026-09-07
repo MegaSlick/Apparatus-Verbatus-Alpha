@@ -1562,13 +1562,61 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #   There is no fourth bucket, so nothing here is unattributed. Counts and
 #   exits are unmoved at happy 96 / exit 0 and review 107 / exit 3.
 #
+# **Re-pin, U9 of the vendor-systems units: the Chandra adapter on the vendor
+# grammar, onto Wave 1's tree, 375c3ecedf.** Both pins move, and the file counts
+# move with them for the first time in this sequence.
+#
+#   The one cause, and the whole of it: `pipeline/3_attestatores/chandra.py::
+#   present` now sizes a whole page the way Chandra's own pipeline sizes it --
+#   `chandra/model/util.py::scale_to_fit`, ported in `common/imaging_ports.py`
+#   -- and records it as an `adapter-crop` under the vendor's operation name.
+#   This fixture's pages are 200x260, which that rule snaps to 196x252, so each
+#   Chandra page Testimonium now presents its own published, resized blob
+#   instead of the sealed Exemplar page itself.
+#
+#   Attributed by measurement, not by argument: with that one function reverted
+#   to returning its presentation unchanged (and the matching re-derivation
+#   branch in `witness_adapters.validate_adapter_presentation` with it) and
+#   every other line of the unit in place, both scenarios reproduce the
+#   superseded literals exactly -- eba7cbda... and adfc009c... So nothing else
+#   in the unit reaches a fixture run: the carried vendor prompt bytes, the
+#   `html` parser name, the declared generation view, the vendor identity on a
+#   capture and the declared format capabilities are all live-path only, and the
+#   committed fixture keeps its own `fixture-chandra-response.v1` placeholder,
+#   its own `FIXTURE_PROMPT` and its own `json` parser until U16.
+#
+#   Leaf by leaf against 375c3ecedf -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy goes
+#   13,864 -> 13,882 and review 14,384 -> 14,402, both +19 added and -1 removed.
+#   Every one of those falls in exactly these buckets, and there is no other:
+#
+#     * 4 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/kind` "page" -> "adapter-crop" and
+#       `payload/presented/transform/operation` "whole" ->
+#       "chandra-scale-to-fit.v1", on each of the two Chandra page Testimonia.
+#     * 14 added leaves per scenario: the seven-field resize recipe plus
+#       `colour_mode = "keep"` on those same two records.
+#     * 2 added leaves per scenario: the two new blob digests in the
+#       Attestatores manifest.
+#     * 3 added and 1 removed blob file per scenario: the two published resized
+#       Chandra page images (hence 96 -> 98 and 107 -> 109 files), and the
+#       Armarium export bundle, whose content-addressed name is its own content
+#       and so is renamed rather than added.
+#     * 6 changed values per scenario that are content-addressed blob paths --
+#       the two page Testimonia's `presented/image_path` and `inputs[0]`, and
+#       the export's two references to the renamed bundle.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 133 in
+#       happy and 153 in review.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3.
+#
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
-HAPPY_SNAPSHOT_FILES = 96
-REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "eba7cbda45d230a24fa473f3c27d3dba85c9eb4f9bb62fd0cb887e2c1231efb6"
-REVIEW_RUN_TREE_DIGEST = "adfc009c79b8e369b0fa290f67f20b8099737f6839ea2c46b0b90f155373a198"
+HAPPY_SNAPSHOT_FILES = 98
+REVIEW_SNAPSHOT_FILES = 109
+HAPPY_RUN_TREE_DIGEST = "c6500d87a69ca1c9bf1d414d3e8fa6a89e9782cc57f4cf6e3e221ba603e8f6a6"
+REVIEW_RUN_TREE_DIGEST = "3050e7275b217704c2e5a2596f815eae0d1d8b952dd69134851c10c15c47d3e7"
 
 
 def orchestrate(
@@ -5583,7 +5631,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # The count includes two retained Chandra-response blobs, Unit 12's two
     # content-addressed raw Churro responses, Unit 13's retained DAI act
-    # responses, and Unit 9's ink-map artifacts.
+    # responses, Unit 9's ink-map artifacts, and -- since the Chandra adapter
+    # runs the vendor's own `scale_to_fit` -- the two published page images it
+    # presents, one per witnessed page.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0

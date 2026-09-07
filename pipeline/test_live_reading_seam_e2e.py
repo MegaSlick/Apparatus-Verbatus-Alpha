@@ -125,37 +125,41 @@ TAIL_FROM_RECENSOR = (
 )
 
 # What each chair answers with. The witness bodies are the shapes their own
-# adapters parse: Chandra answers in the closed contract its prompt asks for
-# (`pipeline/3_attestatores/chandra_response.py`) -- block text with normalized
-# `box_1000` geometry that converts, on this fixture's 200x260 pages, to
-# exactly the sealed proposal rectangles of `a1`, `a2` and a2's page-2
-# continuation; Churro speaks its `<output>` envelope once per page; DAI is
-# act-scoped and answers plain text once per act. Churro answers its own closed
-# contract on page 1 and its trained `<output>` envelope on page 2, so both of
-# its legal shapes cross this seam.
+# adapters parse: Chandra answers in its vendor's own layout grammar
+# (`common/chandra_layout.py`) -- top-level divs carrying a `data-bbox`
+# normalized 0-1000, which convert, on this fixture's 200x260 pages, to the
+# sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; Churro
+# speaks its `<output>` envelope once per page; DAI is act-scoped and answers
+# plain text once per act. Churro answers its own closed contract on page 1 and
+# its trained `<output>` envelope on page 2, so both of its legal shapes cross
+# this seam.
 CHANDRA_PAGE_ONE = (
-    '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
-    '{"box_1000": [100, 77, 900, 385], "text": "SYNTHETIC ACT ONE alpha beta gamma"}, '
-    '{"box_1000": [100, 462, 900, 846], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
+    '<div data-bbox="100 77 900 385" data-label="Text">'
+    "SYNTHETIC ACT ONE alpha beta gamma</div>\n"
+    '<div data-bbox="100 462 900 846" data-label="Text">'
+    "SYNTHETIC ACT TWO delta epsilon zeta eta</div>"
 )
-# Page 2 carries only a2's continuation, and it is answered in the contract's
-# page-text form. That is one legitimate answer of the two, exercised
-# deliberately so this seam covers both across its two pages -- not the only
-# one the Perlector will read. The geometry form on a continuation page is
-# accepted now: `pipeline/4_perlector/run.py::act_attachment_view` still
-# requires a page witness's `attached` to equal its geometric overlap with the
-# act's sealed regions on that page, but no longer separately refuses an
-# attached continuation entry (run.py ~1239-1259), because between the two
-# rules such an entry had no legal spelling at all. What a continuation page
-# genuinely lacks is an ANCHOR, and that is what the surviving rule says.
+# Page 2 carries only a2's continuation, and it is answered as a block the
+# model transcribed but placed no box on -- a `<div>` with no `data-bbox`. The
+# retired JSON contract had two forms and this seam covered both; the vendor
+# grammar has one, and the fact the second form used to stand for -- a page a
+# chair read but reported no geometry for -- is exactly what a block with no
+# box is, so the coverage is kept rather than dropped. The grammar names it
+# (`malformed-bbox`, reason "no data-bbox attribute") instead of substituting
+# the [0,0,1,1] rectangle the vendor's own parser would have.
+#
+# The geometry form on a continuation page is accepted now:
+# `pipeline/4_perlector/run.py::act_attachment_view` still requires a page
+# witness's `attached` to equal its geometric overlap with the act's sealed
+# regions on that page, but no longer separately refuses an attached
+# continuation entry (run.py ~1239-1259), because between the two rules such an
+# entry had no legal spelling at all. What a continuation page genuinely lacks
+# is an ANCHOR, and that is what the surviving rule says.
 # `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
-# pins the geometry form here, and
+# pins the geometry form, and
 # `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
 # Attestatores' own boundary.
-CHANDRA_PAGE_TWO = (
-    '{"schema": "verbatus-chandra-page-response.v1", '
-    '"text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}'
-)
+CHANDRA_PAGE_TWO = '<div data-label="Text">SYNTHETIC ACT TWO delta epsilon zeta eta</div>'
 # Churro answers page 1 in the closed shape ITS own prompt asks for
 # (`feeding.churro_layout_prompt`, parsed by `common/churro_response.py`). The
 # boxes are derived for this fixture rather than copied from `CHANDRA_PAGE_ONE`:
@@ -238,8 +242,21 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # this fixture's one image token and does not fit 2,048. The shipped
         # catalogue states 8,192 for this chair at every tier, so the stand-in
         # states it too -- the row moves, never the arithmetic and never the
-        # pixels. Chandra's row is untouched and still needs 1,777.
-        "max_model_len": {"perlector": 16384, "attestator_3": 8192}.get(chair, 2048),
+        # pixels.
+        #
+        # Chandra's row moved next, for the same reason once more: the chair is
+        # asked in its vendor's own `OCR_LAYOUT_PROMPT` rather than this
+        # repository's retired instruction, re-measured at 593 against 256, so
+        # its need is 1 + 593 + 1,520 = 2,114 where the row left 2,048. The
+        # shipped catalogue states 8,192 for it at every tier too. DAI keeps
+        # 2,048: its act crop needs 1 + 84 + 230 and fits with room to spare,
+        # and raising a row nothing refuses would remove the one chair this
+        # stand-in still proves the arithmetic against.
+        "max_model_len": {
+            "perlector": 16384,
+            "attestator_1": 8192,
+            "attestator_3": 8192,
+        }.get(chair, 2048),
         "max_num_seqs": 1,
         "max_num_batched_tokens": 256,
         "gpu_memory_utilization": "0.85",

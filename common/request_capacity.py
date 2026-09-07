@@ -671,10 +671,33 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),
         ),
+        # Re-measured 2026-09-07 for the carried vendor prompt: Chandra's own
+        # `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`) replaces the
+        # repository's retired `_LIVE_INSTRUCTION` at this chair, so the number
+        # this chair is admitted on is the cost of the text it now actually
+        # sends -- **256 -> 593**, over a prompt that is 2,161 characters where
+        # the retired one was 934.
+        #
+        # Measured by `TOKEN_COST_REPORT.md` section 3's own method and its own
+        # arithmetic (`total = render(...)` with the image expanded, minus the
+        # image tokens): the repository's message list rendered through
+        # `chat_template.jinja` with the real tokenizer at the revision below,
+        # `transformers 5.16.1`, the same version that report used. The control
+        # is what makes it a measurement of the same thing rather than a new
+        # number in the same units: the identical harness re-renders the retired
+        # `_LIVE_INSTRUCTION` and reproduces **256 exactly**. Message order does
+        # not enter it -- image-first and text-first render to the same count --
+        # so the landed image-before-text change moves nothing here, as its own
+        # docstring says.
+        #
+        # The single retired entry is not kept beside this one. Churro carries
+        # two because it can be *asked* in either framing; this chair has one
+        # prompt, and a second entry would seal a cost for text no code can
+        # send.
         "attestator_1": (
             SealedPromptTokens(
-                tokens=256,
-                prompt_digest="97cfb7ba5143687c0f61784026d37268cd18d60c053f99ab49e4079ccb9d629a",
+                tokens=593,
+                prompt_digest="025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8",
                 repo="datalab-to/chandra-ocr-2",
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),

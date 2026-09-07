@@ -43,6 +43,7 @@ if str(STAGE) not in sys.path:
 
 import feeding  # noqa: E402
 
+from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
@@ -84,26 +85,33 @@ LIVE_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 CATALOGUE_CHAIRS = LIVE_CHAIRS
 FIXTURE_ROOT = ROOT / "proof"
 
-# Chandra answers in the closed shape its own prompt asks for
-# (`chandra_response.py`): block text with normalized `box_1000` geometry. The
-# boxes below convert, on this fixture's 200x260 pages, to exactly the sealed
-# proposal rectangles of `a1` (20,20 160x80), `a2` (20,120 160x100) and a2's
-# page-2 continuation (20,20 160x60), so the served witness's own geometry
-# overlaps the acts it reports on.
+# Chandra answers in its vendor's own layout grammar (`common/chandra_layout.py`,
+# the answer `OCR_LAYOUT_PROMPT` asks for): top-level divs carrying a
+# `data-bbox` normalized 0-1000 against the sealed page. The boxes below are the
+# ones this module has always used and they convert, through the same
+# `to_page_bounds` the retired JSON contract used, to exactly the sealed
+# proposal rectangles of `a1` (20,20 160x81), `a2` (20,120 160x100) and a2's
+# page-2 continuation, so the served witness's own geometry overlaps the acts it
+# reports on. Only whitespace sits between the divs: text outside every
+# top-level block would be a `content-outside-blocks` finding, which is the
+# grammar reporting ink no block carries rather than anything this fixture means
+# to say.
 CHANDRA_PAGE_ONE = (
-    '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
-    '{"box_1000": [100, 77, 900, 385], "text": "SYNTHETIC ACT ONE alpha beta gamma"}, '
-    '{"box_1000": [100, 462, 900, 846], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
+    '<div data-bbox="100 77 900 385" data-label="Text">'
+    "SYNTHETIC ACT ONE alpha beta gamma</div>\n"
+    '<div data-bbox="100 462 900 846" data-label="Text">'
+    "SYNTHETIC ACT TWO delta epsilon zeta eta</div>"
 )
 CHANDRA_PAGE_TWO = (
-    '{"schema": "verbatus-chandra-page-response.v1", "blocks": ['
-    '{"box_1000": [100, 77, 900, 308], "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"}]}'
+    '<div data-bbox="100 77 900 308" data-label="Text">'
+    "SYNTHETIC ACT TWO delta epsilon zeta eta</div>"
 )
 CHANDRA_BODY = CHANDRA_PAGE_ONE
-# A body in neither declared shape -- what a model answering in its own native
-# mode rather than the asked-for contract would look like on the wire. It is
-# retained and refused by name, never read.
-CHANDRA_UNRECOGNIZED_BODY = '{"pages": [{"markdown": "a real Chandra body, not the contract"}]}'
+# A body the layout grammar can place nothing in -- prose, which is what a model
+# answering in its own markdown mode rather than the layout mode its prompt asks
+# for produces. It is retained and refused by name (`no-layout-blocks`), never
+# read.
+CHANDRA_UNRECOGNIZED_BODY = "A real Chandra markdown body, with no layout block in it."
 # Churro's trained `<output>` envelope, which stays fully legal after Unit 12:
 # a model that ignores the layout clause reads, retains and aligns exactly as it
 # did, and lands unattached. Most of this module still scripts it for that
@@ -168,7 +176,13 @@ attestatores = _load_attestatores()
 # one the Perlector's own row took here when the reader stopped admitting on a
 # floor.  The shipped catalogue states 8,192 for this chair at every tier, so
 # that is what the stand-in states.
-LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_3": 8192}
+# Chandra's row moves for the same reason and by the same disposition. Its
+# sealed prompt was this repository's own 256-token instruction; the chair is
+# now asked in the vendor's own `OCR_LAYOUT_PROMPT`, re-measured at 593, and
+# 593 + 1,520 + the fixture page's single image token is 2,114 against 2,048.
+# The shipped catalogue states 8,192 for this chair at every tier, so that is
+# what the stand-in states. The arithmetic and the pixels are untouched.
+LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 8192}
 
 
 def _vllm_row(
@@ -409,8 +423,9 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
 # (`common/request_capacity.py`). DAI is act-scoped: 1 + 84 + 230 = 315 against
 # 256. Churro is page-scoped and reserves a dense page's answer, and both halves
 # are the layout instruction's: 1 + 441 + 1,631 = 2,073 against 512.
-# Attestator 1 keeps the module's ordinary 2,048 and needs 1,777, so its
-# testimony is what proves the refusals were per request.
+# Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,520 = 2,114
+# under the carried vendor prompt, so its testimony is what proves the refusals
+# were per request.
 REFUSING_CONTEXTS = {"attestator_2": 256, "attestator_3": 512}
 REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (2073, 512)}
 
@@ -1163,12 +1178,14 @@ def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometr
 ):
     """Attestator 1 is a served Chandra witness like the others (Tyrel, 2026-09-02).
 
-    Its page response parses under the contract its own prompt asks for, so
-    the page record is a reading whose text is the block texts joined and whose
-    observed geometry is the blocks converted to sealed-page pixels -- each with
-    a span into that text. The act views carry the same page-level geometry
-    over their one-crop presentation. The page record names the response once,
-    through its capture, and does not repeat it in the partition list.
+    Its page response parses under the vendor's own layout grammar, so the page
+    record is a reading whose text is the block texts joined and whose observed
+    geometry is each `data-bbox` converted to sealed-page pixels -- with a span
+    into that text. The act views carry the same page-level geometry over their
+    one-crop presentation. The page record names the response once, through its
+    capture, and does not repeat it in the partition list. The retained view
+    carries the vendor's own declared answer bound beside the vendor's own
+    prompt bytes, and the capture names the vendor pin those bytes came from.
     """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -1182,7 +1199,18 @@ def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometr
         "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
     )
     assert payload["native_capture"]["parse"]["state"] == "parsed"
-    assert payload["native_capture"]["view"] == {"prompt": attestatores.chandra.prompt()}
+    assert payload["native_capture"]["view"] == {
+        "prompt": attestatores.chandra.prompt(),
+        "generation": {"max_new_tokens": 12384},
+    }
+    assert payload["native_capture"]["vendor_identity"] == {
+        "repository": "github.com/datalab-to/chandra",
+        "sha": "d4f7467435aa4137d9539f000ddf0b7ced3eb43f",
+        "carried_strings": {
+            "OCR_LAYOUT_PROMPT": chandra_layout.OCR_LAYOUT_PROMPT_SHA256,
+            "PROMPT_ENDING": chandra_layout.PROMPT_ENDING_SHA256,
+        },
+    }
     assert payload["observed"] == [
         {
             "ordinal": 0,
@@ -1234,7 +1262,7 @@ def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_nam
     record = act_records(tree)[("a1", "attestator_1")]
     payload = record["payload"]
     assert record["outcome"] == "failed"
-    assert "unverified-response-schema" in payload["reason"]
+    assert "no-layout-blocks" in payload["reason"]
     assert payload["content_health"]["recordable"] is False
     # The bytes are retained and the request is accounted for even though no
     # parser could read them -- GOVERNANCE 2.
@@ -1250,8 +1278,8 @@ def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_nam
     # retained model view stays beside the blob it describes.
     assert payload["native_capture"]["parse"] == {
         "state": "unrecognized-shape",
-        "parser": "json",
-        "outcome": "unverified-response-schema",
+        "parser": "html",
+        "outcome": "no-layout-blocks",
     }
     assert payload["native_capture"]["raw_response_ref"] == payload["raw_response_ref"]
     assert payload["raw_response_kind"] == "model-output"

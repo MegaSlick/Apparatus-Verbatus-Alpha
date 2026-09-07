@@ -119,10 +119,17 @@ def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
     request reaches the wire, but the refused attempt still names a real
     adapter, and that adapter's declared expressiveness is a fact about it
     whether or not this one request was sendable.
+
+    ``Mapping`` rather than ``dict``, matching the seam this mirrors: an
+    adapter declares its capabilities as a read-only mapping so one shared
+    default cannot be mutated into every undeclared adapter at once
+    (`witness_adapters.FALLBACK_FORMAT_CAPABILITIES`), and a `mappingproxy` is
+    not a `dict`. The returned value is copied into a plain object here, so the
+    record this feeds carries an ordinary mapping and never the adapter's own.
     """
 
     capabilities = getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
-    if not isinstance(capabilities, dict) or set(capabilities) != {
+    if not isinstance(capabilities, Mapping) or set(capabilities) != {
         "can_express_uncertainty",
         "can_express_layout",
     }:
@@ -136,7 +143,7 @@ def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
                 f"adapter {adapter!r} declares format_capabilities.{field} as "
                 f"{capabilities[field]!r}, not a boolean"
             )
-    return capabilities
+    return dict(capabilities)
 
 
 def real_ingress(context) -> bool:
