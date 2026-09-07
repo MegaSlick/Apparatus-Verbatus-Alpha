@@ -6,8 +6,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Callable
+from typing import Callable, TypeVar
 
+from ..http_deadline import call_within_deadline
 from .models import (
     BILLING_BUCKET_WIDTH,
     AbsenceObservation,
@@ -22,6 +23,8 @@ from .models import (
     utc_now,
 )
 from .provider import PodProvider
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,12 +216,31 @@ class VerifiedShutdown:
         list_absent = False
 
         # The first operation is an idempotent terminate, never an optimistic status check.
-        attempts, terminate_failure = self._terminate(record.pod_id, attempts)
+        attempts, terminate_failure = self._terminate(
+            record.pod_id, attempts, deadline - self.monotonic()
+        )
         if terminate_failure is not None:
             last_terminate_failure = terminate_failure
         while True:
-            status = self._status(record.pod_id)
-            listed = self._list_absence(record.pod_id)
+            # Consulted *before* the observations, not only after them.  Every
+            # verb below is a synchronous provider call, and the loop used to
+            # reach its deadline check only once all three had returned: a
+            # blocked provider therefore postponed the retry, the failed-close
+            # report and every other piece of cleanup for as long as it liked,
+            # while the pod carried on billing.  Checking here is also what
+            # keeps the budget passed into each verb positive.
+            if self.monotonic() >= deadline:
+                return self._failed_shutdown(
+                    record,
+                    reason,
+                    attempts,
+                    get_absent,
+                    list_absent,
+                    _join_details(last_detail, last_terminate_failure or ""),
+                )
+
+            status = self._status(record.pod_id, deadline - self.monotonic())
+            listed = self._list_absence(record.pod_id, deadline - self.monotonic())
             get_absent = status.presence is Presence.ABSENT
             list_absent = listed.presence is Presence.ABSENT
             last_detail = _join_details(status.detail, listed.detail)
@@ -245,22 +267,61 @@ class VerifiedShutdown:
 
             # 202/204 or a caught timeout is not a close.  Re-issue termination
             # while either independent observation is still anything but absent.
-            attempts, terminate_failure = self._terminate(record.pod_id, attempts)
+            attempts, terminate_failure = self._terminate(
+                record.pod_id, attempts, deadline - self.monotonic()
+            )
             if terminate_failure is not None:
                 last_terminate_failure = terminate_failure
             remaining = max(0.0, deadline - self.monotonic())
             self.sleeper(min(self.poll_seconds, remaining))
 
-    def _terminate(self, pod_id: str, attempts: int) -> tuple[int, str | None]:
+    def _bounded(self, verb: str, budget_seconds: float, work: Callable[[], _T]) -> _T:
+        """Run one provider verb under the controller's own remaining budget.
+
+        The transport below bounds its own call, but the two bounds answer
+        different questions: it knows how long *one HTTP request* may take, and
+        only the controller knows how much of *this shutdown* is left.  A
+        provider seam is an injected object here — a fake, a fixture, a future
+        adapter over some other client — so this layer cannot assume the one
+        below it is bounded at all, and a close that returns a named failure
+        inside its declared budget is the guarantee an operator is given.
+
+        `DeadlineExceeded` is raised, not returned: every call site already
+        catches `Exception` and turns it into a recorded observation detail, so
+        the overrun travels the same route a provider error does and appears in
+        the report rather than in a traceback nobody stores.
+        """
+
+        return call_within_deadline(
+            work,
+            budget_seconds=budget_seconds,
+            label=f"provider {verb}",
+            # No cancel, and no cancellation seam added to `PodProvider` to
+            # supply one. A provider is an injected object with no socket this
+            # layer can reach, and widening the seam to carry a cancel token
+            # would put a control on every future adapter for a leak this design
+            # cannot produce: each verb is given the *whole* remainder of the
+            # deadline, so a verb that overruns has exhausted it and the check at
+            # the top of `close` ends the loop. At most one worker is abandoned
+            # per close, and the transport's own deadline is what unwinds it.
+            # `DeadlineExceeded.worker_still_running` says whether it had.
+            cancel=lambda: None,
+        )
+
+    def _terminate(
+        self, pod_id: str, attempts: int, budget_seconds: float
+    ) -> tuple[int, str | None]:
         try:
-            self.provider.terminate(pod_id)
+            self._bounded("terminate", budget_seconds, lambda: self.provider.terminate(pod_id))
             return attempts + 1, None
         except Exception as error:
             return attempts + 1, f"terminate failed: {error}"
 
-    def _status(self, pod_id: str) -> ProviderStatus:
+    def _status(self, pod_id: str, budget_seconds: float) -> ProviderStatus:
         try:
-            observation = self.provider.status(pod_id)
+            observation = self._bounded(
+                "status", budget_seconds, lambda: self.provider.status(pod_id)
+            )
         except Exception as error:
             return ProviderStatus(
                 pod_id, Presence.UNKNOWN, require_utc(self.now(), "status error time"), str(error)
@@ -290,9 +351,11 @@ class VerifiedShutdown:
             )
         return observation
 
-    def _list_absence(self, pod_id: str) -> AbsenceObservation:
+    def _list_absence(self, pod_id: str, budget_seconds: float) -> AbsenceObservation:
         try:
-            observation = self.provider.verify_absent(pod_id)
+            observation = self._bounded(
+                "verify_absent", budget_seconds, lambda: self.provider.verify_absent(pod_id)
+            )
         except Exception as error:
             return AbsenceObservation(
                 pod_id,
@@ -328,7 +391,18 @@ class VerifiedShutdown:
         capture: object
         for attempt in range(1, self.billing_attempts + 1):
             try:
-                capture = self.provider.capture_cost(record.pod_id, record.created_at, cutoff)
+                # Bounded by the controller's declared per-operation budget
+                # rather than by what is left of the shutdown deadline: absence
+                # is already proven by the time this runs, so the shutdown
+                # budget is spent, and the reconciliation schedule
+                # (`BILLING_RECONCILIATION_*`) is deliberately allowed to run
+                # past it. Unbounded is still not an option — a capture that
+                # never returns leaves the operator with no receipt at all.
+                capture = self._bounded(
+                    "capture_cost",
+                    self.timeout_seconds,
+                    lambda: self.provider.capture_cost(record.pod_id, record.created_at, cutoff),
+                )
             except Exception as error:
                 capture = error
             else:

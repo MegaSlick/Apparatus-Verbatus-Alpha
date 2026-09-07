@@ -246,8 +246,9 @@ def test_transport_ignores_an_ambient_proxy_and_reaches_the_loopback_model(
         for name in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY"):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv(proxy_variable, proxy_base)
-        # Constructed under the proxy environment, which is what a process
-        # started that way does: the opener must refuse discovery at build time.
+        # Both the construction and the request happen under the proxy
+        # environment, which is what a process started that way looks like: the
+        # opener has to refuse discovery whenever it is built.
         transport = UrllibHttpTransport()
         response = transport.request(
             "POST",
@@ -357,3 +358,80 @@ def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> Non
 
     assert response.status == status
     assert response.body == b'{"error":"not loaded"}'
+
+
+def _dribble(status: bytes, *, headers_slowly: bool):
+    """A responder that stays inside the socket timeout and never finishes."""
+
+    stop = threading.Event()
+
+    def respond(connection: socket.socket) -> None:
+        if headers_slowly:
+            connection.sendall(b"HTTP/1.1 " + status + b"\r\n")
+            while not stop.wait(0.05):
+                connection.sendall(b"X-Pad: pad\r\n")
+        else:
+            connection.sendall(
+                b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 4096\r\n\r\n"
+            )
+            while not stop.wait(0.05):
+                connection.sendall(b"x")
+
+    return respond, stop
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"503 Service Unavailable"])
+@pytest.mark.parametrize("headers_slowly", [False, True], ids=["slow-body", "slow-headers"])
+def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
+    status: bytes, headers_slowly: bool
+) -> None:
+    """Connect, headers and body come out of one monotonic deadline.
+
+    Measured at 36acde636f against a declared 0.15s: a response whose *headers*
+    dribbled in returned HTTP 200 after 1.280s, because the body deadline was
+    created only once the opener had already returned them.  Both loops that
+    drive this transport consult their own deadline between requests only, so
+    one such call defeats the readiness watchdog and the shutdown absence poll
+    alike, on a card that bills by the hour.
+    """
+
+    respond, stop = _dribble(status, headers_slowly=headers_slowly)
+    with _raw_server(respond) as base:
+        started = time.monotonic()
+        try:
+            with pytest.raises(EndpointUnavailable) as caught:
+                UrllibHttpTransport().request(
+                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.4
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+
+    assert elapsed < 3.0, f"the call ran {elapsed:.2f}s against a 0.4s budget"
+    # An overrun proves nothing about whether a listener owns the port, so it
+    # may never release the sequential residency lease.
+    assert caught.value.definitively_absent is False
+
+
+def test_a_slow_but_finite_response_still_succeeds_inside_its_budget() -> None:
+    """The counterfactual: the deadline must not refuse a merely slow answer."""
+
+    body = b'{"data":[{"id":"reader-api"}]}'
+
+    def slow_but_finite(connection: socket.socket) -> None:
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+        )
+        for start in range(0, len(body), 8):
+            time.sleep(0.02)
+            connection.sendall(body[start : start + 8])
+
+    with _raw_server(slow_but_finite) as base:
+        response = UrllibHttpTransport().request(
+            "GET", f"{base}/v1/models", body=None, timeout_seconds=5.0
+        )
+
+    assert response.status == 200
+    assert response.body == body

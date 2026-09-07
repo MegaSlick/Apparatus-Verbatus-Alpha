@@ -4669,3 +4669,48 @@ def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path
     assert flaky.refusals == 2
     assert handle.receipt.details.endpoint == "http://127.0.0.1:8000/v1"
     assert launcher.processes[0].terminate_calls == 0
+
+
+def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path: Path) -> None:
+    """Each probe gets the smaller of its own budget and the watchdog's remainder.
+
+    The watchdog's deadline used to be consulted only *between* requests, so a
+    probe issued one millisecond inside it could still add its whole budget to a
+    start that had already run out of time. With `startup_timeout_seconds` of 3
+    and a 1-second poll, the third round has one second left and the probe must
+    be told so.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    class RecordingHealthBudgets:
+        def __init__(self) -> None:
+            self.health_budgets: list[float] = []
+            self.rounds = 0
+
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes and url.endswith("/health"):
+                self.health_budgets.append(timeout_seconds)
+                self.rounds += 1
+                if self.rounds <= 2:
+                    raise EndpointUnavailable("not up yet", definitively_absent=False)
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    recorder = RecordingHealthBudgets()
+    manager.http = recorder
+
+    manager.start(chair, TIER)
+
+    assert recorder.health_budgets == [2.0, 2.0, 1.0]

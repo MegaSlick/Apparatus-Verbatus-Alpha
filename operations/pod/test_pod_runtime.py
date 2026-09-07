@@ -7489,3 +7489,127 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
     _assert_balance_hook_was_stubbed(balance_calls)
     record = _last_json_object(capsys.readouterr().out)
     assert "NOT DELIVERED" in record["launch_notification"]
+
+
+# -- the shutdown controller's own budget over each provider verb --
+
+
+class BlockingProvider:
+    """A provider seam whose verbs never return, as a hung HTTP client would."""
+
+    def __init__(self, delegate: FakeProvider, blocked: set[str], release: threading.Event) -> None:
+        self.delegate = delegate
+        self.blocked = blocked
+        self.release = release
+        self.calls: list[str] = []
+
+    def _verb(self, name: str, *arguments: object) -> object:
+        self.calls.append(name)
+        if name in self.blocked:
+            self.release.wait(30.0)
+        return getattr(self.delegate, name)(*arguments)
+
+    def estimate(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("estimate", *arguments)
+
+    def create(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("create", *arguments)
+
+    def adopt(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("adopt", *arguments)
+
+    def status(self, *arguments: object) -> object:
+        return self._verb("status", *arguments)
+
+    def terminate(self, *arguments: object) -> object:
+        return self._verb("terminate", *arguments)
+
+    def verify_absent(self, *arguments: object) -> object:
+        return self._verb("verify_absent", *arguments)
+
+    def capture_cost(self, *arguments: object) -> object:
+        return self._verb("capture_cost", *arguments)
+
+
+def test_a_close_whose_provider_hangs_returns_a_named_failure_inside_its_budget() -> None:
+    """The controller's deadline must bind the verbs, not only the gaps between them.
+
+    `close` used to reach its deadline check only after a terminate and two
+    absence observations had all returned, so one blocked provider call
+    postponed the retry, the failed-close report and every other piece of
+    cleanup indefinitely — while the pod carried on billing. Real clocks here
+    deliberately: a fake one cannot observe a bound whose whole subject is
+    elapsed time.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    release = threading.Event()
+    blocking = BlockingProvider(provider, {"terminate"}, release)
+    closer = VerifiedShutdown(
+        blocking,  # type: ignore[arg-type]
+        timeout_seconds=0.5,
+        poll_seconds=0.1,
+        billing_cutoff_margin_seconds=3600,
+    )
+
+    started = time.monotonic()
+    try:
+        report = closer.close(record, reason="hung provider drill")
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert report.state is CloseState.FAILED_SHUTDOWN
+    assert report.terminate_attempts == 1
+    assert "did not complete within" in report.last_detail
+    assert "provider terminate" in report.last_detail
+    assert report.cost_capture is None
+    assert report.manual_action is not None
+    # The declared budget, plus the grace a cancelled worker is given to unwind.
+    assert elapsed < 5.0, f"the close ran {elapsed:.2f}s against a 0.5s budget"
+
+
+def test_a_hung_verb_abandons_one_worker_and_then_ends_the_close() -> None:
+    """A bound that abandons workers must not trade one hang for a slow leak.
+
+    A provider seam exposes no socket, so an overrunning verb here really is
+    abandoned rather than cancelled. What keeps that from accumulating is the
+    budget: each verb is given *the whole remainder* of the shutdown deadline,
+    so a verb that overruns has by definition exhausted it, and the check at the
+    top of the loop ends the close rather than starting another round. At most
+    one worker is left behind per close, and this pins that rather than the
+    per-interval property the loop cannot exhibit.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    release = threading.Event()
+    blocking = BlockingProvider(provider, {"status"}, release)
+    closer = VerifiedShutdown(
+        blocking,  # type: ignore[arg-type]
+        timeout_seconds=0.6,
+        poll_seconds=0.05,
+        billing_cutoff_margin_seconds=3600,
+    )
+
+    before = threading.active_count()
+    try:
+        report = closer.close(record, reason="hung observation drill")
+        # Read *before* `release` is set: every abandoned worker is still
+        # blocked here, so this counts what the loop left behind rather than
+        # what has already unwound. Reading it afterwards would pass whatever
+        # the loop did, which is no assertion at all.
+        still_running = threading.active_count() - before
+    finally:
+        release.set()
+        time.sleep(0.2)
+
+    assert report.state is CloseState.FAILED_SHUTDOWN
+    # Exactly the one blocked `status`, still waiting on `release`. A loop that
+    # kept polling after an overrun would leave several.
+    assert still_running == 1, f"{still_running} abandoned workers after one close"
+    assert blocking.calls.count("status") == 1, blocking.calls
+    assert "did not complete within" in report.last_detail
