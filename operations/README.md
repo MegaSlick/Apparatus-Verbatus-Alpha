@@ -94,9 +94,10 @@ arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
 `NTFY_SERVER` override so stale process state cannot redirect the bearer topic.
 
 **Every event exits non-zero when delivery failed**, and prints one line beginning
-`notify: NOT DELIVERED`. A real delivery prints nothing at all. So the exit status is evidence
-for all four events, and a session that thinks it was heard cannot wait forever on a message
-that was never sent.
+`notify: NOT DELIVERED`; a real delivery prints one line, `notify: delivered (<event>)`, since
+2026-09-06, so silence is never evidence of either. The exit status is evidence for all four
+events, and a session that thinks it was heard cannot wait forever on a message that was
+never sent.
 
 `start` and `milestone` used to exit 0 even after printing that line, deliberately, so a
 session could not die because a ping did not land. Two independent reviewers found the same
