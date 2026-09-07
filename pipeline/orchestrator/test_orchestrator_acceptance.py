@@ -1523,10 +1523,52 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured in independent temporary roots at canonical run id "r", through this
 # module's own `orchestrate` and `semantic_snapshot_digest`, which agreed
 # exactly.
+#
+# **Merge re-pin, Wave 1 of the vendor-systems units (U1-U8 of
+# `VENDOR_SYSTEMS_DESIGN_2026-09-06.md`) onto the correction unit's tree,
+# f937a35f4b.** Both pins move. Eight units each measured "no pin moved" alone
+# and the merge moved them anyway, so the cause was re-measured here rather
+# than carried over from any unit's own report.
+#
+#   The one cause, and the whole of it: U7 replaced the three fixture
+#   placeholder `training_domain` sentences in `config/witness_context.toml`
+#   with the real vendor systems' published facts -- Chandra-2's HTML layout
+#   grammar, DAI's two published Hub corpora, Churro's own trained XML
+#   instruction. That file reaches a fixture run twice over. Its bytes are
+#   sealed into `config_digest` as `witness_context_declaration_sha256`
+#   (`common/stage.py::run_config_bindings`), and its sentences are rendered
+#   into every Perlector dossier, so the run authority, every envelope's
+#   `config_digest` and `self_hash`, and every digest and content-addressed
+#   blob name downstream of a dossier move with it.
+#
+#   Attributed by measurement, not by argument: with `config/
+#   witness_context.toml` alone reverted to f937a35f4b's bytes and every other
+#   line of all eight units in place, both scenarios reproduce the superseded
+#   literals exactly -- 4d7de674... and 1936f76c... So no other Wave 1 change
+#   reaches a fixture run: U3's vendor identity on captures, U4's serving
+#   schema fields, U5's Perlector image order and the rest are live-path,
+#   catalogue or serving-side only, and neither the real catalogue nor the real
+#   roster is ever sealed into either scenario.
+#
+#   Leaf by leaf against f937a35f4b -- every JSON file in the tree flattened to
+#   its scalar leaves -- the leaf count is unmoved at 14,453 (happy) and 14,979
+#   (review); no leaf is added and none is lost. 405 leaves change value in
+#   happy and 475 in review, and 36 keys per scenario per side differ only
+#   because a blob's content-addressed name is part of its path. Every one of
+#   those falls in exactly three buckets: a 64-hex digest or `self_hash` (378
+#   and 440), a `<stage>/blobs/sha256/...` path whose name is its own content
+#   digest (21 and 26 changed values, plus the 72 renamed keys), or the
+#   `training_domain` sentence itself in the Perlector's dossier (6 and 9).
+#   There is no fourth bucket, so nothing here is unattributed. Counts and
+#   exits are unmoved at happy 96 / exit 0 and review 107 / exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "4d7de674fd7d74d35dccd7c2f056f49918a06492b77f3ae4943a331c53035417"
-REVIEW_RUN_TREE_DIGEST = "1936f76c1b7063390fa4425c19df774e33161715e50867b4033b6465a6785b62"
+HAPPY_RUN_TREE_DIGEST = "eba7cbda45d230a24fa473f3c27d3dba85c9eb4f9bb62fd0cb887e2c1231efb6"
+REVIEW_RUN_TREE_DIGEST = "adfc009c79b8e369b0fa290f67f20b8099737f6839ea2c46b0b90f155373a198"
 
 
 def orchestrate(
