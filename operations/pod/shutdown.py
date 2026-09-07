@@ -284,7 +284,10 @@ class VerifiedShutdown:
         provider seam is an injected object here — a fake, a fixture, a future
         adapter over some other client — so this layer cannot assume the one
         below it is bounded at all, and a close that returns a named failure
-        inside its declared budget is the guarantee an operator is given.
+        within its declared budget plus one cancel grace
+        (`http_deadline.CANCEL_GRACE_SECONDS`, spent in full here because the
+        seam has no socket to break) is the guarantee an operator is given:
+        bounded to the second, not exact.
 
         `DeadlineExceeded` is raised, not returned: every call site already
         catches `Exception` and turns it into a recorded observation detail, so

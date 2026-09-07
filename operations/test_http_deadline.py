@@ -87,7 +87,34 @@ def test_a_worker_that_will_not_unwind_is_named_rather_than_passed_over() -> Non
         release.set()
 
     assert caught.value.worker_still_running is True
-    assert "had not unwound" in str(caught.value)
+    # No socket was shut down here -- the cancel was a no-op -- so the refusal
+    # must not say one was (the independent read of this branch).
+    assert caught.value.cancel_attempted is False
+    assert "was abandoned still running" in str(caught.value)
+    assert "socket was shut down" not in str(caught.value)
+
+
+def test_a_worker_that_survives_a_real_cancel_is_named_with_the_socket_shut_down() -> None:
+    """The stronger clause is earned only when a cancel actually ran."""
+
+    release = threading.Event()
+
+    def unstoppable() -> None:
+        release.wait(10.0)
+
+    try:
+        with pytest.raises(DeadlineExceeded) as caught:
+            call_within_deadline(
+                unstoppable,
+                budget_seconds=0.05,
+                label="unstoppable work",
+                cancel=lambda: [],  # a cancel that ran and had nothing to report
+            )
+    finally:
+        release.set()
+
+    assert caught.value.cancel_attempted is True
+    assert "had not unwound when the socket was shut down" in str(caught.value)
 
 
 def test_a_non_positive_budget_is_refused_without_starting_work() -> None:

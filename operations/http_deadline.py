@@ -75,8 +75,10 @@ class DeadlineExceeded(Exception):
         elapsed_seconds: float,
         worker_still_running: bool,
         cancel_failures: tuple[str, ...] = (),
+        cancel_attempted: bool = True,
     ) -> None:
         self.label = label
+        self.cancel_attempted = cancel_attempted
         self.budget_seconds = budget_seconds
         self.elapsed_seconds = elapsed_seconds
         self.worker_still_running = worker_still_running
@@ -86,7 +88,14 @@ class DeadlineExceeded(Exception):
             f"(abandoned after {elapsed_seconds:.3f}s)"
         )
         if worker_still_running:
-            detail += "; its request thread had not unwound when the socket was shut down"
+            # Only a call that had a socket to break can say one was shut down; a
+            # caller that passed a no-op cancel (the shutdown controller bounding
+            # an injected provider seam) merely abandoned the thread.
+            detail += (
+                "; its request thread had not unwound when the socket was shut down"
+                if cancel_attempted
+                else "; its request thread was abandoned still running"
+            )
         if cancel_failures:
             detail += f"; cancelling it reported {'; '.join(cancel_failures)}"
         super().__init__(detail)
@@ -235,7 +244,8 @@ def call_within_deadline(
     if thread.is_alive():
         # A cancel may report why it could not break its sockets; `None` from a
         # seam that has none is not a failure.
-        cancel_failures = cancel() or ()
+        cancel_result = cancel()
+        cancel_failures = cancel_result or ()
         thread.join(CANCEL_GRACE_SECONDS)
         raise DeadlineExceeded(
             label,
@@ -243,6 +253,8 @@ def call_within_deadline(
             elapsed_seconds=monotonic() - started,
             worker_still_running=thread.is_alive(),
             cancel_failures=tuple(str(failure) for failure in cancel_failures),
+            # A seam with no sockets returns None: nothing was shut down.
+            cancel_attempted=cancel_result is not None,
         )
     error = outcome.get("error")
     if error is not None:

@@ -25,6 +25,7 @@ import pytest
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import DigestMismatchRefusal
+from operations.http_deadline import CANCEL_GRACE_SECONDS
 
 from . import cli
 from . import launch as launch_module
@@ -7568,7 +7569,12 @@ def test_a_close_whose_provider_hangs_returns_a_named_failure_inside_its_budget(
     assert report.cost_capture is None
     assert report.manual_action is not None
     # The declared budget, plus the grace a cancelled worker is given to unwind.
-    assert elapsed < 5.0, f"the close ran {elapsed:.2f}s against a 0.5s budget"
+    # The declared budget plus the one cancel grace the no-op seam spends in
+    # full, plus scheduling slack: bounded to the second, as the docstring says.
+    bound = 0.5 + CANCEL_GRACE_SECONDS + 1.0
+    assert elapsed < bound, (
+        f"the close ran {elapsed:.2f}s against a 0.5s budget (+{bound - 0.5:g}s)"
+    )
 
 
 def test_a_hung_verb_abandons_one_worker_and_then_ends_the_close() -> None:
