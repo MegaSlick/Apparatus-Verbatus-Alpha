@@ -625,7 +625,10 @@ honestly means the answer did not fit.
 `verbatus-structure-prompt.v3`; Tyrel, 2026-09-06 -- each witness runs as its
 developers intended). The turn *is* `chandra/prompts.py::OCR_LAYOUT_PROMPT`,
 carried and sealed by digest in `common/chandra_layout.py`, with nothing of
-ours in front of it or after it; both Chandra chairs send the same bytes.
+ours in front of it or after it. The other Chandra chair, `attestator_1`, is
+to send these same bytes once its own adapter unit lands; on this tip it still
+sends `pipeline/3_attestatores/chandra.py`'s own JSON instruction, so the two
+chairs do not yet ask alike.
 Everything v2's own instruction asked for survives in the vendor's words --
 a rectangle per block in normalized 0–1000 coordinates, a label, reading order
 -- and the one ask that does not is our own JSON envelope, which the vendor
@@ -860,22 +863,23 @@ every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
-zero-act and cut-off answers, and 7 of the 11 named parse refusals
-(`_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`), are exercised there
-over the real chain as well as in this stage's own suite; the remaining four
-refusal codes are exercised only at the parser level
-(`common/test_structure_answer.py`). The export it reaches
-is *held*, and the reason is not this stage: the Churro chair is scripted there
-in its trained `<output>` envelope, which carries no geometry, so it never
-attaches to an act and two witnesses of a floor of three count. Since Unit 12
-that is a property of the scripted body rather than of the chair -- asked for
-block geometry it can answer with it and attach by its own boxes, which is what
-`pipeline/test_live_reading_seam_e2e.py` measures over declared acts, where the
-export is now delivered (`pipeline/3_attestatores/HANDOFF.md`). The envelope is
-kept in this suite on purpose: pinning the witness floor to a shape this suite
-does not vary keeps "which acts exist" and "how many witnesses reach them"
-apart. Either way it is a witness-coverage fact, not a fact about this stage --
-every act the chair proposed was read.
+zero-act and cut-off answers, and 3 of `chandra_layout.PARSE_OUTCOMES`' 6
+codes -- every one `_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`
+builds a scripted body for -- are exercised there over the real chain as well
+as in this stage's own suite; the other three are properties of the response
+*bytes* rather than of an answer, unreachable through an endpoint, and are
+exercised at the parser level (`common/test_chandra_layout.py`). The export it
+reaches is *held*, and the reason is not this stage: the Churro chair is
+scripted there in its trained `<output>` envelope, which carries no geometry,
+so it never attaches to an act and two witnesses of a floor of three count.
+Since Unit 12 that is a property of the scripted body rather than of the chair
+-- asked for block geometry it can answer with it and attach by its own boxes,
+which is what `pipeline/test_live_reading_seam_e2e.py` measures over declared
+acts, where the export is now delivered (`pipeline/3_attestatores/HANDOFF.md`).
+The envelope is kept in this suite on purpose: pinning the witness floor to a
+shape this suite does not vary keeps "which acts exist" and "how many witnesses
+reach them" apart. Either way it is a witness-coverage fact, not a fact about
+this stage -- every act the chair proposed was read.
 
 **Named risks.** The real `designator_structure` rows' `max_model_len` is a
 planning value, and a whole-page transcription plus geometry may not fit it;

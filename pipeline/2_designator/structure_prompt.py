@@ -13,10 +13,14 @@ would make the sealed digest ours rather than the vendor's, and the whole point
 of the ruling is that what the chair receives is provable against the vendor's
 own file.
 
-Both Chandra chairs -- `designator_structure` here and `attestator_1` in
-`pipeline/3_attestatores/chandra.py` -- send the same bytes, because they are
-the same model asked for the same thing. What differs is what each stage does
-with the answer, not what it asks.
+`attestator_1` in `pipeline/3_attestatores/chandra.py` is the other Chandra
+chair, and the design retires that module's own JSON instruction in favour of
+these same vendor bytes: it is the same model asked for the same thing, so
+what should differ between the two chairs is what each does with the answer,
+not what it asks. **That swap is its own unit and has not landed here.** On
+this tip `chandra.py` still sends its own instruction, so the two chairs do
+not yet send the same bytes, and this module is the only one that sends the
+vendor's.
 
 **What was retired, and why it is not a loss.** v2 was this repository's own
 instruction: it asked for every act as one rectangle in normalized 0-1000
