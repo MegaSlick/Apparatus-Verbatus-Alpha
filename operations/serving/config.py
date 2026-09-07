@@ -40,7 +40,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
+from common.chairs.models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    is_hf_revision,
+    is_sha256,
+    is_witness_role,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
@@ -50,6 +57,13 @@ from .errors import ServingConfigurationError
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
 _KINDS = {"vllm", "fixture", "unsupported"}
+# 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
+# 'auto' is admitted only for a witness (Attestator) row: it defers to the
+# exact generation_config.json the chair's own pinned revision ships, which
+# `manager._launch_audit` then digests from the verified snapshot so 'auto'
+# is a value pinned by that revision rather than an unaudited default that
+# could silently change underneath the row.
+_GENERATION_CONFIG_VALUES = {"vllm", "auto"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
@@ -87,8 +101,10 @@ _PROFILE_FIELDS = {
 # revision's own processor configuration -- ``preprocessor_config.json`` where
 # the repository ships one, ``processor_config.json`` (under its
 # ``image_processor`` object) where it does not, which for `attestator_2`'s
-# pinned DAI revision is the only one that exists; they decide how many prompt
-# tokens one image costs (``common/request_capacity.py``).  vLLM reads them
+# pinned DAI revision is the only one that exists (``manager.assert_processor_geometry``
+# reads both spellings from the verified snapshot and refuses a launch where
+# the row disagrees); they decide how many prompt tokens one image costs
+# (``common/request_capacity.py``).  vLLM reads them
 # from the model repository, so a row that omits them still launches -- what it
 # cannot do is have a request checked against it before it is sent, and
 # ``request_capacity.row_image_geometry`` refuses by name in that case rather
@@ -507,9 +523,18 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
             "max_lora_rank must be one of vLLM's supported static LoRA ranks"
         )
     generation_config = _text(raw["generation_config"], "generation_config")
-    if generation_config != "vllm":
+    if generation_config not in _GENERATION_CONFIG_VALUES:
         raise ServingConfigurationError(
-            "generation_config must be exactly 'vllm'; model-supplied generation defaults are not a pinned profile"
+            f"generation_config must be one of {sorted(_GENERATION_CONFIG_VALUES)}, not "
+            f"{generation_config!r}"
+        )
+    if generation_config == "auto" and not is_witness_role(chair):
+        raise ServingConfigurationError(
+            f"generation_config='auto' is admitted only for witness (Attestator) rows; "
+            f"chair {chair!r} is not a witness role. A witness's vendor-shipped "
+            "generation_config.json is itself the pinned profile (by the chair's "
+            "revision); the Perlector and Designator rows carry no vendor generation "
+            "defaults to defer to and must stay 'vllm'"
         )
     preflight_state = _text(raw["preflight_state"], "preflight_state")
     if preflight_state not in {"unproven", "proven"}:
