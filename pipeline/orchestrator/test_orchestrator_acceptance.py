@@ -1677,15 +1677,65 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #   (`proof/build_fixture.py`, the cut-mid-element body) belongs to a scenario
 #   neither pin covers, and neither pin moved for it.
 #
+# **Re-pin, the U9 hostile-review round: Chandra's presented page carries the
+# vendor's own colour step, onto U10's tree, 9162c9586a.** Both pins move; both
+# file counts and both leaf totals do not.
+#
+#   One cause, and the whole of it: `chandra.present` now performs
+#   `chandra/input.py::load_image`'s `convert("RGB")` as well as `scale_to_fit`,
+#   and records it as `colour_mode = "rgb"` instead of `"keep"`. The vendor's
+#   loader converts every image at open, so RGB is what its own `scale_to_fit`
+#   is ever handed; leaving the conversion to the engine's `do_convert_rgb`
+#   performed it server-side on a grayscale blob, unrecorded, which is the one
+#   step ARCHITECTURE invariant 3 cannot have happening off the record. The
+#   conversion runs *before* the resize, where the vendor runs it, and the
+#   replay follows (`common/native_witness.py::_COLOUR_BEFORE_RESIZE`).
+#
+#   Nothing else in the round reaches a fixture run. The post-hoc repetition
+#   scan the same round added to the Chandra retention branch runs on every
+#   fixture body and finds nothing in any of them -- every declared
+#   `fixture-chandra-response.v1` reading is one short line ("SYNTHETIC ACT ONE
+#   alpha beta gamma", 34 characters) or empty, against the scan's own 72-
+#   character floor -- so it adds no finding leaf and moves no stop reason
+#   here; it is pinned directly in `test_chandra_adapter.py` instead.
+#
+#   Leaf by leaf against 9162c9586a -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy stays at
+#   13,906 leaves and review at 14,420, with 3 added and 3 removed blob files
+#   per scenario, all three renames. 145 leaves change in happy and 166 in
+#   review, and every one falls in exactly these buckets:
+#
+#     * 2 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/transform/colour_mode` "keep" -> "rgb", on each of
+#       the two Chandra page Testimonia.
+#     * 8 changed values per scenario that are content-addressed blob paths --
+#       the two page Testimonia's `presented/image_path`, the `inputs` entries
+#       naming the two republished Chandra images (the second record's three
+#       are one rename plus the reorder that digest-sorted list takes from it),
+#       and the export's two references to the renamed bundle.
+#     * 3 added and 3 removed blob files per scenario, no net change and hence
+#       100 and 111 files unmoved: the two republished RGB Chandra page images
+#       and the Armarium export bundle, whose content-addressed names are their
+#       own content and so are renamed rather than added.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 135 in
+#       happy and 156 in review.
+#
+#   The reading itself is unmoved: no `parse/text`, `payload/payload` or
+#   geometry leaf changes in either scenario. The engine would have produced
+#   these same pixels from the grayscale blob; what changed is that the record
+#   now says who produced them.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3.
+#
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios, and the same harness reproduces
-# 38af5b730d's own literals -- c6500d87... and 3050e727..., 98 and 109 files --
+# 9162c9586a's own literals -- c512f039... and 64f94606..., 100 and 111 files --
 # exactly, which is what says it measures the same thing.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "c512f0393b6f30d8d151a4f2bc185db3b998939f5db1cacff471d7585d191dcd"
-REVIEW_RUN_TREE_DIGEST = "64f9460623d0b1df87fe8608583c3eb80bbd77363a1ead876430c8e199a506d4"
+HAPPY_RUN_TREE_DIGEST = "f50861eac28210489413f9d50f15d4b63b0faf944a40f26b985de3cb96c1a137"
+REVIEW_RUN_TREE_DIGEST = "890c3a78f180e73a91ebf7127f31222e666ecaf49b09f5254d90eae5d5f1c307"
 
 
 def orchestrate(

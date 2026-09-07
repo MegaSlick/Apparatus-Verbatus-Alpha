@@ -31,9 +31,15 @@ so the two chairs the same model occupies -- `designator_structure` here and
 `attestator_1` in `pipeline/3_attestatores/chandra.py`, which has always sent
 one instruction -- did not match each other either. **Not one word of the
 instruction was dropped to fix that**: the sentence that was the system turn is
-now the instruction's opening paragraph, verbatim, exactly as
-`chandra.py::_LIVE_INSTRUCTION` already opens with its own fidelity sentence.
-What changed is the framing, and only the framing.
+now the instruction's opening paragraph, verbatim. What changed is the framing,
+and only the framing.
+
+**This chair does not yet ask the vendor's own question.** The attestator chair
+now sends `chandra/prompts.py::OCR_LAYOUT_PROMPT`'s carried bytes
+(`common/chandra_layout.py`, sent by `chandra.py::prompt`), and the instruction
+this file renders is still this repository's own wording. The two chairs
+therefore agree on the message *shape* -- one `user` turn, no system message --
+and not on the bytes.
 """
 
 from __future__ import annotations

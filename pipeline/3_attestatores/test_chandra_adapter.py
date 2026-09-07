@@ -7,10 +7,12 @@ import json
 import subprocess
 import sys
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from common import chandra_layout
 from common.chairs import load_models_toml
@@ -18,7 +20,13 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
-from common.imaging import encode_grayscale_png_deterministic
+from common.imaging import (
+    convert_png_to_rgb,
+    crop_png,
+    encode_grayscale_png_deterministic,
+    encode_image_deterministic,
+    resize_png_lanczos,
+)
 from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import (
     partition_disagreement,
@@ -1329,7 +1337,7 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
         "source_page_id": "page-1",
         "source_page_ordinal": 1,
         "bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
-        "colour_mode": "keep",
+        "colour_mode": "rgb",
         "resize": {
             "resampler": "pillow-lanczos",
             "dimension_rounding": "grid-28",
@@ -1341,6 +1349,12 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
     }
     # Really resized, not the sealed page under another name.
     assert presented["image_sha256"] != digest_bytes(page)
+    # And really converted: the vendor's own loader hands `scale_to_fit` an RGB
+    # image on every call, so a grayscale blob here would be a recorded
+    # `colour_mode` that did not run.
+    with Image.open(BytesIO(context.tree.read_bytes(presented["image_path"]))) as shown:
+        assert shown.mode == "RGB"
+        assert shown.size == (196, 252)
     validate_presented_page_binding(
         presented,
         page_ordinal=1,
@@ -1350,6 +1364,68 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
         page_bytes=page,
     )
     adapters.validate_adapter_presentation("chandra.v1", source, presented)
+
+
+def test_the_presented_page_is_the_vendors_own_convert_then_resize_order():
+    """`load_image` converts and `scale_to_fit` resizes what it was handed.
+
+    Asserted against the two steps composed in that order over the same sealed
+    crop, so a future edit that reverses them inside `present` fails here rather
+    than only in a digest nobody can read.
+    """
+    chandra = _load_stage_module("chandra")
+    page = _page_png(200, 260)
+    context = SimpleNamespace(tree=_PageTree(page))
+
+    presented = chandra.present(context, _page_presentation(page, 200, 260))
+
+    vendors_order = resize_png_lanczos(
+        convert_png_to_rgb(crop_png(page, {"x": 0, "y": 0, "w": 200, "h": 260})), 196, 252
+    )
+    assert context.tree.read_bytes(presented["image_path"]) == vendors_order
+
+
+def test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page():
+    """Why `_COLOUR_BEFORE_RESIZE` exists, measured rather than argued.
+
+    On an `L`, `1` or `RGB` crop the choice of order is invisible: expanding one
+    grey sample into three channels commutes with a per-band resample. On the
+    `LA` and `RGBA` pages the Exemplar also seals it does not -- Pillow's
+    resampler does not treat an alpha band as one more colour band -- so a
+    replay that ran the colour step in the wrong place would re-derive a
+    different digest for a page the door legitimately admits, and an adapter
+    that ran it in the wrong place would show the chair pixels the vendor never
+    would.
+    """
+    for mode in ("1", "L", "RGB"):
+        crop = encode_image_deterministic(_page_in_mode(mode, 200, 260))
+        assert convert_png_to_rgb(resize_png_lanczos(crop, 196, 252)) == resize_png_lanczos(
+            convert_png_to_rgb(crop), 196, 252
+        ), mode
+    for mode in ("LA", "RGBA"):
+        crop = encode_image_deterministic(_page_in_mode(mode, 200, 260))
+        assert convert_png_to_rgb(resize_png_lanczos(crop, 196, 252)) != resize_png_lanczos(
+            convert_png_to_rgb(crop), 196, 252
+        ), mode
+
+
+def _page_in_mode(mode: str, width: int, height: int) -> Image.Image:
+    """The same structured page in one of the modes a sealed crop can arrive in."""
+
+    def pixel(value: int):
+        if mode == "1":
+            return 1 if value >= 128 else 0
+        if mode == "L":
+            return value
+        if mode == "LA":
+            return (value, 255 - value)
+        if mode == "RGB":
+            return (value, (value * 3) % 256, (value * 7) % 256)
+        return (value, (value * 3) % 256, (value * 7) % 256, 255 - value)
+
+    image = Image.new(mode, (width, height))
+    image.putdata([pixel((x + y) % 256) for y in range(height) for x in range(width)])
+    return image
 
 
 def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_readback():
@@ -1509,6 +1585,157 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     # The whole capture is a shape the shared contract accepts, findings and
     # vendor pin included -- not merely a dict this module built.
     validate_native_capture(record)
+
+
+def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
+    """The vendor's retry ladder is not carried; the fact it detects is.
+
+    `chandra/model/vllm.py` re-rolls a stuck page up a rising-temperature ladder
+    under `_should_retry`. Re-rolling a reading until it stops looking stuck is
+    recovering quality, which GOVERNANCE 11 refuses to a recovery loop, so the
+    ladder stays with the vendor's harness. What crosses is the observation:
+    without it a page that degenerated but still ended under its bound would
+    reach the Perlector as full testimony under `transport_stop_reason "stop"`.
+
+    The scan reads the *transcription*, not the markup it arrived in: the tail
+    of these bytes is `</div>` and the tail of the reading is the repeated
+    phrase, and the finding names which view it looked at.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    stuck = "the same clause repeated over and over " * 12
+    body = f'<div data-bbox="100 100 900 900" data-label="Text">{stuck}</div>'.encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["state"] == "parsed"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["findings"][0]["inspected"] == "parsed-text"
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
+    # The bytes are untouched and the reading is untouched: the scan runs after
+    # capture and records, it does not gate (GOVERNANCE 7).
+    assert tree.read_bytes(record["raw_response_ref"]["relative_path"]) == body
+    validate_native_capture(record)
+
+
+def test_an_honest_chandra_reading_carries_no_repetition_finding():
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = (
+        b'<div data-bbox="100 100 900 400" data-label="Text">the first act, read plainly</div>'
+        b'<div data-bbox="100 420 900 900" data-label="Text">the second, different act</div>'
+    )
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["findings"] == []
+    assert record["stop_reason"] == "stop"
+
+
+def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
+    """Precedence, and the same precedence Churro's capture already uses.
+
+    A body this grammar could not place is the more load-bearing fact about the
+    capture, so it is what the stop reason names; the repetition stays in
+    `findings` either way, so nothing is lost by the ordering (GOVERNANCE 2).
+    The raw bytes are what was inspected, because no parse produced a text.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = ("nothing here is a layout block at all, over and over " * 8).encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["state"] == "unrecognized-shape"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["findings"][0]["inspected"] == "raw-response"
+    assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
+    """An unscanned body is a recorded fact, not a clean one.
+
+    The grammar refuses these bytes unread, and normalizing them here to count a
+    tail would spend exactly the memory the ceiling exists to refuse. The
+    capture says the scan did not run instead of saying nothing.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = b"x" * (chandra.MAX_RESPONSE_BYTES + 1)
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="length",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["outcome"] == "response-too-large"
+    assert [finding["kind"] for finding in record["findings"]] == [
+        "post-hoc-repetition-uninspected"
+    ]
+    assert record["findings"][0]["inspected"] == "raw-response"
+    assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_the_placeholder_posture_is_scanned_for_repetition_too():
+    """The scan is posture-blind, as the retention it rides on is.
+
+    A degenerate body is a fact about a response whichever reader read it, and
+    the fixture's placeholder rows are read by a parser of this repository's own
+    -- so a stuck placeholder is recorded stuck rather than silently clean.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    stuck = "over and over and over again " * 12
+    body = json.dumps(
+        {"schema": chandra.FIXTURE_RESPONSE_SCHEMA, "markdown": stuck, "blocks": []}
+    ).encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": dict(chandra.FIXTURE_PROMPT)},
+        raw_response=body,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+
+    assert record["parse"]["state"] == "parsed"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
 
 
 def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_chair():

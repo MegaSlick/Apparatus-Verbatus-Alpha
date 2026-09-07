@@ -130,24 +130,23 @@ alike. Both retained blobs are re-read and digest-checked by the attempt tally
 rather than carried as envelope inputs, because the tally re-derives an act
 record's inputs from its regions and presentation alone.
 
-**Chandra is a served witness like the others, under a closed response
-contract.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
+**Chandra is a served witness like the others, reading its vendor's own
+grammar.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
 Chandra reads the page for the Designator and separately as Attestator 1, and
 nothing is captured from one call into another. The capture-as-Testimonium
 intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
 the `chandra-capture.v1` name) is removed rather than left as dead surface.
-What the served chair parses is `chandra_response.py`, described in its own
-section below: the closed JSON shape `chandra.prompt` asks for, exactly as the
-Designator's structure pass asks its Chandra call for
-`verbatus-structure-answer.v1`. A body in that shape is a reading -- page text,
-and block geometry in sealed-page pixels with a span per block into that text.
-A body in any other shape lands as `failed` with its bytes retained and its
-shape named (`unverified-response-schema` and the rest of that module's closed
-set); the retained model view rides on the record beside those bytes in the
-`unrecognized-shape` state, naming the shape in `outcome`. Chandra's *native*
-output mode is still unverified -- the vendor publishes no specimen -- and this
-contract does not pretend otherwise: it is the repository's question, and the
-first real response either answers it or arrives as a named surprise.
+What the served chair parses is the vendor's own layout HTML, read by
+`common/chandra_layout.py::parse_layout_html` under the parser name `html`
+(U9 of the vendor systems design). A body in that grammar is a reading -- page
+text, and block geometry from each `data-bbox` in sealed-page pixels with a span
+per block into that text. A body in no shape the reader can place lands with its
+bytes retained and its shape named in `outcome`, in the `unrecognized-shape`
+state. The premise the retired JSON contract rested on -- that the vendor
+publishes no output specimen -- was true of the model card and false of the
+repository, which ships both the prompt every caller sends and the parser for
+the answer it asks for; both are carried and digest-pinned now, so what this
+chair is asked and what it is read as are the vendor's, not this repository's.
 
 **Fixture declarations a live pass does not read.** A live pass reads the
 fixture's pages, acts, continuations and proposals — that is the corpus — and
@@ -167,67 +166,96 @@ keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
 live_chairs` filter the others share, and every anchor the scenario declares is
 one the live pass discards regardless of which chair would have used it.
 
-### The Chandra response contract
+### The Chandra layout grammar
 
-`chandra_response.py` closes what a served Chandra page response parses into.
-Exactly two forms are accepted, both under `schema =
-"verbatus-chandra-page-response.v1"`: a `blocks` list, each block `{box_1000,
-text}` with the rectangle in normalized integer coordinates 0..1000 (text per
-layout block with geometry), or a single `text` string (page text with no
-geometry, for a model that can transcribe but not place). Exactly one of the
-two is present; `blocks` may be empty. Every other body -- an unknown or
-missing schema, an extra key at either level, a duplicate member, a malformed
-box or text, either form's absence or both forms together, the byte and block
-ceilings -- is refused by a name from that module's closed `PARSE_OUTCOMES`,
-whole, with nothing repaired (GOVERNANCE 7) and its bytes already retained.
-`chandra.parse` dispatches on the declared schema: the wire contract to that
-module, the committed fixture's `fixture-chandra-response.v1` placeholder to
-the validation it always had, and anything else to `unverified-response-schema`.
-**The placeholder is offline only.** One parser derives the retained model
-view in both postures, and it used to have no way to tell them apart, so a
-served chair answering in the fixture's stand-in shape was read as a page of
-text -- a reading whose wire shape nothing in this repository had verified,
-published as though it had been (GOVERNANCE 10). `retain_model_view` now takes
-a `served` flag, both live call sites in `live_witness.py` set it, and it
-reaches exactly one parser: under it, `chandra.parse` refuses the placeholder
-as `unverified-response-schema` like any other undeclared shape. The bytes are
-retained before the parser runs, so the refusal names a surprise rather than
-losing one. The fixture posture passes nothing and keeps the acceptance its
-pinned bytes depend on. Both halves are pinned --
-`test_live_witness.py::test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_served_chair`
-for the live refusal and the flag at both call sites, `test_chandra_adapter.py`
-and `test_attestatores_retention.py` for the offline acceptance.
+`common/chandra_layout.py` re-expresses `chandra/output.py::parse_layout` over
+the standard library and is what a served Chandra page response is read by,
+under the parser name `html`. An answer is a sequence of top-level `div`s in
+reading order, each carrying `data-bbox` (four integers normalized to
+`BBOX_SCALE = 1000`) and `data-label` from the vendor's own label vocabulary.
+Nothing is repaired: a malformed or out-of-range `data-bbox` becomes
+`bbox_1000: None` plus a `malformed-bbox` finding where the vendor prints a
+line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
+text or geometry where the vendor drops it; a nested `data-bbox` is recorded
+rather than stripped; and the block count the reader returns is reconciled
+against the raw HTML's own top-level `div` count as a finding. Those findings
+travel on the capture beside the reading (GOVERNANCE 2), because they are the
+whole of what the vendor's parser would have printed to a stdout nobody
+retains. A body the reader can place in no shape at all lands in the
+`unrecognized-shape` state naming what it saw in `outcome`, with its bytes
+already retained.
 
-**The prompt is split by posture.** `chandra.prompt()` asks the served chair
-for the contract shape, in the repository's own words, stating no preference
-and no confidence budget (GOVERNANCE 10). The fixture posture records
-`chandra.FIXTURE_PROMPT` in its retained model view instead
+**The post-hoc repetition scan runs here too.** Chandra's own answer to a
+degenerate reading is `_should_retry`'s rising-temperature ladder, which is not
+carried: re-rolling a reading until it stops looking stuck recovers quality,
+which GOVERNANCE 11 refuses to a recovery loop. `feeding.retain_model_view`
+instead runs the chair-neutral `common/native_witness.py::detect_repetition`
+over the parsed page text (or the raw bytes where no parse produced one, named
+in the finding's `inspected` field), publishes `post-hoc-repetition` beside the
+reading and sets `stop_reason = "partial-post-hoc-repetition-detected"`.
+Without it a stuck answer that ended under its bound would reach the Perlector
+as full testimony under `transport_stop_reason = "stop"`. A parse outcome takes
+precedence over the stop reason and the finding is kept either way, exactly as
+for Churro; a body past the grammar's own retained parsing limit is recorded
+`post-hoc-repetition-uninspected` rather than scanned.
+
+**The placeholder is offline only.** `proof/skeleton_fixture.toml`'s Chandra
+rows still declare `fixture-chandra-response.v1`, a JSON placeholder this
+repository invented for a fixture that asks nothing of anybody, and their bytes
+are pinned into the fixture's own digests until U16 re-declares those rows in
+the vendor grammar. It keeps its own parser name, `json`, and its own reader
+(`chandra.parse_fixture_placeholder`) -- retained as history, never parsed as
+the live grammar. The refusal that keeps the two apart is at the retention seam
+rather than inside the parser: `feeding.retain_model_view` takes a `served`
+flag, both live call sites in `live_witness.py` set it, and a served
+`chandra.v1` response may not be retained under `json` at all. The parser name
+is what the record will carry, so a live capture written under `json` could
+never be re-derived as the grammar it was actually asked in. Bytes are retained
+before any parser runs, so the refusal names a surprise rather than losing one.
+
+**The prompt is split by posture.** `chandra.prompt()` sends
+`chandra_layout.OCR_LAYOUT_PROMPT`'s carried bytes -- the vendor's own
+`ocr_layout` prompt, digest-checked at import -- as one `user` turn with no
+system message, which is the shape `chandra/model/vllm.py` builds. The fixture
+posture records `chandra.FIXTURE_PROMPT` in its retained model view instead
 (`run.py::resolve_attempt`): that view is sealed into the fixture's pinned
-bytes, the fixture never asks a chair anything, and rewording the live
-instruction may not move a fixture byte. Both are this repository's wording;
-neither is a vendor line.
+bytes, the fixture never asks a chair anything, and changing what a served
+chair is asked may not move a fixture byte.
 
-**Geometry converts once, the Designator's way.** A block's `box_1000` is
+**Geometry converts once, the Designator's way.** A block's `bbox_1000` is
 quantized low-edges-floor / far-edges-ceil in normalized space and converted to
 sealed-page pixels by `common.structure_answer.to_page_bounds`, the same
 conversion the Designator's structure pass applies to its own Chandra call, so
-the two Chandra readings of one page share one page-pixel mapping. That
-conversion clamps to the page, so a normalized box can never overshoot the
+the two Chandra readings of one page share one page-pixel mapping. The
+denominator is the *sealed page*, not the resized view the chair was shown,
+because the vendor's own denominator is the same one. That conversion clamps
+the far edges to the page, and a component outside [0, 1000] is malformed
+before it reaches the conversion, so a normalized box can never overshoot the
 sealed page. `chandra.observe` takes a keyword `page_size` for it: a page
 witness's act view presents one crop while restating page-level geometry, so
 the presentation's bounds are never the denominator, and a body that needs the
 size without one is refused rather than placed in the wrong space. Each
-observed box carries the block's span into the retained page text, which is
-the block texts joined with a newline between delivered (non-empty) blocks and
-nowhere else -- `common/structure_answer.py`'s own join rule. A body that
-reports no block geometry (the page-text form, or an empty blocks list)
-derives none; the page record then carries the presentation echo `run.py`
-gives every page with no reported geometry -- the same fact the fixture's
-genuinely-empty rows record, excluded from routing and coverage by its
-`bounds_source` -- and the adapter never hands an echo to the shared
-page-edge check, which admits reported geometry only. The adapter's one
-declared `geometry_quantization` rule covers both accepted shapes, each in its
-own coordinate space.
+observed box carries the block's span into the retained page text. A body whose
+blocks all report no rectangle -- `Blank-Page`, or a `data-bbox` the reader
+refused -- and a body with no block at all derive none; the page record then
+carries the presentation echo `run.py` gives every page with no reported
+geometry, excluded from routing and coverage by its `bounds_source`, and the
+adapter never hands an echo to the shared page-edge check, which admits
+reported geometry only.
+
+**The presented page is the vendor's own pixels.** `chandra.present` reproduces
+what the vendor's inference path does to a page before its model sees it --
+`chandra/input.py::load_image`'s `convert("RGB")` and
+`chandra/model/util.py::scale_to_fit` -- and publishes the result as an
+`adapter-crop` under the operation name `chandra-scale-to-fit.v1` with
+`colour_mode = "rgb"`, so the exact image the chair saw re-derives from the
+sealed Exemplar (ARCHITECTURE invariant 3). The colour step runs after the
+resize where the vendor runs it before, because the replay in
+`validate_presented_page_binding` is colour-last for every adapter and the two
+orders are the same pixels on every mode a sealed crop can arrive in. Only a
+whole-page presentation is transformed: an act view of a page witness restates
+one page reading against a Designator crop nobody was shown, and minting a
+vendor recipe over it would record a step that never ran.
 
 **A live page's partition is derived from the page response itself.** The
 fixture walks one declared response per compatibility act; a live page has one
@@ -895,14 +923,18 @@ remains explicitly synthetic.
 **Named obligations after Unit 10.** These are adapter/integration work, not
 unfinished choices in this contract:
 
-* **Unit 11 (Chandra)** — landed as the closed response contract
-  (`chandra_response.py`, its own section above): the served chair is asked
-  for a declared JSON shape, `parse` returns its page text, `observe` converts
-  its normalized boxes to sealed-page pixels with spans into that text, and
-  the adapter-metadata rule rides beside `raw_response_ref`. What the unit
-  could not carry is a published vendor specimen, because none exists; the
-  contract is this repository's question, and the first pod reading's retained
-  bytes are the specimen.
+* **Unit 11 (Chandra)** — landed, and the closed JSON response contract it
+  landed as is retired by U9 of the vendor systems design. What stands is the
+  boundary: `parse` returns a page text, `observe` converts normalized boxes to
+  sealed-page pixels with spans into that text, and the adapter-metadata rule
+  rides beside `raw_response_ref`. What is gone is the shape:
+  `chandra_response.py`, `verbatus-chandra-page-response.v1` and the
+  `_LIVE_INSTRUCTION` that asked for them. The clause said the unit could carry
+  no published vendor specimen because none exists; that was true of the model
+  card and false of `datalab-to/chandra`, which ships both the prompt every
+  caller sends and the parser for the answer it asks for under Apache-2.0. Both
+  are carried and digest-pinned now (the layout grammar, its own section
+  above), so the specimen is the vendor's and not this repository's question.
 * **Unit 12 (Churro)** — landed, and its layout channel is retired by U10 of the
   vendor systems design. The fixture-only serve it replaced with the real
   full-page boundary stands: raw bytes, parse failure, truncation and

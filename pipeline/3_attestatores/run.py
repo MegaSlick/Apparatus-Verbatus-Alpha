@@ -3771,10 +3771,13 @@ def publish_page_testimonia_and_attachments(
                         # walks -- so this one blob is named there after all,
                         # and the double-naming above is accepted because the
                         # alternative is an untraceable finding. Unreachable for
-                        # the wire contract -- its
-                        # page-pixel conversion clamps to the page -- so only a
-                        # live body wearing the fixture placeholder's pixel
-                        # boxes could take this branch.
+                        # Chandra's own layout grammar -- a `data-bbox` with a
+                        # component outside [0, 1000] is `malformed-bbox` and
+                        # reports no rectangle at all, and the ones that survive
+                        # convert through `common/structure_answer.py::
+                        # to_page_bounds`, which clamps the far edges to the
+                        # page -- so only a live body wearing the fixture
+                        # placeholder's pixel boxes could take this branch.
                         page_response_refs.append(reference)
                     for overshoot in overshoots:
                         overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
@@ -3785,7 +3788,10 @@ def publish_page_testimonia_and_attachments(
                         observed.append({**item, "ordinal": len(observed)})
                 if page_captures is not None and captured_geometry and not observed:
                     # A live response that parsed but reported no block geometry
-                    # (the contract's page-text form, or an empty blocks list)
+                    # (a page-scoped chair whose grammar carries no coordinate
+                    # at all, or a layout answer whose blocks each report no
+                    # rectangle -- `Blank-Page` or a malformed `data-bbox` --
+                    # or one with no block in it)
                     # is a page with no reported geometry, the same fact the
                     # fixture's genuinely-empty rows record: the presentation
                     # echo stands in, excluded from routing and coverage.

@@ -463,8 +463,15 @@ def page_request(
         kind=STRUCTURE_CALL_KIND,
         messages=messages,
         image_sha256s=(source_sha256,),
-        # Chandra's repository ships no sampling parameters of its own, so this
-        # chair has no carried vendor view to retain as evidence.
+        # No carried vendor view, because this chair does not ask the vendor's
+        # own question. Chandra's repository does ship a generation bound --
+        # `chandra/settings.py::MAX_OUTPUT_TOKENS`, which every vendor caller
+        # passes -- and `feeding.chandra_generation` retains it as declared
+        # evidence for `attestator_1`, the chair that sends the vendor's own
+        # prompt bytes. This pass still sends `structure_prompt.py`'s own
+        # instruction, so retaining the vendor's number beside it would record
+        # vendor evidence for a request the vendor never makes. The declared
+        # view arrives with the vendor prompt, not before it.
         generation_declared={},
         # The bound, plus the thinking-mode flag both Chandra chairs send
         # (`common/chair_wire.py` carries the evidence and why it is safe under

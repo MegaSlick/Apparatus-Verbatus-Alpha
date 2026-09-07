@@ -25,10 +25,12 @@ from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     churro_capture_system_prompt,
     derive_churro_capture,
+    # The scan under its own chair-neutral name. It was imported here through
+    # `detect_churro_repetition` while that was the only name it had; two page
+    # chairs now call it, and importing the chair-named alias under the
+    # chair-neutral name would say the Chandra branch borrowed Churro's.
+    detect_repetition,
     parse_churro_response,
-)
-from common.native_witness import (
-    detect_churro_repetition as detect_repetition,
 )
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
@@ -527,6 +529,76 @@ def sealed_page_bytes(context: Any, page_id: str, *, what: str) -> bytes:
     return page_bytes
 
 
+def _record_post_hoc_repetition(
+    record: dict[str, Any], raw_response: bytes, *, ceiling: int
+) -> None:
+    """Scan a retained capture for a repeated tail and record what it found.
+
+    The vendor's own answer to a degenerate reading is a retry ladder --
+    Chandra's ``_should_retry`` re-rolls the same page up the temperature
+    ladder until the answer stops looking stuck. That is not carried: re-rolling
+    a reading until it looks better is recovering *quality*, which GOVERNANCE 11
+    reserves to a review flag and refuses to a recovery loop. What is carried is
+    the fact. The scan runs after the bytes are already retained and already
+    parsed, it changes nothing about the response, and it publishes a finding
+    beside the reading plus a stop reason that says the reading is partial --
+    without which a Chandra answer that degenerated but still ended under its
+    bound would reach the Perlector as full testimony under
+    ``transport_stop_reason = "stop"`` (GOVERNANCE 2).
+
+    Written here rather than inside ``derive_churro_capture`` because that
+    function derives *Churro's* whole capture -- its grammar, its byte ceiling,
+    its parse states -- while this is the one chair-neutral half of it. The
+    detector itself is already chair-neutral
+    (``common/native_witness.py::detect_repetition``); this is the seam that
+    applies it to a capture some other chair's derivation did not build.
+
+    Three rules, each the same as Churro's, so two page witnesses cannot come to
+    mean different things by one finding:
+
+    * **What is inspected.** ``parse["text"]`` where a parse produced one, and
+      the raw bytes otherwise, with the choice named in the finding's
+      ``inspected`` field. Repetition is a fact about what the model
+      transcribed, not about the markup it arrived in -- a page of `<div
+      data-bbox=...>` wrappers repeats by construction.
+    * **The ceiling.** A body past the grammar's own retained parsing limit was
+      never read by the parser, and normalizing it here to count a tail would
+      spend the memory the ceiling exists to refuse. The scan says it did not
+      run rather than running on bytes nobody bounded.
+    * **Precedence.** A parse outcome wins over a repeated tail: a body this
+      grammar could not place is the more load-bearing fact about the capture,
+      and the repetition stays in ``findings`` either way, so nothing is lost by
+      the ordering.
+    """
+
+    if len(raw_response) > ceiling:
+        finding: dict[str, Any] | None = {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": (
+                f"response exceeds the retained parsing limit of {ceiling} bytes "
+                f"(received {len(raw_response)})"
+            ),
+        }
+        basis = "raw-response"
+    else:
+        parsed_text = record["parse"].get("text")
+        inspected: str | bytes
+        inspected, basis = (
+            (parsed_text, "parsed-text")
+            if isinstance(parsed_text, str)
+            else (raw_response, "raw-response")
+        )
+        finding = detect_repetition(inspected)
+    if finding is None:
+        return
+    record["findings"].append({**finding, "inspected": basis})
+    if finding["kind"] == "post-hoc-repetition" and record["parse"]["state"] not in {
+        "failed",
+        "unrecognized-shape",
+    }:
+        record["stop_reason"] = "partial-post-hoc-repetition-detected"
+
+
 def retain_model_view(
     tree: Any,
     *,
@@ -650,6 +722,7 @@ def retain_model_view(
             record["stop_reason"] = "partial-parse-unrecognized-shape"
         else:
             record["parse"] = {"state": "parsed", "parser": parser, "text": parsed}
+        _record_post_hoc_repetition(record, raw_response, ceiling=chandra.MAX_RESPONSE_BYTES)
     elif adapter == "dai.v1" and parser == "text":
         try:
             record["parse"] = {

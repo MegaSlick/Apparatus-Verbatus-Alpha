@@ -25,12 +25,14 @@ systems design.
 
 **The four vendor pieces this adapter is responsible for.**
 
-* *Preprocess.* `present` reproduces `chandra/model/util.py::scale_to_fit` --
-  through `common/imaging_ports.py::scale_to_fit_chandra`, which is the port,
-  and `common/imaging.py`, which moves the pixels -- and records it as an
-  `adapter-crop` under the vendor's own operation name
-  `chandra-scale-to-fit.v1`, so the exact image the chair saw re-derives from
-  the sealed Exemplar (ARCHITECTURE invariant 3).
+* *Preprocess.* `present` reproduces what the vendor's inference path does to a
+  page before its model sees it: `chandra/input.py::load_image`'s
+  `convert("RGB")` and `chandra/model/util.py::scale_to_fit` -- through
+  `common/imaging_ports.py::scale_to_fit_chandra`, which is the port, and
+  `common/imaging.py`, which moves the pixels and performs the colour step --
+  recorded as an `adapter-crop` under the vendor's own operation name
+  `chandra-scale-to-fit.v1` with `colour_mode = "rgb"`, so the exact image the
+  chair saw re-derives from the sealed Exemplar (ARCHITECTURE invariant 3).
 * *Prompt.* `prompt` sends `chandra_layout.OCR_LAYOUT_PROMPT`'s carried bytes
   as one `user` turn with no system message, which is the shape
   `chandra/model/vllm.py` builds.
@@ -85,7 +87,7 @@ import feeding
 from common import chandra_layout
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
-from common.imaging import crop_png, dimensions, resize_png_lanczos
+from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
 from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import validate_presented
 
@@ -97,10 +99,19 @@ FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
 #: its rounding rule declared (`grid-28`) and its replay from sealed page bytes
 #: implemented; spelled once here so the writer and the vocabulary cannot drift.
 PRESENT_OPERATION: Final = "chandra-scale-to-fit.v1"
-#: `scale_to_fit` performs no colour conversion of its own. Recorded explicitly
-#: rather than omitted: `keep` says a conversion did not run, which an absent
-#: field on a record allowed to omit it cannot say.
-PRESENT_COLOUR_MODE: Final = "keep"
+#: The vendor's own conversion to three 8-bit colour samples, performed here and
+#: recorded, because the vendor performs it before its model sees a pixel.
+#: `scale_to_fit` itself converts nothing, but nothing ever reaches it
+#: unconverted: `chandra/input.py::load_image` opens every image file as
+#: `Image.open(filepath).convert("RGB")` and the PDF path renders
+#: `.to_pil().convert("RGB")`, so every image handed to
+#: `chandra/model/vllm.py`'s `scale_to_fit(item.image)` is already RGB. Left to
+#: the engine's own `do_convert_rgb` the conversion would still happen --
+#: server-side, on a grayscale blob, unrecorded -- and the exact image the chair
+#: saw would no longer re-derive from the Exemplar plus the recorded transforms
+#: (ARCHITECTURE invariant 3). `present` runs it, before the resize, where the
+#: vendor runs it; see there for why the order is not a detail.
+PRESENT_COLOUR_MODE: Final = "rgb"
 # One ceiling per fact, declared beside the grammar that also enforces it and
 # re-exported here because the fixture placeholder's own reader below has to
 # apply the same finite intake to bytes crossing the same boundary.
@@ -289,12 +300,39 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     inference path sends, and under tonight's ruling it runs here too: the crop
     comes off the sealed Exemplar, `common/imaging_ports.scale_to_fit_chandra`
     decides the target, `common/imaging.resize_png_lanczos` moves the pixels,
+    `common/imaging.convert_png_to_rgb` performs the vendor's own colour step,
     and the result is published as an `adapter-crop` whose transform names the
-    vendor operation. That is what makes the exact image the chair saw
-    re-derivable from the Exemplar plus the record (ARCHITECTURE invariant 3):
-    `common/native_witness.py::validate_presented_page_binding` replays exactly
-    these three steps against the sealed page and refuses a digest that does not
-    come back.
+    vendor operation and the colour mode. That is what makes the exact image the
+    chair saw re-derivable from the Exemplar plus the record (ARCHITECTURE
+    invariant 3): `common/native_witness.py::validate_presented_page_binding`
+    replays exactly these steps against the sealed page and refuses a digest
+    that does not come back.
+
+    **The colour step is the vendor's, and it is ours to run.** `scale_to_fit`
+    converts nothing itself, but the vendor never hands it anything unconverted:
+    `chandra/input.py::load_image` is `Image.open(filepath).convert("RGB")` and
+    the PDF path renders `.to_pil().convert("RGB")`, so RGB is what reaches
+    `scale_to_fit(item.image)` on every vendor call. A grayscale page sent
+    without it is not read differently -- the engine's own `do_convert_rgb`
+    performs the same conversion server-side -- but it performs it on pixels
+    nothing in this repository recorded, which is exactly the unrecorded
+    server-side step `convert_png_to_rgb` was written to take back (ARCHITECTURE
+    invariant 3). So the departure `colour_mode = "keep"` recorded is closed here
+    rather than merely described.
+
+    **The order is the vendor's, and the order is load-bearing.** `load_image`
+    converts and `scale_to_fit` then resizes what it was handed, so the
+    conversion runs first here too, and `validate_presented_page_binding`
+    replays it first for this operation (`_COLOUR_BEFORE_RESIZE`). That is not
+    ceremony: on an `L`, `1` or `RGB` crop the two orders are the same bytes,
+    but on the `LA` and `RGBA` pages the Exemplar also seals they are not --
+    Pillow's resampler treats an alpha band differently from a colour one, and
+    converting afterwards was measured to move most of the image by a sample
+    level (`test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page`).
+    Converting first also retires a departure: `resize_png_lanczos` promotes a
+    bitonal crop to `L` before resampling, because Pillow substitutes NEAREST
+    for LANCZOS on mode `1`, and a Chandra crop is already `RGB` before it gets
+    there.
 
     **Only a whole-page presentation is resized, and that is the honest line.**
     Chandra is a page witness: the image a chair is ever shown is a page
@@ -329,7 +367,22 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     bounds = dict(transform["bounds"])
     source_width, source_height = bounds["w"], bounds["h"]
     target_width, target_height = scale_to_fit_chandra(source_width, source_height)
-    model_image = resize_png_lanczos(crop_png(page_bytes, bounds), target_width, target_height)
+    try:
+        # Before the resize, where `load_image` performs it. See the docstring:
+        # on an alpha-bearing page the other order is measurably other pixels.
+        converted = convert_png_to_rgb(crop_png(page_bytes, bounds))
+    except ValueError as error:
+        # `load_image`'s own conversion, named at this boundary rather than
+        # raised through it. `convert_png_to_rgb` refuses an image mode a sealed
+        # crop cannot arrive in, and a bare `ValueError` out of an adapter is
+        # the thing the bounds check above already exists to prevent: a caller
+        # that could have held this attempt with a reason gets an unnamed
+        # interpreter error instead (GOVERNANCE 2).
+        raise SchemaRefusal(
+            f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
+            f"loader performs on every image before scale_to_fit sees it: {error}"
+        ) from error
+    model_image = resize_png_lanczos(converted, target_width, target_height)
     digest, published = context.tree.put_blob(ATTESTATORES, model_image)
     return {
         "kind": "adapter-crop",

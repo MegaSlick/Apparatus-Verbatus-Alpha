@@ -103,7 +103,11 @@ _DIMENSION_ROUNDING: Final = {
 #   aspect exactly, which is why the aspect identity in `_validate_resize_recipe`
 #   is not applied to it -- and does not have to be: Chandra's own geometry is
 #   `data-bbox` normalized 0-1000, mapped by `to_page_bounds` against the
-#   *sealed page* size, never through this resized view.
+#   *sealed page* size, never through this resized view. The RGB step recorded
+#   as `colour_mode` is the vendor's too, one function earlier:
+#   `chandra/input.py::load_image` converts at open, so `scale_to_fit` is only
+#   ever handed RGB -- which is why this operation converts *before* it resizes
+#   (`_COLOUR_BEFORE_RESIZE`) where Churro's converts after.
 # * `churro-prepare-ocr-image.v1` -- `src/churro_ocr/_internal/image.py::
 #   prepare_ocr_image` at `stanford-oval/Churro @
 #   4abb17386d9656199c2776195926545fc527a691`: `ensure_rgb(resize_image_to_fit(
@@ -124,10 +128,12 @@ _DIMENSION_ROUNDING: Final = {
 # replays_through_our_lanczos_not_the_vendors_nearest` pins it, and **U8's
 # vendor parity table needs a mode-`"1"` row that expects inequality here**;
 # a parity test that asserted byte equality on a bitonal source would be
-# asserting something neither port claims. Chandra is unaffected: its own
-# loader converts to RGB before anything resizes (`chandra/input.py::
-# load_image`), and LANCZOS-then-expand equals expand-then-LANCZOS on both
-# `"L"` and `"1"` sources.
+# asserting something neither port claims. Chandra is unaffected, and for a
+# stronger reason than it used to be: its own loader converts to RGB before
+# anything resizes (`chandra/input.py::load_image`), and its adapter now runs
+# that conversion in the same place (`_COLOUR_BEFORE_RESIZE`), so a bitonal
+# Chandra crop is already `"RGB"` when it reaches `resize_png_lanczos` and the
+# promotion never applies to it.
 RESIZING_ADAPTER_CROP_OPERATIONS: Final = frozenset(_DIMENSION_ROUNDING)
 ADAPTER_CROP_OPERATIONS: Final = frozenset({"crop"}) | RESIZING_ADAPTER_CROP_OPERATIONS
 #: The colour conversions an adapter may perform between the resize and the
@@ -149,9 +155,28 @@ _COLOUR_MODE_OPTIONAL_OPERATIONS: Final = frozenset({"chandra-scale-to-fit.v1"})
 #: run. Requiring the key and then admitting either answer would let a record
 #: name the vendor operation over a grayscale blob the vendor never sends --
 #: the same silence the required-field rule above was written to close, one
-#: level in. `keep` stays meaningful for Chandra, whose `scale_to_fit`
-#: performs no conversion of its own.
+#: level in. Chandra's operation is not fixed the same way and stays optional:
+#: `scale_to_fit` performs no conversion itself, so the name does not imply
+#: one. Its adapter records `rgb` all the same, because the conversion the
+#: vendor *does* perform is one function earlier
+#: (`chandra/input.py::load_image`), which is a fact about the adapter's own
+#: recipe rather than about the operation name -- and `keep` therefore stays
+#: available to a record whose vendor converts nothing at all.
 _COLOUR_MODE_FIXED_VALUES: Final = {"churro-prepare-ocr-image.v1": "rgb"}
+#: And where each operation's conversion sits relative to its resize, because
+#: the two orders are not the same pixels and a replay has to pick the vendor's.
+#: Churro's `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`, so
+#: its colour step is last; Chandra's is one function earlier than the operation
+#: it is recorded on -- `chandra/input.py::load_image` converts at open and
+#: `scale_to_fit` resizes whatever it was handed -- so its colour step is first.
+#: On an `L`, `1` or `RGB` crop the choice is invisible: expanding grey into
+#: three channels commutes with a per-band resample. On an `LA` or `RGBA` crop
+#: it is not -- Pillow's resampler treats an alpha band differently from a
+#: colour one, and the two orders were measured to disagree by a sample level
+#: across most of the image (`test_chandra_adapter.py::
+#: test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page`). The
+#: Exemplar seals `LA` and `RGBA` pages, so that crop is a page the door admits.
+_COLOUR_BEFORE_RESIZE: Final = frozenset({"chandra-scale-to-fit.v1"})
 # `chandra/model/util.py::scale_to_fit` at the pinned sha: LANCZOS onto a
 # 28-pixel grid, under a 3072x2048 = 6,291,456-pixel maximum area.
 #
@@ -632,6 +657,19 @@ def validate_native_witness_geometry(
     return payload
 
 
+def _replay_colour_mode(presented: dict[str, Any], derived: bytes) -> bytes:
+    """Run the recorded colour step, or nothing at all where none was recorded."""
+    if presented["transform"].get("colour_mode") != "rgb":
+        return derived
+    try:
+        return convert_png_to_rgb(derived)
+    except ValueError as error:
+        raise SchemaRefusal(
+            f"an adapter-crop presentation's colour conversion cannot be replayed from "
+            f"its sealed page ({error})"
+        ) from error
+
+
 def validate_presented_page_binding(
     presented: dict[str, Any],
     *,
@@ -690,28 +728,26 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
         derived = crop_png(page_bytes, bounds)
+        # Each vendor's own order, because the two orders are not the same
+        # pixels. `_COLOUR_BEFORE_RESIZE` says which operation converts first;
+        # `keep` is recorded and executes nothing either way, which is the whole
+        # of its meaning.
+        colour_first = operation in _COLOUR_BEFORE_RESIZE
+        if colour_first:
+            derived = _replay_colour_mode(presented, derived)
         if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
             resize = presented["transform"]["resize"]
             # The closed recipe repeats crop dimensions so any re-deriver drift
-            # becomes a named schema refusal before resizing.
+            # becomes a named schema refusal before resizing. Read off the
+            # derived bytes after any colour step, which cannot change them:
+            # `convert("RGB")` re-samples no pixel position.
             if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
                 raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
             derived = resize_png_lanczos(
                 derived, resize["target_width_px"], resize["target_height_px"]
             )
-        # The colour step runs last because that is where the vendor performs
-        # it -- `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`,
-        # and converting first would resample three expanded channels instead
-        # of the one the vendor resampled. `keep` is recorded and executes
-        # nothing, which is the whole of its meaning.
-        if presented["transform"].get("colour_mode") == "rgb":
-            try:
-                derived = convert_png_to_rgb(derived)
-            except ValueError as error:
-                raise SchemaRefusal(
-                    f"an adapter-crop presentation's colour conversion cannot be replayed from "
-                    f"its sealed page ({error})"
-                ) from error
+        if not colour_first:
+            derived = _replay_colour_mode(presented, derived)
         expected_sha256 = digest_bytes(derived)
         if presented["image_sha256"] != expected_sha256:
             raise SchemaRefusal(
