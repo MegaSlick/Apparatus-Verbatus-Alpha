@@ -1,13 +1,18 @@
 """SPEC_D §1.1, §1.2, §4, §6 (D1 row).
 
-Covers `structure_prompt.py` (sealed prompt text and its digest, and the
-GOVERNANCE 10 no-preference/no-severity/no-confidence check a test can
+Covers `structure_prompt.py` (the carried vendor prompt bytes and their digest,
+and the GOVERNANCE 10 no-preference/no-severity/no-confidence check a test can
 actually pin) and the one equality this stage owns for
 `common/structure_answer.py`: its page-pixel conversion against
 `geometry_layer.chandra_layout`'s own arithmetic, over a grid of boxes
 including the 0 and 1000 edges. It lives here rather than in `common/`
 because `geometry_layer` lives in `pipeline/2_designator/` and `common/` may
 not import a stage.
+
+`geometry_layer.chandra_layout` and `common.chandra_layout` are two different
+things with one word between them, so they are imported under distinct names
+here: the first is this stage's own proposal builder, the second is the vendor
+grammar module. The collision is why the import lines below spell both out.
 """
 
 from __future__ import annotations
@@ -17,11 +22,13 @@ import re
 import geometry
 import pytest
 import structure_prompt
-from geometry_layer import RESPONSE_BLOB_PREFIX, chandra_layout
+from geometry_layer import RESPONSE_BLOB_PREFIX
+from geometry_layer import chandra_layout as chandra_layout_proposals
 from structure_prompt import STRUCTURE_PROMPT_VERSION, messages, prompt_sha256
 
+from common import chandra_layout as vendor_layout
 from common.contracts.errors import SchemaRefusal
-from common.structure_answer import STRUCTURE_ANSWER_SCHEMA, to_page_bounds
+from common.structure_answer import to_page_bounds
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
@@ -35,20 +42,44 @@ FORBIDDEN_WORDS = ("score", "rank", "prefer", "best", "confidence", "severity", 
 
 
 def test_prompt_version_is_the_declared_seal():
-    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v2"
+    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v3"
 
 
 def test_messages_is_one_user_turn_with_no_system_turn_and_no_image_block():
-    """v2: Chandra's own inference code sends a single `user` message and never
-    a system message, and this chair's occupant is Chandra. The fidelity
-    sentence that was the system turn is still sent, as the instruction's
-    opening paragraph -- the framing changed, not the words."""
+    """Chandra's own inference code sends a single `user` message and never a
+    system message, and this chair's occupant is Chandra."""
     result = messages()
     assert isinstance(result, tuple)
     assert [message["role"] for message in result] == ["user"]
     assert all(isinstance(message["content"], str) and message["content"] for message in result)
-    assert result[0]["content"].startswith(structure_prompt._FIDELITY_TEXT + "\n\n")
-    assert result[0]["content"].endswith(structure_prompt._USER_TEXT)
+
+
+def test_the_turn_is_the_vendor_prompt_bytes_and_nothing_around_them():
+    """v3's whole claim, as an equality rather than as a substring check.
+
+    `in` would pass on a turn that had grown a sentence of ours in front of the
+    vendor's or a reminder after it -- which is exactly the failure the ruling
+    forbids, because the chair would then be receiving something no vendor
+    commit sha names. The rendered turn must *be* `OCR_LAYOUT_PROMPT`.
+    """
+    (turn,) = messages()
+    assert turn["content"] == vendor_layout.OCR_LAYOUT_PROMPT
+
+
+def test_the_prompt_is_carried_from_one_place_only():
+    """Sending the constant rather than a copy of it is what makes the seal
+    mean anything: `common/chandra_layout.py` refuses to import if the bytes
+    drift from `OCR_LAYOUT_PROMPT_SHA256`, and a second copy in this module
+    would be outside that refusal.
+
+    Identity, not equality, at both hops -- the module's name must be a
+    reference to the vendor module's object, and the turn must carry that same
+    object. Equality would pass on a literal pasted in here, which is exactly
+    the copy the seal cannot see.
+    """
+    assert structure_prompt.OCR_LAYOUT_PROMPT is vendor_layout.OCR_LAYOUT_PROMPT
+    (turn,) = messages()
+    assert turn["content"] is vendor_layout.OCR_LAYOUT_PROMPT
 
 
 def test_prompt_digest_is_stable_across_calls():
@@ -59,48 +90,54 @@ def test_prompt_digest_is_the_pinned_seal():
     """The mechanical half of the seal the module docstring promises: changing
     the prompt text must bump `STRUCTURE_PROMPT_VERSION` and re-pin this digest
     in the same commit, or this test catches the drift."""
-    assert prompt_sha256() == "59e960ae895f97aa949c2bfa627b36fbb9e5a7053a37dcde19752eb485ec1a9a"
+    assert prompt_sha256() == "a37ac6915191183b0ded823e8134cea907b2cf2653b1e715bd3ed3d84d60a054"
 
 
 def test_prompt_digest_changes_if_the_rendered_text_changes(monkeypatch):
     before = prompt_sha256()
-    monkeypatch.setattr(structure_prompt, "_USER_TEXT", structure_prompt._USER_TEXT + " ")
+    monkeypatch.setattr(
+        structure_prompt, "OCR_LAYOUT_PROMPT", vendor_layout.OCR_LAYOUT_PROMPT + " "
+    )
     after = prompt_sha256()
     assert before != after
 
 
 def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
     """GOVERNANCE 10: an instrument may state no preference, severity floor, or
-    confidence budget. Pinned directly against the rendered text, not the
-    module's own docstring, so a wording change that reintroduced one of these
-    words into what the model actually receives would fail here."""
+    confidence budget. Pinned directly against the rendered text, so a change of
+    vendor pin that brought one of these words into what the model actually
+    receives would fail here rather than ship.
+
+    The prompt is carried verbatim and is not ours to edit, so this is a
+    tripwire and not a style check: a hit is a conflict between the
+    carried-verbatim ruling and GOVERNANCE 10, which is Tyrel's to resolve
+    (hard rule 9), not a word for a session to quietly delete.
+    """
     rendered = "\n".join(message["content"] for message in messages())
     hits = [word for word in FORBIDDEN_WORDS if re.search(word, rendered, re.IGNORECASE)]
     assert not hits, f"the rendered prompt text contains forbidden word(s): {hits}"
 
 
-def test_prompt_asks_for_exactly_the_declared_json_shape_and_nothing_outside_it():
-    """The shape line is compared whole, not by substring (CodeRabbit round 1,
-    T5). Three `in` checks could not fail on a template that had grown a field,
-    lost `label`, or reordered its members, which is precisely what the
-    prompt's own "exactly this JSON shape and nothing else" sentence promises
-    the chair. The schema name inside the expected line comes from the imported
-    constant rather than a second hard-coded literal, so a schema bump that
-    forgot the prompt text still fails here.
+def test_the_prompt_still_asks_for_everything_v2_asked_for():
+    """The four asks that survived the move to the vendor's own bytes.
 
-    Its scope is the shape template only. An added *instruction* elsewhere in
-    the prompt is caught by `test_prompt_digest_is_the_pinned_seal`, which pins
-    the whole rendered text by digest; this test pins the one line a served
-    chair is told to answer in.
+    v2 asked for a rectangle per act in normalized 0-1000 coordinates, a label,
+    reading order, and a closed answer shape. Each is checked against the
+    rendered prompt rather than against this module's docstring, because a
+    change of vendor pin that dropped one would otherwise leave the docstring
+    claiming an ask the chair is no longer given.
+
+    The one v2 ask that is *not* here is our own JSON envelope, deliberately:
+    the vendor grammar replaced it, and nothing pretends the two were compared.
     """
-    shape = (
-        f'{{"schema": "{STRUCTURE_ANSWER_SCHEMA}", "acts": '
-        '[{"box_1000": [x0, y0, x1, y1], "text": "...", "label": "..."}]}'
-    )
-    rendered = "\n".join(message["content"] for message in messages())
-    assert [line for line in rendered.splitlines() if line.startswith('{"schema"')] == [shape]
-    assert "and nothing else" in rendered
-    assert "reading order" in rendered
+    (turn,) = messages()
+    rendered = turn["content"]
+    assert vendor_layout._NORMALIZED_CLAIM in rendered
+    assert "data-bbox attribute representing the bounding box" in rendered
+    assert "The data-label attribute is the label for the block." in rendered
+    assert "Reading order should be correct and natural." in rendered
+    for label in vendor_layout.OCR_LAYOUT_LABELS:
+        assert f"\n- {label}\n" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +176,7 @@ assert len(GRID_CASES) == 23
 
 @pytest.mark.parametrize("box,page_w,page_h", GRID_CASES)
 def test_to_page_bounds_matches_chandra_layout_over_a_grid_of_boxes(box, page_w, page_h):
-    proposals = chandra_layout(
+    proposals = chandra_layout_proposals(
         page_id="pg_fixture",
         page_ordinal=0,
         page_w=page_w,
@@ -158,7 +195,7 @@ def test_to_page_bounds_matches_chandra_layout_for_two_regions_on_one_page():
     together, since the union path is what a real answer with several acts
     exercises."""
     boxes = [[0, 0, 500, 500], [500, 500, 1000, 1000]]
-    proposals = chandra_layout(
+    proposals = chandra_layout_proposals(
         page_id="pg_fixture",
         page_ordinal=0,
         page_w=640,
@@ -193,7 +230,7 @@ def test_a_hairline_conversion_is_bounds_here_and_refused_by_the_layout_path(box
     assert bounds["w"] == 1 or bounds["h"] == 1
     geometry.validate_bounds(bounds, page_w, page_h, "structure-chair rectangle")
     with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
-        chandra_layout(
+        chandra_layout_proposals(
             page_id="pg_fixture",
             page_ordinal=0,
             page_w=page_w,

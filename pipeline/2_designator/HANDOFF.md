@@ -617,27 +617,52 @@ that, and this chair's occupant is Chandra -- carrying the exact sealed PNG
 bytes as one `data:image/png;base64` block **before** the instruction text,
 which is the order that model was fine-tuned in, with
 `image_sha256s=(source_sha256,)` so the client's digest check binds the request
-to the Exemplar. The prompt is code, sealed by digest
-(`structure_prompt.py`, `verbatus-structure-prompt.v2`); it asks for every act as
-one rectangle in normalized 0–1000 coordinates of the image as shown, its
-transcription as written, an optional label, in reading order, and states no
-preference, severity floor or confidence budget. No `max_tokens` and no
-generation knobs of the stage's own: the engine bounds generation by
-`max_model_len`, and a `"length"` stop then honestly means the answer did not
-fit.
+to the Exemplar. No `max_tokens` and no generation knobs of the stage's own:
+the engine bounds generation by `max_model_len`, and a `"length"` stop then
+honestly means the answer did not fit.
 
-**What comes back** is parsed with `common/structure_answer.py`'s closed
-contract — one accepted wire shape, every other key a named refusal, floats
-quantized under a declared rule, coordinates converted to page pixels once by
-this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
+**The prompt is Chandra's own** (`structure_prompt.py`,
+`verbatus-structure-prompt.v3`; Tyrel, 2026-09-06 -- each witness runs as its
+developers intended). The turn *is* `chandra/prompts.py::OCR_LAYOUT_PROMPT`,
+carried and sealed by digest in `common/chandra_layout.py`, with nothing of
+ours in front of it or after it; both Chandra chairs send the same bytes.
+Everything v2's own instruction asked for survives in the vendor's words --
+a rectangle per block in normalized 0–1000 coordinates, a label, reading order
+-- and the one ask that does not is our own JSON envelope, which the vendor
+grammar replaced. The vendor prompt states no preference, severity floor or
+confidence budget, and `test_structure_prompt.py` measures that against the
+rendered bytes rather than asserting it: a change of vendor pin that brought
+one in would be a conflict between the carried-verbatim ruling and
+GOVERNANCE 10, and hard rule 9 makes that Tyrel's to resolve rather than a
+word for a session to delete.
+
+**What comes back** is Chandra's layout HTML, read by
+`common/chandra_layout.py::parse_layout_html` — top-level `<div>` blocks with
+`data-bbox` and `data-label`, coordinates converted to page pixels once by this
+repository's own arithmetic (`to_page_bounds`, through `block_page_bounds`).
+Nothing is repaired, reordered, or re-asked. Each block becomes a **structure
+proposal** and never an act's text.
+
+**Three kinds of block reach this pass with nothing to mint**, and each is
+recorded rather than resolved. A block whose `data-bbox` could not be read
+keeps its row with `box_1000` and `raw_bounds` null and a `malformed-bbox`
+finding naming its ordinal and which rule the attribute failed — the vendor
+substitutes `[0, 0, 1, 1]` here, and a rectangle the chair never drew would be
+cut, filed and read as an act. A `Blank-Page` block is the chair's own "there
+is nothing here" and by the grammar's rule carries no page geometry; it is
+retained with a `blank-page-retained` finding. And character data outside every
+top-level block is ink in no block and in no span, counted onto the record as
+`content-outside-blocks` — a page that parsed cleanly while words sat outside
+every rectangle is a missed act under a successful status.
 
 **What each answer does to the page** (`structure_pass.ask_page`):
 
 | Answer | Page | Acts |
 |---|---|---|
-| parsed, complete stop (or unreported), ≥1 act | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
-| parsed, complete stop, zero acts | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
-| `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | none; ink → residual holds |
+| parsed, complete stop (or unreported), ≥1 placeable block | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
+| parsed, complete stop, every block is the chair's own `Blank-Page` | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
+| parsed, complete stop, every non-blank block lost its geometry (`data-bbox` malformed, or absent from a block the prompt asked to carry one) | `held`, `structure-blocks-without-geometry` | none; ink → residual holds |
+| `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | as above |
 | parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
 | the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
 | custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
@@ -646,12 +671,34 @@ this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
 
+`structure-blocks-without-geometry` is the row this grammar added, and the
+distinction it draws is the reason it exists. Tiling a page whose blocks all
+lost their boxes would publish "the chair found nothing on this page" about a
+chair that found several things and described each with a rectangle nobody
+could read — a wrong reading under a successful status (GOVERNANCE 2, 10).
+
+**The stop word is now the whole truncation signal.** A truncated JSON object
+was invalid JSON, so the old cut-off body failed to parse and the ordering of
+the two checks was belt and braces. HTML degrades instead: `html.parser` reads
+the truncated block and the grammar returns it with an `unclosed-block`
+finding, so without the `finish_reason` row above the parse outcome the page
+would mint a **short act list under a clean `parsed` state**. Both suites
+script a cut-off body that deliberately still parses, so the hold proves the
+ordering rather than coinciding with it.
+
 The capacity row is the only one decided before a request exists. A whole
 300-dpi page costs this chair 1,715 prompt tokens at the smallest tier's
 `max_pixels` and 5,100 at the largest, before a word of prompt is counted
-(`common/request_capacity.py`); with the measured 325-token prompt and a
+(`common/request_capacity.py`); with the measured 593-token prompt and a
 measured dense-page answer budget of 1,575, the 24 GB and 48 GB rows cannot
-hold one. vLLM answers such a request with HTTP 400 and no reading at all, so
+hold one. **That 1,575 was measured over the retired JSON answer**, and layout
+HTML pays for tags the JSON budget never counted, so it is a figure for a shape
+this chair no longer produces; re-measuring every chair's answer budget at the
+pinned tokenizers is its own unit in the vendor-systems design, and the prompt
+half is what this one re-measured. The error runs toward reserving too little,
+and an overrun is not silent — it arrives as `finish_reason "length"` and holds
+the page under `structure-answer-cut-off`.
+vLLM answers an inadmissible request with HTTP 400 and no reading at all, so
 `ask_page` computes the arithmetic first and holds the page rather than paying
 a card to be refused. The page is never downscaled to make it fit: 300 dpi is
 what `config/pdf_render.toml` argues is needed to read the ink, and trading a
@@ -699,21 +746,59 @@ a rectangle, which in these books can be a whole act — is published no more
 than a transcription is:
 
 ```text
-schema = "designator-structure-answer.v1"
+schema = "designator-structure-answer.v2"
 page_id, page_ordinal, page_w, page_h
-prompt_version, prompt_sha256, answer_schema = "verbatus-structure-answer.v1"
+prompt_version, prompt_sha256
+answer_grammar = {text_view, repository, commit, licence, prompt_source,
+                  parser_source}
 call_record_ref, raw_response_ref | null, custody_ref | null,
 custody_problem | null, receipt_ref, request_sha256
 finish_reason (verbatim | null), served_model_id, call_problem | null
 parse_state ("parsed" | "refused"), parse_outcome | null
 disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
-act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
+act_count, acts = [{ordinal, box_1000 | null, raw_bounds | null,
+                    label_declared, blank_page, text_digest, text_length,
                     label_digest | null, label_length | null}]
 findings = [{kind, ...}]
 quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
+
+`.v2` because the shape changed with the grammar and a v1 reader would be wrong
+about a v2 record rather than merely incomplete. `answer_schema` — whose value
+named the closed JSON wire contract this chair no longer asks for — became
+`answer_grammar`, which says which grammar read the retained bytes and at which
+vendor pin, every value taken from `common/chandra_layout.py`'s own constants so
+one commit sha is stated in one place. `box_1000` and `raw_bounds` became
+nullable, because a block with no rectangle publishes none rather than a
+substituted one. `label_declared` and `blank_page` are two closed questions
+about the block's `data-label` and not the label: the vendor defaults an absent
+label to the word `block`, so without the first an absent label is
+indistinguishable from a chair that wrote `block`, and the second is the fact
+that decides whether a block can be minted at all — deriving it downstream
+would mean publishing the label so someone else could compare it. Both carry no
+span of the chair's prose and pass `_refuse_text_fields` like every other field.
+
+`quantization` still reads `structure-answer.v1.box1000-floor-low-ceil-far.
+sealed-page-pixels`. That string is the identifier of the **conversion rule** —
+low edges floored, far edges ceiled, into sealed-page pixels — and the
+arithmetic behind it did not move, so renaming it would churn a published value
+to describe an unchanged computation. It shared a name with the wire contract;
+it was never the wire contract. `common/structure_answer.py` keeps that
+constant, the join rule and `text_digest` after U16 deletes its JSON acceptance.
+
+The findings a record can carry are the six the layout grammar raises plus
+`duplicate-rectangle`, projected text-free by
+`structure_pass.published_findings` and declared field-by-field in
+`run.py::_STRUCTURE_ANSWER_FINDING_FIELDS`. The projection exists because the
+grammar's `malformed-bbox` finding quotes the model-written `data-bbox` under a
+bound and this stage publishes no model-written string at all; `reason` and
+`detail` survive it because they are this repository's own sentences naming
+which rule failed. A grammar finding kind this pass cannot publish **refuses**
+rather than being dropped — a page that published one fewer fact would still
+parse, still mint and still say `detected`, which is exactly the silent loss
+GOVERNANCE 2 forbids.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding

@@ -655,18 +655,28 @@ def prompt_digest(*texts: str) -> str:
 # one-entry tuple and nothing else changes.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
-        # Re-measured for `verbatus-structure-prompt.v2` -- the single `user`
-        # turn Chandra's own inference code sends, replacing the system+user
-        # framing the fine-tune never saw. Not one word of the instruction
-        # moved; the system turn's sentence is now the instruction's opening
-        # paragraph, so the whole difference is the chat template's own
-        # per-turn overhead: **329 -> 325**, measured by the same harness, at
-        # the same pinned revision, that reproduces the superseded 329 exactly
-        # over the superseded two-turn prompt.
+        # Re-measured for `verbatus-structure-prompt.v3`, which retires this
+        # repository's own instruction and sends Chandra's own
+        # `OCR_LAYOUT_PROMPT` bytes (`common/chandra_layout.py`; Tyrel,
+        # 2026-09-06 -- each witness runs as its developers intended).
+        # **325 -> 593.** The whole of the +268 is the vendor prompt being a
+        # larger document than ours: it enumerates 36 tags, 14 attributes and
+        # 19 block labels and carries twelve guideline bullets, none of which
+        # v2 named. The turn structure did not move -- one `user` turn before
+        # and after -- and neither did the tokenizer or the revision.
+        #
+        # The measurement is the harness of `TOKEN_COST_REPORT.md` section 3,
+        # step 3, at this same pinned revision, run on 2026-09-07; on the
+        # superseded v2 text it reproduces both this table's own 325 and its
+        # `c91e8159...` digest exactly, which is what makes the new number a
+        # measurement by the same instrument rather than a fresh claim.
+        # `025935f3...` is also `chandra_layout.OCR_LAYOUT_PROMPT_SHA256`:
+        # a one-text prompt's `prompt_digest` is the sha256 of that text, so
+        # the two seals coincide by construction rather than by coincidence.
         "designator_structure": (
             SealedPromptTokens(
-                tokens=325,
-                prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
+                tokens=593,
+                prompt_digest="025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8",
                 repo="datalab-to/chandra-ocr-2",
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),

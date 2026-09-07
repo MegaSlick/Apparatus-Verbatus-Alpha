@@ -308,7 +308,13 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "page_h",
         "prompt_version",
         "prompt_sha256",
-        "answer_schema",
+        # Which grammar read the retained bytes, and at which vendor pin
+        # (`structure_pass.ANSWER_GRAMMAR`). It replaces `answer_schema`, whose
+        # value named the closed JSON wire contract this chair no longer asks
+        # for: leaving that name on a record produced under Chandra's own
+        # layout HTML would be a false statement about the reading, not a
+        # harmless legacy field.
+        "answer_grammar",
         "call_record_ref",
         "raw_response_ref",
         "custody_ref",
@@ -338,11 +344,21 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
 # Geometry, and both of the chair's free strings only as a digest and a length.
 # `label` and `text` are absent from this set on purpose: the day either name
 # reappears in the record, this refuses.
+#
+# `label_declared` and `blank_page` are two closed questions about the block's
+# `data-label`, not the label: whether the answer carried one at all (the
+# vendor defaults an absent label to the word `block`, which would otherwise be
+# indistinguishable from a chair that wrote `block`), and whether it was the
+# layout grammar's own `Blank-Page` -- the fact that decides whether the block
+# can be minted at all. Deriving the second downstream would mean publishing
+# the label so someone else could compare it.
 _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
     {
         "ordinal",
         "box_1000",
         "raw_bounds",
+        "label_declared",
+        "blank_page",
         "text_digest",
         "text_length",
         "label_digest",
@@ -350,9 +366,24 @@ _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
     }
 )
 _STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
-# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
-# declared here or it does not publish.
-_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+_STRUCTURE_ANSWER_GRAMMAR_FIELDS = frozenset(
+    {"text_view", "repository", "commit", "licence", "prompt_source", "parser_source"}
+)
+# Every finding kind that can reach the record: `duplicate-rectangle` from
+# `structure_pass.dedupe_rectangles`, and the six the layout grammar raises,
+# projected text-free by `structure_pass.published_findings`. A seventh is
+# declared here or it does not publish -- and `published_findings` refuses an
+# undeclared grammar finding before this is ever reached, so a new kind fails
+# in the pass that raised it rather than at publication.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {
+    "duplicate-rectangle": frozenset({"kind", "ordinals"}),
+    "malformed-bbox": frozenset({"kind", "ordinal", "reason"}),
+    "blank-page-retained": frozenset({"kind", "ordinal"}),
+    "nested-bbox-retained": frozenset({"kind", "blocks", "attributes"}),
+    "unclosed-block": frozenset({"kind", "ordinal", "detail"}),
+    "block-count-mismatch": frozenset({"kind", "parsed_blocks", "top_level_divs"}),
+    "content-outside-blocks": frozenset({"kind", "characters", "detail"}),
+}
 
 
 def _closed_object(value: object, fields: frozenset, what: str) -> dict:
@@ -374,6 +405,11 @@ def _validate_structure_answer_payload(payload: object) -> None:
     record = _closed_object(payload, _STRUCTURE_ANSWER_FIELDS, "structure-answer payload")
     _closed_object(
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
+    )
+    _closed_object(
+        record["answer_grammar"],
+        _STRUCTURE_ANSWER_GRAMMAR_FIELDS,
+        "structure-answer answer_grammar block",
     )
     acts = record["acts"]
     if not isinstance(acts, list):

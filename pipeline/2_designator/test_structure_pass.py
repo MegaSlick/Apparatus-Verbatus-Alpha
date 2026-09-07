@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 from _test_support import load_designator
 
+from common import chandra_layout as vendor_layout
 from common import structure_answer
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
@@ -65,7 +66,9 @@ from operations.serving.fakes import (
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    scripted_structure_cut_off,
     structure_answer_body,
+    structure_layout_block,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
@@ -522,11 +525,12 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert messages[0]["content"][1]["type"] == "text"
         # Chandra's own 12,384-token bound against what this row leaves: the
         # fixture pages are 200x260 and cost 48 image tokens, the prompt is the
-        # measured 325, and the live row states `max_model_len` 4,096. The row
-        # is what binds, so no bound goes on the wire and the engine's own
-        # budget -- the same quantity, measured by the component that holds the
-        # tokenizer -- governs, exactly as before.
-        assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 325
+        # measured 593 (v3, the vendor's own `OCR_LAYOUT_PROMPT`), and the live
+        # row states `max_model_len` 4,096. The row is what binds, so no bound
+        # goes on the wire and the engine's own budget -- the same quantity,
+        # measured by the component that holds the tokenizer -- governs,
+        # exactly as before.
+        assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 593
         assert "max_tokens" not in request
         # Thinking mode closed, whichever of the two shipped chat templates the
         # engine resolves (`common/chair_wire.py`).
@@ -549,10 +553,28 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert [act["text_digest"] for act in payload["acts"]] == [
             structure_answer.text_digest(text) for _b, text in expected
         ]
+        # These blocks declare no `data-label`, so both label fields are null
+        # and `label_declared` says why -- the vendor's own `if not label:
+        # label = "block"` default would otherwise make an absent label
+        # indistinguishable from a chair that wrote the word `block`. None is
+        # `Blank-Page`, so every one is mintable and every one minted.
+        assert [act["label_declared"] for act in payload["acts"]] == [False] * len(expected)
+        assert [act["label_digest"] for act in payload["acts"]] == [None] * len(expected)
+        assert [act["label_length"] for act in payload["acts"]] == [None] * len(expected)
+        assert [act["blank_page"] for act in payload["acts"]] == [False] * len(expected)
         assert payload["findings"] == []
+        # Which grammar read the retained bytes, at which vendor pin.
+        assert payload["answer_grammar"] == {
+            "text_view": "chandra-layout-text.v1",
+            "repository": "github.com/datalab-to/chandra",
+            "commit": "d4f7467435aa4137d9539f000ddf0b7ced3eb43f",
+            "licence": "Apache-2.0",
+            "prompt_source": "chandra/prompts.py",
+            "parser_source": "chandra/output.py::parse_layout",
+        }
         assert payload["decoding"]["policy"] == "structure"
         assert payload["decoding"]["temperature"] == 0
-        assert payload["prompt_version"] == "verbatus-structure-prompt.v2"
+        assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
         # The retained bytes, the custody binding and the call record all exist
         # under the digests the record names.
         for name in ("raw_response_ref", "custody_ref", "call_record_ref"):
@@ -692,7 +714,17 @@ def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
 # --- what each answer does to the page (SPEC_D §1.4) ---------------------------------
 
 
-def test_a_zero_act_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_path, monkeypatch):
+def test_a_blank_page_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_path, monkeypatch):
+    """The chair's own "there is nothing on this page", in the vendor's grammar.
+
+    Under the retired JSON contract this was `acts: []`. Chandra's prompt gives
+    it a word instead -- a `Blank-Page` block -- and the grammar retains that
+    block rather than dropping it as the vendor does, so the record carries one
+    act row with null geometry and a `blank-page-retained` finding while the
+    page is still tiled. `act_count` is 1 and the mint is empty, and the
+    difference between those two numbers is the whole point: the block is
+    retained, and nothing is minted from it.
+    """
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(
         root, catalogue, tmp_path, monkeypatch, [_answer(PAGE_ONE_ACTS), _answer(())]
@@ -703,7 +735,16 @@ def test_a_zero_act_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_path,
     assert statuses[2]["payload"]["structure_evidence"] == "fallback-tiles"
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     assert answers[2]["payload"]["disposition"] == "fallback-tiles"
-    assert answers[2]["payload"]["act_count"] == 0
+    assert answers[2]["payload"]["act_count"] == 1
+    (block,) = answers[2]["payload"]["acts"]
+    assert block["blank_page"] is True
+    # The declared box is recorded; the page rectangle is not. The grammar
+    # keeps a `Blank-Page` block's own `data-bbox` because discarding it would
+    # be the same silent loss in a smaller place, and gives it no page
+    # geometry because the block says there is nothing there to place.
+    assert block["box_1000"] == [0, 0, 1000, 1000]
+    assert block["raw_bounds"] is None
+    assert answers[2]["payload"]["findings"] == [{"kind": "blank-page-retained", "ordinal": 0}]
     (fallback,) = _artifacts(root, DESIGNATOR, "page-fallback")
     assert fallback["payload"]["page_ordinal"] == 2
     assert fallback["payload"]["page_bounds"] == {"x": 0, "y": 0, "w": 200, "h": 260}
@@ -766,31 +807,30 @@ def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_pat
     ("content", "code"),
     [
         (
-            "# Page\n\nSome markdown the chair wrote instead of JSON.",
-            "structure-answer-invalid-json",
+            "# Page\n\nSome markdown the chair wrote instead of layout blocks.",
+            "structure-answer-no-layout-blocks",
         ),
         (
-            json.dumps({"schema": "verbatus-structure-answer.v1", "acts": [], "note": "x"}),
-            "structure-answer-unverified-response-schema",
-        ),
-        (
-            json.dumps({"schema": "verbatus-structure-answer.v1"}),
-            "structure-answer-missing-act-list",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema": "verbatus-structure-answer.v1",
-                    "acts": [{"box_1000": [10, 10, 5, 5], "text": "x"}],
-                }
-            ),
-            "structure-answer-malformed-act-geometry",
+            '<article><div data-bbox="10 10 900 900" data-label="Text">wrapped</div></article>',
+            "structure-answer-blocks-not-at-top-level",
         ),
     ],
 )
-def test_an_answer_the_contract_refuses_holds_the_page_by_its_outcome(
+def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     live_run, tmp_path, monkeypatch, content, code
 ):
+    """The two refusals a wire fake can reach, and they are named apart.
+
+    `no-layout-blocks` is an answer with no `<div>` in it at all; the chair
+    wrote prose. `blocks-not-at-top-level` is an answer that has divs, every one
+    of them wrapped -- which is also what the vendor's own `recursive=False`
+    would have found nothing in. Telling them apart is what lets a first real
+    reading say which happened without a person opening the blob. The grammar's
+    other three outcomes are properties of *bytes* (`raw-response-not-bytes`,
+    `invalid-utf8`, `response-too-large`) and cannot arrive through a
+    `ScriptedAnswer`, which carries a `str`; `common/test_chandra_layout.py`
+    reaches all three directly.
+    """
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(
         root,
@@ -808,34 +848,41 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_its_outcome(
     assert payload["acts"] == [] and payload["act_count"] == 0
 
 
-def test_a_truncated_body_that_does_not_parse_holds_as_cut_off_not_a_parse_refusal(
+def test_a_truncated_body_that_still_parses_holds_as_cut_off_not_as_a_short_page(
     live_run, tmp_path, monkeypatch
 ):
-    """The cut-off stop word wins over the parse outcome: SPEC_D S1.4 places
+    """The cut-off stop word wins over the parse outcome, and now it has to.
 
-    the `finish_reason in ENGINE_STOP_CUT_OFF` row above the parse-refusal
-    rows, and it applies "parsed or not". A body the engine truncated
-    mid-object is exactly the failure this measurement exists to name --
-    the small `max_model_len` a whole-page transcription can overrun -- and
-    it must not be recorded as `structure-answer-invalid-json`, which would
-    blame the chair's JSON rather than the context window.
+    SPEC_D S1.4 places the `finish_reason in ENGINE_STOP_CUT_OFF` row above the
+    parse-refusal rows, and it applies "parsed or not". Under the retired JSON
+    contract a truncated body was invalid JSON, so the hold could have come
+    from either check and the ordering was belt and braces. Chandra's layout
+    HTML degrades instead: `html.parser` reads the truncated block, the grammar
+    returns it with an `unclosed-block` finding, and without the stop-word row
+    the page would mint a **short act list under a clean `parsed` state** --
+    a truncated reading published as a complete one, which is the missed act
+    GOALS 1 rates worst. So this body deliberately still parses, and the hold
+    proves the ordering rather than coinciding with it.
     """
     root, catalogue = live_run
-    truncated = '{"schema": "verbatus-structure-answer.v1", "acts": [{"box_1000"'
     _endpoint, exit_code = _run_designator(
         root,
         catalogue,
         tmp_path,
         monkeypatch,
-        [_answer(PAGE_ONE_ACTS), ScriptedAnswer(content=truncated, finish_reason="length")],
+        [_answer(PAGE_ONE_ACTS), scripted_structure_cut_off(PAGE_TWO_ACTS, 200, 260)],
     )
     assert exit_code == EXIT_HELD
     _assert_page_two_held(root, "structure-answer-cut-off")
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     payload = answers[2]["payload"]
-    assert payload["parse_state"] == "refused"
+    assert payload["parse_state"] == "parsed"
+    assert payload["parse_outcome"] is None
     assert payload["finish_reason"] == "length"
-    assert payload["act_count"] == 0
+    # The block the engine cut off is on the record, with its `unclosed-block`
+    # finding -- retained, and held, rather than minted.
+    assert payload["act_count"] == 1
+    assert [finding["kind"] for finding in payload["findings"]] == ["unclosed-block"]
 
 
 def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refused_by_name(
@@ -843,8 +890,8 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
 ):
     """The unnameable stop word is fatal whether or not the body parsed --
 
-    not folded silently into `structure-answer-invalid-json` just because
-    the JSON also happened to be unreadable.
+    not folded silently into `structure-answer-no-layout-blocks` just because
+    the body also happened to carry no block.
     """
     root, catalogue = live_run
     with pytest.raises(ContractError, match="finish_reason 'abort'"):
@@ -855,7 +902,7 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
             monkeypatch,
             [
                 _answer(PAGE_ONE_ACTS),
-                ScriptedAnswer(content="not json at all", finish_reason="abort"),
+                ScriptedAnswer(content="not a layout answer at all", finish_reason="abort"),
             ],
         )
     assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
@@ -973,6 +1020,209 @@ def test_a_duplicate_rectangle_mints_once_and_is_recorded_as_a_finding(
     assert keys == ["proposal:1:0", "proposal:1:2", "proposal:2:0"]
     acts = expected_acts(_open(root, catalogue, ATTESTATORES, "--placement-tier", TIER))
     assert len(acts) == 3
+
+
+# --- blocks the grammar gives no rectangle (U13) ------------------------------------
+
+
+def _layout(*blocks: str) -> ScriptedAnswer:
+    """A scripted answer written as raw layout HTML, for the blocks the builder
+    deliberately refuses to make: it verifies its rectangles round-trip, and
+    these are the blocks that have none."""
+    return ScriptedAnswer(content="\n".join(blocks), finish_reason="stop")
+
+
+def _good_blocks(acts) -> list[str]:
+    """The ordinary placeable blocks for a page's acts, from the shared builder.
+
+    Written out beside the unplaceable ones so a page under test still covers
+    all of its own ink: a page that placed only some of its acts would be held
+    on conservation residual, which would hide whatever the test was about.
+    """
+    return [structure_layout_block(bounds, text, 200, 260, label=None) for bounds, text in acts]
+
+
+def test_a_malformed_bbox_block_is_recorded_and_never_minted(live_run, tmp_path, monkeypatch):
+    """The vendor substitutes `[0, 0, 1, 1]` here; nothing here substitutes.
+
+    The block keeps its row with null geometry and a `malformed-bbox` finding
+    naming the ordinal and which rule the attribute failed, and the page's
+    other block still mints. A rectangle the chair never drew would otherwise
+    be cut, filed and read as an act -- the wrong reading GOALS 2 rates worst,
+    arriving under a `detected` page.
+    """
+    root, catalogue = live_run
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [
+            _layout(
+                *_good_blocks(PAGE_ONE_ACTS),
+                '<div data-bbox="1_0 2 3" data-label="Text">a block nobody can place</div>',
+            ),
+            _answer(PAGE_TWO_ACTS),
+        ],
+    )
+    assert exit_code == EXIT_COMPLETE
+    payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]["payload"]
+    assert payload["disposition"] == "detected"
+    # All three blocks are on the record; only the two placeable ones are
+    # rectangles.
+    assert payload["act_count"] == 3
+    assert [act["raw_bounds"] for act in payload["acts"][:2]] == [
+        dict(bounds) for bounds, _text in PAGE_ONE_ACTS
+    ]
+    assert payload["acts"][2]["box_1000"] is None
+    assert payload["acts"][2]["raw_bounds"] is None
+    # Its text is still retained by digest, so the words are not lost with the
+    # geometry.
+    assert payload["acts"][2]["text_digest"] == structure_answer.text_digest(
+        "a block nobody can place"
+    )
+    assert payload["findings"] == [
+        {
+            "kind": "malformed-bbox",
+            "ordinal": 2,
+            "reason": "expected 4 space-separated components, found 3",
+        }
+    ]
+    # The finding quotes no byte the chair wrote: the retained blob is where
+    # `1_0 2 3` lives, and this record publishes no model-written string.
+    assert "1_0" not in json.dumps(payload)
+    keys = sorted(row["act_key"] for row in _seal(root)["payload"]["expected_acts"])
+    assert keys == ["proposal:1:0", "proposal:1:1", "proposal:2:0"]
+
+
+def test_a_page_whose_every_block_lost_its_geometry_is_held_not_tiled(
+    live_run, tmp_path, monkeypatch
+):
+    """Not `fallback-tiles`: the chair found things and could not place them.
+
+    Tiling would publish "the chair found nothing on this page" over an answer
+    that described two blocks, which is a wrong reading under a successful
+    status (GOVERNANCE 2, 10). The page is held, its ink reconciles as
+    conservation residual, and both blocks keep their rows and their findings.
+    """
+    root, catalogue = live_run
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [
+            _answer(PAGE_ONE_ACTS),
+            _layout(
+                '<div data-bbox="500 500 100 100" data-label="Text">inverted</div>',
+                '<div data-label="Text">no box at all</div>',
+            ),
+        ],
+    )
+    assert exit_code == EXIT_HELD
+    _assert_page_two_held(root, structure_pass.HELD_BLOCKS_WITHOUT_GEOMETRY)
+    payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
+    assert payload["parse_state"] == "parsed"
+    assert payload["act_count"] == 2
+    assert [finding["reason"] for finding in payload["findings"]] == [
+        "x1 <= x0 or y1 <= y0",
+        "no data-bbox attribute",
+    ]
+
+
+def test_words_the_chair_wrote_outside_every_block_are_counted_on_the_record(
+    live_run, tmp_path, monkeypatch
+):
+    """The finding that keeps a clean parse from hiding a missed act.
+
+    Character data outside every top-level block is in no block, in no span and
+    in no rectangle. The page still mints what it can -- refusing it would cost
+    the acts that *were* placed (GOALS 1) -- and carries the count of what sat
+    outside, so a first real reading can see it without opening the blob.
+    """
+    root, catalogue = live_run
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [
+            _layout(
+                "a marginal note the chair left outside every block",
+                *_good_blocks(PAGE_ONE_ACTS),
+            ),
+            _answer(PAGE_TWO_ACTS),
+        ],
+    )
+    assert exit_code == EXIT_COMPLETE
+    payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]["payload"]
+    assert payload["disposition"] == "detected"
+    assert payload["act_count"] == len(PAGE_ONE_ACTS)
+    (finding,) = payload["findings"]
+    assert finding["kind"] == "content-outside-blocks"
+    # Non-whitespace characters only, and the count rather than the words.
+    assert finding["characters"] == len(
+        "a marginal note the chair left outside every block".replace(" ", "")
+    )
+    assert "marginal note" not in json.dumps(payload)
+
+
+def test_a_finding_kind_this_pass_cannot_publish_refuses_rather_than_vanishing():
+    """A finding is never dropped to let a page publish.
+
+    If `common/chandra_layout.py` grows a seventh finding kind, the page it
+    appears on must fail loudly here rather than publish with one fewer fact on
+    it -- which would be invisible, because the record would still parse, still
+    mint and still say `detected`.
+    """
+    every = sorted(structure_pass._PUBLISHED_FINDING_FIELDS)
+    assert every == sorted(vendor_layout.LAYOUT_FINDING_KINDS)
+    with pytest.raises(ContractError, match="which this pass does not know how to publish"):
+        structure_pass.published_findings([{"kind": "a-kind-nobody-declared", "ordinal": 0}])
+
+
+# One synthetic grammar finding per declared kind, carrying every fact
+# `common/chandra_layout.py` puts on that kind. Built through the grammar's own
+# `_finding`, which refuses an undeclared kind, so a row here that named a kind
+# the grammar does not raise would fail in the builder.
+_GRAMMAR_FINDING_FACTS = {
+    "malformed-bbox": {
+        "ordinal": 3,
+        "reason": "components are not plain decimal integers",
+        "data_bbox": "1_0 2 3 4",
+        "data_bbox_truncated": False,
+    },
+    "blank-page-retained": {"ordinal": 0},
+    "nested-bbox-retained": {"blocks": 2, "attributes": 5},
+    "unclosed-block": {"ordinal": 1, "detail": "the answer ended before its last div closed"},
+    "block-count-mismatch": {"parsed_blocks": 2, "top_level_divs": 3},
+    "content-outside-blocks": {"characters": 41, "detail": "outside every top-level block"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_GRAMMAR_FINDING_FACTS))
+def test_each_grammar_finding_publishes_the_fields_the_record_declares(kind):
+    """The two tables that describe one finding, checked against each other.
+
+    `structure_pass._PUBLISHED_FINDING_FIELDS` decides what is republished and
+    `run.py::_STRUCTURE_ANSWER_FINDING_FIELDS` decides what may be published;
+    they are separate declarations of one shape and could drift apart without
+    a page that happens to raise the kind. Every kind is exercised here rather
+    than only the two a live run in this suite reaches.
+
+    The `malformed-bbox` row also proves the projection's whole reason for
+    existing: the grammar's finding quotes the model-written `data-bbox`, and
+    the published one does not carry it under any key.
+    """
+    (published,) = structure_pass.published_findings(
+        [vendor_layout._finding(kind, **_GRAMMAR_FINDING_FACTS[kind])]
+    )
+    assert set(published) == designator._STRUCTURE_ANSWER_FINDING_FIELDS[kind]
+    designator._closed_object(
+        published, designator._STRUCTURE_ANSWER_FINDING_FIELDS[kind], f"{kind} finding"
+    )
+    assert "data_bbox" not in published
+    assert "1_0" not in json.dumps(published)
 
 
 def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path, monkeypatch):
@@ -1226,6 +1476,7 @@ def _minimal_answer_record() -> dict[str, Any]:
     record["acts"] = []
     record["findings"] = []
     record["decoding"] = dict.fromkeys(designator._STRUCTURE_ANSWER_DECODING_FIELDS)
+    record["answer_grammar"] = dict.fromkeys(designator._STRUCTURE_ANSWER_GRAMMAR_FIELDS)
     return record
 
 
@@ -1281,8 +1532,9 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     """The failure this check exists to move off a billing card.
 
     An A4 300-dpi page is 2,480x3,508. Against the shipped 24 GB row it costs
-    1,715 image tokens; with the measured 325-token structure prompt and a
-    1,575-token dense-page answer that is 3,615 against a `max_model_len` of
+    1,715 image tokens; with the measured 593-token structure prompt (v3, the
+    vendor's own `OCR_LAYOUT_PROMPT`) and a 1,575-token dense-page answer that
+    is 3,883 against a `max_model_len` of
     2,048. Before this check the request went out and vLLM answered HTTP 400
     with a body the client discarded; now the page is held by name, its record
     is published with the whole arithmetic on it, and `_RefusingClient.read`
@@ -1297,10 +1549,10 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     assert answer.mint == ()
     capacity = answer.record["capacity"]
     assert capacity["image_prompt_tokens"] == 1715
-    assert capacity["prompt_tokens"] == 325
+    assert capacity["prompt_tokens"] == 593
     assert capacity["answer_budget"] == 1575
-    assert capacity["need"] == 3615
-    assert capacity["headroom"] == 2048 - 3615
+    assert capacity["need"] == 3883
+    assert capacity["headroom"] == 2048 - 3883
     assert capacity["fits"] is False
     # Nothing that describes a response is invented: there was none.
     for field in ("call_record_ref", "raw_response_ref", "custody_ref", "request_sha256"):
@@ -1320,7 +1572,7 @@ def test_the_same_page_is_admitted_once_the_row_states_a_larger_context():
 def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_that_is_sent():
     """The digest that expires the measured constant, checked where the prompt lives."""
 
-    assert structure_pass.structure_prompt_tokens() == 325
+    assert structure_pass.structure_prompt_tokens() == 593
 
 
 def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
@@ -1343,9 +1595,9 @@ def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
         assert capacity["schema"] == "verbatus-request-capacity.v1"
         assert capacity["fits"] is True
         assert capacity["image_prompt_tokens"] == 48
-        assert capacity["prompt_tokens"] == 325
+        assert capacity["prompt_tokens"] == 593
         assert capacity["answer_budget"] == 1575
-        assert capacity["headroom"] == 4096 - (48 + 325 + 1575)
+        assert capacity["headroom"] == 4096 - (48 + 593 + 1575)
         # The same record reached the retained call record, beside the request.
         tree = RunTree(root, RUN_ID)
         call_record = json.loads(
@@ -1389,11 +1641,14 @@ def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
     first answer record reaches the tree.
     """
     root, catalogue = live_run
-    original = structure_pass._act_record
+    original = structure_pass._block_record
     monkeypatch.setattr(
         structure_pass,
-        "_act_record",
-        lambda act: {**original(act), "label": act["label"]},
+        "_block_record",
+        lambda block, page_w, page_h: {
+            **original(block, page_w, page_h),
+            "label": block["label"],
+        },
     )
     with pytest.raises(ContractError, match=r"structure-answer act .*unexpected \['label'\]"):
         _run_designator(

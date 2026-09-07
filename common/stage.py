@@ -389,7 +389,15 @@ STRUCTURE_DECODING_POLICY: Final = "structure"
 # reason `fallback_page_act_key` is — the producer writes them and this module
 # reads them back, so the two may not spell them differently.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
-STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
+# `.v2` since the structure chair moved onto Chandra's own layout grammar
+# (Tyrel, 2026-09-06). The record's shape changed with it and a v1 reader would
+# be wrong about a v2 record rather than merely incomplete: `answer_schema`
+# became `answer_grammar` (a block naming the vendor pin the bytes were read
+# under), each act row grew `label_declared` and `blank_page`, and `box_1000`
+# and `raw_bounds` became nullable for a block the grammar gives no rectangle.
+# No v1 record exists outside a test tree -- nothing persisted has to be
+# migrated -- so the version is bumped rather than the change hidden.
+STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v2"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
 
@@ -3077,8 +3085,8 @@ def _verify_proposal_act_row(
     here; what it cannot do is publish one rectangle and mint a different one.
     Re-deriving the acts from the retained blob would close that gap and is a
     design change, not a correction: it would make `common/stage.py` a second
-    parser of the chair's wire contract, which today has exactly one
-    (`common/structure_answer.py`).
+    reader of the chair's answer grammar, which today has exactly one
+    (`common/chandra_layout.py`).
 
     Three claims, and each is refused separately so the refusal says which one
     failed. The **page** must have been scanned: the page's own

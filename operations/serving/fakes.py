@@ -8,24 +8,25 @@ speaks the reading contract; deduplicating the two families of fakes is a
 named follow-on, not a job this module does.
 
 Beside the reading answers, the builders under "the structure chair's answers"
-script what the Designator's `designator_structure` chair returns: a page's
-acts given in page pixels, a body the closed contract refuses by a named
-outcome, or a real answer the engine cut off mid-object. They live here rather
-than in a suite because knowing which normalized box lands on a given page
-rectangle means inverting `common.structure_answer.to_page_bounds`, and a
-second copy of that inversion could agree with a converter that had changed
-underneath it.
+script what the Designator's `designator_structure` chair returns in Chandra's
+own layout-HTML grammar: a page's blocks given in page pixels, a body the
+grammar refuses by a named outcome, or a real answer the engine cut off
+mid-block. They live here rather than in a suite because knowing which
+normalized box lands on a given page rectangle means inverting
+`common.structure_answer.to_page_bounds`, and a second copy of that inversion
+could agree with a converter that had changed underneath it.
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common import structure_answer
+from common import chandra_layout, structure_answer
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
@@ -264,13 +265,20 @@ class FakeEndpoint:
 
 # --------------------------- the structure chair's answers ---------------------------
 #
-# SPEC_D §5. A test that hand-writes the structure chair's wire JSON has to
-# spell the normalized geometry itself, and the only way to know which box
-# lands on a given page rectangle is to invert `structure_answer.to_page_bounds`
-# — so every suite that scripts the chair would carry its own copy of that
+# SPEC_D §5. A test that hand-writes the structure chair's answer has to spell
+# the normalized geometry itself, and the only way to know which box lands on a
+# given page rectangle is to invert `structure_answer.to_page_bounds` — so
+# every suite that scripts the chair would carry its own copy of that
 # inversion, and each copy could drift from the converter it is inverting. The
 # builders below do it once, and prove it each time by running the answer they
-# built back through the contract that will parse it.
+# built back through the grammar that will parse it.
+#
+# **The grammar is Chandra's own layout HTML** since the structure chair moved
+# onto the vendor's prompt bytes (Tyrel, 2026-09-06): top-level `<div>` blocks
+# carrying `data-bbox="x0 y0 x1 y1"` normalized 0–1000 and `data-label` from the
+# prompt's own nineteen. These builders emit exactly that, and check it back
+# through `common/chandra_layout.py::parse_layout_html` and
+# `block_page_bounds` — never through a second formula of their own.
 
 
 def structure_box_1000(bounds: Mapping[str, int], page_w: int, page_h: int) -> list[int]:
@@ -312,28 +320,76 @@ def structure_box_1000(bounds: Mapping[str, int], page_w: int, page_h: int) -> l
     return box
 
 
+def structure_layout_block(
+    bounds: Mapping[str, int] | None,
+    text: str,
+    page_w: int,
+    page_h: int,
+    *,
+    label: str | None = "Text",
+    bbox_attribute: str | None = None,
+) -> str:
+    """One top-level layout `<div>` in Chandra's grammar.
+
+    ``bounds`` is in page pixels and is inverted to the normalized box that
+    converts back to exactly it. ``bbox_attribute`` overrides that with a raw
+    attribute value, which is how a test scripts the malformed-bbox block the
+    pass retains and never mints; ``bounds=None`` with no override writes a
+    block carrying no `data-bbox` at all. ``label=None`` writes no `data-label`,
+    which is the vendor's "no label declared" case.
+    """
+    attributes = ""
+    if bbox_attribute is not None:
+        attributes += f' data-bbox="{html.escape(bbox_attribute, quote=True)}"'
+    elif bounds is not None:
+        box = structure_box_1000(bounds, page_w, page_h)
+        attributes += f' data-bbox="{box[0]} {box[1]} {box[2]} {box[3]}"'
+    if label is not None:
+        attributes += f' data-label="{html.escape(label, quote=True)}"'
+    return f"<div{attributes}>{html.escape(text)}</div>"
+
+
 def structure_answer_body(
     acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
     page_w: int,
     page_h: int,
 ) -> str:
-    """The structure chair's wire JSON for rectangles given in page pixels.
+    """The structure chair's layout HTML for rectangles given in page pixels.
 
-    Each act is ``(bounds, text)``, or ``(bounds, text, label)`` to exercise the
-    optional label the contract retains and uses for nothing. An empty sequence
-    is the chair's "I see no text" answer, which is a legitimate body and not a
-    refusal — the page-fallback row of SPEC_D §1.4.
+    Each act is ``(bounds, text)`` — a block carrying no `data-label` at all,
+    which is the vendor's "no label declared" case and the one that makes
+    `label_declared` false and both label fields null on the Designator's record
+    — or ``(bounds, text, label)`` to set the block's `data-label`.
+
+    An empty sequence is the chair's "I see no text" answer. It is written as
+    one `Blank-Page` block rather than as an empty
+    string, because an empty string is not a layout answer at all — the grammar
+    refuses it as `no-layout-blocks`, and `Blank-Page` is how Chandra's own
+    prompt tells it to say the page is empty. That is the page-fallback row of
+    SPEC_D §1.4.
+
+    The `Blank-Page` block is written **with** a whole-page `data-bbox`,
+    because the vendor prompt asks for one on every layout block and a real
+    answer would carry it. It changes nothing about the page's outcome — the
+    grammar gives a `Blank-Page` block no page rectangle whatever its declared
+    box — and it keeps the fixture from also scripting a missing attribute
+    nobody meant to test.
     """
-    written: list[dict[str, Any]] = []
-    for act in acts:
-        entry: dict[str, Any] = {
-            "box_1000": structure_box_1000(act[0], page_w, page_h),
-            "text": act[1],
-        }
-        if len(act) > 2:
-            entry["label"] = act[2]
-        written.append(entry)
-    return json.dumps({"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": written})
+    if not acts:
+        return structure_layout_block(
+            None,
+            "",
+            page_w,
+            page_h,
+            label=chandra_layout.BLANK_PAGE_LABEL,
+            bbox_attribute=f"0 0 {chandra_layout.BBOX_SCALE} {chandra_layout.BBOX_SCALE}",
+        )
+    return "\n".join(
+        structure_layout_block(
+            act[0], act[1], page_w, page_h, label=act[2] if len(act) > 2 else None
+        )
+        for act in acts
+    )
 
 
 def scripted_structure_answer(
@@ -344,46 +400,58 @@ def scripted_structure_answer(
     finish_reason: Any = "stop",
     **fields: Any,
 ) -> ScriptedAnswer:
-    """One page's scripted structure answer, verified against the parser.
+    """One page's scripted structure answer, verified against the grammar.
 
     The body is parsed here, before any test sees it, so a builder that drifted
-    from `common/structure_answer.py` fails in the builder rather than as an
-    unexplained hold three stages downstream. ``finish_reason="length"`` scripts
-    the cut-off row of SPEC_D §1.4 over a body that nonetheless parses.
+    from `common/chandra_layout.py` fails in the builder rather than as an
+    unexplained hold three stages downstream. Both halves of the round trip are
+    checked — each block's page rectangle and each block's text under the
+    declared text view — because a builder that escaped its text wrongly would
+    otherwise script a body whose digests silently differ from what it meant.
+    ``finish_reason="length"`` scripts the cut-off row of SPEC_D §1.4 over a
+    body that nonetheless parses.
     """
     content = structure_answer_body(acts, page_w, page_h)
-    parsed = structure_answer.parse(content.encode(), page_w=page_w, page_h=page_h)
-    if "parse_outcome" in parsed:
+    parsed = chandra_layout.parse_layout_html(content.encode())
+    if chandra_layout.is_refusal(parsed):
         raise ValueError(f"the scripted answer does not parse: {parsed['parse_outcome']}")
-    if [act["raw_bounds"] for act in parsed["acts"]] != [dict(act[0]) for act in acts]:
+    blocks = parsed["blocks"]
+    # The zero-act answer is one `Blank-Page` block, which by the grammar's own
+    # rule has no page rectangle and no text -- so what it must round-trip to
+    # is exactly that, not an empty block list.
+    expected = [(None, "")] if not acts else [(dict(act[0]), act[1]) for act in acts]
+    placed = [
+        chandra_layout.block_page_bounds(block, page_size=(page_w, page_h)) for block in blocks
+    ]
+    if placed != [bounds for bounds, _text in expected]:
         raise ValueError("the scripted answer's rectangles do not survive the round trip")
+    if [block["text"] for block in blocks] != [text for _bounds, text in expected]:
+        raise ValueError("the scripted answer's text does not survive the round trip")
     return ScriptedAnswer(content=content, finish_reason=finish_reason, **fields)
 
 
 # One body per named refusal, each the smallest answer that reaches that
 # outcome and nothing else. Keyed by the `PARSE_OUTCOMES` code so a test names
 # the outcome it is scripting rather than a body it has to be read to decode.
+#
+# **Three of the grammar's six outcomes are scriptable here and three are not,
+# and that is a property of this seam rather than a gap in coverage.** A
+# `ScriptedAnswer` carries a `str` the pass encodes as UTF-8, so
+# `raw-response-not-bytes` and `invalid-utf8` cannot be reached through an
+# endpoint at all, and `response-too-large` needs a body above
+# `chandra_layout.MAX_RESPONSE_BYTES` (16 MiB) — three orders of magnitude more
+# than any fixture page, and nothing a wire fake should be materialising.
+# `common/test_chandra_layout.py` reaches all three directly on bytes.
 _STRUCTURE_REFUSALS: Mapping[str, str] = {
-    "invalid-json": "# Page one\n\nMarkdown the chair wrote instead of the answer it was asked for.",
-    "top-level-not-object": '["an array of something"]',
-    "unverified-response-schema": json.dumps(
-        {"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": [], "note": "extra"}
+    "no-layout-blocks": (
+        "# Page one\n\nMarkdown the chair wrote instead of the layout blocks it was asked for."
     ),
-    "missing-act-list": json.dumps({"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA}),
-    "malformed-act": json.dumps(
-        {"schema": structure_answer.STRUCTURE_ANSWER_SCHEMA, "acts": ["not an object"]}
+    "blocks-not-at-top-level": (
+        '<article><div data-bbox="10 10 900 900" data-label="Text">wrapped</div></article>'
     ),
-    "malformed-act-geometry": json.dumps(
-        {
-            "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
-            "acts": [{"box_1000": [500, 500, 100, 100], "text": "inverted"}],
-        }
-    ),
-    "malformed-act-text": json.dumps(
-        {
-            "schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
-            "acts": [{"box_1000": [10, 10, 900, 900], "text": 7}],
-        }
+    "too-many-layout-blocks": "\n".join(
+        f'<div data-bbox="1 1 2 2" data-label="Text">b{index}</div>'
+        for index in range(chandra_layout.MAX_LAYOUT_BLOCKS + 1)
     ),
 }
 
@@ -391,12 +459,11 @@ _STRUCTURE_REFUSALS: Mapping[str, str] = {
 def scripted_structure_refusal(
     outcome: str, *, finish_reason: Any = "stop", **fields: Any
 ) -> ScriptedAnswer:
-    """An answer the closed contract refuses, by the exact outcome named.
+    """An answer the layout grammar refuses, by the exact outcome named.
 
-    Verified through `structure_answer.parse` on a square page, which every one
-    of these bodies refuses before or independently of geometry conversion, so
-    the outcome is a property of the body and not of a page size the caller
-    happens to be using.
+    Verified through `chandra_layout.parse_layout_html`, which takes no page
+    size at all, so the outcome is a property of the body and cannot depend on
+    a page the caller happens to be using.
     """
     if outcome not in _STRUCTURE_REFUSALS:
         raise ValueError(
@@ -404,7 +471,7 @@ def scripted_structure_refusal(
             f"the ones built here are {sorted(_STRUCTURE_REFUSALS)}"
         )
     content = _STRUCTURE_REFUSALS[outcome]
-    parsed = structure_answer.parse(content.encode(), page_w=1000, page_h=1000)
+    parsed = chandra_layout.parse_layout_html(content.encode())
     if parsed.get("parse_outcome") != outcome:
         raise ValueError(
             f"the scripted body refuses as {parsed.get('parse_outcome')!r}, not {outcome!r}"
@@ -467,29 +534,43 @@ def scripted_structure_cut_off(
     page_h: int,
     **fields: Any,
 ) -> ScriptedAnswer:
-    """A whole-page answer the engine stopped mid-object, as a real overrun looks.
+    """A whole-page answer the engine stopped mid-block, as a real overrun looks.
 
-    The body is the complete answer truncated inside its first act, and the
-    stop word is `"length"`. Both matter: the cut-off row of §1.4 holds "parsed
-    or not", so a truncated body must be held as cut off rather than blamed on
-    the chair's JSON.
+    The body is the complete answer truncated inside its first block's text,
+    and the stop word is `"length"`.
+
+    **Under the layout grammar the stop word is the whole signal, and that is
+    the point of this fake.** A truncated JSON object was invalid JSON, so the
+    old cut-off body failed to parse and the hold could have come from either
+    check. HTML degrades instead: `html.parser` reads the truncated block, the
+    grammar returns it with an `unclosed-block` finding, and the page would mint
+    a short act list under a clean `parsed` state if nothing else caught it. So
+    this builder asserts the truncated body **still parses**, which is what
+    makes the test over it a test of `_finish_reason_disposition` running
+    before the parse outcome rather than a coincidence.
 
     **This is the answer-side truncation, and it is real** -- an engine that
     admits a request and then runs out of room to finish it stops exactly like
     this. It is *not* the failure SPEC_D §7 names as the likely first real one:
     a `max_model_len` too small for a page is refused before generation with an
-    HTTP 400 and no choices at all, which is `scripted_prompt_too_long`. This
-    docstring used to claim to script that one, and scripting it in the wrong
-    shape is what let "proven offline against a fake endpoint" mean a claim
-    about wire shape rather than about admissibility.
+    HTTP 400 and no choices at all, which is `scripted_prompt_too_long`.
     """
+    if not acts:
+        raise ValueError("a cut-off answer needs at least one block to be cut off inside")
     whole = structure_answer_body(acts, page_w, page_h)
-    cut = whole[: whole.index('"box_1000"') + len('"box_1000"')]
-    if (
-        structure_answer.parse(cut.encode(), page_w=page_w, page_h=page_h).get("parse_outcome")
-        != "invalid-json"
-    ):
-        raise ValueError("the truncated body still parses; it cannot script a cut-off answer")
+    opening = whole.index(">") + 1
+    cut = whole[: opening + max(1, len(acts[0][1]) // 2)]
+    parsed = chandra_layout.parse_layout_html(cut.encode())
+    if chandra_layout.is_refusal(parsed):
+        raise ValueError(
+            f"the truncated body refuses as {parsed['parse_outcome']!r}; this fake exists to "
+            "prove the hold comes from the stop word over a body that parses"
+        )
+    if [finding["kind"] for finding in parsed["findings"]] != ["unclosed-block"]:
+        raise ValueError(
+            "the truncated body did not leave its last block unclosed, so it does not look "
+            "like an engine that ran out of room mid-block"
+        )
     return ScriptedAnswer(content=cut, finish_reason="length", **fields)
 
 

@@ -184,6 +184,17 @@ def write_catalogue(path: Path, registry) -> Path:
             row = _vllm_row(
                 recipe=identity.serving_recipe, chair=chair, tier=tier, port=8400 + index
             )
+            if chair == "designator_structure":
+                # The shared helper's default 2,048 no longer admits this
+                # chair's request: since v3 it sends Chandra's own
+                # `OCR_LAYOUT_PROMPT`, measured at 593 tokens, and with the
+                # fixture page's 48 image tokens and the 1,575-token dense-page
+                # answer budget the arithmetic is 2,216. Held at 2,048 is the
+                # *correct* outcome (`test_structure_pass.py` proves it against
+                # a real A4 page), and a suite about which acts exist has to get
+                # past admission to say anything at all. This is a test value in
+                # a tmp file, like every other figure in the row.
+                row["max_model_len"] = 4096
             row["preflight_identity_digest"] = identity_digest
             row["preflight_digest"] = profile_preflight_digest(row)
             rows.append(row)
@@ -781,10 +792,14 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     """The engine ran out of room, and the record says so rather than guessing.
 
     SPEC_D §7 names this as the likeliest first real failure: a page's whole
-    transcription overruns `max_model_len`. The body is truncated mid-object
-    and the stop word is `length`, and the hold must name the context window
-    rather than blaming the chair's JSON — otherwise the one measurement this
-    design exists to obtain reads as a model that cannot write JSON.
+    transcription overruns `max_model_len`. The body is truncated mid-block and
+    the stop word is `length`, and the hold must name the context window.
+
+    Under Chandra's layout grammar the body **still parses** — HTML degrades
+    where a truncated JSON object could not — so without the stop-word row this
+    page would seal a short act list under a clean `parsed` state. The whole
+    chain is asserted here: the page is held, page 2 proposes nothing, and its
+    ink reconciles as residual.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(
@@ -802,8 +817,10 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     assert statuses[2]["payload"]["reason_code"] == "structure-answer-cut-off"
     answers = by_page_ordinal(artifacts(run_root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     payload = answers[2]["payload"]
-    assert payload["parse_state"] == "refused"
+    assert payload["parse_state"] == "parsed"
+    assert payload["parse_outcome"] is None
     assert payload["finish_reason"] == "length"
+    assert [finding["kind"] for finding in payload["findings"]] == ["unclosed-block"]
     # The bytes are retained whatever the disposition: they are the evidence.
     tree = RunTree(run_root, RUN_ID)
     retained = tree.read_bytes(payload["raw_response_ref"]["relative_path"])
@@ -816,16 +833,12 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
 @pytest.mark.parametrize(
     "outcome",
     (
-        "invalid-json",
-        "top-level-not-object",
-        "unverified-response-schema",
-        "missing-act-list",
-        "malformed-act",
-        "malformed-act-geometry",
-        "malformed-act-text",
+        "no-layout-blocks",
+        "blocks-not-at-top-level",
+        "too-many-layout-blocks",
     ),
 )
-def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
+def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
     """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
 
     A page whose answer this system cannot read is held with the outcome that
@@ -833,16 +846,13 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, 
     never re-asked, and never quietly tiled as though the chair had answered
     (GOVERNANCE 7).
 
-    This covers 7 of `structure_answer.PARSE_OUTCOMES`' 11 codes — every one
+    This covers 3 of `chandra_layout.PARSE_OUTCOMES`' 6 codes — every one
     `operations/serving/fakes.py::_STRUCTURE_REFUSALS` builds a scripted body
-    for. `raw-response-not-bytes` and `response-too-large` describe the wire
-    itself, not a body the fake endpoint hands back, so no scripted answer can
-    reach them here. `excessive-json-nesting` and `too-many-acts` are
-    constructible over this real chain but have no scripted body yet; all of
-    them, and the full 11, are exercised at the parser level in
-    `common/test_structure_answer.py`, whose
-    `test_no_outcome_can_be_added_to_the_contract_without_a_test_above` pins
-    the declared set so a new code cannot be added there in silence.
+    for. The other three are properties of the response *bytes* rather than of
+    an answer: a `ScriptedAnswer` carries a `str` the pass encodes as UTF-8, so
+    `raw-response-not-bytes` and `invalid-utf8` cannot arrive through an
+    endpoint at all, and `response-too-large` needs a body above 16 MiB.
+    `common/test_chandra_layout.py` reaches all six directly on bytes.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(

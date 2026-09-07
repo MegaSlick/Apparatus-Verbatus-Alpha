@@ -27,15 +27,43 @@ Chandra's own bound. A `"length"` stop still honestly means the answer did not
 fit, and the page is held on it rather than read short (GOALS 1: a truncated
 act list is a missed act).
 
+**What comes back is Chandra's own layout HTML** (Tyrel, 2026-09-06: each
+witness runs as its developers intended). The chair is asked in the vendor's
+own `OCR_LAYOUT_PROMPT` bytes (`structure_prompt.py` v3, carried and sealed in
+`common/chandra_layout.py`) and answers in the vendor's own grammar: top-level
+`<div>` layout blocks carrying `data-bbox` in normalized 0-1000 coordinates and
+`data-label` from the prompt's own nineteen. `common/chandra_layout.py::
+parse_layout_html` reads it; this pass turns each block into a **structure
+proposal** and never into an act's text.
+
+**A block is not automatically a rectangle.** Three kinds of block reach this
+pass with nothing to mint, and each is recorded rather than resolved:
+
+* a block whose `data-bbox` could not be read is retained with `bbox_1000:
+  null`, `raw_bounds: null` and a `malformed-bbox` finding naming its ordinal.
+  It is **never minted**. The vendor substitutes `[0, 0, 1, 1]` here and prints
+  a message claiming the full image; a rectangle the chair never drew would be
+  cut, filed and read as an act (GOVERNANCE 2, GOALS 2).
+* a `Blank-Page` block reports the chair's judgement that there is nothing on
+  the page, and by the grammar's own rule carries no page geometry. It is
+  retained with a `blank-page-retained` finding and mints nothing.
+* character data outside every top-level block is ink in no block and in no
+  span. `parse_layout_html` counts it as a `content-outside-blocks` finding and
+  this pass carries that finding onto the page's record, because a page that
+  parsed cleanly while words sat outside every rectangle is a missed act
+  arriving under a successful status.
+
 **What each answer does to the page** is the closed table in SPEC_D §1.4,
-implemented by `ask_page`: a parsed, complete answer with acts marks the page
-`scanned`/`detected`; a parsed, complete answer with no acts marks it
+implemented by `ask_page`: a parsed, complete answer with at least one
+mintable block marks the page `scanned`/`detected`; a parsed, complete answer
+whose every block is the chair's own `Blank-Page` marks it
 `scanned`/`fallback-tiles` and the page is cut into its predetermined crops
-(Tyrel, 2026-08-11); a cut-off, an unparseable answer, an unusable call, or a
-parsed answer whose rectangles touch none of the ink the scan itself found
-holds the page under a name from `STRUCTURE_HELD_CODES`. A transport or
-serving refusal is fatal, with nothing published for the page. Nothing is
-repaired, retried, or re-asked (GOVERNANCE 7).
+(Tyrel, 2026-08-11); a cut-off, an unparseable answer, an unusable call, an
+answer whose every non-blank block lost its geometry, or a parsed answer whose
+rectangles touch none of the ink the scan itself found holds the page under a
+name from `STRUCTURE_HELD_CODES`. A transport or serving refusal is fatal, with
+nothing published for the page. Nothing is repaired, retried, or re-asked
+(GOVERNANCE 7).
 
 **Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
 section and never under `reading_of_record` (Tyrel, 2026-09-02): the
@@ -51,6 +79,8 @@ running at 0 while the record says otherwise (GOVERNANCE 10).
 (`model_evidence_blocks`) and never overrides them; nothing here ranks,
 selects among, or repairs what the chair returned. A duplicate rectangle mints
 once and is a recorded finding (SPEC_D §2.2), never a choice between the two.
+Dropping an unplaceable block from the mint is not a selection either: it is
+the absence of geometry, recorded, and the block keeps its row on the record.
 """
 
 from __future__ import annotations
@@ -58,13 +88,14 @@ from __future__ import annotations
 import base64
 import dataclasses
 from pathlib import Path
-from typing import Any, Final, Mapping
+from types import MappingProxyType
+from typing import Any, Final, Mapping, TypedDict
 
 import geometry
 import structure
 import structure_prompt
 
-from common import structure_answer
+from common import chandra_layout
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
@@ -90,6 +121,22 @@ from common.stage import (
     STRUCTURE_DECODING_POLICY,
     validate_serving_provenance,
 )
+
+# The three pieces of `common/structure_answer.py` that are **not** its retired
+# JSON acceptance and outlive it: the page-pixel conversion's declared rule
+# name, the newline-between-delivered-texts join rule, and one digest function
+# for a chair's free strings. `common/chandra_layout.py` imports the same
+# module for `to_page_bounds` and `join_delivered_texts` themselves, so this is
+# the shared home for the arithmetic both Chandra readings land in, not a
+# leftover dependency on the wire contract this pass just retired.
+#
+# `QUANTIZATION_RULE`'s value still opens `structure-answer.v1`. That string is
+# the identifier of the *conversion rule* -- low edges floored, far edges
+# ceiled, into sealed-page pixels -- and the arithmetic behind it has not
+# moved, so re-naming it would churn a published value to describe an unchanged
+# computation. It shared a name with the wire contract; it was never the wire
+# contract.
+from common.structure_answer import PAGE_TEXT_RULE, QUANTIZATION_RULE, text_digest
 from operations.serving.client import ChairClient, ChairRequest, ChairResponse, serving_mode_for
 from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from operations.serving.errors import ServingError
@@ -127,6 +174,17 @@ HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
 # is needed to read the ink, and trading a measurable refusal for an
 # unmeasurable misreading is not this pass's decision to make.
 HELD_REQUEST_TOO_LARGE: Final = "structure-request-too-large"
+# The answer parsed and returned blocks, but every block that was not the
+# chair's own `Blank-Page` declaration lost its geometry: a `data-bbox` this
+# stage could not read (`chandra_layout.parse_bbox_attribute` names which rule
+# each one failed).  Distinct from `fallback-tiles`, and the distinction is the
+# whole reason this code exists.  Tiling a page here would record "the chair
+# found nothing on this page" about a chair that found several things and
+# described each of them with a rectangle nobody could read -- a wrong reading
+# published under a successful status, which GOVERNANCE 2 and 10 both forbid.
+# The page is held, its ink reconciles as conservation residual, and every
+# block keeps its row and its `malformed-bbox` finding on the answer record.
+HELD_BLOCKS_WITHOUT_GEOMETRY: Final = "structure-blocks-without-geometry"
 STRUCTURE_HELD_CODES: Final = frozenset(
     {
         HELD_CUT_OFF,
@@ -134,8 +192,9 @@ STRUCTURE_HELD_CODES: Final = frozenset(
         HELD_NO_INK_OVERLAP,
         HELD_RESPONSE_NOT_RETAINED,
         HELD_REQUEST_TOO_LARGE,
+        HELD_BLOCKS_WITHOUT_GEOMETRY,
     }
-    | {f"structure-answer-{outcome}" for outcome in structure_answer.PARSE_OUTCOMES}
+    | {f"structure-answer-{outcome}" for outcome in chandra_layout.PARSE_OUTCOMES}
 )
 
 # What a page's answer did to it. `detected` and `fallback-tiles` are the two
@@ -403,10 +462,24 @@ def page_capacity(profile: Any, page_w: int, page_h: int) -> dict[str, Any]:
     """Whether one whole-page structure request fits the sealed serving row.
 
     The page is the only image this request carries, and it goes at its sealed
-    size: this pass never resizes what it shows the chair.  The answer budget
-    is the measured cost of this chair's own structure JSON over a dense
-    (800-word, six-act) page -- a row that cannot hold that cannot mark out a
-    real register page, whatever it does with a sparse one.
+    size: this pass never resizes what it shows the chair.  The answer budget is
+    the measured cost of a dense (800-word, six-act) page's answer -- a row that
+    cannot hold that cannot mark out a real register page, whatever it does with
+    a sparse one.
+
+    **That budget was measured over the retired JSON answer, and the chair now
+    answers in layout HTML.**  Stated rather than quietly relied on
+    (GOVERNANCE 10): `MEASURED_DENSE_PAGE_ANSWER_TOKENS["designator_structure"]`
+    is 1,575 tokens of `verbatus-structure-answer.v1`, and HTML pays for tags
+    and attributes that the JSON budget never counted, so this number is a
+    figure for a shape the chair no longer produces.  Re-measuring every chair's
+    answer budget at the pinned tokenizers is one unit's whole job in the
+    vendor-systems design and is not split across the units that changed the
+    grammars; what this unit re-measured is the *prompt* half, which it owns.
+    The direction of the error is the safe one for admission -- a bigger real
+    answer means this reserves too little, so a row this admits could still
+    overrun -- and an overrun is not silent: it arrives as `finish_reason
+    "length"` and holds the page under `structure-answer-cut-off`.
     """
 
     return request_fits(
@@ -480,6 +553,22 @@ def page_request(
 # --- the answer -----------------------------------------------------------------
 
 
+class StructureProposal(TypedDict):
+    """One layout block that carries a rectangle on the sealed page.
+
+    Only geometry and the block's ordinal: the block's own text and label live
+    in the retained response bytes and reach the record as a digest and a
+    length, never as a value this stage carries around
+    (`_block_record`, ARCHITECTURE -- the Designator establishes no
+    transcription).  `ordinal` is the block's position in the answer, which is
+    what joins a minted rectangle back to its row and to any finding about it.
+    """
+
+    ordinal: int
+    bbox_1000: list[int]
+    raw_bounds: Bounds
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class PageAnswer:
     """What one page's answer did to it, and the text-free record of the answer.
@@ -495,13 +584,44 @@ class PageAnswer:
     page_id: str
     disposition: str
     reason_code: str | None
-    mint: tuple[structure_answer.ParsedAct, ...]
+    mint: tuple[StructureProposal, ...]
     record: dict[str, Any]
 
 
+def placeable_blocks(
+    blocks: list[chandra_layout.LayoutBlock], page_w: int, page_h: int
+) -> list[StructureProposal]:
+    """Every block the layout grammar gives a sealed-page rectangle for, in order.
+
+    `chandra_layout.block_page_bounds` returns `None` for a `Blank-Page` block
+    and for one whose `data-bbox` could not be read, and there is no third
+    answer and no default -- so this is the whole of the mint candidacy rule,
+    and it is a fact about the grammar rather than a judgement of this pass.
+    A block it skips is not discarded: it keeps its row on the answer record
+    with null geometry, and the finding that says why is already beside it.
+
+    The `bbox_1000 is None` arm is unreachable while `block_page_bounds` keeps
+    its own rule -- it returns `None` for exactly that case -- and it is a plain
+    check rather than an `assert` because an assertion vanishes under `python
+    -O`, and what it would be guarding is a rectangle reaching `cut_minted_region`
+    with no normalized box on its record.
+    """
+    page_size = (page_w, page_h)
+    proposals: list[StructureProposal] = []
+    for block in blocks:
+        bounds = chandra_layout.block_page_bounds(block, page_size=page_size)
+        bbox = block["bbox_1000"]
+        if bounds is None or bbox is None:
+            continue
+        proposals.append(
+            {"ordinal": block["ordinal"], "bbox_1000": list(bbox), "raw_bounds": bounds}
+        )
+    return proposals
+
+
 def dedupe_rectangles(
-    acts: list[structure_answer.ParsedAct],
-) -> tuple[list[structure_answer.ParsedAct], list[dict[str, Any]]]:
+    proposals: list[StructureProposal],
+) -> tuple[list[StructureProposal], list[dict[str, Any]]]:
     """Mint each distinct rectangle once, recording the later ordinals as findings.
 
     The class-and-bounds identity has no ordinal namespace
@@ -511,18 +631,20 @@ def dedupe_rectangles(
     in the retained blob. Not a refusal: GOVERNANCE 7, and a refusal here would
     lose every other act on the page over one the chair drew twice.
     """
-    unique: list[structure_answer.ParsedAct] = []
+    unique: list[StructureProposal] = []
     first_by_rectangle: dict[tuple[int, int, int, int], int] = {}
     findings: list[dict[str, Any]] = []
-    for act in acts:
-        bounds = act["raw_bounds"]
+    for proposal in proposals:
+        bounds = proposal["raw_bounds"]
         key = (bounds["x"], bounds["y"], bounds["w"], bounds["h"])
         prior = first_by_rectangle.get(key)
         if prior is not None:
-            findings.append({"kind": "duplicate-rectangle", "ordinals": [prior, act["ordinal"]]})
+            findings.append(
+                {"kind": "duplicate-rectangle", "ordinals": [prior, proposal["ordinal"]]}
+            )
             continue
-        first_by_rectangle[key] = act["ordinal"]
-        unique.append(act)
+        first_by_rectangle[key] = proposal["ordinal"]
+        unique.append(proposal)
     return unique, findings
 
 
@@ -579,11 +701,30 @@ def _finish_reason_disposition(finish_reason: str | None) -> str | None:
     )
 
 
-def _act_record(act: structure_answer.ParsedAct) -> dict[str, Any]:
-    """One act as the published record carries it: geometry, and text only by digest.
+# The chair's own name for its answer, published on every live page record so
+# a reader can tell which grammar read the retained bytes without opening them.
+# Every value is `common/chandra_layout.py`'s own constant: nothing here names
+# a vendor pin a second time, because two places to state one commit is one
+# place for them to disagree. A re-parse under a different pin is then visibly
+# different rather than silently so (the design's contract boundary, and
+# GOVERNANCE 6's rule for the model identity restated for the grammar).
+ANSWER_GRAMMAR: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+        "repository": chandra_layout.VENDOR_REPOSITORY,
+        "commit": chandra_layout.VENDOR_COMMIT,
+        "licence": chandra_layout.VENDOR_LICENCE,
+        "prompt_source": chandra_layout.VENDOR_PROMPT_SOURCE,
+        "parser_source": chandra_layout.VENDOR_PARSER_SOURCE,
+    }
+)
+
+
+def _block_record(block: chandra_layout.LayoutBlock, page_w: int, page_h: int) -> dict[str, Any]:
+    """One layout block as the published record carries it: geometry, text by digest.
 
     Both free strings the chair returned are reduced the same way. `text` is
-    the page's transcription and was never published. `label` is the chair's
+    the block's transcription and was never published. `label` is the chair's
     own word for the rectangle, and it is the chair's reading too: a marginal
     name or an index row is a whole act in these books (GLOSSARY, "act"), so a
     label is not a shorter kind of thing than a transcription -- it is the same
@@ -591,19 +732,82 @@ def _act_record(act: structure_answer.ParsedAct) -> dict[str, Any]:
     the Designator never establishes the authoritative transcription
     (ARCHITECTURE) and `run.py::_refuse_text_fields` can only match field
     *names*. The digest and the length are what let a reader prove what the
-    retained blob says without the record saying it, and `null` on both stays
-    the honest spelling of "the chair offered no label".
+    retained blob says without the record saying it.
+
+    **Two structural booleans are published in clear, and they are not the
+    label.** `label_declared` says whether the answer carried a `data-label` at
+    all -- the vendor's own `if not label: label = "block"` default otherwise
+    makes an absent label indistinguishable from one the chair wrote as
+    `block`. `blank_page` says whether that label was the grammar's own
+    `Blank-Page`, which is the fact that decides whether the block can be
+    minted; deriving it downstream would mean publishing the label to let
+    someone else compare it. Both are answers to a closed question, carry no
+    span of the chair's prose, and are what the `blank-page-retained` finding
+    beside them refers to.
+
+    `box_1000` and `raw_bounds` are both `null` for a block whose `data-bbox`
+    could not be read and for a `Blank-Page` block. Null is the honest value:
+    the vendor substitutes a rectangle here, and a substituted rectangle on
+    this record would be cut, filed and read as an act.
     """
-    label = act["label"]
+    bbox = block["bbox_1000"]
+    bounds = chandra_layout.block_page_bounds(block, page_size=(page_w, page_h))
+    label = block["label"] if block["label_declared"] else None
+    text = block["text"]
     return {
-        "ordinal": act["ordinal"],
-        "box_1000": list(act["box_1000"]),
-        "raw_bounds": dict(act["raw_bounds"]),
-        "text_digest": structure_answer.text_digest(act["text"]),
-        "text_length": len(act["text"]),
-        "label_digest": None if label is None else structure_answer.text_digest(label),
+        "ordinal": block["ordinal"],
+        "box_1000": None if bbox is None else list(bbox),
+        "raw_bounds": None if bounds is None else dict(bounds),
+        "label_declared": block["label_declared"],
+        "blank_page": block["blank_page"],
+        "text_digest": text_digest(text),
+        "text_length": len(text),
+        "label_digest": None if label is None else text_digest(label),
         "label_length": None if label is None else len(label),
     }
+
+
+# Every finding kind the layout grammar can raise, mapped to the fields this
+# record republishes -- and a kind outside the map refuses rather than
+# publishing.  A projection rather than a pass-through for one reason:
+# `chandra_layout`'s `malformed-bbox` finding quotes the model-written
+# `data-bbox` under a bound, and this stage publishes no model-written string
+# at all (`run.py::_refuse_text_fields` and `_block_record` above).  `reason`
+# and `detail` survive because they are this repository's own sentences naming
+# which rule failed, not bytes the chair wrote.  The retained response blob is
+# where the attribute itself lives, and `ordinal` is what joins this finding to
+# the block that carries it.
+_PUBLISHED_FINDING_FIELDS: Final[Mapping[str, tuple[str, ...]]] = {
+    "malformed-bbox": ("ordinal", "reason"),
+    "blank-page-retained": ("ordinal",),
+    "nested-bbox-retained": ("blocks", "attributes"),
+    "unclosed-block": ("ordinal", "detail"),
+    "block-count-mismatch": ("parsed_blocks", "top_level_divs"),
+    "content-outside-blocks": ("characters", "detail"),
+}
+
+
+def published_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The grammar's findings as the text-free record carries them, in order.
+
+    Refuses an undeclared kind by name rather than dropping it: a finding the
+    grammar raises and this record silently omits is exactly the "lost
+    silently" GOVERNANCE 2 forbids, and it would be invisible -- the page would
+    publish, parse and mint with one fewer fact on it.
+    """
+    published: list[dict[str, Any]] = []
+    for finding in findings:
+        kind = finding["kind"]
+        fields = _PUBLISHED_FINDING_FIELDS.get(kind)
+        if fields is None:
+            raise ContractError(
+                f"the layout grammar raised a {kind!r} finding, which this pass does not know "
+                f"how to publish; the kinds it publishes are "
+                f"{sorted(_PUBLISHED_FINDING_FIELDS)}. A finding is never dropped to let a "
+                "page publish"
+            )
+        published.append({"kind": kind, **{name: finding[name] for name in fields}})
+    return published
 
 
 def _refused_page_answer(
@@ -636,7 +840,7 @@ def _refused_page_answer(
         "page_h": page_h,
         "prompt_version": structure_prompt.STRUCTURE_PROMPT_VERSION,
         "prompt_sha256": structure_prompt.prompt_sha256(),
-        "answer_schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+        "answer_grammar": dict(ANSWER_GRAMMAR),
         "call_record_ref": None,
         "raw_response_ref": None,
         "custody_ref": None,
@@ -653,8 +857,8 @@ def _refused_page_answer(
         "act_count": 0,
         "acts": [],
         "findings": [],
-        "quantization": structure_answer.QUANTIZATION_RULE,
-        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "quantization": QUANTIZATION_RULE,
+        "page_text_rule": PAGE_TEXT_RULE,
         "decoding": {
             "policy": STRUCTURE_DECODING_POLICY,
             "temperature": temperature,
@@ -758,18 +962,25 @@ def ask_page(
     except SchemaRefusal as error:
         custody_problem = str(error)
 
-    parsed: structure_answer.ParsedAnswer | None = None
+    parsed: chandra_layout.ParsedLayout | None = None
     parse_outcome: str | None = None
     if response.parse_problem is None:
         content = response.content if response.content is not None else ""
-        result = structure_answer.parse(content.encode("utf-8"), page_w=page_w, page_h=page_h)
-        if "parse_outcome" in result:
-            parse_outcome = result["parse_outcome"]
+        result = chandra_layout.parse_layout_html(content.encode("utf-8"))
+        if chandra_layout.is_refusal(result):
+            parse_outcome = result["parse_outcome"]  # type: ignore[typeddict-item]
         else:
             parsed = result  # type: ignore[assignment]
 
-    mint: list[structure_answer.ParsedAct] = []
-    findings: list[dict[str, Any]] = []
+    mint: list[StructureProposal] = []
+    # Computed from the parse and not from the disposition: a held page's
+    # findings are the evidence for the hold, and a cut-off or no-ink-overlap
+    # page that published an empty finding list would be hiding the
+    # `unclosed-block`, `malformed-bbox` and `content-outside-blocks` facts that
+    # say what the chair actually returned (GOVERNANCE 2).
+    findings: list[dict[str, Any]] = (
+        [] if parsed is None else published_findings(parsed["findings"])
+    )
     if custody_problem is not None:
         # Checked before the body: an answer this run cannot bind to the call
         # that produced it proposes nothing, whatever it happens to say.
@@ -789,27 +1000,51 @@ def ask_page(
         elif parsed is None:
             disposition, reason_code = DISPOSITION_HELD, f"structure-answer-{parse_outcome}"
         else:
-            unique, findings = dedupe_rectangles(parsed["acts"])
-            if not unique:
-                disposition, reason_code = DISPOSITION_FALLBACK_TILES, None
-            elif analysis["structure_evidence"] == DISPOSITION_DETECTED and not any(
-                touches_ink(act["raw_bounds"], analysis) for act in unique
+            placeable = placeable_blocks(parsed["blocks"], page_w, page_h)
+            unique, duplicates = dedupe_rectangles(placeable)
+            findings.extend(duplicates)
+            if unique:
+                if analysis["structure_evidence"] == DISPOSITION_DETECTED and not any(
+                    touches_ink(proposal["raw_bounds"], analysis) for proposal in unique
+                ):
+                    # The coordinate-space tripwire: the scan found ink and
+                    # nothing the chair drew touches any of it. Not a threshold
+                    # -- zero pixels, page-wide -- and it fires only when the
+                    # scan itself found ink.
+                    disposition, reason_code = DISPOSITION_HELD, HELD_NO_INK_OVERLAP
+                else:
+                    disposition, reason_code = DISPOSITION_DETECTED, None
+                    mint = unique
+            elif any(
+                block["bbox_1000"] is None and not block["blank_page"] for block in parsed["blocks"]
             ):
-                # The coordinate-space tripwire: the scan found ink and nothing
-                # the chair drew touches any of it. Not a threshold -- zero
-                # pixels, page-wide -- and it fires only when the scan itself
-                # found ink.
-                disposition, reason_code = DISPOSITION_HELD, HELD_NO_INK_OVERLAP
+                # At least one block is one the chair meant to place and this
+                # stage could not -- a `data-bbox` that was malformed, or absent
+                # from a block the prompt asked to carry one. Both are the same
+                # fact: the chair found something and said where in a way nobody
+                # can read. Tiling here would record "nothing on this page"
+                # over an answer that described several things (GOVERNANCE 2,
+                # 10).
+                disposition, reason_code = DISPOSITION_HELD, HELD_BLOCKS_WITHOUT_GEOMETRY
             else:
-                disposition, reason_code = DISPOSITION_DETECTED, None
-                mint = unique
+                # Nothing to place and nothing lost placing it. Reached only
+                # when every block is the chair's own `Blank-Page`: a block that
+                # is not blank and has a box is placeable and would be in
+                # `unique`, and one that is not blank and has no box is the arm
+                # above. The page is cut into its predetermined crops (Tyrel,
+                # 2026-08-11), which is what "the chair sees no text" did before
+                # this grammar too.
+                disposition, reason_code = DISPOSITION_FALLBACK_TILES, None
     if reason_code is not None and reason_code not in STRUCTURE_HELD_CODES:
         raise ContractError(  # pragma: no cover - closed by construction above
             f"page {ordinal} would be held under {reason_code!r}, which is not a declared "
             "structure hold code"
         )
 
-    acts_record = [_act_record(act) for act in (parsed["acts"] if parsed is not None else [])]
+    blocks_record = [
+        _block_record(block, page_w, page_h)
+        for block in (parsed["blocks"] if parsed is not None else [])
+    ]
     record = {
         "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,
@@ -818,7 +1053,7 @@ def ask_page(
         "page_h": page_h,
         "prompt_version": structure_prompt.STRUCTURE_PROMPT_VERSION,
         "prompt_sha256": structure_prompt.prompt_sha256(),
-        "answer_schema": structure_answer.STRUCTURE_ANSWER_SCHEMA,
+        "answer_grammar": dict(ANSWER_GRAMMAR),
         "call_record_ref": dict(response.call_record_ref),
         "raw_response_ref": None if custody is None else dict(custody["response_ref"]),
         "custody_ref": None if custody is None else dict(custody["custody_ref"]),
@@ -832,11 +1067,11 @@ def ask_page(
         "parse_outcome": parse_outcome,
         "disposition": disposition,
         "reason_code": reason_code,
-        "act_count": len(acts_record),
-        "acts": acts_record,
+        "act_count": len(blocks_record),
+        "acts": blocks_record,
         "findings": findings,
-        "quantization": structure_answer.QUANTIZATION_RULE,
-        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "quantization": QUANTIZATION_RULE,
+        "page_text_rule": PAGE_TEXT_RULE,
         # The posture this call actually ran under, per call: the sealed
         # section by name, the value read from the sealed bytes, and the digest
         # of those bytes (Tyrel, 2026-09-02: sealed and recorded per run).
@@ -863,9 +1098,9 @@ def ask_page(
 # --- minting geometry ----------------------------------------------------------
 
 
-def validated_rectangle(act: structure_answer.ParsedAct, page_w: int, page_h: int) -> Bounds:
+def validated_rectangle(proposal: StructureProposal, page_w: int, page_h: int) -> Bounds:
     """The chair's rectangle in page pixels, checked against the page it was drawn on."""
-    bounds = dict(act["raw_bounds"])
+    bounds = dict(proposal["raw_bounds"])
     geometry.validate_bounds(bounds, page_w, page_h, "structure-chair rectangle")
     return bounds  # type: ignore[return-value]
 
