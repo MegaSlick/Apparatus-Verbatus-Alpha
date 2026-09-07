@@ -270,19 +270,38 @@ attach's `no-page-anchor`, the blank-confirmation path the fixture already
 exercises). `declared_chandra_anchor_chair` names the anchor chair on both
 routes.
 
-**What the live alignment does not do, and why the e2e export is still held.**
-Alignment supplies a span inside a witness's own text; attachment is the page
-geometry that chair reported against the sealed proposal, and a chair with no
-reported geometry is not attached. Churro publishes no native layout, so on
-the live path its page text aligns to the derived anchor and it stays
-`attached: false`, `comparable: false`, with its `aligned` alignment retained
-beside it and no span -- the record says both facts. The fixture attaches
-Churro only through a declared `[[native_observation]]` row, which a live pass
-does not read. Deriving Churro's geometry from Chandra's anchor lines would be
-one chair's geometry attributed to another (the "never chair against chair"
-rule of the adapter contract below), so it is not done here; a Churro layout
-channel is Unit 12's obligation, and until it lands a live run counts two
-witnesses of a floor of three and holds for review.
+**What the live alignment does not do.** Alignment supplies a span inside a
+witness's own text; attachment is the page geometry that chair reported against
+the sealed proposal, and a chair with no reported geometry is not attached.
+Deriving one chair's geometry from another's anchor lines would be one chair's
+geometry attributed to another (the "never chair against chair" rule of the
+adapter contract below), so it is never done. A page witness whose body carries
+no layout therefore aligns and stays `attached: false`, `comparable: false`,
+with its `aligned` alignment retained beside it and no span -- the record says
+both facts.
+
+**Unit 12 closed that for Churro by asking, not by anchoring.** Churro had no
+layout because nobody had asked it for one: its card documents no output format
+at all, and its trained prompt asks for `<output>` text and reading order, never
+coordinates. The served chair is now asked for the closed shape
+`common/churro_response.py` declares (`feeding.churro_layout_prompt`), and when
+it answers in that shape it attaches by **its own** boxes against the act's own
+sealed proposal, basis `geometric-overlap` -- exactly as Chandra does, with
+nothing selecting between them (GOVERNANCE 3, hard rule 8). The trained envelope
+stays fully legal, and a body in it lands exactly where a Churro body landed
+before: read, retained, aligned, unattached.
+
+**What the floor now rests on, said plainly.** `comparable` requires `attached`
+**and** `alignment.status == "aligned"`, and every page witness's alignment is
+computed against the anchor derived from the Chandra chair's response. So from
+Unit 12 forward the third witness counts toward the floor only because the first
+located its text. That is not the attachment rule this section forbids -- the
+geometry is Churro's own, and the anchor is a text-locating instrument the closed
+alignment schema already refuses to treat as a preference -- but it is a real
+narrowing of what "three independent witnesses" means: two independent readings
+and one dependent comparability, not three unrelated readings agreeing. The
+dependency was inert while Churro could never count. It is load-bearing now, and
+any later claim about witness independence has to say so.
 
 **A page witness's geometry on a continuation page is a record the Perlector
 now reads.** `attached` is derived from geometry alone on every contributing
@@ -506,17 +525,34 @@ stage's live pass as one link in a whole run: the real stage programs to the
 Designator, this stage's three live witness chairs, a live Perlector, and then
 the Recensor, Archetypus and Armarium over what both wrote — the first time any
 stage after the Perlector has read a live tree. They read it: the run seals a
-terminal export. It is **held for review, not delivered**, and the reason is
-one named limit of this stage's rather than anything downstream. Each act
-counts two witnesses of a floor of three: Chandra reads under its contract, is
-attached by its own block geometry and aligned against the anchor derived from
-its own response; DAI reads its crops; Churro's page text aligns to that same
-anchor but Churro publishes no native layout, so on the live path its only
-geometry is the presented echo, which routing excludes, and it stays
-geometrically unattached with its alignment retained beside it. The fixture
-posture attaches Churro through a declared `[[native_observation]]` row, and a
-live pass reads none. That is the honest current measurement of a live roster,
-and a Churro layout channel (Unit 12's obligation) is what will move it.
+terminal export, and since Unit 12 it is **delivered**. Each act counts three
+witnesses of a floor of three: Chandra reads under its contract, attached by its
+own block geometry and aligned against the anchor derived from its own response;
+DAI reads its crops, basis `presented-region`; Churro answers the closed shape
+its own prompt asks for and attaches by its own boxes, aligned against the same
+anchor.
+
+**Two holds went, and only one of them was ever asserted.** The witness floor
+was. The second was `testimony_shortfall`: the Recensor diffs each page
+witness's retained page text against the union of its attached-and-aligned
+spans, so an unattached page witness's WHOLE page text was uncovered and the
+page held for that reason too, independently of the floor, on every live export.
+Nothing measured it. The e2e now asserts both separately and by name before it
+asserts `reasons == []`, so either returning says which.
+
+**What that does and does not claim.** One scripted run over a fixture whose
+page text is exactly its two acts reaches `delivered`. Nothing follows about a
+real page (GOVERNANCE 10, hard rule 1). A real register carries headers, folio
+numbers and marginalia no proposal covers; Churro will transcribe them; that
+page will hold on content coverage. That is the rule working (GOALS 1), and it
+is *better* than before this unit, not worse — an unattached witness covered
+nothing at all. Two other consequences arrive with a real page and are named
+rather than deferred: Churro's blocks outside every sealed proposal now reach
+`unrouted_observations`/`partition_disagreement` and can route a bounded
+fallback recrop against the shared cap of three (GOVERNANCE 11), and a block
+overlapping two acts becomes likelier, which
+`refuse_ambiguous_act_alignments` names rather than resolves — resolving it
+would be picking.
 
 ## Real ingress
 
@@ -813,11 +849,36 @@ unfinished choices in this contract:
   could not carry is a published vendor specimen, because none exists; the
   contract is this repository's question, and the first pod reading's retained
   bytes are the specimen.
-* **Unit 12 (Churro)** replaces the fixture-only Churro serve with the real
-  full-page XML boundary while keeping raw bytes, parse failure, truncation and
-  post-capture repetition visible. It declares whether it has any native
-  quantization to apply (rather than inheriting another adapter's rule) and
-  carries its own published specimen evidence.
+* **Unit 12 (Churro)** — landed. The fixture-only serve is replaced by the real
+  full-page boundary, with raw bytes, parse failure, truncation and
+  post-capture repetition all still visible, and the chair gains a layout
+  channel: `pipeline/3_attestatores/churro.py` owns its five operations, and
+  `common/churro_response.py` is the closed shape its live prompt asks for. Both
+  halves of this clause, answered:
+  - **Native quantization: none to inherit and none inherited.** Churro's card
+    documents no output format at all, so there was no native rule to apply.
+    `churro.QUANTIZATION_RULE` is its own declared rule -- the same arithmetic
+    Chandra's spells, under Churro's own name, because a rule acquired by
+    omission is a rule nobody declared for that chair.
+  - **Published specimen evidence: still none, and Unit 11's precedent is
+    consumed rather than re-argued.** The vendor publishes no response body, so
+    the contract is this repository's question and the first pod reading's
+    retained bytes are the specimen. A body in any other shape is refused by
+    name with its bytes already retained, reaching the capture as
+    `unrecognized-shape` -- the parser ran and could name no shape it knows,
+    which is a different fact from a parse failure and a state Churro could not
+    reach before.
+
+  Two things a later reader should not have to rediscover. The **parser name
+  selects the parser**: `xml` is the fixture posture's and reaches
+  `validate_churro_xml` alone, `churro` is the live posture's and reaches both
+  legal shapes, and `verify_native_capture_bytes` re-derives under the name the
+  record carries -- so fixture byte identity is a property of the dispatcher,
+  not of the corpus. And the **contract lives in `common/`, not beside
+  `chandra_response.py`**, because three stages re-derive a Churro capture from
+  its retained blob and neither reader may import an Attestatores module; a
+  parser under the stage would leave both re-deriving through a branch they
+  cannot reach.
 * **Unit 13 (DAI)** adds DAI's exact registry rows and extends the closed
   transform for its adapter-owned crop/resize so the shown pixels remain
   reproducible. The landed adapter begins from its assigned Designator proposal;
