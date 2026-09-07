@@ -36,7 +36,7 @@ def _native_capture() -> dict:
         "adapter": "churro.v1",
         "view": {
             "prompt": {"system": "system prompt", "user": "user prompt"},
-            "generation": {"max_new_tokens": 24_000},
+            "generation": {"max_new_tokens": 20_000},
         },
         "raw_response_ref": {
             "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -667,7 +667,7 @@ def _page_with_churro_capture() -> dict:
                 "adapter": "churro.v1",
                 "view": {
                     "prompt": {"system": "system prompt", "user": "user prompt"},
-                    "generation": {"max_new_tokens": 24_000},
+                    "generation": {"max_new_tokens": 20_000},
                 },
                 "raw_response_ref": {
                     "relative_path": f"3_attestatores/blobs/sha256/{digest}",
@@ -719,7 +719,7 @@ def _page_with_churro_capture() -> dict:
             lambda value: value["native_capture"]["view"]["generation"].update(
                 max_new_tokens=10**100
             ),
-            "24000-token bound",
+            "20000-token bound",
         ),
         (
             lambda value: value["native_capture"].update(stop_reason="partial-parse-failed"),

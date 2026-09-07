@@ -39,6 +39,7 @@ from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.decoding import load_decoding_policy
 from common.fixture_identity import page_identity
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 from common.runtree.store import RECEIPTS_DIR, RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -519,7 +520,17 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         # trained order, and the token sequence the chat template emits.
         assert messages[0]["content"][0]["type"] == "image_url"
         assert messages[0]["content"][1]["type"] == "text"
+        # Chandra's own 12,384-token bound against what this row leaves: the
+        # fixture pages are 200x260 and cost 48 image tokens, the prompt is the
+        # measured 325, and the live row states `max_model_len` 4,096. The row
+        # is what binds, so no bound goes on the wire and the engine's own
+        # budget -- the same quantity, measured by the component that holds the
+        # tokenizer -- governs, exactly as before.
+        assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 325
         assert "max_tokens" not in request
+        # Thinking mode closed, whichever of the two shipped chat templates the
+        # engine resolves (`common/chair_wire.py`).
+        assert request["chat_template_kwargs"] == {"enable_thinking": False}
         assert request["temperature"] == 0
     tree = RunTree(root, RUN_ID)
 

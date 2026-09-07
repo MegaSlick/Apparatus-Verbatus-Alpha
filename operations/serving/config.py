@@ -84,7 +84,10 @@ _PROFILE_FIELDS = {
 }
 # Optional on a vLLM row, and optional deliberately.  ``patch_size``/
 # ``merge_size`` are the chair's vision-encoder geometry, read from the pinned
-# revision's own ``preprocessor_config.json``; they decide how many prompt
+# revision's own processor configuration -- ``preprocessor_config.json`` where
+# the repository ships one, ``processor_config.json`` (under its
+# ``image_processor`` object) where it does not, which for `attestator_2`'s
+# pinned DAI revision is the only one that exists; they decide how many prompt
 # tokens one image costs (``common/request_capacity.py``).  vLLM reads them
 # from the model repository, so a row that omits them still launches -- what it
 # cannot do is have a request checked against it before it is sent, and

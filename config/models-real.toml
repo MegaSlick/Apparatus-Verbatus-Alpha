@@ -20,6 +20,20 @@ recensor = "unproven-real-recensor"
 archetypus = "unproven-real-archetypus"
 armarium = "unproven-real-armarium"
 
+# Which framing each witness chair is asked in, for the one chair whose adapter
+# has more than one. Stated explicitly rather than left to the adapter's default
+# so a run says, in its own sealed configuration, which question it asked -- and
+# so an A/B between the two is a line here rather than an edit to code on a pod.
+# The resolved name is written onto every Testimonium the chair produces.
+#
+# `churro-layout-prompt.v1` is Unit 12's instruction and is the value that was
+# already in force; **this declaration does not change it.** Whether the trained
+# framing (`churro-trained-prompt.v1`, the carried Table 6 prompt the model was
+# published with) should become the default is Tyrel's decision, and the
+# correction plan puts it to him as Q4 with a Stage 2 measurement behind it.
+[witness_framings]
+attestator_3 = "churro-layout-prompt.v1"
+
 [chairs.designator_structure]
 state = "configured"
 source = "huggingface"

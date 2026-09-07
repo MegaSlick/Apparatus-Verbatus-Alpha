@@ -295,7 +295,7 @@ def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context(
     record = request_fits(
         _row(),
         [A4_300DPI],
-        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        _live_framing_tokens("attestator_3"),
         dense_page_answer_budget("attestator_3"),
     )
     assert record["image_prompt_tokens"] + record["prompt_tokens"] == 7134
@@ -308,7 +308,7 @@ def test_the_same_request_fits_once_the_row_states_a_larger_context():
     record = request_fits(
         _row(max_model_len=16384),
         [A4_300DPI],
-        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        _live_framing_tokens("attestator_3"),
         dense_page_answer_budget("attestator_3"),
     )
     assert record["fits"] is True
@@ -404,12 +404,19 @@ def test_a_negative_count_is_refused_rather_than_defaulted(field):
 # import a stage across the boundary `common/README.md` draws.
 
 
+def _live_framing_tokens(chair: str) -> int:
+    """The first measured framing's cost -- the one a run sends by default."""
+
+    return MEASURED_PROMPT_TOKENS[chair][0].tokens
+
+
 def test_an_edited_prompt_invalidates_its_measured_token_count():
     with pytest.raises(RequestCapacityRefusal) as refusal:
         sealed_prompt_tokens("attestator_3", "a system prompt nobody measured", "and its user turn")
     message = str(refusal.value)
-    assert "changed after it was measured" in message
-    assert MEASURED_PROMPT_TOKENS["attestator_3"].prompt_digest in message
+    assert "changed after it was measured, or it is a framing nobody has measured" in message
+    for entry in MEASURED_PROMPT_TOKENS["attestator_3"]:
+        assert entry.prompt_digest in message
 
 
 def test_a_chair_with_no_measurement_is_refused_rather_than_estimated():
@@ -604,20 +611,26 @@ def test_every_measured_prompt_names_the_tokenizer_the_real_roster_pins():
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    # A chair with more than one measured framing carries one entry per framing
+    # (`MEASURED_PROMPT_TOKENS`), and every one of them is reconciled: an index
+    # suffix keys them apart here and is stripped before the roster lookup.
     measured = {
-        chair: (entry.repo, entry.revision) for chair, entry in MEASURED_PROMPT_TOKENS.items()
+        f"{chair}[{index}]": (entry.repo, entry.revision)
+        for chair, entries in MEASURED_PROMPT_TOKENS.items()
+        for index, entry in enumerate(entries)
     }
-    measured["perlector"] = PERLECTOR_MEASURED_TOKENIZER
+    measured["perlector[0]"] = PERLECTOR_MEASURED_TOKENIZER
 
     disagreements = []
-    for chair, (repo, revision) in sorted(measured.items()):
+    for key, (repo, revision) in sorted(measured.items()):
+        chair = key.split("[", 1)[0]
         identity = roster.get(chair)
         if not isinstance(identity, ChairIdentity):
-            disagreements.append(f"{chair}: measured against {repo}@{revision}, roster has none")
+            disagreements.append(f"{key}: measured against {repo}@{revision}, roster has none")
             continue
         if (identity.repo, identity.revision) != (repo, revision):
             disagreements.append(
-                f"{chair}: measured against {repo}@{revision}, "
+                f"{key}: measured against {repo}@{revision}, "
                 f"roster says {identity.repo}@{identity.revision}"
             )
     assert disagreements == []
@@ -635,6 +648,9 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    # A chair with more than one measured framing carries one entry per framing
+    # (`MEASURED_PROMPT_TOKENS`), and every one of them is reconciled: an index
+    # suffix keys them apart here and is stripped before the roster lookup.
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }

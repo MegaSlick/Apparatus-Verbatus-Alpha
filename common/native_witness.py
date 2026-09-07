@@ -21,6 +21,7 @@ from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 # `native` and `derived` are reported-ink evidence. `presented` only associates
@@ -64,24 +65,30 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
-# Churro's *declared* output bound: its carried HuggingFace-generate
-# `max_new_tokens`, retained on every request's `generation_declared` and in
-# every retained Churro model view as the record of what Churro would have been
-# asked for.  It is no longer, by itself, what goes on the wire.  Every sealed
-# Churro serving row caps `max_model_len` well below it (8,192 at 24 GB and
-# 48 GB and 16,384 at 80 GB+ in `config/serving_recipes_real.toml`, since the
-# request-capacity unit raised them from 2,048/4,096/8,192; every one of the
-# six numbers is far under 24,000, which is what this comment turns on), and
-# vLLM refuses a request whose prompt
-# plus `max_tokens` exceeds the row's context, so
-# `pipeline/3_attestatores/live_witness.py::churro_generation_sent` sends this
-# value only where the sealed row is strictly longer than it and otherwise
-# sends no bound at all, leaving the row's own `max_model_len` to bound
-# generation.  Four MiB still allows more than 174 UTF-8 response bytes per
-# declared token -- far beyond an OCR transcription -- while giving the XML
-# parser and the post-hoc repetition scan a hard ceiling whatever bound the
-# request carried.
-CHURRO_OUTPUT_TOKENS: Final = 24_000
+# Churro's *declared* output bound, retained on every request's
+# `generation_declared` and in every retained Churro model view as the record
+# of what Churro's own pipeline asks for.  It is not, by itself, what goes on
+# the wire: `common/request_capacity.py::sendable_max_tokens` sends
+# `min(this, max_model_len - image - prompt)` against the request's own
+# capacity record, because vLLM's admission rule is
+# `prompt_tokens + max_tokens <= max_model_len` and every sealed Churro row
+# caps `max_model_len` far below this number (8,192 at 24 GB and 48 GB, 16,384
+# at 80 GB+).
+#
+# **The number is the CHURRO paper's, not a carried configuration value.** It
+# was 24,000 here, described as Churro's "carried HuggingFace-generate
+# `max_new_tokens`"; the model's `generation_config.json` at the pinned
+# revision carries no such field, so that description named a source that does
+# not exist.  20,000 is section B.2's, "chosen to allow generation of all gold
+# outputs", and it is declared once for the whole repository in
+# `request_capacity.DECLARED_ANSWER_BOUND_TOKENS` beside the other three
+# chairs' bounds, so one chair's bound cannot drift from the table the wire
+# value is computed from.
+#
+# Four MiB still allows more than 209 UTF-8 response bytes per declared token
+# -- far beyond an OCR transcription -- while giving the XML parser and the
+# post-hoc repetition scan a hard ceiling whatever bound the request carried.
+CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 # One name, so the chair's two legal shapes cannot acquire two intake bounds.
 # The number is declared beside the wire contract that also has to enforce it
 # (`common/churro_response.py`), and re-exported here because this module is
@@ -1328,10 +1335,21 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             f"{value['transport_stop_reason']!r}"
         )
     view = value["view"]
-    if set(view) != {"prompt", "generation"}:
+    # `framing` is admitted and optional, and both halves of that are
+    # deliberate. Optional, because every record written before this chair had
+    # more than one framing is still exactly what it was and stays valid.
+    # Admitted, because a live reading is now taken under one of several
+    # declared framings (`pipeline/3_attestatores/churro.py::FRAMINGS`) and the
+    # record has to be able to say which -- the prompt bytes beside it identify
+    # the wording, but only a reader who already knows both wordings can tell
+    # them apart, and a run's own name for the question it asked is the fact an
+    # A/B compares on.
+    if set(view) - {"framing"} != {"prompt", "generation"}:
         raise SchemaRefusal(
             "a Churro page capture does not retain exactly its prompt and generation view"
         )
+    if "framing" in view and (not isinstance(view["framing"], str) or not view["framing"]):
+        raise SchemaRefusal("a Churro page capture names a framing that is not a nonblank string")
     prompt, generation = view["prompt"], view["generation"]
     if (
         not isinstance(prompt, dict)

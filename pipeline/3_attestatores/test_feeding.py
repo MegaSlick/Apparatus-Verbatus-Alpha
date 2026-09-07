@@ -159,7 +159,7 @@ def test_a_comment_inside_the_output_element_does_not_shorten_the_transcription(
     assert validate_churro_xml(raw) == expected
 
 
-def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
+def test_churro_records_its_declared_bound_and_detects_repetition_after_complete_capture():
     tree = _Tree()
     raw = b"a" * 72
     record = retain_model_view(
@@ -170,7 +170,8 @@ def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_captur
         transport_stop_reason="eos",
         parser="xml",
     )
-    assert CHURRO_OUTPUT_TOKENS == 24_000
+    # The CHURRO paper section B.2's own bound, not a number of ours.
+    assert CHURRO_OUTPUT_TOKENS == 20_000
     assert record["raw_response_ref"]["sha256"] == digest_bytes(raw)
     assert record["findings"][0]["kind"] == "post-hoc-repetition"
     assert record["stop_reason"] == "partial-parse-failed"

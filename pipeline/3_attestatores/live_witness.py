@@ -67,42 +67,32 @@ a "minus" subtraction, so a future carried key nobody has named yet defaults
 to *not* being sent (GOVERNANCE 7: never send a vendor value silently) instead
 of leaking onto the wire by omission from a denylist.
 
-**Churro's token bound is declared at 24,000 and sent only where the sealed row
-can hold it.** ``common.native_witness.CHURRO_OUTPUT_TOKENS`` is Churro's
-carried HuggingFace-generate value, and ``generation_declared`` retains it on
-every request and in the retained model view exactly as before: it is the
-record of what Churro would have been asked for. What goes on the wire is a
-different question, and only the sealed serving row the chair actually runs
-under can answer it. Every Churro row in ``config/serving_recipes_real.toml``
-caps ``max_model_len`` well below it -- 8,192 and 16,384 since the capacity
-unit raised them, 2,048/4,096/8,192 before that -- and vLLM refuses a request whose
-prompt plus ``max_tokens`` exceeds that -- so sending 24,000 made the first
-real call a 400 on a card that bills by the hour. ``churro_generation_sent``
-therefore renames the declared key to vLLM's ``max_tokens`` only when **this
-request's own prompt plus the declared bound** fits the row's ``max_model_len``,
-and otherwise sends **no** bound at all: with no ``max_tokens`` the engine
-bounds generation by ``max_model_len`` itself, which is the answer budget
-measured by the one component that holds the tokenizer and the image.
+**Every chair's generation bound is now decided by one rule, against the
+sealed row.** ``common/request_capacity.py::sendable_max_tokens`` holds it:
+``min(the chair's declared upstream bound, max_model_len - image tokens -
+prompt tokens)``, both terms read off *this request's own* capacity record.
+``generation_bound_sent`` below is this module's name for it, used at all three
+witness builders; ``pipeline/2_designator/structure_pass.py`` calls the shared
+function directly for the fourth chair.
 
-The prompt is part of that sum because vLLM's admission rule is
-``prompt_tokens + max_tokens <= max_model_len``, not ``max_tokens <
-max_model_len``. Comparing the bound against the row alone was right about
-every row this catalogue ships -- all three Churro contexts are far below
-24,000 -- and wrong about the rule: a row stating 24,001 would have been sent
-the full 24,000 beside a 2,280-token page image, and refused. The count it now
-consults is the request's own measured prompt cost from the capacity record the
-paragraph below builds (``image_prompt_tokens + prompt_tokens``), so nothing
-here estimates: the image cost is ``smart_resize``'s integer arithmetic over
-numbers the row states, and the prompt cost is a measured constant bound by
-digest to the exact text.
+This generalises what used to be Churro's rule alone -- DAI and Chandra sent no
+bound at all, which is not the same as being unbounded: with no ``max_tokens``
+the engine sets the answer budget to ``max_model_len - prompt`` itself, so a
+DAI act crop was free to generate some 7,700 tokens where its own publisher
+runs it at 1,024.
 
-**That count is a measured floor, not a guarantee of admission.** It is what
-this repository has measured of the request's prompt; vLLM's own assembly has
-never been observed (``common/request_capacity.py``). So this prevents the
-overrun the arithmetic can see, and a bound it lets through is not thereby
-proved admissible. A ``"length"`` stop under this rule honestly means the
-context was exhausted, exactly as it already does for the Perlector and the
-Designator, neither of which sends a bound either.
+**The row term is expressed by sending no field, and the vendor's term by
+sending one.** The prompt cost this seam can measure is a floor -- vLLM's own
+assembly has never been observed to agree with it -- so putting the row term on
+the wire would turn a one-token undercount into an HTTP 400 before generation,
+on a card that bills by the hour. Sending nothing cannot fail that way and is
+exactly what the engine already did. A value therefore goes out only where the
+*declared* bound is strictly smaller than what the row leaves, which is the
+only case where the vendor's number changes anything -- and the gap between the
+two terms is then also the margin against an undercount, thousands of tokens
+wide at every shipped row. A ``"length"`` stop means the vendor's bound
+wherever one was sent and the context wherever none was, and the retained
+chair-call record's ``generation_sent`` says which.
 
 **Whether a request fits is a different question from what may be sent, and it
 is asked of every chair here.** The paragraph above bounds Churro's generation;
@@ -160,6 +150,7 @@ from typing import Any, Final, Mapping
 
 import feeding
 
+from common.chair_wire import chandra_wire_fields
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
@@ -177,6 +168,7 @@ from common.request_capacity import (
     dense_page_answer_budget,
     refuse_unless_it_fits,
     sealed_prompt_tokens,
+    sendable_max_tokens,
 )
 from operations.serving.client import ChairRequest, ChairResponse
 
@@ -423,6 +415,10 @@ def act_chair_request(
         for key in _DAI_GENERATION_SENT_KEYS
         if key in generation_declared
     }
+    generation_sent.update(generation_bound_sent(_ADAPTER_CHAIRS["dai.v1"], capacity))
+    # The second EOS id the engine never reads off the model's own file
+    # (`feeding.dai_wire_stop_token_ids`).
+    generation_sent.update(feeding.dai_wire_stop_token_ids())
     request = ChairRequest(
         kind="chat-completions",
         messages=messages,
@@ -434,66 +430,18 @@ def act_chair_request(
     return ActChairRequest(request=request, presented=presented, prompt=prompt, capacity=capacity)
 
 
-def row_context_bound(profile: Any, adapter_name: str) -> int:
-    """The sealed serving row's own context length, or a refusal naming the row.
+def generation_bound_sent(chair: str, capacity: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``max_tokens`` this chair's request carries, from the sealed row.
 
-    ``ChairClient.handle.profile`` is the
-    `operations/serving/config.py::ServingProfile` the chair actually runs
-    under, and its ``max_model_len`` is the only field in the serving contract
-    that says how long a request the engine will accept -- there is no separate
-    answer-budget field, and ``smoke.py`` sends no bound at all. A row that
-    cannot state it is refused here by name, before a request is built, rather
-    than discovered as a wire refusal after a pod is already billing.
+    ``common.request_capacity.sendable_max_tokens`` holds the rule and the
+    declared bounds; this is the Attestatores-local name for it, kept so the
+    three builders below read the same as the Designator's own call site and so
+    an adapter name is never what decides a bound. Returns ``{}`` where the
+    sealed row is what binds -- see that function for why the row term is
+    expressed by sending no field rather than by sending our own count of it.
     """
 
-    max_model_len = getattr(profile, "max_model_len", None)
-    if not isinstance(max_model_len, int) or isinstance(max_model_len, bool) or max_model_len <= 0:
-        raise SchemaRefusal(
-            f"the sealed serving row for {adapter_name} (recipe="
-            f"{getattr(profile, 'recipe', None)!r}, chair={getattr(profile, 'chair', None)!r}, "
-            f"tier={getattr(profile, 'tier', None)!r}) states no positive max_model_len, so "
-            "nothing here can say what request length it accepts; a generation bound is never "
-            "sent on a guess"
-        )
-    return max_model_len
-
-
-def churro_generation_sent(
-    profile: Any, generation_declared: Mapping[str, Any], *, prompt_tokens: int
-) -> dict[str, Any]:
-    """Churro's declared token bound as the sealed row will actually take it.
-
-    Sent as vLLM's ``max_tokens`` only when ``prompt_tokens`` plus the declared
-    bound fits the row's ``max_model_len``; otherwise nothing is sent and the
-    engine bounds generation by ``max_model_len`` itself.
-
-    ``prompt_tokens`` is this request's own measured prompt cost -- the capacity
-    record's ``image_prompt_tokens + prompt_tokens``, the image's cost under
-    ``smart_resize`` at the row's own geometry plus the digest-bound measured
-    constant for Churro's prompt. It is a **measured floor**: vLLM's own prompt
-    assembly has never been observed by this repository
-    (``common/request_capacity.py``). So this prevents the overrun the
-    arithmetic can see -- a bound sent beside a prompt that already exhausts the
-    context -- and does not guarantee the engine admits what it does send.
-
-    Comparing the bound against the row alone was the earlier rule. It agreed
-    with this one on every shipped row, because all three Churro contexts are
-    far below 24,000, and disagreed with vLLM: at ``max_model_len = 24001`` it
-    sent the whole 24,000 beside a page image and the engine refused the
-    request. See the module docstring's "Churro's token bound" paragraph.
-    """
-
-    max_model_len = row_context_bound(profile, "churro.v1")
-    declared_bound = generation_declared["max_new_tokens"]
-    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens < 0:
-        raise SchemaRefusal(
-            f"a Churro generation bound is decided against this request's own measured prompt "
-            f"cost, which was given as {prompt_tokens!r}; a bound is never sent against a "
-            "prompt count nobody measured"
-        )
-    if prompt_tokens + declared_bound <= max_model_len:
-        return {"max_tokens": declared_bound}
-    return {}
+    return sendable_max_tokens(chair, capacity)
 
 
 #: The adapters this seam knows how to build a page request for and capture a
@@ -504,6 +452,18 @@ def churro_generation_sent(
 _PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1"})
 
 
+def _framed_prompt(adapter: Any, framing: str | None) -> Mapping[str, Any]:
+    """One adapter's prompt, under the framing this run resolved for its chair.
+
+    ``None`` means the adapter has one framing and there is nothing to name
+    (``witness_adapters.framing_for``); the adapter is then asked exactly as it
+    always was, so an adapter with a single prompt keeps a zero-argument
+    ``prompt()`` and no call site has to know which kind it holds.
+    """
+
+    return adapter.prompt() if framing is None else adapter.prompt(framing)
+
+
 def page_chair_request(
     context: Any,
     adapter: Any,
@@ -511,6 +471,7 @@ def page_chair_request(
     presentation: Mapping[str, Any],
     *,
     profile: Any,
+    framing: str | None = None,
 ) -> ChairRequest:
     """Build one page-scoped (Churro or Chandra) reading request from a whole page.
 
@@ -533,7 +494,7 @@ def page_chair_request(
 
     presented = adapter.present(context, dict(presentation))
     image_bytes = _presented_image_bytes(context, presented)
-    prompt = adapter.prompt()
+    prompt = _framed_prompt(adapter, framing)
     image_sha256s = (presented["image_sha256"],)
     if set(prompt) == {"system", "user"}:
         # Churro's two-message framing (`feeding.churro_prompt`).
@@ -563,20 +524,35 @@ def page_chair_request(
         scope="page",
         what=f"the {adapter_name} request for page {presentation.get('source_page_ordinal')!r}",
     )
+    # Only Churro carries a vendor generation view to retain as evidence
+    # (`feeding.churro_generation`); Chandra's repository ships no sampling
+    # parameters at all, so there is nothing of its own to declare. Beside it
+    # go the fields each occupant needs that `generation_config = "vllm"` would
+    # otherwise decide for it: Churro's own shipped repetition penalty, and
+    # Chandra's thinking-mode flag.
+    #
+    # Dispatched by name and **total**, so a third page adapter is refused here
+    # rather than quietly handed the other one's vendor fields. The prompt-shape
+    # branch above cannot stand in for this: it recognizes a *shape*, and a new
+    # adapter sharing Churro's two-message shape would have fallen through to
+    # Chandra's flag.
+    generation_declared: dict[str, Any]
     if adapter_name == "churro.v1":
-        generation_declared: dict[str, Any] = dict(feeding.churro_generation())
-        # The capacity record above already counted this exact request's image
-        # and prompt against this exact row, so the sendable bound is decided
-        # against the prompt that will sit beside it rather than against the
-        # row alone.
-        generation_sent = churro_generation_sent(
-            profile,
-            generation_declared,
-            prompt_tokens=capacity["image_prompt_tokens"] + capacity["prompt_tokens"],
-        )
-    else:
+        generation_declared = dict(feeding.churro_generation())
+        wire_fields: dict[str, Any] = dict(feeding.churro_wire_decoding())
+    elif adapter_name == "chandra.v1":
         generation_declared = {}
-        generation_sent = {}
+        wire_fields = chandra_wire_fields()
+    else:
+        raise SchemaRefusal(
+            f"page-scoped adapter {adapter_name!r} has no declared generation view at this "
+            f"seam; the page-scoped adapters are {sorted(_PAGE_SCOPED_ADAPTERS)}"
+        )
+    # The capacity record above already counted this exact request's image and
+    # prompt against this exact row, so the sendable bound is decided against
+    # the prompt that will sit beside it rather than against the row alone.
+    generation_sent = generation_bound_sent(_ADAPTER_CHAIRS[adapter_name], capacity)
+    generation_sent.update(wire_fields)
     return ChairRequest(
         kind="chat-completions",
         messages=messages,
@@ -886,6 +862,7 @@ def captured_page_attempt(
     adapter_name: str,
     adapter: Any,
     response: ChairResponse,
+    framing: str | None = None,
 ) -> LiveAttempt:
     """The live twin of `run.py::captured_churro_page_attempt`, generalized.
 
@@ -941,9 +918,16 @@ def captured_page_attempt(
             f"captured_page_attempt has no capture recipe for adapter {adapter_name!r}; "
             f"the page-scoped adapters are {sorted(_PAGE_SCOPED_ADAPTERS)}"
         )
-    view: dict[str, Any] = {"prompt": adapter.prompt()}
+    view: dict[str, Any] = {"prompt": _framed_prompt(adapter, framing)}
     if generation_declared:
         view["generation"] = generation_declared
+    if framing is not None:
+        # Which question this reading was asked, by name, on the record it
+        # produced. The prompt bytes are already retained beside it; the name is
+        # what lets one run's readings be compared with another's without
+        # digesting two prompts to discover they differ (GOVERNANCE 6, and the
+        # A/B this makes possible at all).
+        view["framing"] = framing
     capture = adapter.retain(
         context.tree,
         view=view,

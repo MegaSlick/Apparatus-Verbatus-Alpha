@@ -12,11 +12,20 @@ exactly one status record whichever pass marked it out.
 page, the exact sealed PNG bytes as a `data:image/png;base64` block, bound to
 the Exemplar by `image_sha256s=(source_sha256,)` so the client's own digest
 check refuses a request whose image is not the sealed page (ARCHITECTURE
-invariant 3). No tiling: the only tiling policy in this tree is Surya's, and
-the chair this pass serves is a page-level model. No `max_tokens`: the engine
-bounds generation by `max_model_len`, so a `"length"` stop then honestly
-means the answer did not fit, and the page is held on it rather than read
-short (GOALS 1: a truncated act list is a missed act).
+invariant 3), and sent as a single `user` turn with the image block before the
+instruction, which is how this chair's occupant -- Chandra -- is called by its
+own inference code. No tiling: the only tiling policy in this tree is Surya's,
+and the chair this pass serves is a page-level model. The generation bound is
+`min(Chandra's own 12,384-token `MAX_OUTPUT_TOKENS`, `max_model_len` less this
+request's measured image and prompt cost)`
+(`common/request_capacity.py::sendable_max_tokens`), and the row term of that
+`min` is expressed by sending no `max_tokens` at all -- which is what the
+engine already does with it, measured by the component that holds the
+tokenizer. So on every row this catalogue ships, where 12,384 is far above what
+the row leaves, nothing is sent and nothing changes; a shorter row would carry
+Chandra's own bound. A `"length"` stop still honestly means the answer did not
+fit, and the page is held on it rather than read short (GOALS 1: a truncated
+act list is a missed act).
 
 **What each answer does to the page** is the closed table in SPEC_D §1.4,
 implemented by `ask_page`: a parsed, complete answer with acts marks the page
@@ -56,6 +65,7 @@ import structure
 import structure_prompt
 
 from common import structure_answer
+from common.chair_wire import chandra_wire_fields
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
@@ -68,6 +78,7 @@ from common.request_capacity import (
     dense_page_answer_budget,
     request_fits,
     sealed_prompt_tokens,
+    sendable_max_tokens,
 )
 from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -417,6 +428,14 @@ def page_request(
 
     ``capacity`` is the record this request was admitted on; the client copies
     it onto the retained call record so a run's receipts carry the arithmetic.
+    It is also what the generation bound is derived from
+    (`common/request_capacity.py::sendable_max_tokens`), which sends Chandra's
+    own 12,384-token `MAX_OUTPUT_TOKENS` only where the row leaves strictly
+    more than that and otherwise sends nothing, leaving the engine to bound
+    generation by `max_model_len` exactly as this pass has always let it. A
+    request built with no capacity record carries no bound either, because
+    there is then no measured prompt cost to weigh it against and a bound is
+    never sent on a guess; every production call site passes one.
     """
     # One `user` turn and no system turn: Chandra's own inference code sends
     # exactly that, and this chair's occupant is Chandra
@@ -444,8 +463,16 @@ def page_request(
         kind=STRUCTURE_CALL_KIND,
         messages=messages,
         image_sha256s=(source_sha256,),
+        # Chandra's repository ships no sampling parameters of its own, so this
+        # chair has no carried vendor view to retain as evidence.
         generation_declared={},
-        generation_sent={},
+        # The bound, plus the thinking-mode flag both Chandra chairs send
+        # (`common/chair_wire.py` carries the evidence and why it is safe under
+        # either of the two chat templates the revision ships).
+        generation_sent={
+            **({} if capacity is None else sendable_max_tokens(DESIGNATOR_CHAIR, capacity)),
+            **chandra_wire_fields(),
+        },
         capacity=capacity,
     )
 

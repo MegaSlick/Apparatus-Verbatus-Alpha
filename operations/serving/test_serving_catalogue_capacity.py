@@ -61,7 +61,10 @@ ACT_REGION_CROP = (2480, 584)
 # would ask whether they can serve a request smaller than any the reader lets
 # through.
 PROMPT_TOKENS = {
-    **{chair: entry.tokens for chair, entry in MEASURED_PROMPT_TOKENS.items()},
+    # The default framing's cost per chair: `MEASURED_PROMPT_TOKENS` carries
+    # one entry per framing a chair can be asked in, and the first is the one a
+    # run sends unless it names another (`churro.DEFAULT_FRAMING`).
+    **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
     "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
 }
 

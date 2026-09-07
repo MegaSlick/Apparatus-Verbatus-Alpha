@@ -387,29 +387,78 @@ say.
    adapter's own account of its bytes beside the bytes themselves instead of
    dropping the view for want of a state name.
 
-**Churro's declared 24,000-token bound is a declaration, and only sometimes the
-request.** `common/native_witness.py::CHURRO_OUTPUT_TOKENS` is Churro's carried
-HuggingFace-generate `max_new_tokens`, and the live seam used to rename it
-straight onto the wire as vLLM's `max_tokens`. Every Churro row in
-`config/serving_recipes_real.toml` caps `max_model_len` far below it (2,048,
-4,096 and 8,192 when this was written; 8,192 and 16,384 since the capacity unit
-raised them), and vLLM refuses a request whose prompt plus `max_tokens` exceeds the
-row's context — so the very first call on a real pod was a refusal, on a card
-billing by the hour, from the one chair in the pass that sent a bound at all.
-`live_witness.churro_generation_sent` now asks the sealed row the chair is
-actually running under (`ChairClient.handle.profile`): the declared bound goes
-on the wire only where `max_model_len` is strictly larger than it, and
-otherwise nothing is sent and the engine bounds generation by `max_model_len`
-itself — the same decision the Perlector and the Designator already record, and
-the only answer budget measured by the component that holds the tokenizer and
-the image. This seam estimates no prompt cost: a reservation nobody measured
-would be a number the record could not defend and could still be refused by the
-row. The declaration is untouched — `generation_declared` carries 24,000 on
-every request, the retained Churro model view still requires it, and a row that
-states no positive `max_model_len` is refused by name before the request is
-built. `test_live_witness.py` walks every Churro row in the shipped catalogue at
-every tier and asserts what this seam would send is a bound that row can take;
-its counterfactual holds the old flat 24,000 against the same three rows.
+**Every chair sends a generation bound, derived from the sealed row, and the
+image part goes before the text part.** Two corrections to what this seam feeds,
+landed together (`workbench/active/CORRECTION_PLAN_2026-09-06.md`, group (i)).
+
+*Part order.* All three occupants were fine-tuned with the vision block before
+the instruction — DAI's model-card snippet and this project's own old
+`pilot_crops_dai.py`, Chandra's `model/vllm.py`, Churro's provider — and each
+chat template emits a message's content parts in list order, so the order *is*
+the token sequence the model sees. Every builder here sent text first; all
+three now send the image first (`live_witness._user_content`), and one test
+pins it at all three builders together, because the defect was that they agreed
+with each other and disagreed with every upstream. No measured token count
+moves: the sealed prompt constants are taken over the message texts and
+digested over those texts in order.
+
+*The bound.* `common/request_capacity.py::sendable_max_tokens` decides
+`min(the chair's declared upstream bound, max_model_len − image tokens − prompt
+tokens)` from this request's own capacity record, and **expresses the row term
+by sending no `max_tokens` at all** — which is the same quantity, measured by
+the component that holds the tokenizer. Our prompt count is a measured floor
+vLLM's assembly has never been observed to agree with, so putting it on the
+wire would turn a one-token undercount into an HTTP 400 before generation, on a
+billing card. A value goes out only where the *declared* bound is strictly
+smaller than what the row leaves, and the gap between the two is then also the
+margin against an undercount.
+`DECLARED_ANSWER_BOUND_TOKENS` carries the four bounds with their sources —
+Chandra 12,384 (`chandra/settings.py::MAX_OUTPUT_TOKENS`), DAI 1,024 (its model
+card's own `model.generate`), Churro 20,000 (the CHURRO paper §B.2, replacing a
+24,000 this repository had described as a carried value the model's
+`generation_config.json` does not contain). Churro alone used to send a bound,
+and only where the row could hold the whole declared value beside the prompt;
+Chandra and DAI sent **nothing**, which is not the same as being unbounded —
+with no `max_tokens` the engine sets the answer budget to `max_model_len −
+prompt` itself, so a DAI act crop could generate some 7,700 tokens against a
+1,024-token upstream bound on a card billing by the hour. On every row this
+catalogue ships that is the case for DAI alone; Chandra's 12,384 and Churro's
+20,000 are both above what their rows leave, so those three chairs send no
+bound and behave exactly as before. A `"length"` stop means the vendor's bound
+wherever one was sent and the context wherever none was, and the retained
+chair-call record's `generation_sent` says which. The declaration is untouched: `generation_declared` still
+carries Churro's `max_new_tokens` and DAI's whole carried
+`generation_config.json`, and the retained Churro model view still requires the
+bound. `test_live_witness.py` walks every Churro row in the shipped catalogue at
+every tier and asserts the sum this seam would send is one that row can take.
+
+*And the values `generation_config = "vllm"` discards.* That flag makes vLLM
+return an empty sampling diff instead of the model's own file, so every shipped
+default is replaced by vLLM's. Three are sent back deliberately: Churro's
+`repetition_penalty` 1.05 (`feeding.churro_wire_decoding`; the paper documents
+this model's own degeneration loops, and at temperature 0 the penalty is
+applied before the argmax, so determinism is untouched), DAI's second EOS id
+151643 as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
+carried config rather than re-typed), and `chat_template_kwargs:
+{"enable_thinking": false}` on both Chandra chairs (`common/chair_wire.py`,
+which carries the evidence that the revision ships two disagreeing chat
+templates and why the flag is safe under either).
+
+**Churro is asked in a named framing, and the name is on the record.**
+`churro.FRAMINGS` declares two — `churro-layout-prompt.v1`, Unit 12's
+instruction, and `churro-trained-prompt.v1`, the carried Table 6 prompt the
+model was published with — and `config/models-real.toml`'s `[witness_framings]`
+names which one a run asks in. **The default is unchanged**: which framing
+should be the default is Tyrel's decision (the correction plan's Q4), and what
+this adds is the ability to name the other one without editing code on a pod,
+plus a record of which was asked. `witness_adapters.framing_for` resolves it
+once per pass from the sealed roster, `run.py` hands it to both live seams, and
+the resolved name is written onto every Churro capture as `view.framing`. This
+is not a picker (hard rule 8): it chooses the wording of a question before the
+page is read, never among readings, and it is recorded rather than inferred.
+Both framings carry their own measured prompt cost (441 and 281), because a
+framing whose cost nobody measured would be refused at the capacity check —
+which would make the selector a choice between one option and an error.
 
 **Whether a request *fits* is a different question, and it is now asked of both
 page chairs and of DAI.** The bound above governs what may be *sent*; it cannot

@@ -20,6 +20,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import CHAIR_CALL_RECORD_FIELDS, CHAIR_CALL_RECORD_SCHEMA
 
 from .client import (
+    _FORBIDDEN_GENERATION_SENT_KEYS,
     ChairClient,
     ChairRequest,
     ReceiptDriftRefusal,
@@ -276,6 +277,38 @@ def test_forbidden_generation_sent_keys_refused(tmp_path: Path) -> None:
             assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
     assert endpoint.requests == []
     assert len(blob_store) == 0
+
+
+def test_a_top_k_of_one_never_reaches_the_wire_without_temperature_zero(tmp_path: Path) -> None:
+    """DAI's decoding equivalence, pinned where the wire body is actually built.
+
+    DAI's carried `generation_config.json` is `do_sample: true, temperature:
+    0.1, top_k: 1, top_p: 0.001` -- deterministic greedy, because `top_k = 1`
+    leaves the argmax as the entire candidate set. This pipeline sends
+    `top_k`/`top_p`/`repetition_penalty` and lets this client put `temperature:
+    0` on the wire, where vLLM takes its greedy path over the same
+    repetition-penalised logits: the same token, every step.
+
+    **That equivalence rests on the two fields travelling together, and nothing
+    said so until now.** Drop `top_k` and leave `temperature: 0` and decoding
+    is still greedy; drop `temperature` as well and vLLM's own defaults --
+    `temperature 1.0`, `top_k 0` -- make it full random sampling on a
+    handwriting reader. So this asserts the pairing on the posted body, and
+    asserts that a caller cannot separate them: `temperature` is manager-owned
+    and refused in `generation_sent`.
+    """
+
+    client, endpoint, _, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="read", finish_reason="stop"))
+        client.read(
+            _request(generation_sent={"top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05})
+        )
+    posted = endpoint.requests[0]
+    assert posted["top_k"] == 1
+    assert posted["temperature"] == 0
+    # Not a coincidence of this call site: no caller can say otherwise.
+    assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
 
 
 def test_image_digest_drift_refused_before_any_request_is_sent(tmp_path: Path) -> None:

@@ -83,7 +83,15 @@
 # catalogue.
 #
 # `patch_size`/`merge_size` are the chair's vision-encoder geometry, read from
-# the pinned revision's own `preprocessor_config.json`.  They are not vLLM
+# the pinned revision's own processor configuration: `preprocessor_config.json`
+# where the repository ships one, `processor_config.json` (under its
+# `image_processor` object) where it does not.  Which file exists differs by
+# chair -- chandra-ocr-2 ships both, churro-3B and Qwen3.8-27B only the first,
+# and `attestator_2`'s DAI revision only the second, so naming one file for all
+# four named a file that 404s for DAI.  `ServingManager.start` proves these two
+# numbers against whichever file the verified snapshot carries, so a wrong
+# declaration here is a named refusal on the machine that has the weights
+# rather than a silently mis-counted image.  They are not vLLM
 # flags -- vLLM reads them from the model repository -- and they are recorded
 # here because they are what decides how many prompt tokens one image costs
 # (`common/request_capacity.py`), which no other field in this row can say.

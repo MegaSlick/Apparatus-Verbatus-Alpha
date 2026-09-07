@@ -21,6 +21,7 @@ from common.native_witness import validate_presented_page_binding
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
 STAGE = Path(__file__).resolve().parent
+ROOT = STAGE.parent.parent
 
 
 def _load_local_adapters():
@@ -291,9 +292,11 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Quantization is data beside the five operations, and `takes_page_size`
-    # says whether this adapter's `observe` accepts the sealed page's own size --
-    # both read off the registry entry rather than off the adapter's name.
+    # Quantization is data beside the five operations; `takes_page_size` says
+    # whether this adapter's `observe` accepts the sealed page's own size, and
+    # `resolve_framing` how it resolves a declared framing name (`None` where it
+    # has one framing and a run has nothing to choose) -- all three read off the
+    # registry entry rather than off the adapter's name.
     assert fields == {
         "prompt",
         "parse",
@@ -302,7 +305,13 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "observe",
         "quantization",
         "takes_page_size",
+        "resolve_framing",
     }
+    assert (
+        adapters.RUNNABLE_ADAPTERS["churro.v1"].resolve_framing is adapters.churro.resolve_framing
+    )
+    assert adapters.RUNNABLE_ADAPTERS["chandra.v1"].resolve_framing is None
+    assert adapters.RUNNABLE_ADAPTERS["dai.v1"].resolve_framing is None
     # Each page witness declares its OWN rule; neither inherits the other's, even
     # though the two currently spell the same arithmetic.
     assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization == adapters.churro.QUANTIZATION_RULE
@@ -583,3 +592,60 @@ def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, 
             context, _dai_region(width, height, x, y)
         )
     assert context.tree.blobs == {}, "a refused presentation published adapter bytes"
+
+
+# --- the roster's declared framing, resolved once and refused early -----------
+
+
+def _roster(framings: dict[str, str] | None = None):
+    """The real roster, optionally re-declaring which framing a chair is asked in."""
+
+    from common.chairs.config import load_models_toml
+
+    config = load_models_toml(ROOT / "config" / "models-real.toml")
+    if framings is None:
+        return config
+    return dataclasses.replace(config, witness_framings=framings)
+
+
+def test_the_shipped_roster_declares_the_framing_it_is_already_asking_in():
+    """The declaration is explicit and it changes nothing: which framing is the
+    default is Tyrel's decision (the correction plan's Q4)."""
+
+    adapters = _load_local_adapters()
+    config = _roster()
+    assert dict(config.witness_framings) == {"attestator_3": "churro-layout-prompt.v1"}
+    assert adapters.framing_for(config, "attestator_3") == "churro-layout-prompt.v1"
+
+
+def test_a_chair_whose_adapter_has_one_framing_names_none():
+    """`None` rather than an invented name: there is nothing to choose, and the
+    capture's own prompt bytes already say what was asked."""
+
+    adapters = _load_local_adapters()
+    assert adapters.framing_for(_roster(), "attestator_1") is None
+    assert adapters.framing_for(_roster(), "attestator_2") is None
+
+
+def test_the_default_is_resolved_and_recorded_even_when_the_roster_names_none():
+    """A Testimonium that recorded a framing only when someone happened to name
+    one could not be compared across runs."""
+
+    adapters = _load_local_adapters()
+    assert adapters.framing_for(_roster({}), "attestator_3") == "churro-layout-prompt.v1"
+
+
+def test_a_roster_naming_a_framing_no_adapter_declares_is_refused_before_the_run_opens():
+    adapters = _load_local_adapters()
+    with pytest.raises(SchemaRefusal, match="has no framing named"):
+        adapters.validate_runnable_adapter_bindings(
+            _roster({"attestator_3": "churro-xml-template.v1"})
+        )
+
+
+def test_a_roster_framing_a_single_framing_adapter_is_refused_by_name():
+    adapters = _load_local_adapters()
+    with pytest.raises(SchemaRefusal, match="declares only one framing"):
+        adapters.validate_runnable_adapter_bindings(
+            _roster({"attestator_2": "churro-layout-prompt.v1"})
+        )

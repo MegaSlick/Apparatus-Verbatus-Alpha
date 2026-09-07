@@ -32,6 +32,7 @@ if str(STAGE) not in sys.path:
     sys.path.insert(0, str(STAGE))
 
 import chandra  # noqa: E402
+import churro  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
@@ -44,7 +45,9 @@ from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
 from common.imaging import encode_grayscale_png  # noqa: E402
 from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
 from common.request_capacity import (  # noqa: E402
+    DECLARED_ANSWER_BOUND_TOKENS,
     RequestCapacityRefusal,
+    request_fits,
     sealed_prompt_tokens,
 )
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
@@ -218,11 +221,26 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
 
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
+    capacity = act_request.capacity
     assert dict(request.generation_sent) == {
         "repetition_penalty": declared["repetition_penalty"],
         "top_k": declared["top_k"],
         "top_p": declared["top_p"],
+        # DAI's own model card runs it at `max_new_tokens=1024`, and this crop
+        # leaves the row far more room than that, so the declared bound wins.
+        "max_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_2"],
+        # The second EOS id in the carried config, which the engine never
+        # reads because every row pins `generation_config = "vllm"`.
+        "stop_token_ids": [151643],
     }
+    assert declared["eos_token_id"] == [feeding.DAI_TOKENIZER_EOS_TOKEN_ID, 151643]
+    # The declared bound is what binds here -- far below what the row leaves --
+    # which is why it goes on the wire at all, and the difference is the margin
+    # against vLLM counting the prompt higher than this seam can.
+    assert (
+        capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"]
+        > DECLARED_ANSWER_BOUND_TOKENS["attestator_2"]
+    )
     for forbidden in ("temperature", "do_sample", "bos_token_id", "eos_token_id", "pad_token_id"):
         assert forbidden not in request.generation_sent
 
@@ -263,10 +281,15 @@ def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_
     assert user["content"][1]["text"] == feeding.churro_layout_prompt()["user"]
     # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
-    # The sealed row is shorter than the declared bound, so no bound is sent
-    # and the engine bounds generation by `max_model_len` itself.
+    # The sealed row is shorter than the declared bound, so the row is what
+    # binds and no bound is sent -- the engine's own budget is the same
+    # quantity, measured by the component that holds the tokenizer.
     assert CHURRO_OUTPUT_TOKENS >= row.max_model_len
-    assert dict(request.generation_sent) == {}
+    assert dict(request.generation_sent) == {
+        # Churro's own shipped penalty, which `generation_config = "vllm"`
+        # would otherwise replace with vLLM's default 1.0.
+        "repetition_penalty": 1.05,
+    }
 
 
 def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends():
@@ -284,12 +307,13 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         request, _ = _churro_page_request(row)
         assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
         sent = dict(request.generation_sent)
-        assert set(sent) <= {"max_tokens"}
+        assert set(sent) <= {"max_tokens", "repetition_penalty"}
+        assert "repetition_penalty" in sent
+        capacity = request.capacity
+        assert capacity is not None
+        prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
         if "max_tokens" in sent:
-            capacity = request.capacity
-            assert capacity is not None
-            prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
-            assert prompt + sent["max_tokens"] <= row.max_model_len, row.tier
+            assert prompt + sent["max_tokens"] < row.max_model_len, row.tier
 
 
 def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():
@@ -299,77 +323,121 @@ def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
     assert over == [row.tier for row in rows]
     # Raised from 2,048/4,096/8,192 by the capacity unit so a whole page fits;
-    # still an order of magnitude under the 24,000 the old flat bound sent.
+    # still far under the 20,000 Churro's own paper allows for an answer.
     assert [row.max_model_len for row in rows] == [8192, 8192, 16384]
 
 
-def _stand_in_row(max_model_len):
-    """A row long enough to exercise the sendable branch. No shipped row is."""
+def _stand_in_row(max_model_len, chair="attestator_3"):
+    """A row of a stated length, with the geometry a capacity record needs."""
 
-    return SimpleNamespace(max_model_len=max_model_len, recipe="r", chair="attestator_3", tier="t")
-
-
-def test_churro_generation_sent_sends_the_declared_bound_where_a_row_can_hold_it():
-    """A longer row is not refused: the declaration is sendable when it fits."""
-
-    assert live_witness.churro_generation_sent(
-        _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=1
-    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
-    # A row exactly as long as the bound holds it only with an empty prompt,
-    # which no real request has: one token of prompt and nothing is sent.
-    assert live_witness.churro_generation_sent(
-        _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=0
-    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
-    assert (
-        live_witness.churro_generation_sent(
-            _stand_in_row(CHURRO_OUTPUT_TOKENS), feeding.churro_generation(), prompt_tokens=1
-        )
-        == {}
+    return SimpleNamespace(
+        max_model_len=max_model_len,
+        min_pixels=3136,
+        max_pixels=3211264,
+        patch_size=14,
+        merge_size=2,
+        recipe="r",
+        chair=chair,
+        tier="t",
     )
 
 
-def test_the_bound_is_weighed_against_this_requests_own_prompt_not_against_the_row_alone():
-    """vLLM admits on `prompt + max_tokens <= max_model_len`, so both are counted.
+def _capacity_for(chair, *, max_model_len, prompt_tokens):
+    """One closed capacity record carrying an exact prompt cost and no images."""
 
-    The boundary the earlier rule got wrong, at exactly one token either side of
-    it. At `max_model_len = 24001` the old rule sent the whole 24,000 because
-    24,000 < 24,001, and the engine refuses that request for any prompt at all:
-    a Churro page carries a 2,280-token image and a 281-token prompt at the
-    smallest tier's `max_pixels`. Nothing is sent there now. A row long enough
-    to hold that prompt beside the bound still gets it.
+    return request_fits(_stand_in_row(max_model_len, chair), [], prompt_tokens, 1)
+
+
+@pytest.mark.parametrize("chair", sorted(DECLARED_ANSWER_BOUND_TOKENS))
+def test_the_declared_bound_is_sent_only_where_it_is_what_binds(chair):
+    """`min(declared, max_model_len - image - prompt)`, with the row term
+    expressed by sending no field -- checked either side of the crossover and
+    exactly on it.
+
+    The generalisation of what used to be Churro's rule alone: DAI and Chandra
+    sent no bound at all, which let the engine set the budget to
+    `max_model_len - prompt` -- some 7,700 tokens for a DAI act crop whose own
+    publisher runs it at 1,024.
     """
 
-    declared = feeding.churro_generation()
-    page_prompt = 2280 + 281
+    declared = DECLARED_ANSWER_BOUND_TOKENS[chair]
+    prompt = 500
 
-    # The row the old rule would have sent 24,000 to.
+    # The row leaves less than the declared bound: nothing is sent, and the
+    # engine bounds generation by `max_model_len` exactly as it always did.
+    for room in (declared - 1, declared):
+        assert (
+            live_witness.generation_bound_sent(
+                chair, _capacity_for(chair, max_model_len=prompt + room, prompt_tokens=prompt)
+            )
+            == {}
+        )
+    # One token past the crossover, and far past it: the declared bound is what
+    # binds, so it goes out and stops growing with the row.
+    for extra in (1, 10_000):
+        assert live_witness.generation_bound_sent(
+            chair,
+            _capacity_for(chair, max_model_len=prompt + declared + extra, prompt_tokens=prompt),
+        ) == {"max_tokens": declared}
+
+
+def test_the_row_term_is_never_put_on_the_wire_as_our_own_count_of_it():
+    """The failure a `min` sent literally would have introduced.
+
+    vLLM admits on `prompt + max_tokens <= max_model_len` measured by *its* own
+    prompt assembly, and this repository's count is a measured floor that has
+    never been observed to agree with it (`common/request_capacity.py`). A
+    request that sent the row's remainder as `max_tokens` would turn a
+    one-token undercount into an HTTP 400 before generation, on a card billing
+    by the hour -- so where the row is what binds, nothing is sent, and where
+    the vendor's bound is what binds, the gap between the two is the margin.
+    """
+
+    page_prompt = 2280 + 441
+    declared = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
+    # A row one token short of holding the declared bound beside this prompt:
+    # a literal `min` would have sent `declared - 1`, with zero slack.
     assert (
-        live_witness.churro_generation_sent(
-            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), declared, prompt_tokens=page_prompt
+        live_witness.generation_bound_sent(
+            "attestator_3",
+            _capacity_for(
+                "attestator_3",
+                max_model_len=declared + page_prompt - 1,
+                prompt_tokens=page_prompt,
+            ),
         )
         == {}
     )
-    # One token short of holding the pair, and one token over: the boundary is
-    # `prompt + bound <= max_model_len`, inclusive.
-    assert (
-        live_witness.churro_generation_sent(
-            _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt - 1),
-            declared,
-            prompt_tokens=page_prompt,
-        )
-        == {}
+    # And where a bound is sent, the slack is the whole difference.
+    row_length = declared + page_prompt + 5_000
+    sent = live_witness.generation_bound_sent(
+        "attestator_3",
+        _capacity_for("attestator_3", max_model_len=row_length, prompt_tokens=page_prompt),
     )
-    assert live_witness.churro_generation_sent(
-        _stand_in_row(CHURRO_OUTPUT_TOKENS + page_prompt), declared, prompt_tokens=page_prompt
-    ) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
+    assert sent == {"max_tokens": declared}
+    assert row_length - page_prompt - sent["max_tokens"] == 5_000
 
 
-@pytest.mark.parametrize("bad", [None, -1, True, "2280", 2280.0])
-def test_a_generation_bound_is_never_decided_against_an_unmeasured_prompt(bad):
-    with pytest.raises(SchemaRefusal):
-        live_witness.churro_generation_sent(
-            _stand_in_row(CHURRO_OUTPUT_TOKENS + 1), feeding.churro_generation(), prompt_tokens=bad
+def test_a_generation_bound_is_never_decided_against_something_that_is_not_a_capacity_record():
+    """The bound is derived from the record the request was admitted on, or not
+    at all: a plain mapping of the same numbers is refused rather than read."""
+
+    real = _capacity_for("attestator_3", max_model_len=8192, prompt_tokens=500)
+    for bad in (
+        {"max_model_len": 8192, "image_prompt_tokens": 0, "prompt_tokens": 500},
+        {key: value for key, value in real.items() if key != "prompt_tokens"},
+        {**real, "unexpected": 1},
+    ):
+        with pytest.raises(RequestCapacityRefusal):
+            live_witness.generation_bound_sent("attestator_3", bad)
+
+
+def test_a_chair_with_no_declared_upstream_bound_is_refused_by_name():
+    with pytest.raises(RequestCapacityRefusal) as error:
+        live_witness.generation_bound_sent(
+            "perlector", _capacity_for("attestator_3", max_model_len=8192, prompt_tokens=500)
         )
+    assert "declares no upstream generation bound" in str(error.value)
 
 
 @pytest.mark.parametrize("value", [None, 0, -1, True, "2048", 2048.0])
@@ -542,16 +610,16 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
     assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["instruction"]) == 256
     dai = feeding.dai_prompt()
     assert sealed_prompt_tokens("attestator_2", dai["system"], dai["user"]) == 84
-    # Churro's constant is sealed against the *live* instruction, because that
-    # is the prompt a served request carries.  `feeding.churro_prompt` is the
-    # trained carry the fixture posture declares and nothing sends, and it no
-    # longer has a measured constant of its own -- asserted below so the two
-    # postures cannot be confused for one another.
-    churro = feeding.churro_layout_prompt()
-    assert sealed_prompt_tokens("attestator_3", churro["system"], churro["user"]) == 441
-    carried = feeding.churro_prompt()
+    # Churro carries a constant per declared framing, because a run can ask it
+    # in either and a framing whose cost nobody measured could not be sent at
+    # all.  Both are sealed to their own text, so an edit to one does not
+    # silently borrow the other's number.
+    layout = feeding.churro_layout_prompt()
+    assert sealed_prompt_tokens("attestator_3", layout["system"], layout["user"]) == 441
+    trained = feeding.churro_prompt()
+    assert sealed_prompt_tokens("attestator_3", trained["system"], trained["user"]) == 281
     with pytest.raises(RequestCapacityRefusal) as expired:
-        sealed_prompt_tokens("attestator_3", carried["system"], carried["user"])
+        sealed_prompt_tokens("attestator_3", layout["system"], layout["user"] + " ")
     assert "the prompt changed after it was measured" in str(expired.value)
 
 
@@ -572,8 +640,20 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
     assert message["role"] == "user"
     assert message["content"][0]["type"] == "image_url"
     assert message["content"][1] == {"type": "text", "text": chandra_module.prompt()["instruction"]}
+    # Chandra's repository ships no sampling parameters, so there is nothing of
+    # its own to declare.
     assert request.generation_declared == {}
-    assert request.generation_sent == {}
+    capacity = request.capacity
+    room = capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"]
+    # The row is what binds here -- 12,384 is far above what it leaves -- so no
+    # bound goes on the wire and the engine's own budget governs, exactly as
+    # before (`common/request_capacity.py::sendable_max_tokens`).
+    assert room < DECLARED_ANSWER_BOUND_TOKENS["attestator_1"]
+    assert dict(request.generation_sent) == {
+        # Thinking mode closed, whichever of the revision's two disagreeing
+        # chat templates the engine resolves (`common/chair_wire.py`).
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
 
 
 def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
@@ -622,6 +702,95 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
         (user,) = [message for message in request.messages if message["role"] == "user"]
         types = [part["type"] for part in user["content"]]
         assert types == ["image_url", "text"]
+
+
+# --- the recorded framing selector (not a picker: hard rule 8) ----------------
+
+
+def test_the_default_framing_is_unit_twelves_layout_prompt_and_this_unit_does_not_move_it():
+    """Which framing is the *default* is Tyrel's decision (the correction
+    plan's Q4). What this pins is that adding the ability to name the other one
+    left the default exactly where Unit 12 put it."""
+
+    assert churro.DEFAULT_FRAMING == feeding.CHURRO_LAYOUT_PROMPT_VERSION
+    assert churro.prompt() == feeding.churro_layout_prompt()
+    assert churro.resolve_framing(None) == churro.DEFAULT_FRAMING
+
+
+def test_each_declared_framing_asks_its_own_prompt():
+    assert churro.prompt(feeding.CHURRO_LAYOUT_PROMPT_VERSION) == feeding.churro_layout_prompt()
+    assert churro.prompt(feeding.CHURRO_TRAINED_PROMPT_VERSION) == feeding.churro_prompt()
+    assert set(churro.FRAMINGS) == {
+        feeding.CHURRO_LAYOUT_PROMPT_VERSION,
+        feeding.CHURRO_TRAINED_PROMPT_VERSION,
+    }
+
+
+@pytest.mark.parametrize("bad", ["churro-layout-prompt", "", None if False else "trained", 1])
+def test_an_undeclared_framing_is_refused_rather_than_resolved_to_a_near_match(bad):
+    with pytest.raises(SchemaRefusal) as error:
+        churro.prompt(bad)
+    assert "has no framing named" in str(error.value)
+
+
+def test_both_declared_framings_are_measured_and_therefore_sendable():
+    """A framing whose prompt cost nobody measured is a framing no run can
+    send: `sealed_prompt_tokens` refuses it at the capacity check, which would
+    make the selector a choice between one option and an error."""
+
+    for framing, expected in (
+        (feeding.CHURRO_LAYOUT_PROMPT_VERSION, 441),
+        (feeding.CHURRO_TRAINED_PROMPT_VERSION, 281),
+    ):
+        prompt = churro.prompt(framing)
+        assert sealed_prompt_tokens("attestator_3", prompt["system"], prompt["user"]) == expected
+
+
+def test_a_named_framing_reaches_the_request_and_its_capacity_record():
+    """End to end at the builder: the prompt bytes and the measured cost both
+    follow the name, so a request under the trained framing is admitted on the
+    trained framing's own arithmetic."""
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(54, 72)
+    presentation = _presentation(kind="page", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=churro.prompt)
+    request = live_witness.page_chair_request(
+        context,
+        adapter,
+        "churro.v1",
+        presentation,
+        profile=_sealed_churro_rows()[0],
+        framing=feeding.CHURRO_TRAINED_PROMPT_VERSION,
+    )
+    system, user = request.messages
+    assert system["content"] == feeding.churro_prompt()["system"]
+    assert user["content"][1]["text"] == feeding.churro_prompt()["user"]
+    assert request.capacity["prompt_tokens"] == 281
+
+
+def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
+    """Hard rule 8, stated as a test: this selects the question before the page
+    is read, never among readings, and the name it selected is on the record."""
+
+    response, _, _ = _read_one(
+        tmp_path,
+        script=ScriptedAnswer(content="<output>read</output>", finish_reason="stop"),
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()),
+        1,
+        "attestator_3",
+        "churro.v1",
+        adapter,
+        response,
+        framing=feeding.CHURRO_TRAINED_PROMPT_VERSION,
+    )
+    view = attempt.native_capture["view"]
+    assert view["framing"] == feeding.CHURRO_TRAINED_PROMPT_VERSION
+    assert view["prompt"] == feeding.churro_prompt()
 
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():

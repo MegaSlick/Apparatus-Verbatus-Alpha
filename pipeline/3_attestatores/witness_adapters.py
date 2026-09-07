@@ -48,7 +48,7 @@ import chandra
 import churro
 import feeding
 
-from common.chairs.models import AbsentChair, ModelsConfig
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -85,6 +85,13 @@ class RunnableAdapter:
     observe: Callable[..., Any]
     quantization: str | None = None
     takes_page_size: bool = False
+    #: How this adapter resolves a declared framing name to the one it will be
+    #: asked in, or ``None`` where it has exactly one framing and a run has
+    #: nothing to choose. Declared here, like ``takes_page_size``, so a caller
+    #: asks the registry rather than comparing adapter names -- and so a second
+    #: multi-framing adapter cannot be forgotten at a call site that names only
+    #: the first.
+    resolve_framing: Callable[..., str] | None = None
 
 
 def _retain_dai_model_view(
@@ -284,6 +291,7 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     ),
     "churro.v1": RunnableAdapter(
         prompt=churro.prompt,
+        resolve_framing=churro.resolve_framing,
         parse=churro.parse,
         retain=churro.retain,
         present=churro.present,
@@ -326,9 +334,47 @@ def declared_quantization_rules() -> frozenset[str]:
 
 
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
-    """Refuse shared declarations that have no stage-local callable route."""
+    """Refuse shared declarations that have no stage-local callable route.
+
+    Also the roster's declared framings (`ModelsConfig.witness_framings`):
+    `common/chairs/config.py` checks that each names a configured witness
+    chair, and this is where the *name* is checked, because only the stage
+    knows which framings an adapter declares. Refused here, before a run
+    opens, rather than at the first request on a billing card.
+    """
 
     for chair in models.witness_chairs:
         identity = models.chairs[chair]
-        if not isinstance(identity, AbsentChair):
-            resolve_runnable_adapter(identity.witness_adapter)
+        if isinstance(identity, AbsentChair):
+            continue
+        adapter = resolve_runnable_adapter(identity.witness_adapter)
+        declared = models.witness_framings.get(chair)
+        if declared is None:
+            continue
+        if adapter.resolve_framing is None:
+            raise SchemaRefusal(
+                f"the roster asks chair {chair!r} in framing {declared!r}, but its adapter "
+                f"{identity.witness_adapter!r} declares only one framing and can be asked in "
+                "no other"
+            )
+        adapter.resolve_framing(declared)
+
+
+def framing_for(models: ModelsConfig, chair: str) -> str | None:
+    """The framing this run asks one chair in, resolved once, or ``None``.
+
+    ``None`` where the adapter has a single framing: there is then no name to
+    record beyond the prompt bytes the capture already retains. Where the
+    adapter has several, the resolved name is returned even when the roster
+    declared none, because the default is as much a fact about a reading as an
+    override is -- and a Testimonium that recorded a framing only when someone
+    happened to name one would be a record you could not compare across runs.
+    """
+
+    identity = models.chairs.get(chair)
+    if not isinstance(identity, ChairIdentity):
+        return None
+    adapter = resolve_runnable_adapter(identity.witness_adapter)
+    if adapter.resolve_framing is None:
+        return None
+    return adapter.resolve_framing(models.witness_framings.get(chair))

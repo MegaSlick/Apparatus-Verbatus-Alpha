@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Iterable, Mapping
 
 import pytest
@@ -87,11 +88,13 @@ from .http import (
     require_exact_model_id,
 )
 from .manager import (
+    PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
     ReceiptPublication,
     ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
+    assert_processor_geometry,
 )
 from .preflight import ServingSmokeReader, prepare_log_root
 from .process import SubprocessLauncher
@@ -4613,3 +4616,99 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
         issue.code == "smoke-output-invalid" and issue.chair == "reader" for issue in report.issues
     )
     assert launcher.processes[0].terminate_calls == 1
+
+
+# --- the row's declared image geometry, proved against the model's own file ---
+
+
+def _geometry_row(patch: int | None = 16, merge: int | None = 2):
+    """A row shaped only as `assert_processor_geometry` reads one."""
+
+    return SimpleNamespace(
+        patch_size=patch,
+        merge_size=merge,
+        chair="attestator_2",
+        recipe="unproven-real-attestatores",
+        tier=TIER,
+    )
+
+
+def _snapshot_carrying(tmp_path: Path, filename: str, document: object):
+    root = tmp_path / "snapshot"
+    root.mkdir(exist_ok=True)
+    (root / filename).write_text(json.dumps(document), encoding="utf-8")
+    return SimpleNamespace(root=root)
+
+
+# The two real shapes, taken from the pinned revisions themselves:
+# `preprocessor_config.json` states the pair at the top level (chandra-ocr-2,
+# churro-3B, Qwen3.8-27B); `processor_config.json` nests it under
+# `image_processor`, and for `attestator_2`'s DAI revision it is the only file
+# that exists at all -- fetching the other returns 404, which is the defect
+# this check and the comment corrections beside it close.
+TOP_LEVEL = {"patch_size": 16, "merge_size": 2, "image_processor_type": "Qwen2VLImageProcessorFast"}
+NESTED = {
+    "image_processor": {"patch_size": 16, "merge_size": 2},
+    "processor_class": "Qwen3VLProcessor",
+}
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], TOP_LEVEL),
+        (PROCESSOR_CONFIG_FILENAMES[1], NESTED),
+    ],
+)
+def test_a_row_matching_the_models_own_processor_configuration_passes(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], {**TOP_LEVEL, "patch_size": 14}),
+        (PROCESSOR_CONFIG_FILENAMES[1], {"image_processor": {"patch_size": 16, "merge_size": 1}}),
+    ],
+)
+def test_a_row_that_disagrees_with_the_model_is_refused_by_name(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    """The defect this closes: `patch_size`/`merge_size` decide every image's
+    prompt-token cost, and a wrong pair mis-counts by 30% while the receipt
+    publishes the arithmetic as though it had been checked."""
+
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+    assert "attestator_2" in str(error.value)
+    assert filename in str(error.value)
+
+
+def test_a_row_that_declares_no_geometry_is_left_alone(tmp_path: Path) -> None:
+    """Fixture and synthetic rows declare neither, and are unchanged by this."""
+
+    snapshot = _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[0], {"patch_size": 14})
+    assert_processor_geometry(snapshot, _geometry_row(patch=None, merge=None))
+
+
+def test_a_snapshot_with_no_processor_configuration_is_passed_not_refused(tmp_path: Path) -> None:
+    """The documented boundary. All four pinned repositories ship one of the two
+    files, so absence means a synthetic store rather than a wrong declaration
+    about a real model -- and whether a materialized store is complete is
+    `common/chairs/model_store.py`'s question, answered against the manifest."""
+
+    root = tmp_path / "empty"
+    root.mkdir()
+    assert_processor_geometry(SimpleNamespace(root=root), _geometry_row())
+
+
+def test_an_unreadable_processor_configuration_is_refused_rather_than_skipped(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "broken"
+    root.mkdir()
+    (root / PROCESSOR_CONFIG_FILENAMES[0]).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ServingConfigurationError):
+        assert_processor_geometry(SimpleNamespace(root=root), _geometry_row())

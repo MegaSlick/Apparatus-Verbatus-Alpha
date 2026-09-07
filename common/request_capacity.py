@@ -36,7 +36,7 @@ Qwen3-VL chairs (Chandra, the Perlector) use patch 16 / merge 2 -- 1,024 px per
 image token.  A default here would silently mis-count by 30%, so
 :func:`row_image_geometry` refuses by name when the sealed row does not state
 them rather than guessing (the same posture as
-``pipeline/3_attestatores/live_witness.py::row_context_bound``).
+``row_context_length`` below).
 
 Prompt tokens
 -------------
@@ -262,9 +262,15 @@ def row_image_geometry(profile: Any) -> RowImageGeometry:
     ``--mm-processor-kwargs``; ``patch_size``/``merge_size`` are the chair's
     vision-encoder geometry, declared on the row because they decide the token
     cost of every image sent under it.  They are read from the pinned
-    revision's own ``preprocessor_config.json`` and recorded on the row; a row
-    that states none of them is refused here rather than counted against a
-    default that would be wrong for two of the four chairs.
+    revision's own processor configuration -- ``preprocessor_config.json``
+    where the repository ships one, ``processor_config.json`` (under its
+    ``image_processor`` object) where it does not -- and recorded on the row;
+    a row that states none of them is refused here rather than counted against
+    a default that would be wrong for two of the four chairs.  Which of the
+    two files exists differs by chair, and
+    ``operations/serving/manager.py::assert_processor_geometry`` is what
+    proves the row's declaration against the file the verified snapshot
+    actually carries, wherever that snapshot exists.
     """
 
     values: dict[str, int] = {}
@@ -320,9 +326,11 @@ def row_context_length(profile: Any) -> int:
     """The sealed row's ``max_model_len``, or a refusal naming the row.
 
     The one field in the serving contract that says how long a request the
-    engine will accept.  Deliberately the same refusal posture as
-    ``pipeline/3_attestatores/live_witness.py::row_context_bound``, which asks
-    the same question of the same field for the sendable generation bound.
+    engine will accept -- there is no separate answer-budget field, and
+    ``operations/serving/smoke.py`` sends no bound at all.  Asked here for both
+    of the two questions that need it: whether a request fits at all
+    (:func:`request_fits`) and what generation bound it may carry
+    (:func:`sendable_max_tokens`).
     """
 
     value = getattr(profile, "max_model_len", None)
@@ -635,7 +643,17 @@ def prompt_digest(*texts: str) -> str:
 # (`TOKEN_COST_REPORT.md` sections 1 and 5).  No weights were fetched and no
 # tokenizer runs here: these are the recorded results, bound to the prompt text
 # they were taken over.
-MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyType(
+#
+# **A chair carries one measurement per prompt it can be asked in, matched by
+# digest.**  Churro can be asked in either of two declared framings
+# (`pipeline/3_attestatores/churro.py::FRAMINGS`), and a framing whose cost
+# nobody measured is a framing no run can send: `sealed_prompt_tokens` would
+# refuse it at the capacity check, which would make the selector a choice
+# between one option and an error.  So the value is a tuple, every entry sealed
+# to its own text exactly as a single entry was, and the digest still expires a
+# measurement the moment its prompt is edited.  A chair with one prompt has a
+# one-entry tuple and nothing else changes.
+MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
         # Re-measured for `verbatus-structure-prompt.v2` -- the single `user`
         # turn Chandra's own inference code sends, replacing the system+user
@@ -645,41 +663,52 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyTy
         # per-turn overhead: **329 -> 325**, measured by the same harness, at
         # the same pinned revision, that reproduces the superseded 329 exactly
         # over the superseded two-turn prompt.
-        "designator_structure": SealedPromptTokens(
-            tokens=325,
-            prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
-            repo="datalab-to/chandra-ocr-2",
-            revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+        "designator_structure": (
+            SealedPromptTokens(
+                tokens=325,
+                prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
+                repo="datalab-to/chandra-ocr-2",
+                revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            ),
         ),
-        "attestator_1": SealedPromptTokens(
-            tokens=256,
-            prompt_digest="97cfb7ba5143687c0f61784026d37268cd18d60c053f99ab49e4079ccb9d629a",
-            repo="datalab-to/chandra-ocr-2",
-            revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+        "attestator_1": (
+            SealedPromptTokens(
+                tokens=256,
+                prompt_digest="97cfb7ba5143687c0f61784026d37268cd18d60c053f99ab49e4079ccb9d629a",
+                repo="datalab-to/chandra-ocr-2",
+                revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            ),
         ),
-        "attestator_2": SealedPromptTokens(
-            tokens=84,
-            prompt_digest="9601ebe46918c76ac3f8d094b602ffd6303cc5bf51d5973e5eff2ad93cff964a",
-            repo="Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
-            revision="e371095d4ffe585f31f4974462931ddbac61ff64",
+        "attestator_2": (
+            SealedPromptTokens(
+                tokens=84,
+                prompt_digest="9601ebe46918c76ac3f8d094b602ffd6303cc5bf51d5973e5eff2ad93cff964a",
+                repo="Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
+                revision="e371095d4ffe585f31f4974462931ddbac61ff64",
+            ),
         ),
-        # Re-measured for `feeding.churro_layout_prompt` --
-        # `churro-layout-prompt.v1`, the instruction the live chair is actually
-        # sent since Churro's native layout landed.  The sealed 281 was taken
-        # over `feeding.churro_prompt`'s trained `<output>` framing, which is
-        # now what the *fixture* posture declares and not what any served
-        # request carries, and its digest expired the moment the live prompt
-        # changed -- which is the mechanism working, not a defect.  The
-        # replacement clause asks for a JSON object with one `box_1000` per
-        # block, so the prompt is longer: 441 tokens over
-        # c5a8375b..., measured by the same harness, at the same pinned
-        # revision, that reproduces the superseded 281 exactly over the carried
-        # prompt it was taken from.
-        "attestator_3": SealedPromptTokens(
-            tokens=441,
-            prompt_digest="c5a8375b77b15fcd09ccd9ed6212cb650a87a3b2268019082916a1c7e32f209a",
-            repo="stanford-oval/churro-3B",
-            revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
+        # Both of Churro's declared framings, measured together on 2026-09-06 by
+        # the harness of `TOKEN_COST_REPORT.md` section 3, at the pinned
+        # revision: `churro-layout-prompt.v1` (Unit 12's live instruction) at
+        # 441 over c5a8375b..., and `churro-trained-prompt.v1` (the carried
+        # Table 6 prompt, asking for the `<output>` envelope) at 281 over
+        # b6289913....  Both numbers are reproductions rather than new claims:
+        # 441 is Unit 12's own sealed value unchanged, and 281 is the value
+        # this table carried before Unit 12, re-derived here so the trained
+        # framing is sendable again rather than merely nameable.
+        "attestator_3": (
+            SealedPromptTokens(
+                tokens=441,
+                prompt_digest="c5a8375b77b15fcd09ccd9ed6212cb650a87a3b2268019082916a1c7e32f209a",
+                repo="stanford-oval/churro-3B",
+                revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
+            ),
+            SealedPromptTokens(
+                tokens=281,
+                prompt_digest="b6289913d017e07fe66a0124ccf64c391b73e11821c4c83d0d732dbe2112336d",
+                repo="stanford-oval/churro-3B",
+                revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
+            ),
         ),
     }
 )
@@ -762,8 +791,8 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
     the cost of a prompt nobody sends.
     """
 
-    entry = MEASURED_PROMPT_TOKENS.get(chair)
-    if entry is None:
+    entries = MEASURED_PROMPT_TOKENS.get(chair)
+    if entries is None:
         raise RequestCapacityRefusal(
             f"chair {chair!r} has no measured prompt-token count; no tokenizer is available "
             "offline in this environment, so a request for this chair cannot be checked "
@@ -771,15 +800,17 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
             f"{sorted(MEASURED_PROMPT_TOKENS)})"
         )
     digest = prompt_digest(*texts)
-    if digest != entry.prompt_digest:
-        raise RequestCapacityRefusal(
-            f"chair {chair!r} sends a prompt whose digest is {digest}, but its measured "
-            f"prompt-token count of {entry.tokens} was taken over {entry.prompt_digest} "
-            f"with {entry.measured_by}; the prompt changed after it was measured, and a request "
-            "is never checked against the token cost of text nobody sends. Re-measure the "
-            "prompt and update common/request_capacity.py"
-        )
-    return entry.tokens
+    for entry in entries:
+        if digest == entry.prompt_digest:
+            return entry.tokens
+    measured = ", ".join(f"{entry.tokens} over {entry.prompt_digest}" for entry in entries)
+    raise RequestCapacityRefusal(
+        f"chair {chair!r} sends a prompt whose digest is {digest}, but its measured "
+        f"prompt-token count(s) were taken over {measured} with {entries[0].measured_by}; "
+        "the prompt changed after it was measured, or it is a framing nobody has measured, "
+        "and a request is never checked against the token cost of text nobody sends. "
+        "Re-measure the prompt and update common/request_capacity.py"
+    )
 
 
 def perlector_prompt_tokens(text: str) -> tuple[int, str]:
@@ -907,6 +938,117 @@ MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
         "perlector": 216,
     }
 )
+
+
+# What each occupant's *own* pipeline asks for as a generation bound, per chair.
+#
+# Distinct from the two tables above and not interchangeable with them.  Those
+# are measurements this repository took of what an answer *costs*; this one is
+# what the vendor's own inference code *asks for*, carried as a fact about
+# upstream with its source named.  Nothing here is a claim that a longer answer
+# would be worse -- it is the bound the model was run under wherever its
+# publisher ran it, and, on a card that bills by the hour, the bound that stops
+# an unbounded generation.
+#
+# * `designator_structure` / `attestator_1` -- Chandra, 12,384:
+#   `chandra/settings.py::MAX_OUTPUT_TOKENS`, passed as `max_tokens` by
+#   `chandra/model/vllm.py` on every request inside an 18,000-token context.
+# * `attestator_2` -- DAI, 1,024: the model card's own inference snippet calls
+#   `model.generate(max_new_tokens=1024)`.  It is *not* in the carried
+#   `generation_config.json`, which is why it is declared here rather than
+#   added to `feeding.dai_generation()`: that function returns the vendor's
+#   file byte-for-byte under a digest, and an inference-script value is a
+#   different kind of evidence than a shipped configuration.
+# * `attestator_3` -- Churro, 20,000: the CHURRO paper section B.2, "chosen to
+#   allow generation of all gold outputs".  This replaces a 24,000 that this
+#   repository had described as Churro's "carried HuggingFace-generate
+#   `max_new_tokens`"; the model's own `generation_config.json` at the pinned
+#   revision carries no such field, so that description named a source that
+#   does not exist and the number belonged to nobody.
+#
+# The Perlector is deliberately absent.  Its occupant is a stock base model
+# with no vendor inference script to carry a bound from, and
+# `pipeline/4_perlector/live_reader.py` states its own reason for sending none.
+DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "designator_structure": 12_384,
+        "attestator_1": 12_384,
+        "attestator_2": 1_024,
+        "attestator_3": 20_000,
+    }
+)
+
+
+def sendable_max_tokens(chair: str, capacity: Mapping[str, Any]) -> dict[str, int]:
+    """The ``max_tokens`` this request may carry, or nothing where the row binds.
+
+    The bound is ``min(the chair's declared upstream bound, max_model_len -
+    image tokens - prompt tokens)``, both terms taken from
+    :data:`DECLARED_ANSWER_BOUND_TOKENS` and from *this request's own* capacity
+    record -- so it is derived from the same arithmetic the request was
+    admitted on, against the same sealed row, never from a second and looser
+    reading of either.
+
+    **The row term is expressed by sending no field at all, and that is not a
+    shortcut.** With no ``max_tokens`` vLLM sets the answer budget to
+    ``max_model_len - input_length`` computed from *its own* prompt assembly,
+    which is the same quantity the row term names but measured by the component
+    that actually holds the tokenizer and the image. Ours is a **measured
+    floor**: this repository has never observed vLLM's assembly agree with it
+    (module docstring). Putting our number on the wire would therefore turn any
+    undercount, by even one token, into ``prompt + max_tokens > max_model_len``
+    -- HTTP 400, before a token is generated, on a card that bills by the hour,
+    which is precisely the failure this module exists to keep off rented
+    silicon. Sending nothing cannot fail that way, and it is what every chair
+    was already doing.
+
+    So a value goes on the wire only where the *declared* bound is what binds,
+    strictly below what the row leaves. That is the case the vendor's number is
+    for and the only one where it changes anything: DAI's act crops would
+    otherwise be free to generate some 7,700 tokens where its own publisher
+    runs it at 1,024. The slack between the two terms is then also the margin
+    against an undercount, and it is thousands of tokens wide at every shipped
+    row rather than a number anyone chose.
+
+    Strictly below, not at or below: at exact equality the sent bound would
+    leave zero slack, which is the one case where a one-token disagreement with
+    vLLM is a refusal rather than a shorter answer.
+
+    **What a ``"length"`` stop means afterwards.** The vendor's own bound was
+    reached wherever a bound was sent, and the context was exhausted wherever
+    none was -- and which of the two applied is on the retained chair-call
+    record, because the value travels on ``generation_sent``.
+
+    Never guesses: a chair with no declared bound, or a capacity record that is
+    not this module's own closed shape, is refused by name.
+    """
+
+    declared = DECLARED_ANSWER_BOUND_TOKENS.get(chair)
+    if declared is None:
+        raise RequestCapacityRefusal(
+            f"chair {chair!r} declares no upstream generation bound, so nothing here can say "
+            "what answer length its occupant's own pipeline asks for; a bound is never sent "
+            f"on a guess (the declared chairs are {sorted(DECLARED_ANSWER_BOUND_TOKENS)})"
+        )
+    if not isinstance(capacity, Mapping) or set(capacity) != CAPACITY_RECORD_FIELDS:
+        raise RequestCapacityRefusal(
+            f"a generation bound for chair {chair!r} was asked for against something other than "
+            f"this module's own {SCHEMA} record, so the row and the prompt cost it would be "
+            "derived from are not the ones this request was admitted on"
+        )
+    max_model_len = _positive(capacity["max_model_len"], "max_model_len")
+    prompt_cost = _nonnegative(
+        capacity["image_prompt_tokens"], "image_prompt_tokens"
+    ) + _nonnegative(capacity["prompt_tokens"], "prompt_tokens")
+    remaining = max_model_len - prompt_cost
+    if remaining <= 0:
+        raise RequestCapacityRefusal(
+            f"the request for chair {chair!r} costs {prompt_cost} prompt tokens against a "
+            f"max_model_len of {max_model_len}, so no answer fits at all; a bound of zero or "
+            "less is never sent",
+            capacity=dict(capacity),
+        )
+    return {"max_tokens": declared} if declared < remaining else {}
 
 
 def dense_page_answer_budget(chair: str) -> int:

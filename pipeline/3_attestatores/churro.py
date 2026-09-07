@@ -51,7 +51,8 @@ chair.
 from __future__ import annotations
 
 import json
-from typing import Any, Final
+from types import MappingProxyType
+from typing import Any, Callable, Final, Mapping
 
 import feeding
 
@@ -63,9 +64,60 @@ QUANTIZATION_RULE: Final = "churro.v1.floor-min-ceil-max.sealed-page-pixels"
 PAGE_RESPONSE_SCHEMA: Final = churro_response.PAGE_RESPONSE_SCHEMA
 
 
-def prompt() -> dict[str, str]:
-    """Frame the served page request for the shape `churro_response` parses."""
-    return feeding.churro_layout_prompt()
+#: The framings this chair can be asked in, by name. Closed and exact: a name
+#: outside it is refused rather than resolved to something near it.
+#:
+#: * ``churro-layout-prompt.v1`` -- Unit 12's instruction, the trained framing
+#:   with its two output-format clauses replaced so the answer carries one
+#:   ``box_1000`` per block (``feeding.churro_layout_prompt``).
+#: * ``churro-trained-prompt.v1`` -- the carried Table 6 prompt this model was
+#:   published with, asking for the ``<output>`` envelope and no geometry at
+#:   all (``feeding.churro_prompt``). It stayed in the tree as the fixture
+#:   posture's declaration after Unit 12 moved the live path; this makes it
+#:   askable again, which is what an A/B needs.
+#:
+#: **Upstream has a third framing this cannot yet offer**: the Churro library's
+#: current ``CHURRO_3B_XML_TEMPLATE``. Adding it is a new carry of vendor prompt
+#: bytes, which `cleanroom/README.md` admits but which needs the bytes fetched,
+#: cited and re-measured against the pinned tokenizer -- named here as the gap
+#: rather than left for a reader to notice the arm is missing.
+FRAMINGS: Final[Mapping[str, Callable[[], dict[str, str]]]] = MappingProxyType(
+    {
+        feeding.CHURRO_LAYOUT_PROMPT_VERSION: feeding.churro_layout_prompt,
+        feeding.CHURRO_TRAINED_PROMPT_VERSION: feeding.churro_prompt,
+    }
+)
+
+#: What a run gets when it names no framing. **Unit 12's own default, and this
+#: unit does not move it**: which framing is the default is Tyrel's decision
+#: (the correction plan's Q4), and what is added here is the ability to name
+#: the other one and to see, on the record, which one was asked.
+DEFAULT_FRAMING: Final = feeding.CHURRO_LAYOUT_PROMPT_VERSION
+
+
+def resolve_framing(framing: Any = None) -> str:
+    """One declared framing name, exactly, or a refusal listing the declared set.
+
+    **Not a picker** (hard rule 8). It selects the wording of a question before
+    the page is read; nothing here chooses among readings, ranks them, or looks
+    at a response. The name it returns is written onto the Testimonium the
+    reading produces, so which question was asked is a recorded fact rather
+    than something a later reader infers from the prompt bytes.
+    """
+
+    if framing is None:
+        return DEFAULT_FRAMING
+    if not isinstance(framing, str) or framing not in FRAMINGS:
+        raise SchemaRefusal(
+            f"churro.v1 has no framing named {framing!r}; the declared framings are "
+            f"{sorted(FRAMINGS)} and a reading is never taken under a near match"
+        )
+    return framing
+
+
+def prompt(framing: Any = None) -> dict[str, str]:
+    """Frame the served page request under one declared, recorded framing."""
+    return FRAMINGS[resolve_framing(framing)]()
 
 
 def parse(raw_response: bytes) -> Any:

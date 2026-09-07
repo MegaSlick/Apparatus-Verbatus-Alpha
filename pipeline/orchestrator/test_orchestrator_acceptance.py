@@ -1497,9 +1497,35 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
+# **Re-pin, correction unit (group (i) of `CORRECTION_PLAN_2026-09-06.md`).**
+# `HAPPY_RUN_TREE_DIGEST` moves; `REVIEW_RUN_TREE_DIGEST` does not, and both
+# halves of that are measured rather than argued.
+#
+#   The one cause: Churro's declared answer bound, `CHURRO_OUTPUT_TOKENS`, is
+#   the CHURRO paper section B.2's 20,000 and was 24,000 -- a number this
+#   repository had described as the model's carried HuggingFace-generate
+#   `max_new_tokens`, which its `generation_config.json` at the pinned revision
+#   does not contain. Every retained Churro model view carries the declared
+#   bound (`common/native_witness.py::_validate_churro_capture` requires it),
+#   so the fixture's own Churro captures move with it.
+#
+#   Attributed by measurement: with that one constant put back to 24,000 and
+#   every other line of the unit in place, this scenario reproduces
+#   5b225fa3... exactly. Nothing else in the unit reaches a fixture run --
+#   the part order, the generation bound, the sent decoding values and the
+#   framing selector are all live-path only, and the real serving catalogue
+#   and roster are never sealed into either scenario.
+#
+#   The review scenario was measured under the new constant and is unmoved at
+#   1936f76c..., so it is left exactly as it was. Counts and exits are unmoved
+#   on both sides.
+#
+# Measured in independent temporary roots at canonical run id "r", through this
+# module's own `orchestrate` and `semantic_snapshot_digest`, which agreed
+# exactly.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "5b225fa3d64f0131974fdd3b777c42265e5fe2e28c5264131b2e20b88602fa24"
+HAPPY_RUN_TREE_DIGEST = "4d7de674fd7d74d35dccd7c2f056f49918a06492b77f3ae4943a331c53035417"
 REVIEW_RUN_TREE_DIGEST = "1936f76c1b7063390fa4425c19df774e33161715e50867b4033b6465a6785b62"
 
 

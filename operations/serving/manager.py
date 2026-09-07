@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Final, Mapping, Protocol
 
 from common.chairs.errors import ChairRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
@@ -612,6 +612,9 @@ class ServingManager:
                 if identity.adapter_of is None
                 else self.registry.ensure(base_identity)
             )
+            # The row's declared image geometry, proved against the model's own
+            # processor configuration now that a verified snapshot of it exists.
+            assert_processor_geometry(base_snapshot, profile)
             endpoint = profile.endpoint
             # The lock spans endpoint probing and any failed launch cleanup, not
             # merely the successful `ServiceHandle` lifetime.  Otherwise two pod
@@ -1284,6 +1287,85 @@ class ServingManager:
                 refusal.chair,
                 f"{refusal.difference}; additionally, the serving start failed: {detail}",
             ) from refusal
+
+
+#: The two files a Qwen-VL repository can state its vision-encoder geometry in,
+#: in the order they are consulted. Which one exists differs by chair at the
+#: pinned revisions -- ``datalab-to/chandra-ocr-2`` ships both,
+#: ``stanford-oval/churro-3B`` and ``Qwen/Qwen3.8-27B`` only the first, and
+#: ``attestator_2``'s DAI revision only the second (fetching the other returns
+#: 404). ``preprocessor_config.json`` states ``patch_size``/``merge_size`` at
+#: the top level; ``processor_config.json`` nests them under
+#: ``image_processor``, and both spellings are read below.
+PROCESSOR_CONFIG_FILENAMES: Final = ("preprocessor_config.json", "processor_config.json")
+
+
+def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfile) -> None:
+    """Prove the row's declared image geometry against the model's own file.
+
+    ``patch_size`` and ``merge_size`` decide how many prompt tokens every image
+    costs (``common/request_capacity.py``), and until now the row *declared*
+    them and nothing checked the declaration: a row that said 14 for a patch-16
+    chair would mis-count every image by 30% and refuse or admit requests on
+    the strength of it, silently, with the arithmetic published in the receipt
+    as though it had been checked. It is a comment in three files that says
+    where the numbers came from; this is the check.
+
+    **Where it can run, and where it cannot.** It reads the verified snapshot
+    the launch is about to serve, so it runs wherever the weights are -- on the
+    pod, at every start, including the preflight start that stamps a row
+    ``proven``. It cannot run on a laptop that has never materialized the
+    model, and it does not pretend to: this is not called from a request
+    builder or from a catalogue test, and the offline check on those numbers
+    remains what it always was, a reviewed comment naming the source.
+
+    Asked only of a row that declares the pair. Every real row does; a fixture
+    or synthetic row declares neither and is left exactly as it was
+    (``operations/serving/config.py::_OPTIONAL_PROFILE_FIELDS``).
+
+    **A snapshot carrying neither file is passed, and that is a boundary rather
+    than an oversight.** All four pinned repositories ship one of the two, so
+    for a real materialization absence cannot happen -- and when it does, it
+    means a store built by a test or a synthetic fixture, which is not a wrong
+    declaration about a real model but the absence of a model to declare
+    anything about. Whether a materialized store is complete is
+    ``common/chairs/model_store.py``'s question and is answered against the
+    pinned manifest, not here. The skip is pinned by its own test so it cannot
+    become the quiet default for a real chair.
+    """
+
+    declared = {field: getattr(profile, field, None) for field in ("patch_size", "merge_size")}
+    if any(value is None for value in declared.values()):
+        return
+    for filename in PROCESSOR_CONFIG_FILENAMES:
+        path = snapshot.root / filename
+        if not path.is_file():
+            continue
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ServingConfigurationError(
+                f"chair {profile.chair!r} declares patch_size/merge_size on its serving row, "
+                f"and {filename} in its verified snapshot could not be read to check them: "
+                f"{error}"
+            ) from error
+        if not isinstance(document, dict):
+            continue
+        section = document.get("image_processor") if "image_processor" in document else document
+        if not isinstance(section, dict):
+            continue
+        observed = {field: section.get(field) for field in declared}
+        if any(value is None for value in observed.values()):
+            continue
+        if observed != declared:
+            raise ServingConfigurationError(
+                f"chair {profile.chair!r} serving row (recipe={profile.recipe!r}, "
+                f"tier={profile.tier!r}) declares {declared}, but {filename} at the pinned "
+                f"revision states {observed}; every image's prompt-token cost is computed "
+                "from the row's numbers, so serving under them would mis-count every request "
+                "this chair is sent"
+            )
+        return
 
 
 def _launchable(

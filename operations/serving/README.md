@@ -334,6 +334,27 @@ itself cannot be verified (`ServiceStopError`), the drift refusal is what the
 caller sees — the stop failure is chained onto it (`__cause__`), never
 allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
 
+**What a reading request looks like, and who decides each part of it.** The
+stages build the messages and this package puts them on the wire unchanged, so
+two facts about the shape are settled outside here and named for a reader who
+finds them surprising in a recorded body. First, **the image part comes before
+the text part** in a chair's user turn: every chat template these occupants
+ship emits content parts in list order, and all three were fine-tuned with the
+vision block first, so that order is the token sequence the model was trained
+on (`pipeline/3_attestatores/live_witness.py::_user_content`,
+`pipeline/2_designator/structure_pass.py::page_request`). Second, **a chair's
+`max_tokens` is `min(its declared upstream bound, max_model_len − the request's
+own image and prompt cost)`, with the row term expressed by sending no field**
+(`common/request_capacity.py::sendable_max_tokens`) — sending our own count of
+the row's remainder would risk an HTTP 400 the engine's own count would not,
+while the declared bound, sent only where it is strictly smaller, is what stops
+a chair generating far past the length its own publisher runs it at. Alongside
+it travel the few decoding values `generation_config = "vllm"` makes the engine
+discard: `repetition_penalty` for Churro, `stop_token_ids` for DAI's second EOS
+id, `chat_template_kwargs` for both Chandra chairs. All of them ride
+`generation_sent`, so the retained `chair-call-record.v1` says exactly what went
+out.
+
 `ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
 in this order: refuse an unbuildable request (a `kind` other than
 `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,

@@ -133,6 +133,12 @@ def churro_prompt() -> dict[str, str]:
 CHURRO_LAYOUT_PROMPT_VERSION: Final = "churro-layout-prompt.v1"
 
 
+#: Names the wording `churro_prompt` sends -- the carried Table 6 prompt the
+#: model was published with. Beside `CHURRO_LAYOUT_PROMPT_VERSION` so
+#: `churro.FRAMINGS` can name both by one vocabulary.
+CHURRO_TRAINED_PROMPT_VERSION: Final = "churro-trained-prompt.v1"
+
+
 def churro_layout_prompt() -> dict[str, str]:
     """The live instruction: the trained framing, asked for block geometry.
 
@@ -232,6 +238,80 @@ def churro_layout_prompt() -> dict[str, str]:
 def churro_generation() -> dict[str, int]:
     """The predeclared operational bound, not a content or repetition control."""
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+
+
+def churro_wire_decoding() -> dict[str, float]:
+    """Churro's own shipped ``repetition_penalty``, because the engine drops it.
+
+    Carried third-party content: one value from ``generation_config.json`` (260
+    source bytes, SHA-256
+    ``90e92cbc8634d6f5b1cb1ae58a3c48724a1ce1f11f8b7aecb5b9b3fd5d5a06bf``) in
+    ``stanford-oval/churro-3B`` at the revision ``config/models-real.toml``
+    pins. Only this one value crosses; the file's ``do_sample``/``temperature``
+    describe a sampling posture `config/decoding.toml` owns and the serving
+    seam already fixes at 0, and its ``bos``/``eos``/``pad`` ids are the
+    tokenizer's own, which vLLM reads for itself.
+
+    **Why it has to be sent.** Every serving row pins
+    ``generation_config = "vllm"``, and vLLM's ``get_diff_sampling_param``
+    then returns ``{}`` instead of the model's file, so the request falls back
+    to ``_DEFAULT_SAMPLING_PARAMS`` -- ``repetition_penalty 1.0``. The model's
+    publisher ships 1.05 and the CHURRO paper section D.5 documents this model
+    entering degeneration loops. Declining a vendor's own mitigation by
+    accident is exactly what GOVERNANCE 7 forbids in the other direction: the
+    pipeline does not gate model behaviour, and it does not silently substitute
+    its own value for the vendor's either.
+
+    **Determinism is untouched.** At ``temperature = 0`` vLLM takes the greedy
+    path, and the penalty is applied to the logits *before* that argmax; the
+    same request still returns the same tokens.
+
+    Not folded into :func:`churro_generation`, which is the *declared* view
+    retained inside every Churro model view: that record is written by
+    ``common/contracts/canonical.py``, which refuses floats outright, and a
+    declared view that quietly re-encoded 1.05 would be worse than one that
+    does not claim to carry it. What is sent is recorded, exactly, on the
+    retained chair-call record -- ``operations/serving/client.py`` transcribes
+    it as ``wire-decimal.v1``, the machinery that exists for DAI's identical
+    1.05.
+    """
+    return {"repetition_penalty": 1.05}
+
+
+# The stop token vLLM already holds for DAI without being told: the tokenizer's
+# own ``eos_token``, ``<|im_end|>``, at the pinned revision. Named so
+# :func:`dai_wire_stop_token_ids` can say which of the carried ids is the *new*
+# one rather than re-typing a literal for it.
+DAI_TOKENIZER_EOS_TOKEN_ID: Final = 151645
+
+
+def dai_wire_stop_token_ids() -> dict[str, list[int]]:
+    """DAI's second EOS id, which ``generation_config = "vllm"`` never reads.
+
+    Derived from the carried ``generation_config.json`` (:func:`dai_generation`,
+    under its own digest), never re-typed: its ``eos_token_id`` is
+    ``[151645, 151643]``, and vLLM takes only the first from the tokenizer's
+    ``eos_token``. The second, ``<|endoftext|>``, is dropped with the rest of
+    the model's file when the row pins ``generation_config = "vllm"``, so a
+    response that ends on it would not stop -- and with the answer budget then
+    running to the row's context, that is length billed by the hour rather than
+    a reading.
+
+    Only the ids vLLM does not already have are sent. Adding the primary EOS
+    back would be a no-op in principle and a change to the one stop that is
+    already working in practice, which is not a trade this seam makes on an
+    unobserved engine.
+    """
+
+    declared = dai_generation()["eos_token_id"]
+    extra = [token_id for token_id in declared if token_id != DAI_TOKENIZER_EOS_TOKEN_ID]
+    if not extra:
+        raise SchemaRefusal(
+            "DAI's carried generation config names no stop token beyond the tokenizer's own "
+            f"{DAI_TOKENIZER_EOS_TOKEN_ID}, so this seam has nothing to add; the carried ids "
+            f"are {declared!r} and the carry itself has changed"
+        )
+    return {"stop_token_ids": extra}
 
 
 def dai_prompt() -> dict[str, str]:

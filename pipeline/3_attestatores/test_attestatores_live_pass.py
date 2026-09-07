@@ -48,6 +48,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
@@ -728,10 +729,20 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     assert tree.read_bytes(view["prompts"]["system"]["relative_path"]).decode() == prompt["system"]
     assert tree.read_bytes(view["prompts"]["query"]["relative_path"]).decode() == prompt["user"]
     # And the call record carries the vendor's own declared values, floats
-    # included, beside the three that actually went on the wire.
+    # included, beside everything that actually went on the wire: the three
+    # allow-listed decoding values, the bound derived from the sealed row, and
+    # the second EOS id `generation_config = "vllm"` never reads.
     call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
     declared = feeding.dai_generation()
-    assert set(call["generation_sent"]) == {"repetition_penalty", "top_k", "top_p"}
+    assert set(call["generation_sent"]) == {
+        "repetition_penalty",
+        "top_k",
+        "top_p",
+        "max_tokens",
+        "stop_token_ids",
+    }
+    assert call["generation_sent"]["stop_token_ids"] == [151643]
+    assert call["generation_sent"]["max_tokens"] <= DECLARED_ANSWER_BOUND_TOKENS["attestator_2"]
     assert call["generation_declared"]["repetition_penalty"] == {
         "schema": "wire-decimal.v1",
         "decimal": json.dumps(declared["repetition_penalty"]),

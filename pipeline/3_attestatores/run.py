@@ -4847,6 +4847,14 @@ def live_attempt_pass(
                 rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
         schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
 
+    # Resolved once for the whole pass, from the roster this run sealed: which
+    # framing each page chair is asked in. A chair whose adapter has a single
+    # framing resolves to `None` and is asked exactly as it always was.
+    framings = {
+        chair: witness_adapters.framing_for(context.registry.config, chair)
+        for chair in sorted(page_chairs)
+    }
+
     def serve(client: ChairClient, row: dict[str, str]) -> None:
         nonlocal recorded
         chair = row["chair"]
@@ -4867,6 +4875,7 @@ def live_attempt_pass(
                 attempts_by_pair=attempts_by_pair,
                 page_captures=page_captures,
                 page_ids=page_ids,
+                framing=framings[chair],
             )
         else:
             recorded += _serve_act_unit(
@@ -5142,6 +5151,7 @@ def _serve_page_unit(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
     page_ids: dict[int, str] | None = None,
+    framing: str | None = None,
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
@@ -5151,10 +5161,16 @@ def _serve_page_unit(
             adapter,
             resolved.witness_adapter,
             presentation,
-            # The sealed row this chair is actually running under. Churro's
-            # generation bound is only sendable if that row can hold it
-            # (`live_witness.churro_generation_sent`).
+            # The sealed row this chair is actually running under. Every
+            # chair's generation bound is derived from it and from this
+            # request's own capacity record
+            # (`common/request_capacity.py::sendable_max_tokens`).
             profile=client.handle.profile,
+            # Which framing this run asks this chair in, resolved once from the
+            # sealed roster before the pass began
+            # (`witness_adapters.framing_for`). `None` where the adapter has one
+            # framing and there is nothing to name.
+            framing=framing,
         )
     except RequestCapacityRefusal as error:
         # This page against this row. Every other page keeps its testimony, and
@@ -5181,7 +5197,7 @@ def _serve_page_unit(
         )
     response = client.read(request)
     live = live_witness.captured_page_attempt(
-        context, page_ordinal, chair, resolved.witness_adapter, adapter, response
+        context, page_ordinal, chair, resolved.witness_adapter, adapter, response, framing=framing
     )
     transport_stop_reason = (
         response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
