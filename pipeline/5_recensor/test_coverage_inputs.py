@@ -1062,6 +1062,126 @@ def test_a_measured_shortfall_on_the_same_page_outranks_the_unmeasured_one(monke
     assert "chair 'attestator_1'" in finding["unmeasured_reason"]
 
 
+def _mixed_page_context(monkeypatch, *, anchor_reason=None):
+    """One page, one chair, two acts: one starting here, one continuing through.
+
+    The commonest real shape at the head of a continuation. `act-1` is marked
+    out on page 1 and its page row aligns there; `act-2` is primary on page 2
+    and its page-1 row carries the forced unaligned declaration. `page_role` is
+    `mixed`, which is exactly what `reconcile_page_roles` re-derives from these
+    two attachments. `anchor_reason` replaces `act-1`'s aligned span with an
+    ordinary unaligned row, which is how the same page reaches an empty span
+    union without changing anything else about it.
+    """
+    page = _page_testimonium(outcome="read", retained="alphaXYZ \tQ")
+    page["payload"]["page_role"] = "mixed"
+    context = _context(page)
+    anchored = _attachment(context, end=5)
+    if anchor_reason is not None:
+        anchored["payload"]["attachments"][0]["attached"] = False
+        anchored["payload"]["attachments"][0]["alignment"] = {
+            "status": "unaligned",
+            "reason": anchor_reason,
+        }
+    context.tree.records["attachment-1"] = anchored
+    continuation = _attachment(context, end=0)
+    continuation["artifact_id"] = "attachment-2"
+    continuation["subject_id"] = "act-2"
+    continuation["attempt_id"] = attempt_id("act-2", "act-attachment", 1)
+    continuation["payload"]["attachments"][0]["attached"] = False
+    continuation["payload"]["attachments"][0]["alignment"] = {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    context.tree.records["attachment-2"] = continuation
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {"act_id": "act-1", "act_key": "a1", "page_ordinal": 1},
+            {"act_id": "act-2", "act_key": "a2", "page_ordinal": 2},
+        ],
+    )
+    monkeypatch.setattr(
+        RUN,
+        "artifacts_for",
+        lambda *unused: [
+            {
+                "payload": {
+                    "origin": "proposal",
+                    "transform": {
+                        "source_page_id": "page-1",
+                        "source_page_ordinal": 1,
+                        "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+                    },
+                }
+            }
+        ],
+    )
+    return context
+
+
+def test_a_mixed_pages_uncovered_text_is_measured_beside_a_declared_continuation(monkeypatch):
+    """The declaration withholds the verdict only where it empties the union.
+
+    A page where one act starts and another continues through still has a real
+    span union -- the starting act's -- so the text outside it was measured, and
+    calling that unmeasured would hide a genuine coverage loss behind the
+    neighbouring act's declaration (GOALS 1). The unmeasured half is still
+    recorded beside the verdict rather than dropped (GOVERNANCE 2).
+    """
+    context = _mixed_page_context(monkeypatch)
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    measured = finding["by_chair"]["attestator_1"]
+    assert measured["attached_spans"] == [{"start": 0, "end": 5, "act_id": "act-1"}]
+    assert measured["uncovered_non_whitespace"]["count"] == 4
+    assert finding["shortfall"] is True
+    # The page carries a verdict, so the declaration is recorded beside it and
+    # never as the page's own reason.
+    assert "reason" not in finding
+    assert "act-2 declared unanchored" in finding["unmeasured_reason"]
+    assert "continuation-page-no-act-anchor" in finding["unmeasured_reason"]
+    # Scoped to the declared acts, never to the page: this page WAS measured,
+    # and the page-wide sentence would be a false statement about it.
+    assert "every act attachment" not in finding["unmeasured_reason"]
+    outcome, _reason = RUN.review_route_from_findings(
+        testimony_shortfall=finding["shortfall"],
+        audit_unresolved=False,
+        under_witnessed=False,
+    )
+    assert outcome == "held-for-review"
+
+
+def test_the_same_page_without_an_aligned_span_is_unmeasured_again(monkeypatch):
+    """The counterfactual on the same fixture: the span union decides, not the acts.
+
+    Identical page, identical declaration, identical uncovered text -- only the
+    starting act's span is gone. With nothing for the page text to be diffed
+    against, the count is kept and the verdict is withheld, exactly as for a
+    page whose every act continues through.
+    """
+    context = _mixed_page_context(monkeypatch, anchor_reason="no-overlap-with-act-anchor")
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    measured = finding["by_chair"]["attestator_1"]
+    assert measured["attached_spans"] == []
+    assert measured["uncovered_non_whitespace"]["count"] == 9
+    assert finding["shortfall"] is None
+    assert "page 1's testimony content coverage is unmeasured" in finding["reason"]
+    assert "act-2 declared unanchored" in finding["reason"]
+    assert (
+        RUN.review_route_from_findings(
+            testimony_shortfall=finding["shortfall"],
+            audit_unresolved=False,
+            under_witnessed=False,
+        )
+        is None
+    )
+
+
 def test_every_page_an_act_spans_but_is_not_primary_on_is_restated():
     """The derivation F2 named: the residual-ink rule, applied to this measurement.
 

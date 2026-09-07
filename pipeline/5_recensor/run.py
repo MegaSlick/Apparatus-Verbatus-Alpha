@@ -2457,23 +2457,47 @@ def reconcile_page_roles(
 CONTINUATION_NO_ACT_ANCHOR = "continuation-page-no-act-anchor"
 
 
-def continuation_unmeasured_reason(ordinal: int, observations: list[tuple[str, int, list]]) -> str:
-    """Say, in one sentence, why a continuation page's coverage has no verdict.
+def continuation_unmeasured_reason(
+    ordinal: int,
+    observations: list[tuple[str, int, list]],
+    *,
+    beside_a_measured_verdict: bool = False,
+) -> str:
+    """Say, in one sentence, why a declared-unanchored act's uncovered text has no verdict.
 
     The observation itself is kept — the chair, the page, the uncovered count —
     because it is real and somebody has to be able to act on it. What is refused
-    is calling it a shortfall: the union it was diffed against is empty by
-    declaration, not by measurement (GOVERNANCE 10).
+    is calling it a shortfall: no span of a declared act can enter the union its
+    page text was diffed against, by declaration rather than by measurement
+    (GOVERNANCE 10).
+
+    Two situations, and the sentence names which one it is describing.  Where the
+    chair has no aligned spans on the page at all, the whole page is unmeasured
+    and this is the page's own `reason` — the wording Tyrel's ruling produced,
+    unchanged. Where it does have some, only the declared acts' share is
+    unmeasured; the page carries a real verdict and this rides beside it as
+    `unmeasured_reason`, scoped to those acts, because the page-wide sentence
+    would be a false statement about a page that *was* measured.
     """
     observed = "; ".join(
         f"chair {chair!r} saw {count} uncovered non-whitespace character(s) beside "
         f"{', '.join(acts)} declared unanchored"
         for chair, count, acts in sorted(observations)
     )
+    if beside_a_measured_verdict:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured for the acts the "
+            f"Perlector declares {CONTINUATION_NO_ACT_ANCHOR}, so no witness span can be "
+            "attached to them and what is uncovered beside them is not a measured shortfall"
+        )
+    else:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured: the Perlector declares "
+            f"every act attachment on this continuation page {CONTINUATION_NO_ACT_ANCHOR}, so no "
+            "witness span can be attached there and what is uncovered is not a measured shortfall"
+        )
     return (
-        f"page {ordinal}'s testimony content coverage is unmeasured: the Perlector declares "
-        f"every act attachment on this continuation page {CONTINUATION_NO_ACT_ANCHOR}, so no "
-        "witness span can be attached there and what is uncovered is not a measured shortfall "
+        f"{subject} "
         f"({observed}); continuation-page alignment in the Perlector is what would make this "
         "measurement real"
     )
@@ -2707,15 +2731,25 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         if declared_unanchored and uncovered["count"]:
-            # Recorded, not aggregated: this chair's uncovered count is real and
-            # stays in `by_chair` above, but it may not raise a page-level
-            # shortfall, because the span union it was diffed against is empty
-            # by declaration. The verdict is settled after every chair on the
-            # page has been read, below.
+            # Recorded whichever way the verdict goes: this chair saw uncovered
+            # text beside acts whose spans could never have covered it, and that
+            # observation is what names the gap the Perlector has yet to close.
+            # The settlement below decides whether it becomes the page's reason
+            # or rides beside a measured one.
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
-        else:
+        if spans or not declared_unanchored:
+            # Only an *empty* span union is unmeasured. Where this chair has
+            # aligned spans on the page, the diff was taken against a real union
+            # -- a mixed page carries one act starting here beside another
+            # continuing through -- so its uncovered text is a measurement like
+            # any other and raises the page's shortfall. Suppressing it because
+            # some other act on the page declared itself unanchorable would hide
+            # a real coverage loss behind a neighbour's declaration, which is
+            # the missed act GOALS 1 puts above every other cost. Tyrel's ruling
+            # (Unit 12 F2) withholds the verdict where the measurement cannot be
+            # made; here it can be.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
@@ -2734,12 +2768,17 @@ def testimony_content_findings(context) -> dict[int, dict]:
     for ordinal, observations in unanchored_by_page.items():
         finding = findings[ordinal]
         if finding["shortfall"]:
-            # Another chair on this page measured a real shortfall against a
-            # real span union. That verdict is a measurement and outranks the
+            # This page carries a real shortfall measured against a real span
+            # union -- by another chair, or by this same chair on a mixed page
+            # where one act's spans are aligned and another's are declared
+            # unanchorable. That verdict is a measurement and outranks the
             # unmeasured one; the reason still records what could not be
             # measured beside it, so neither half is lost (GOVERNANCE 2).
             finding.setdefault(
-                "unmeasured_reason", continuation_unmeasured_reason(ordinal, observations)
+                "unmeasured_reason",
+                continuation_unmeasured_reason(
+                    ordinal, observations, beside_a_measured_verdict=True
+                ),
             )
             continue
         # Tyrel's ruling on Unit 12's F2: unmeasured by name.

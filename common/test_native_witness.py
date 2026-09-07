@@ -1413,32 +1413,27 @@ def test_a_json_body_this_parser_cannot_place_is_an_unrecognized_shape_not_a_fai
     assert result["outcome"] == (outcome or "unverified-response-schema")
 
 
-@pytest.mark.parametrize(
-    "body",
-    (
-        b"not xml and not json",
-        b'["a json array, not an object"]',
-        b'"a bare json string"',
-        b"<output attr='no'>x</output>",
-        b"<notoutput>x</notoutput>",
-    ),
+#: Bodies the JSON door cannot place, so the dispatch hands each to the trained
+#: parser. Named once because the two tests below are one claim in two halves --
+#: *that* these fail and *where* they fail -- and a body present in only one of
+#: them would prove neither.
+_NON_OBJECT_BODIES = (
+    b"not xml and not json",
+    b'["a json array, not an object"]',
+    b'"a bare json string"',
+    b"<output attr='no'>x</output>",
+    b"<notoutput>x</notoutput>",
 )
+
+
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
 def test_a_non_object_body_reaches_the_trained_parser_and_fails_there(body):
     result = parse_churro_response(body)
     assert result["state"] == "failed"
     assert result["reason"]
 
 
-@pytest.mark.parametrize(
-    "body",
-    (
-        b"not xml and not json",
-        b'["a json array, not an object"]',
-        b'"a bare json string"',
-        b"<output attr='no'>x</output>",
-        b"<notoutput>x</notoutput>",
-    ),
-)
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
 def test_a_non_object_body_is_handed_to_the_trained_parser_by_name(body, monkeypatch):
     """The prior test proves these bodies fail; this one proves *where*.
 
@@ -1600,7 +1595,10 @@ def test_the_repetition_detector_reads_the_transcription_under_the_wire_contract
 
 
 def test_an_oversized_body_is_refused_before_either_parser_under_both_names():
-    oversized = b"x" * (4 * 1024 * 1024 + 1)
+    # The bound itself, not a copy of its arithmetic: a literal here would keep
+    # passing against a gate that had moved, which is the one thing this test is
+    # for.
+    oversized = b"x" * (CHURRO_MAX_RESPONSE_BYTES + 1)
     for parser in sorted(CHURRO_PARSERS):
         derived = derive_churro_capture(oversized, "eos", parser=parser)
         assert derived["parse"]["state"] == "failed"

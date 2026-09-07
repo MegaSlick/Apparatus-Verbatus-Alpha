@@ -56,7 +56,7 @@
 # live chair is asked for block geometry (`feeding.churro_layout_prompt`) and
 # answers with the JSON object `common/churro_response.py` declares, so its
 # measured prompt is 441 tokens rather than 281 and its dense-page answer 1,631
-# rather than 1,433 -- 318 tokens more per request than the rows above were
+# rather than 1,433 -- 358 tokens more per request than the rows above were
 # first weighed with.  Every row still holds it: 4,352 / 6,100 / 8,765 against
 # 8,192 / 8,192 / 16,384.  The old contexts refuse it by a wider margin than
 # they refused the trained framing, which is the same finding, measured over
