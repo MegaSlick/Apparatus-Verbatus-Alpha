@@ -91,14 +91,22 @@ _DECODE_FAILURES = (
 _HIGH_PRECISION_SCALE = {"I;16": 1 / 257, "I;16L": 1 / 257, "I;16B": 1 / 257, "I;16N": 1 / 257}
 
 
-class _UndefinedSampleRange(ValueError):
-    """A mode whose samples declare no range, so no 8-bit reading of it is honest.
+class _UnsettledReadingPolicy(ValueError):
+    """A page this module can decode and has no settled way to read as grey.
 
     A `ValueError` like every other refusal this module raises, and its own class
-    only so the paths that re-word a decode failure can let this one through
-    unchanged: it says the pipeline has not settled a policy, not that the bytes
-    are damaged, and those are two different sentences to write to an operator.
+    only so the paths that re-word a decode failure can let it through unchanged:
+    it says the pipeline has not settled a policy, not that the bytes are
+    damaged, and those are two different sentences to write to an operator.
     """
+
+
+class _UndefinedSampleRange(_UnsettledReadingPolicy):
+    """A mode whose samples declare no range, so no 8-bit reading of it is honest."""
+
+
+class _UnreadableTransparency(_UnsettledReadingPolicy):
+    """A page that declares transparency, which no grey value can stand for."""
 
 
 def _refuse_undefined_sample_range(mode: str) -> None:
@@ -120,6 +128,46 @@ def _refuse_undefined_sample_range(mode: str) -> None:
         )
 
 
+def _refuse_unreadable_transparency(image: Image.Image) -> None:
+    """Refuse to read a transparent page as grey rather than inventing paper.
+
+    `convert("L")` drops an alpha channel and ignores a tRNS record, so every
+    transparent pixel is read as whatever sample happens to sit under it —
+    usually zero, which this pipeline's readers count as ink. A page whose blank
+    regions read as ink is not a small error: it is a measurement of something
+    that is not on the page, and the alternative (compositing against white)
+    would be this module deciding what colour the paper is, which is the same
+    kind of guess `_refuse_undefined_sample_range` exists to refuse.
+
+    A crop is the other case and behaves differently on purpose: it is a display
+    image, PNG can carry the transparency, and `crop_png` does carry it. This is
+    only about turning a page into grey *values* a stage will then count.
+
+    Found by CodeRabbit reviewing the transparency fix.
+    """
+    if "transparency" in image.info:
+        raise _UnreadableTransparency(
+            "a sealed page declares a transparent sample, and reading it as grey would "
+            "count that sample as ink or as paper without either being recorded; the "
+            "policy for reading a transparent page is not settled"
+        )
+    bands = image.getbands()
+    alpha = next((index for index, band in enumerate(bands) if band.upper() == "A"), None)
+    if alpha is None:
+        return
+    # A page whose alpha channel is entirely opaque carries no transparency to
+    # lose, and refusing it would cost a page for a channel that says nothing
+    # (GOALS 1). One channel of the already-bounded page, so the check is a scan
+    # of at most `MAX_PIXELS` bytes and never an RGBA materialisation.
+    minimum, _maximum = image.split()[alpha].getextrema()
+    if minimum < 255:
+        raise _UnreadableTransparency(
+            "a sealed page carries pixels that are not fully opaque, and reading it as "
+            "grey would count them as ink or as paper without either being recorded; the "
+            "policy for reading a transparent page is not settled"
+        )
+
+
 def _grayscale_samples(image: Image.Image) -> Image.Image:
     """One sealed page as 8-bit grey, scaling the modes a bare convert would clip.
 
@@ -131,6 +179,7 @@ def _grayscale_samples(image: Image.Image) -> Image.Image:
     the same policy at the one other place that reads sample values, so the
     grey a stage measures and the grey a model is shown come from one rule.
     """
+    _refuse_unreadable_transparency(image)
     if image.mode == "L":
         return image
     scale = _HIGH_PRECISION_SCALE.get(image.mode)
@@ -708,7 +757,7 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
             grayscale = _grayscale_samples(image)
             width, height = grayscale.width, grayscale.height
             data = grayscale.tobytes()
-    except _UndefinedSampleRange:
+    except _UnsettledReadingPolicy:
         # This module's own policy refusal, not a statement about the bytes: it
         # must not be re-worded as "not a decodable image", which would send an
         # operator looking for a damaged scan.

@@ -198,6 +198,38 @@ def test_a_16bit_page_with_transparency_crops_with_its_transparency_rescaled() -
         assert image.convert("RGBA").tobytes()[7] == 0, "the white sample stays transparent"
 
 
+def test_grayscale_rows_refuses_a_transparent_page_rather_than_counting_it_as_ink() -> None:
+    """A crop keeps transparency; a grey *reading* of a page cannot invent paper.
+
+    `convert("L")` drops alpha, so a transparent region reads as whatever sample
+    sits under it — usually zero, which every reader in this pipeline counts as
+    ink. Compositing against white instead would be this module deciding what
+    colour the paper is. Both are policy, so the page is held with a named
+    refusal instead. Found by CodeRabbit reviewing the transparency fix.
+    """
+    tRNS_page = _png(2, 1, 0, b"\0\0\xff", _chunk(b"tRNS", struct.pack(">H", 0)))
+    with pytest.raises(ValueError, match="not settled"):
+        grayscale_rows(tRNS_page)
+
+    alpha_page = BytesIO()
+    Image.new("RGBA", (2, 1), (0, 0, 0, 0)).save(alpha_page, format="PNG")
+    with pytest.raises(ValueError, match="not settled"):
+        grayscale_rows(alpha_page.getvalue())
+
+
+def test_grayscale_rows_still_reads_a_page_whose_alpha_channel_says_nothing() -> None:
+    """The refusal is about transparency, not about the presence of a channel: a
+    fully opaque alpha channel loses nothing, and refusing it would cost a page
+    for no reading at all (GOALS 1)."""
+    opaque = BytesIO()
+    Image.new("RGBA", (2, 1), (10, 10, 10, 255)).save(opaque, format="PNG")
+
+    width, height, rows = grayscale_rows(opaque.getvalue())
+
+    assert (width, height) == (2, 1)
+    assert set(rows[0]) == {10}
+
+
 def _invalid_png(case: str) -> bytes:
     valid = _png(1, 1, 0, b"\0\x80")
     if case == "missing-iend":
