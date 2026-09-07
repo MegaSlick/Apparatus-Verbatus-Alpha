@@ -93,6 +93,22 @@ RECENSOR_RUN = _load_recensor()
 NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
 NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
+
+def _perlector_dissent():
+    """The Perlector's own `dissent` module, loaded the way `_load_recensor` is.
+
+    Imported by path rather than by name: `pipeline/4_perlector` is a
+    numeric-prefixed directory its own stage program adds to `sys.path`, and
+    this suite must not acquire that path as a side effect of a comparison it
+    makes in one test.
+    """
+    path = ROOT / "pipeline/4_perlector/dissent.py"
+    spec = importlib.util.spec_from_file_location("perlector_dissent_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
 # what a run writes, and never loosened: "nothing changed" must not be satisfiable
@@ -6097,7 +6113,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
-def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
     tmp_path, happy_run
 ):
     """Capability handling stays live without blinding the reference instrument.
@@ -6106,16 +6122,22 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed
-    after the fact — so it is not a picker. What it is, is a hole in the
-    instrument ARCHITECTURE names for catching a reader that "learned to agree
-    with witnesses rather than to read ink."
+    after the fact — so it is not a picker. What it was, until U12, is a hole in
+    the instrument ARCHITECTURE names for catching a reader that "learned to
+    agree with witnesses rather than to read ink": the declaration alone put a
+    chair permanently outside the comparison.
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
-    unknown until R4 provided act-anchored comparison views; now that R4's
-    alignment lands a comparison view for both, only the capability-declared
-    chair stays unknown, and the reference happy run — where no chair declares
-    the capability — compares all three.
+    dedicated `witness-capabilities` scenario, and chair 2 is act-scoped. It is
+    now compared — not because the exemption was deleted, but because
+    `pipeline/4_perlector/run.py::dissent_testimonia` derives it a
+    `comparison_reported` from its own retained bytes
+    (`common/alignment.py::bracket_marker_view`), and the exemption lifts for a
+    chair that has a safe view. The counterfactual below is what says those are
+    different things: the RETAINED record, which carries no derived view, is
+    still refused by `is_comparable`. Every chair in this scenario is now
+    compared, exactly as in the reference happy run where none declares the
+    capability.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -6128,9 +6150,9 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     )
     by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_2"]["compared"] == "unknown"
-    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert by_chair["attestator_2"]["compared"] is True
+    assert "reason" not in by_chair["attestator_2"]
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 0
 
     testimonium = next(
         record
@@ -6138,8 +6160,15 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     )
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    # The capability blinds the comparison and nothing else: the outcome, the
-    # class, and the coverage count are what they would be without it.
+    # The counterfactual, on this run's own retained evidence: the exemption is
+    # still there and still bites. The retained Testimonium carries the verbatim
+    # report and no derived view (GOVERNANCE 4), and on that record
+    # `is_comparable` is False — so what lifted it above is the view
+    # `dissent_testimonia` builds, not a relaxed rule.
+    assert "comparison_reported" not in testimonium["payload"]
+    assert _perlector_dissent().is_comparable(testimonium) is False
+    # The capability decides the comparison route and nothing else: the outcome,
+    # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"
     entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
     assert entry["witness_coverage"]["by_class"] == {

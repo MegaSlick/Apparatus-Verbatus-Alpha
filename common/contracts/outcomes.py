@@ -85,6 +85,103 @@ ATTACHMENT_BASES: Final = frozenset(
     {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
 )
 
+
+def anchor_line_located(alignment: Any) -> bool:
+    """Whether a page alignment placed THIS act's own anchor line in the witness text.
+
+    Not "the alignment succeeded". Three separate things have to hold, and each
+    of them is a different way the same record can be honest and still place
+    nothing here:
+
+    * `status == "aligned"` -- an unaligned record carries a reason and no span.
+      A continuation page is forced to `continuation-page-no-act-anchor` before
+      geometry is ever consulted (`pipeline/3_attestatores/run.py`), so this
+      basis can never arise on a page the act is not primary on, which is
+      correct: the anchor is derived from the act's own primary page.
+    * `anchor_basis == "act-anchor"` -- `no-page-anchor` and
+      `act-line-not-located` are aligned records that say, in the producer's own
+      vocabulary, that no line for this act was located. They exist for the
+      trivial attach a genuinely empty page reading gets.
+    * a positive-length `witness_span` -- the same trivial attach carries
+      `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
+      placed in, and counting it would put a chair on the witness floor for a
+      reading that placed nothing (GOVERNANCE 10).
+
+    Defensive about shape rather than validating it: this is read from
+    untrusted retained evidence at three seams, and each of those seams
+    validates the alignment's full closed shape itself. What this must never do
+    is raise a bare `TypeError`/`KeyError` out of a derivation whose answer is
+    then compared against a producer's boolean.
+    """
+    if not isinstance(alignment, Mapping) or alignment.get("status") != "aligned":
+        return False
+    if alignment.get("anchor_basis") != "act-anchor":
+        return False
+    span = alignment.get("witness_span")
+    if not isinstance(span, Mapping):
+        return False
+    start, end = span.get("start"), span.get("end")
+    if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
+        return False
+    return end > start
+
+
+def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:
+    """Which evidence attaches one page witness's reading to one act.
+
+    The single derivation of a page-witness attachment, called by the producer
+    (`pipeline/3_attestatores/run.py`) and re-derived independently by both
+    readers (`pipeline/4_perlector/run.py::act_attachment_view` and
+    `pipeline/5_recensor/run.py::act_attachment_facts`). It lives here, beside
+    `ATTACHMENT_BASES` and the floor arithmetic, for the reason
+    `WITNESS_READING_OUTCOMES` does: three spellings of one rule is how a
+    widening lands in one place and refuses the record everywhere else.
+
+    Geometry first, then the anchor line, and the order is load-bearing rather
+    than cosmetic: a chair that reported ink over this act's sealed proposal
+    attached on its own evidence, and labelling that `anchor-line` because the
+    text also aligned would understate what the record proves.
+
+    **Why the anchor line attaches at all.** A page witness whose grammar
+    carries no geometry -- Churro's `HistoricalDocument` is one by vendor
+    design -- reports real page text and can never overlap a proposal
+    rectangle. Deriving attachment from geometry alone left every such chair
+    permanently unattached, so every act sat one witness under a floor of
+    three, and the whole run held on a shortfall that never happened
+    (HOSTILE_REVIEW_2026-09-06 §2 B). `anchor-line` is not a new vocabulary
+    word invented to solve that: it has been in `ATTACHMENT_BASES` since the
+    set was closed, assigned by nothing.
+
+    **This is not a picker** (GOVERNANCE 3, hard rule 8). Nothing here selects
+    among witnesses or prefers one chair's reading: the anchor is a
+    text-locating instrument derived from another chair's own response, and
+    what it decides is whether this chair's text was *placed* in this act --
+    never whose reading is right. What it does cost is independence, and the
+    live seam says so by name: a chair attached on this basis counts toward the
+    floor only because another chair located its text.
+
+    **What it also costs, named rather than discovered later.** Neither reader
+    re-runs `align_to_anchor`; both take the producer's recorded alignment as
+    evidence, as they already did for `comparable`. Before this basis existed, a
+    forged attachment at the witness floor needed BOTH a forged observation and
+    a forged alignment, because `attached` came from geometry and `comparable`
+    from the alignment. It now needs the alignment alone. Both still sit inside
+    a self-hashed, digest-bound artifact under the Attestatores stage seal, so
+    the forgery is a reseal rather than an edit -- which is exactly the attack
+    `pipeline/4_perlector/test_comparability_seam.py` models -- but the cost did
+    fall, and the honest close is a reader that re-derives the alignment (it
+    needs the anchor chair's page text and this act's anchor range, neither of
+    which either reader holds today), not a stricter shape check here.
+    """
+    if not reading:
+        return "unattached"
+    if geometry_overlaps:
+        return "geometric-overlap"
+    if anchor_line_located(alignment):
+        return "anchor-line"
+    return "unattached"
+
+
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
 VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
@@ -529,9 +626,21 @@ def witness_coverage(
         ),
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
-        # Attachments are computed facts: page testimony counts only where its
-        # reported geometry overlaps the act's sealed proposal geometry. The
-        # claim is made only when every fact says which basis decided it.
+        # Attachments are computed facts, never asserted ones, and the claim is
+        # made only when every fact says which basis decided it.
+        #
+        # The name is older than the rule it names, and the gap is recorded
+        # rather than papered over: `native-observation-overlap` was coined when
+        # reported geometry was the only way anything attached. It is not, and
+        # was not even then -- an act-scoped chair attaches by `presented-region`
+        # with no observation at all, and a page witness whose grammar carries no
+        # coordinates attaches by `anchor-line` (`page_attachment_basis`). What
+        # this field actually distinguishes is act-granularity facts that each
+        # name their own basis from the older, weaker interim derivation. Which
+        # basis decided any one chair travels per chair on the attachment record
+        # and is re-derived by both readers, so nothing is lost here; the word is
+        # simply narrower than the fact. Renaming it moves a receipt string and
+        # is left to whoever owns that migration (GOVERNANCE 10).
         "granularity_basis": (
             NATIVE_GRANULARITY_BASIS
             if native_evidence

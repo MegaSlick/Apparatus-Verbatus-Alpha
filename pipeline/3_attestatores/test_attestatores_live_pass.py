@@ -2358,13 +2358,17 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
     )
 
 
-def test_the_trained_envelope_still_reads_and_still_does_not_attach(live_run, tmp_path):
-    """Risk 8.1's likely first real outcome, measured rather than assumed.
+def test_the_trained_envelope_reads_and_attaches_on_its_anchor_line(live_run, tmp_path):
+    """The geometry-free body parses, retains, aligns -- and now attaches.
 
-    A model that ignores the new clause answers in the shape it was fine-tuned
-    on. That body still parses, still retains, still aligns to the anchor, and
-    still lands unattached -- today's state, reached honestly. Nothing in
-    Unit 12 can make the transcription worse except the prompt bytes themselves.
+    A model answering in the shape it was fine-tuned on carries no coordinates,
+    so its only observation is the `presented` echo routing and coverage
+    exclude, asserted below as the counterfactual: there is no reported geometry
+    here for any derivation to read. It used to land unattached on exactly that,
+    which put every act one witness under a floor of three on a shortfall that
+    had not happened. It now attaches on the `anchor-line` basis -- its page text
+    carries this act's located anchor line -- and the record says which basis
+    decided it, because the two are not interchangeable.
     """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -2375,11 +2379,16 @@ def test_the_trained_envelope_still_reads_and_still_does_not_attach(live_run, tm
     assert payload["payload"] == (
         "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
     )
+    # No reported geometry at all: a `presented` echo is excluded by name, so
+    # nothing here could ever have attached by overlap.
     assert [box["bounds_source"] for box in payload["observed"]] == ["presented"]
     [churro_a1] = attachment_entries(tree)["a1"]["attestator_3"]
-    assert churro_a1["attached"] is False
-    assert churro_a1["attachment_basis"] == "unattached"
+    assert churro_a1["attached"] is True
+    assert churro_a1["attachment_basis"] == "anchor-line"
+    assert churro_a1["comparable"] is True
     assert churro_a1["alignment"]["status"] == "aligned"
+    assert churro_a1["alignment"]["anchor_basis"] == "act-anchor"
+    assert churro_a1["span"]["end"] > churro_a1["span"]["start"]
 
 
 def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_response(
@@ -2393,12 +2402,11 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     against that anchor. Chandra itself is attached (its own blocks overlap
     the acts) and aligned, so it is comparable. Churro answers in its trained
     `<output>` envelope here, which carries no geometry, so its only observation
-    is the presented echo routing excludes: its text aligns to the same anchor
-    while it stays geometrically unattached, with no span. Since Unit 12 that is
-    a fact about this SCRIPTED BODY, not about the chair -- the wire-contract
-    body attaches by its own boxes two tests above -- and it is scripted here
-    deliberately, because a model that ignores the layout clause is the likely
-    first real outcome and this is what the record then says.
+    is the presented echo routing excludes -- and its text still aligns to the
+    same anchor, which is what attaches it: basis `anchor-line`, with the span
+    that alignment located. Two chairs, two different bases, and the record says
+    which is which, because `anchor-line` is the one that says this chair counts
+    at this act only because another chair's response placed its text.
     """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -2445,24 +2453,25 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
         "status": "unaligned",
         "reason": "continuation-page-no-act-anchor",
     }
-    # `attached` is geometry alone, on every contributing page: Chandra's page-2
-    # block overlaps a2's continuation region, so the tail is attached while
-    # its alignment says no anchor line exists for it. This is the state this
-    # stage's contract describes and the Perlector today cannot read (its
-    # `act_attachment_view` requires `attached` to equal the geometric overlap
-    # and refuses an attached continuation-page entry -- HANDOFF.md names the
-    # contradiction); it is pinned here so the fix lands against a measured
-    # record rather than a described one.
+    # On a continuation page geometry is the only basis there is: the anchor is
+    # derived from the act's own primary page, and this row's alignment is
+    # forced to `continuation-page-no-act-anchor` before geometry is consulted,
+    # so `anchor-line` can never arise here. Chandra's page-2 block overlaps
+    # a2's continuation region, so the tail is attached while its alignment says
+    # no anchor line exists for it -- attached, uncomparable, no span.
     assert continuation["attached"] is True
     assert continuation["attachment_basis"] == "geometric-overlap"
     assert continuation["comparable"] is False and continuation["span"] is None
 
+    # The geometry-free page witness reaches the act by the other basis, and the
+    # label is what records the difference: `anchor-line` says this chair counts
+    # here only because Chandra's own response located its text.
     [churro_a1] = entries["a1"]["attestator_3"]
-    assert churro_a1["attached"] is False
-    assert churro_a1["comparable"] is False
-    assert churro_a1["attachment_basis"] == "unattached"
-    assert churro_a1["span"] is None
+    assert churro_a1["attached"] is True
+    assert churro_a1["comparable"] is True
+    assert churro_a1["attachment_basis"] == "anchor-line"
     churro_alignment = churro_a1["alignment"]
+    assert churro_a1["span"] == churro_alignment["witness_span"]
     assert churro_alignment["status"] == "aligned"
     assert churro_alignment["anchor_chair"] == "attestator_1"
     assert churro_alignment["anchor_span"] == {"start": 0, "end": 34}

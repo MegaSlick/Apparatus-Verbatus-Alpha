@@ -722,11 +722,27 @@ where one content-addressed blob is honestly reachable by two names.
   meet — a correct record, correctly published, refused one stage later. Unreachable
   while no page witness parsed live; reachable the moment one did.
 
+**A page witness attaches on one of two bases, and the label is derived, not read.**
+`act_attachment_view` re-derives both through the one shared rule the producer used
+(`common/contracts/outcomes.py::page_attachment_basis`): `geometric-overlap` where the
+chair's reported observations cover the act's sealed regions on that page, and —
+only where it reported no such ink — `anchor-line`, where the chair's page text carries
+an alignment that located this act's own anchor line with a positive-length span.
+The second basis is what a grammar that publishes no coordinates at all (Churro's, by
+vendor design) can reach; without it every such chair was unattached at every act and
+every act stood one witness under a floor of three on a shortfall that had not happened.
+Geometry takes precedence when both hold, because the label is evidence about
+independence: `anchor-line` says this chair counts here only because *another* chair's
+anchor located its text. The exact derived label is required, never membership in the two
+admissible ones, and an entry disagreeing with the derivation is refused on every
+contributing page.
+
 **A page witness on a continuation page is judged on its alignment, not on `attached`.**
-`act_attachment_view` derives `attached` from geometry alone — the chair's reported
-observations against the act's sealed regions on that page — and refuses an entry that
-disagrees with that derivation, on every contributing page. It used *also* to refuse any
-continuation-page entry that was attached, and the two rules contradicted each other for
+The anchor-line basis cannot arise there — the anchor is derived from the act's own
+primary page and the producer forces `continuation-page-no-act-anchor` before geometry is
+consulted — so a continuation entry attaches by geometry or not at all. This reader used
+*also* to refuse any continuation-page entry that was attached, and the two rules
+contradicted each other for
 a served page witness whose block really does cover an act's continuation half:
 `false` was refused as not derived from geometry, `true` as claiming an anchor, and no
 honest record existed in either state. The second rule is gone. What a continuation page

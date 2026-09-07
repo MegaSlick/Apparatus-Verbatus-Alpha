@@ -188,21 +188,32 @@ def is_comparable(record: dict[str, Any]) -> bool:
     **This branch is live.** It used to say no producer reached it, which was
     true until spec 07's fixture declared `can_express_uncertainty` on chair 2 of
     act a1 so that the `format_capabilities` distinction was exercised rather
-    than merely representable. The `witness-capabilities` scenario therefore
-    carries one chair uncompared on this axis, which is asserted end to end by
-    `test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all`
-    -- there rather than here, because the fact worth pinning is what real runs
-    measure, not what this function returns for a dict.
+    than merely representable.
 
-    **Known watch item, named rather than hidden:** the exemption is
-    per-capability, so a witness adapter that self-declares
-    `can_express_uncertainty` goes permanently uncompared on this axis. It
-    cannot touch the reading -- dissent is read-only and computed after the
-    fact -- so it is not a picker, but it does blind the instrument
-    ARCHITECTURE names for catching a checkpoint that "learned to agree with
-    witnesses rather than to read ink." A markup-aware comparison view is
-    future work; until it exists these rows must stay visible in the record
-    rather than disappear into a coverage count.
+    **The permanent-unknown watch item is closed, and how it closed matters.**
+    This used to record that a witness adapter self-declaring
+    `can_express_uncertainty` went uncompared on this axis forever -- read-only,
+    so not a picker, but a hole in the instrument ARCHITECTURE names for
+    catching a checkpoint that "learned to agree with witnesses rather than to
+    read ink". It was about to become permanent for the only chair whose grammar
+    says anything about uncertain ink: the DAI adapter's declaration is
+    `can_express_uncertainty: true` (its `[UNCERTAIN]`/`[CROSSED_OUT]` notation
+    is the RecordGold card's), and that flag is deliberately flipped only AFTER
+    this wiring exists, so that declaring it truthfully never costs the chair
+    its dissent row. `pipeline/4_perlector/run.py::dissent_testimonia` now
+    builds each such chair a `comparison_reported` from its OWN retained bytes:
+    an anchored, markup-stripped page slice for a page witness, and
+    `common/alignment.py::bracket_marker_view` -- exactly the two RecordGold
+    bracket tokens removed, offset-mapped -- for an act-scoped one. The
+    exemption below therefore still refuses a raw diff and still returns
+    `False`, but for a shrinking set: a capability-declared chair for which no
+    safe view could be derived at all.
+
+    What remains uncompared, named rather than hidden: a page witness whose
+    recorded alignment is explicitly unaligned (no anchored slice exists), and
+    any future capability-declared chair whose notation is neither tag-shaped
+    nor these two bracket tokens. Those rows stay visible in the record as
+    `compared: "unknown"` with their reason, never folded into a coverage count.
     """
     payload = record.get("payload", {})
     capabilities = payload.get("format_capabilities", {})
@@ -211,20 +222,22 @@ def is_comparable(record: dict[str, Any]) -> bool:
     # A format that can embed uncertainty markup inline (`[UNCERTAIN]`,
     # `[CROSSED_OUT]`) is unsafe to diff against its raw report -- the markup
     # itself would read as disagreement. That is still true here: this chair
-    # stays unmeasurable UNLESS an act-anchored, markup-stripped comparison
-    # view already exists for it (R4's alignment -- `comparison_reported`,
-    # never the raw `reported`). Most capability-declared chairs never get
-    # one and stay honestly unknown; a page witness that does gets to rejoin
-    # the instrument through the safe view rather than by declaration alone.
+    # stays unmeasurable UNLESS a derived comparison view already exists for it
+    # (`comparison_reported`, never the raw `reported`). A chair that has one
+    # rejoins the instrument through the safe view rather than by declaration
+    # alone; one that has none -- a page witness whose alignment failed -- stays
+    # honestly unknown with its reason recorded.
     #
-    # Said exactly: `markup_text_view` removes TAG markup (`<...>`) and
-    # decodes entities. A notation that is not tag-shaped -- DAI's bracketed
-    # `[UNCERTAIN]` most plainly -- survives it, so the view does not make
-    # every capability-declared format safe. It happens to line up today
-    # because the tag-emitting chairs (Chandra HTML, Churro XML) are the page
-    # witnesses that get views, and the bracket-emitting chair is act-scoped
-    # and gets none. If a bracket-notation chair ever becomes page-scoped, the
-    # view alone is not the safety this exemption is claiming. Named rather
+    # Said exactly: `markup_text_view` removes TAG markup (`<...>`) and decodes
+    # entities; `bracket_marker_view` removes exactly `[UNCERTAIN]` and
+    # `[CROSSED_OUT]`. Neither is universal, so this test is that A view was
+    # derived, not that EVERY notation is handled -- the caller picks the view
+    # by scope, and it picks the right one for both notations in the tree
+    # today (tag-shaped for the page witnesses, bracketed for the act-scoped
+    # DAI chair). A future chair whose notation is neither would be handed a
+    # view that leaves its markers in, and the guard against that is a notation
+    # field on the capability rather than a check this function could make: it
+    # sees a string and cannot tell which grammar produced it. Named rather
     # than assumed away (GOVERNANCE 10). R4 audit, F-X3.
     return isinstance(payload.get("comparison_reported"), str)
 

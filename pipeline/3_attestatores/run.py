@@ -41,6 +41,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.outcomes import page_attachment_basis  # noqa: E402
 from common.contracts.serving import (  # noqa: E402
     RAW_RESPONSE_KINDS,
     RAW_RESPONSE_MODEL_OUTPUT,
@@ -4238,20 +4239,32 @@ def publish_page_testimonia_and_attachments(
                         if region["payload"]["transform"]["source_page_ordinal"]
                         == contributing_page
                     ]
-                    # Alignment only supplies a span inside this witness's own
-                    # text.  The attachment itself is the page geometry this
-                    # chair reported against the sealed proposal; no anchor
-                    # selects a witness/proposal correspondence.
+                    # Two bases, derived by the one shared rule
+                    # (`common/contracts/outcomes.py::page_attachment_basis`)
+                    # both readers re-derive: this chair's own reported ink over
+                    # the act's sealed proposal, or -- only where it reported no
+                    # such ink -- an alignment that located this act's anchor
+                    # line inside its page text. The second exists because a
+                    # grammar can carry no geometry at all (Churro's, by vendor
+                    # design), and geometry-only attachment left every such
+                    # chair permanently unattached and every act one witness
+                    # under the floor. Nothing here selects among witnesses: the
+                    # anchor decides whether this chair's text was PLACED in
+                    # this act, never whose reading is right (GOVERNANCE 3).
                     contributing_outcome = page_outcomes.get(
                         (contributing_page, chair), act_attempt.outcome
                     )
-                    page_attached = contributing_outcome in WITNESS_READING_OUTCOMES and any(
-                        reported_geometry_overlaps(
-                            page_observations[(contributing_page, chair)], bounds
-                        )
-                        for bounds in page_bounds
+                    attachment_basis = page_attachment_basis(
+                        reading=contributing_outcome in WITNESS_READING_OUTCOMES,
+                        geometry_overlaps=any(
+                            reported_geometry_overlaps(
+                                page_observations[(contributing_page, chair)], bounds
+                            )
+                            for bounds in page_bounds
+                        ),
+                        alignment=page_alignment,
                     )
-                    attachment_basis = "geometric-overlap" if page_attached else "unattached"
+                    page_attached = attachment_basis != "unattached"
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {

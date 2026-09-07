@@ -299,6 +299,16 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
             row["comparable"] = False
             row["attachment_basis"] = "unattached"
             row["span"] = None
+            # The second route to attachment, closed here on purpose. Since the
+            # `anchor-line` basis landed, a page witness also attaches when its
+            # page text carries this act's located anchor line -- which this
+            # chair's does, and which has nothing to do with the recovery crop
+            # this test is about. Recording the alignment as explicitly
+            # unaligned (an ordinary, honest outcome, with its reason) isolates
+            # the question the test asks: with no text route left, does a box
+            # that lies inside only a LATER crop attach the chair to the act?
+            # It must not, and the assertions below are that answer.
+            row["alignment"] = {"status": "unaligned", "reason": "forged-alignment-failure"}
         return record
 
     original_reference = context.tree.read_artifact_reference
