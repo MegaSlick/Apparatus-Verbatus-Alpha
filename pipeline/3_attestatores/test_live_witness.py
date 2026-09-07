@@ -559,12 +559,18 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
 def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     """DAI is act-scoped, and a page-fallback act's crop is the whole page.
 
-    The measured case from the token study: presented at DAI's own ceilings the
-    page is 1,291x1,826 and still costs 2,280 image tokens, which the 24 GB row
-    cannot hold beside an 84-token prompt even with the *smaller* single-act
-    answer budget reserved. The image cost alone is what settles it -- which is
-    why an act chair reserving one act's answer rather than a page's does not
-    let a page-fallback act through.
+    The measured case from the token study, at DAI's `v2` ceilings (width,
+    height, and total pixels): a fallback band's presented crop was
+    1,291x1,826, costing 2,280 image tokens, which the 24 GB row cannot hold
+    beside an 84-token prompt even with the *smaller* single-act answer budget
+    reserved. `v3` retired the height and total-pixel ceilings
+    (`feeding.py::_dai_image_limits`), so this size is no longer what
+    `feeding.dai_dimensions` produces for this input; ``adapter.present`` is
+    stubbed to hand the presentation back unchanged, so this drill exercises
+    `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
+    the resize rule, and the 1,291x1,826 probe stays valid for that. The image
+    cost alone is what settles it -- which is why an act chair reserving one
+    act's answer rather than a page's does not let a page-fallback act through.
     """
 
     context = SimpleNamespace(tree=_FakeTree())

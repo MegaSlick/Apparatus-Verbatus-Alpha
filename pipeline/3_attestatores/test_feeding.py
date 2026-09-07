@@ -13,8 +13,7 @@ import feeding
 import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
-    DAI_MAX_HEIGHT_PX,
-    DAI_MAX_TOTAL_PIXELS,
+    DAI_FORMAT_CAPABILITIES,
     DAI_MAX_WIDTH_PX,
     SCHEDULING_POLICY,
     SingleChairResidency,
@@ -887,8 +886,6 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     assert DAI_MAX_WIDTH_PX == 1_500
-    assert DAI_MAX_HEIGHT_PX == 4_096
-    assert DAI_MAX_TOTAL_PIXELS == 2_359_296
     assert view["transform"]["target_width_px"] == 1_500
     assert view["transform"]["target_height_px"] == 500
     assert view["model_image_ref"] == _ref("attestatores/model-views/a.jpg", "b" * 64)
@@ -936,6 +933,16 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
     assert validate_dai_text(response.encode("utf-8")) == response
 
 
+def test_dai_declares_its_own_format_capabilities_pending_u12():
+    """DAI's grammar can carry a doubt; the flag stays false until U12 wires it."""
+    assert dict(DAI_FORMAT_CAPABILITIES) == {
+        "can_express_uncertainty": False,
+        "can_express_layout": False,
+    }
+    with pytest.raises(TypeError):
+        DAI_FORMAT_CAPABILITIES["can_express_uncertainty"] = True
+
+
 def test_every_dai_ceiling_seals_where_it_came_from():
     """A sealed ceiling states its source, and a chosen one says it was chosen."""
     view = dai_model_view(
@@ -948,33 +955,40 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     limits = view["image_limits"]
-    assert limits["schema"] == "dai-image-limits.v2"
+    # v3: the height and total-pixel ceilings retired with the vendor systems
+    # design (neither read off anything the model states); the one remaining
+    # ceiling is re-sourced to the model card rather than "design v2.1 section
+    # 2", which named the same number without the model's own source for it.
+    assert limits["schema"] == "dai-image-limits.v3"
     ceilings = set(limits) - {"schema", "sources"}
+    assert ceilings == {"max_width_px"}
     assert ceilings == set(limits["sources"]), "every ceiling names a source, and only ceilings do"
     assert all(limits["sources"][name].strip() for name in ceilings)
-    # The two sourced ceilings name where they were read; the chosen one names
-    # itself as chosen and the arithmetic that fixes its value.
-    assert "serve_dai.sh" in limits["sources"]["max_total_pixels"]
-    assert "design v2.1" in limits["sources"]["max_width_px"]
-    assert "no model source" in limits["sources"]["max_height_px"]
-    assert DAI_MAX_HEIGHT_PX * 576 == DAI_MAX_TOTAL_PIXELS
+    assert "Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR" in limits["sources"]["max_width_px"]
+    assert "1500 pixels (max)" in limits["sources"]["max_width_px"]
     assert view["image_limits_sha256"] == digest_of(limits)
 
 
 @pytest.mark.parametrize(
-    ("width_px", "height_px", "expected"),
+    ("width_px", "height_px", "expected", "resized"),
     [
-        (500, 10_000, (204, 4_080)),
-        (1_500, 3_000, (1_086, 2_172)),
-        # This crossover distinguishes predicate search from a pre-floored
-        # height bound: 565x4096 fits, while nested flooring chooses only 564.
-        (581, 4_212, (565, 4_096)),
+        # Under `v2` this shape's height and total pixels each tripped a now-
+        # retired ceiling and were resized down; under `v3` a width already
+        # under 1,500 is an identity view, however tall the crop or however
+        # many total pixels it carries.
+        (500, 10_000, (500, 10_000), False),
+        (1_500, 3_000, (1_500, 3_000), False),
+        # Over the one remaining ceiling: floor-rounded aspect-preserving
+        # resize, no search -- 1,000 x 1,500 // 4,501 truncates to 333, not 334.
+        (4_501, 1_000, (1_500, 333), True),
     ],
 )
-def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px, expected):
+def test_dai_resize_applies_only_its_sealed_width_ceiling(width_px, height_px, expected, resized):
+    source = _ref("designator/crops/tall.png")
+    model = _ref("attestatores/model-views/tall.jpg", "b" * 64) if resized else source
     view = dai_model_view(
-        source_image_ref=_ref("designator/crops/tall.png"),
-        model_image_ref=_ref("attestatores/model-views/tall.jpg", "b" * 64),
+        source_image_ref=source,
+        model_image_ref=model,
         width_px=width_px,
         height_px=height_px,
         system_prompt_ref=_ref("models/dai/system.txt"),
@@ -984,8 +998,7 @@ def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px,
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
     assert target[0] <= DAI_MAX_WIDTH_PX
-    assert target[1] <= DAI_MAX_HEIGHT_PX
-    assert target[0] * target[1] <= DAI_MAX_TOTAL_PIXELS
+    assert (view["transform"]["kind"] == "identity") != resized
 
 
 def test_dai_identity_view_requires_the_exact_source_image_reference():

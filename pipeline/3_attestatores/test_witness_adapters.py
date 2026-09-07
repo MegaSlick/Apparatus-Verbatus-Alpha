@@ -334,10 +334,11 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "dai.v1": None,
     }
     # What each adapter's own grammar can carry, read off the registry entry the
-    # same way. Chandra and Churro declare their own; DAI records exactly the
-    # blanket value every live attempt recorded before adapters could declare
-    # one, until its unit lands. The two values happen to coincide for Churro
-    # today, and the binding is asserted by identity so that a later flip of its
+    # same way. All three now declare their own (`chandra.FORMAT_CAPABILITIES`,
+    # `churro.FORMAT_CAPABILITIES`, `feeding.DAI_FORMAT_CAPABILITIES`); none of
+    # them fall back to the shared blanket default any more. The three values
+    # happen to coincide with that blanket default today, and each binding is
+    # asserted by identity so that a later flip of Churro's or DAI's own
     # uncertainty flag (U12, after the Perlector can compare a bracket-marker
     # view) moves the registry with the adapter rather than only the adapter.
     assert {
@@ -353,7 +354,7 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     )
     assert (
         adapters.RUNNABLE_ADAPTERS["dai.v1"].format_capabilities
-        is adapters.FALLBACK_FORMAT_CAPABILITIES
+        is adapters.feeding.DAI_FORMAT_CAPABILITIES
     )
     assert (
         adapters.RUNNABLE_ADAPTERS["churro.v1"].resolve_framing is adapters.churro.resolve_framing
@@ -538,42 +539,40 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # 1536x1536 is the total-pixel ceiling exactly, and it is the width
-        # ceiling that binds there rather than the pixel budget.
+        # A square once caught by the retired total-pixel ceiling: `v3` has only
+        # the width ceiling, and it alone still binds here (1,536 > 1,500), so
+        # the target is unchanged from `v2` even though the reason moved.
         pytest.param(
             1_536,
             1_536,
             "L",
             (1_500, 1_500),
             "crop-resize-preserve-aspect",
-            id="at-the-total-pixel-ceiling",
+            id="square-crop-still-bound-by-width-alone",
         ),
-        # 576x4096 = 2359296 exactly: all three ceilings meet on this one shape,
-        # which `DAI_LIMIT_SOURCES` names as the reason the height ceiling is 4096.
-        pytest.param(
-            576,
-            4_096,
-            "L",
-            (576, 4_096),
-            "crop",
-            id="where-all-three-ceilings-meet",
-        ),
+        # Under `v2` this shape tripped the retired height ceiling (4,097 > the
+        # old 4,096) and was resized; under `v3` there is no height ceiling to
+        # trip, so a width this far under 1,500 is an identity view regardless
+        # of how tall the crop is.
         pytest.param(
             576,
             4_097,
             "L",
-            (575, 4_089),
-            "crop-resize-preserve-aspect",
-            id="one-past-the-height-ceiling",
+            (576, 4_097),
+            "crop",
+            id="tall-crop-past-the-retired-height-ceiling",
         ),
-        # Nested flooring undercuts the largest feasible width in this aspect band.
+        # Under `v2` this shape's 2,359,872 px tripped the retired total-pixel
+        # ceiling exactly one pixel-row past it and was resized down; under
+        # `v3` a width under 1,500 is never resized, however many total pixels
+        # the crop carries.
         pytest.param(
-            581,
-            4_212,
+            576,
+            4_098,
             "L",
-            (565, 4_096),
-            "crop-resize-preserve-aspect",
-            id="in-the-rounding-band",
+            (576, 4_098),
+            "crop",
+            id="tall-crop-past-the-retired-total-pixel-ceiling",
         ),
         pytest.param(1, 1, "L", (1, 1), "crop", id="one-pixel"),
         # A bilevel scan, which the door seals as mode `1` rather than promoting.
@@ -608,8 +607,6 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
         resize = presented["transform"]["resize"]
         assert (resize["target_width_px"], resize["target_height_px"]) == target
         assert resize["target_width_px"] <= 1_500
-        assert resize["target_height_px"] <= 4_096
-        assert resize["target_width_px"] * resize["target_height_px"] <= 2_359_296
     validate_presented_page_binding(
         presented,
         page_ordinal=1,

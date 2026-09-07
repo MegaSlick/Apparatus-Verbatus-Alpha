@@ -112,10 +112,11 @@ class RunnableAdapter:
     #: The default is exactly that old blanket value, so an adapter that has not
     #: yet declared its own records precisely what it recorded before. Chandra
     #: and Churro declare their own here (`chandra.FORMAT_CAPABILITIES`,
-    #: `churro.FORMAT_CAPABILITIES`); DAI's lands with its own unit. Both
-    #: grammars that *can* carry a doubt keep `can_express_uncertainty` false
-    #: until the Perlector can compare a bracket-marker view, so that a declared
-    #: uncertainty never becomes a permanently uncomparable one.
+    #: `churro.FORMAT_CAPABILITIES`); DAI's is `feeding.DAI_FORMAT_CAPABILITIES`.
+    #: Churro's and DAI's grammars, which *can* carry a doubt, both keep
+    #: `can_express_uncertainty` false until the Perlector can compare a
+    #: bracket-marker view, so that a declared uncertainty never becomes a
+    #: permanently uncomparable one.
     format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
     #: How this adapter reads the committed fixture's own declared bytes, where
     #: those are not in the vendor grammar a served chair answers in. ``None``
@@ -401,6 +402,7 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         retain=_retain_dai_model_view,
         present=_dai_present,
         observe=_dai_observe,
+        format_capabilities=feeding.DAI_FORMAT_CAPABILITIES,
     ),
 }
 

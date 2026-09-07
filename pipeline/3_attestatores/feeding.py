@@ -14,7 +14,8 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
 from threading import RLock
-from typing import Any, Callable, Final, Iterator
+from types import MappingProxyType
+from typing import Any, Callable, Final, Iterator, Mapping
 
 from common import chandra_layout
 from common.contracts.canonical import digest_bytes, digest_of
@@ -35,26 +36,29 @@ from common.native_witness import (
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 DAI_MAX_WIDTH_PX = 1_500
-DAI_MAX_HEIGHT_PX = 4_096
-DAI_MAX_TOTAL_PIXELS = 2_359_296
-# Two of these three ceilings are read off something; one is chosen. Sealing them
-# side by side as bare integers made all three read as measured model bounds, and
-# a number nobody can trace is exactly what GOVERNANCE 10 refuses -- so each one
-# carries its own provenance into the record it seals, and a chosen ceiling says
-# out loud that it was chosen.
+# `DAI_MAX_HEIGHT_PX` (4096, "no model source") and `DAI_MAX_TOTAL_PIXELS`
+# (2,359,296, the old pipeline's serve_dai.sh) retired with the vendor systems
+# design: neither read off anything the model itself states, and the served
+# row's own `max_pixels` (`config/serving_recipes_real.toml`, DERIVED against
+# the largest 1,500-px-wide act crop this pipeline actually produces) is sized
+# so the engine never re-resizes what this one ceiling already sized -- a
+# second client-side ceiling on height or total pixels would be redundant with
+# that row, not merely retired for lack of a source. `dai-image-limits.v2` ->
+# `.v3` records the schema no longer names either.
+#
+# The one ceiling that remains is read off something: the model card itself
+# (`https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
+# revision `e371095d4ffe585f31f4974462931ddbac61ff64`, Training/Parameters:
+# "Image width: 1500 pixels (max)") rather than "design v2.1 section 2", which
+# named the same number but not the model's own source for it. A number
+# nobody can trace is exactly what GOVERNANCE 10 refuses, so the one ceiling
+# left carries its provenance into the record it seals.
 DAI_LIMIT_SOURCES = {
-    "max_width_px": ("design v2.1 section 2: DAI is fed act crops at most 1500 px wide"),
-    "max_height_px": (
-        "R3 policy, no model source: nothing in the design, the roster or DAI's own "
-        "serving flags names a pixel height (the serving script's 4096 is "
-        "--max-model-len, a token count). Chosen so the sealed pixel budget still "
-        "affords 576 px of width at the ceiling (4096 x 576 = 2359296 exactly); "
-        "below it the total-pixel ceiling governs, so it binds only strips past "
-        "about 7:1 that carry too little width to read"
-    ),
-    "max_total_pixels": (
-        "DAI's own serving profile max_pixels (the old pipeline's serve_dai.sh), "
-        "already recorded in this repository at operations/serving/preflight.py"
+    "max_width_px": (
+        "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR model card, "
+        "Training/Parameters: 'Image width: 1500 pixels (max)' "
+        "(https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR "
+        "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
@@ -88,7 +92,37 @@ _RUNNABLE_PARSERS = frozenset(
         ("dai.v1", "text"),
     }
 )
+# `[UNCERTAIN]` and `[CROSSED_OUT]` are not this repository's invention: they
+# are the expert transcription convention defined on the training dataset's
+# own card, `Teklia/DAI-CReTDHI-RecordGold-ATR`
+# (https://huggingface.co/datasets/Teklia/DAI-CReTDHI-RecordGold-ATR), which
+# declares `license: mit`. Its sibling training corpus,
+# `Teklia/DAI-CReTDHI-RecordGeneanet-ATR`, declares no licence at all; nothing
+# from that card is carried here; it is named so a later reader does not read
+# one dataset's MIT term as covering both. These two literal strings are the
+# whole of what crosses from the Gold card into this module: `validate_dai_text`
+# preserves them unchanged, and their presence in the grammar is the reason
+# `DAI_FORMAT_CAPABILITIES` below can name a doubt at all.
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
+
+#: What DAI's grammar can carry, declared from the grammar rather than assumed
+#: from a blanket default (vendor systems design, Contract boundary: "DAI
+#: true/false" is the target once U12 flips the first field). Its answer is
+#: plain UTF-8 text carrying the RecordGold card's own `[UNCERTAIN]`/
+#: `[CROSSED_OUT]` convention (`_UNCERTAINTY_TOKENS` above), so the grammar
+#: *can* carry a doubt; it has no coordinate vocabulary anywhere, so
+#: `can_express_layout` is false and stays false.
+#:
+#: `can_express_uncertainty` is **false here and is U12's to flip**, for the
+#: same reason Churro's is (`churro.FORMAT_CAPABILITIES`): a chair that
+#: declares uncertainty before the Perlector can compare one against a
+#: bracket-marker view is permanently `compared: unknown` under
+#: `dissent.is_comparable` -- the judges' second fatal flaw. U6 landed the
+#: comparison view (`common/alignment.py::bracket_marker_view`) and U12 wires
+#: it before flipping this constant, in that order.
+DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
+    {"can_express_uncertainty": False, "can_express_layout": False}
+)
 
 
 #: The vendor systems ruling retired three things at this seam, and they are
@@ -365,12 +399,18 @@ def dai_model_view(
 
 
 def _dai_image_limits() -> dict[str, Any]:
-    """The one sealed statement of DAI's executable image ceilings."""
+    """The one sealed statement of DAI's executable image ceilings.
+
+    ``v3``: the height and total-pixel ceilings named in ``v2`` are gone, not
+    renamed. Neither read off anything the model card, the roster, or DAI's own
+    serving flags actually state, and the served row's own ``max_pixels`` is
+    sized so the engine never re-resizes what the one remaining ceiling already
+    sized (``feeding.DAI_MAX_WIDTH_PX``'s own comment). A schema that still
+    named them would seal two ceilings this pipeline no longer enforces.
+    """
     return {
-        "schema": "dai-image-limits.v2",
+        "schema": "dai-image-limits.v3",
         "max_width_px": DAI_MAX_WIDTH_PX,
-        "max_height_px": DAI_MAX_HEIGHT_PX,
-        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
         "sources": dict(DAI_LIMIT_SOURCES),
     }
 
@@ -467,33 +507,35 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
 
 
 def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest integer aspect-preserving view within every DAI ceiling.
+    """Largest aspect-preserving view within DAI's one sealed ceiling.
 
-    Height and area must remain search predicates: pre-flooring a height-derived
-    width can undercut the largest feasible view by one pixel.
+    `v3` retired the height and total-pixel search this rule used to run
+    (`_dai_image_limits`'s own docstring): width is the only ceiling the model
+    card states, so this is a straight floor-rounded scale-down when the
+    source is wider than the ceiling, and an identity view otherwise -- no
+    search, because there is only one bound left to satisfy. Nothing here
+    bounds height or total pixels; the served row's own `max_pixels`
+    (`config/serving_recipes_real.toml`) is sized so the engine never
+    re-resizes what this rule already produced.
 
     Public because it decides which pixels a DAI witness is actually shown, and
     the presentation writer and the read-back validator in `witness_adapters`
     both have to reach exactly this rule. Under a private name, renaming it here
     would break those two together with nothing to say they were coupled.
     """
-    upper_width = min(width_px, DAI_MAX_WIDTH_PX)
-    if upper_width < 1:
-        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
-    low, high = 1, upper_width
-    while low < high:
-        candidate = (low + high + 1) // 2
-        candidate_height = max(1, height_px * candidate // width_px)
-        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS and (
-            candidate_height <= DAI_MAX_HEIGHT_PX
-        ):
-            low = candidate
-        else:
-            high = candidate - 1
-    target_width = low
+    if (
+        not isinstance(width_px, int)
+        or isinstance(width_px, bool)
+        or not isinstance(height_px, int)
+        or isinstance(height_px, bool)
+        or width_px < 1
+        or height_px < 1
+    ):
+        raise SchemaRefusal("DAI source dimensions must be positive integers")
+    if width_px <= DAI_MAX_WIDTH_PX:
+        return width_px, height_px
+    target_width = DAI_MAX_WIDTH_PX
     target_height = max(1, height_px * target_width // width_px)
-    if target_height > DAI_MAX_HEIGHT_PX:
-        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
     return target_width, target_height
 
 
