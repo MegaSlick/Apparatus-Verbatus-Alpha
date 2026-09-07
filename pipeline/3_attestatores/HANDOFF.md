@@ -601,39 +601,64 @@ Perlector-side fix has since landed -- one entry per `relative_path` before the
 sorted comparison -- so that branch is no longer a record this stage may
 publish and the next one must refuse.
 
-**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
-stage's live pass as one link in a whole run: the real stage programs to the
-Designator, this stage's three live witness chairs, a live Perlector, and then
-the Recensor, Archetypus and Armarium over what both wrote — the first time any
-stage after the Perlector has read a live tree. They read it: the run seals a
-terminal export, and since Unit 12 it is **delivered**. Each act counts three
-witnesses of a floor of three: Chandra reads under its contract, attached by its
-own block geometry and aligned against the anchor derived from its own response;
-DAI reads its crops, basis `presented-region`; Churro answers the closed shape
-its own prompt asks for and attaches by its own boxes, aligned against the same
-anchor.
+**Read end to end, and it reaches a held export.**
+`pipeline/test_live_reading_seam_e2e.py` runs this stage's live pass as one link
+in a whole run: the real stage programs to the Designator, this stage's three
+live witness chairs, a live Perlector, and then the Recensor, Archetypus and
+Armarium over what both wrote — the first time any stage after the Perlector has
+read a live tree. They read it: the run seals a terminal export, and it is
+**held for review** (`EXIT_HELD` at the Recensor and the Armarium,
+`payload/delivered == []`). Each act counts **two** witnesses of a floor of
+three. Chandra reads under its grammar, attached by its own block geometry and
+aligned against the anchor derived from its own response; DAI reads its crops,
+basis `presented-region`; Churro reads the whole page, is located against
+Chandra's anchor with a real span, and stays `attachment_basis "unattached"` —
+`HistoricalDocument` has no coordinate vocabulary anywhere, so nothing binds its
+span to an act, and `comparable` follows `attached`.
 
-**Two holds went, and only one of them was ever asserted.** The witness floor
-was. The second was `testimony_shortfall`: the Recensor diffs each page
-witness's retained page text against the union of its attached-and-aligned
-spans, so an unattached page witness's WHOLE page text was uncovered and the
-page held for that reason too, independently of the floor, on every live export.
-Nothing measured it. The e2e now asserts both separately and by name before it
-asserts `reasons == []`, so either returning says which.
+**That is this unit's own doing, and it is the honest state of the tree.** Unit
+12 asked this chair for block rectangles in a modified carry of a prompt the
+model was never trained on, and those rectangles were what attached it. The
+coordinate channel is retired with the prompt that asked for it, because a
+`box_1000` per block is a channel Churro-DS's weights were never taught to fill
+(GOVERNANCE 10). What closes the hold is not asking a model for a channel it
+cannot answer: it is U12, admitting the Perlector's existing `anchor-line` basis
+for a page witness whose alignment for an act is `aligned` with a located span.
+
+**Two holds, and the e2e asserts each by name before the aggregate.** The
+witness floor is one: `coverage/under_witnessed` true, `shortfalls`
+`{failed: 0, truncated: 0, unaligned: 1}`. The second is
+`testimony_content_coverage`: the Recensor diffs each page witness's retained
+page text against the union of its attached-and-aligned spans, so an unattached
+page witness's WHOLE page text is uncovered and the page holds for that reason
+too, independently of the floor. Chandra covers its page (0 uncovered
+non-whitespace); Churro covers none of it (63). A bare `reasons != []` would
+pass identically whichever half had broken, so neither is asserted through the
+other.
 
 **What that does and does not claim.** One scripted run over a fixture whose
-page text is exactly its two acts reaches `delivered`. Nothing follows about a
-real page (GOVERNANCE 10, hard rule 1). A real register carries headers, folio
-numbers and marginalia no proposal covers; Churro will transcribe them; that
-page will hold on content coverage. That is the rule working (GOALS 1), and it
-is *better* than before this unit, not worse — an unattached witness covered
-nothing at all. Two other consequences arrive with a real page and are named
-rather than deferred: Churro's blocks outside every sealed proposal now reach
-`unrouted_observations`/`partition_disagreement` and can route a bounded
-fallback recrop against the shared cap of three (GOVERNANCE 11), and a block
-overlapping two acts becomes likelier, which
-`refuse_ambiguous_act_alignments` names rather than resolves — resolving it
-would be picking.
+page text is exactly its two acts reaches `held-for-review` for exactly these
+two reasons. Nothing follows about a real page (GOVERNANCE 10, hard rule 1). A
+real register carries headers, folio numbers and marginalia no proposal covers;
+Churro will transcribe them, and that page would hold on content coverage even
+once attachment lands. That is the rule working (GOALS 1, GOVERNANCE 2), not a
+regression to repair by loosening a floor.
+
+**The offline posture still delivers, and the two diverge on one declared row.**
+`proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
+states a page box outright, and `run.py::_fixture_native_observations` publishes
+it as `bounds_source "native"` without consulting the adapter — so the fixture
+happy scenario still attaches Churro, still counts three witnesses of a floor of
+three, and still reaches a delivered export, over geometry the live chair cannot
+produce. The row is kept rather than deleted: removing it moves the whole
+offline proof to the held posture (measured — 109 failures in
+`pipeline/orchestrator/test_orchestrator_acceptance.py` alone, the happy
+scenario at exit 3 with both acts under-witnessed), which is U12's change and
+not this unit's. It is recorded instead of left implicit: at the declaration in
+`proof/build_fixture.py`, and mechanically in
+`proof/test_fixture_declaration_contract.py`, which pins `attestator_3` as the
+one chair declaring a box its own adapter reports it cannot express, so the
+divergence cannot outlive U12 in silence.
 
 ## Real ingress
 

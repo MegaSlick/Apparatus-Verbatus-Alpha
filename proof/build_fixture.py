@@ -193,6 +193,30 @@ NATIVE_OBSERVATIONS = (
     # would double-count. attestator_3's box stays large enough to contain both
     # proposal regions, exercising geometric attachment and containment without
     # using an anchor as authority.
+    #
+    # **AND NO LIVE CHAIR COULD PRODUCE IT.** U10 put the Churro chair back on
+    # its vendor's own system, where `HistoricalDocument` carries no coordinate
+    # vocabulary anywhere: `churro.FORMAT_CAPABILITIES` says
+    # `can_express_layout = False`, the adapter declares no quantization rule
+    # and no page size, and `churro.observe` returns a `bounds_source
+    # "presented"` echo that routing and coverage expressly exclude. This row
+    # bypasses all of that -- `run.py::_fixture_native_observations` publishes a
+    # declared box as `bounds_source "native"` without consulting the adapter --
+    # so the offline posture still attaches this chair, still counts three
+    # witnesses of a floor of three, and still reaches a *delivered* export,
+    # while the live seam over the same chair is held at two of three
+    # (`pipeline/test_live_reading_seam_e2e.py`).
+    #
+    # It is kept rather than deleted, and the reason is scope, not comfort:
+    # deleting it moves the whole offline proof to the held posture (measured:
+    # 109 failures in `pipeline/orchestrator/test_orchestrator_acceptance.py`
+    # alone, the happy scenario at exit 3 with both acts under-witnessed), which
+    # is U12's change -- it restores attachment through the Perlector's
+    # `anchor-line` basis -- and not U10's to make on the way past. The
+    # divergence is stated here, in `pipeline/3_attestatores/HANDOFF.md`, and
+    # mechanically in `proof/test_fixture_declaration_contract.py`, which pins
+    # this as the one declared row whose chair's adapter reports it cannot
+    # express layout, so the row cannot outlive the channel in silence.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
     # The disagreement fixture stays deliberately uncalibrated and belongs to
     # the recovery scenario: it is reported ink outside every proposal, which

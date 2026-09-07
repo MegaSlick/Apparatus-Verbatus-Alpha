@@ -323,6 +323,43 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
         ), f"native_observation {row!r} falls outside page {page['ordinal']}"
 
 
+def test_the_declared_rows_no_live_chair_could_produce_are_named_here(skeleton, chairs, adapters):
+    """The offline posture may declare geometry; it may not do so unnoticed.
+
+    A `[[native_observation]]` row bypasses the adapter entirely --
+    `run.py::_fixture_native_observations` publishes it as `bounds_source
+    "native"` without asking whether the chair's adapter could have reported a
+    box at all -- so the fixture can state page geometry for a chair whose live
+    `observe` never produces any. Exactly one row does, and it is load-bearing:
+    `attestator_3` is the Churro chair, whose `HistoricalDocument` grammar has
+    no coordinate vocabulary (`can_express_layout` false, no quantization rule,
+    no `takes_page_size`, and an `observe` that returns a `bounds_source
+    "presented"` echo routing and coverage exclude). That declared box is what
+    attaches this chair offline, so the fixture happy scenario counts three
+    witnesses of a floor of three and reaches a delivered export, while the live
+    seam over the same chair is held at two of three
+    (`pipeline/test_live_reading_seam_e2e.py`).
+
+    The row is kept because deleting it is U12's change -- U12 restores
+    attachment through the Perlector's `anchor-line` basis -- and not a step
+    U10 takes on the way past; `proof/build_fixture.py` carries the measurement
+    that decided it. What this test refuses is the silence: the moment U12
+    lands, or a second chair is given a declared box its adapter says it cannot
+    express, this list is wrong and says so by name rather than leaving one
+    posture proving a capability the other retired.
+    """
+    incapable = sorted(
+        {
+            row["chair"]
+            for row in skeleton.get("native_observation", [])
+            if not adapters.resolve_runnable_adapter(
+                chairs[row["chair"]].witness_adapter
+            ).format_capabilities["can_express_layout"]
+        }
+    )
+    assert incapable == ["attestator_3"], incapable
+
+
 def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
     skeleton, chairs, adapters
 ):

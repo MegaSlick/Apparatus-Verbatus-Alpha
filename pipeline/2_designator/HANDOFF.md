@@ -781,16 +781,18 @@ over the real chain as well as in this stage's own suite; the remaining four
 refusal codes are exercised only at the parser level
 (`common/test_structure_answer.py`). The export it reaches
 is *held*, and the reason is not this stage: the Churro chair is scripted there
-in its trained `<output>` envelope, which carries no geometry, so it never
-attaches to an act and two witnesses of a floor of three count. Since Unit 12
-that is a property of the scripted body rather than of the chair -- asked for
-block geometry it can answer with it and attach by its own boxes, which is what
-`pipeline/test_live_reading_seam_e2e.py` measures over declared acts, where the
-export is now delivered (`pipeline/3_attestatores/HANDOFF.md`). The envelope is
-kept in this suite on purpose: pinning the witness floor to a shape this suite
-does not vary keeps "which acts exist" and "how many witnesses reach them"
-apart. Either way it is a witness-coverage fact, not a fact about this stage --
-every act the chair proposed was read.
+in the retired `<output>` envelope, which carries no geometry, so it never
+attaches to an act and two witnesses of a floor of three count. Since U10 that
+is a property of the chair rather than only of the scripted body -- its
+`HistoricalDocument` grammar has no coordinate vocabulary anywhere, so it
+reports no geometry in any framing it can be asked in, and
+`pipeline/test_live_reading_seam_e2e.py` reaches the same held export over
+declared acts (`pipeline/3_attestatores/HANDOFF.md`); U12 closes it at the
+Perlector, on the `anchor-line` basis. The envelope is kept in this suite on
+purpose: pinning the witness floor to a shape this suite does not vary keeps
+"which acts exist" and "how many witnesses reach them" apart. Either way it is a
+witness-coverage fact, not a fact about this stage -- every act the chair
+proposed was read.
 
 **Named risks.** The real `designator_structure` rows' `max_model_len` is a
 planning value, and a whole-page transcription plus geometry may not fit it;

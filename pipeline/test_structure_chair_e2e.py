@@ -27,15 +27,19 @@ proposed ones, and the fixture path's declared-act machinery is not consulted
 anywhere in between.
 
 **The export is held for review, and the reason is not the structure chair.**
-Every act is minted, witnessed and read; the Churro chair here answers in its
-trained `<output>` envelope, which carries no geometry, so it never attaches to
-an act and two witnesses of a floor of three count. Since Unit 12 that is a
-property of the SCRIPTED BODY rather than of the chair: asked for block geometry
-this chair can now answer with it and attach by its own boxes, which is what
-`pipeline/test_live_reading_seam_e2e.py` measures over declared acts. The
-envelope is kept here on purpose — this module is about which acts exist, not
-about how many witnesses reach them, and pinning the witness floor to a shape
-this suite does not vary keeps the two questions apart.
+Every act is minted, witnessed and read; the Churro chair here answers in the
+retired `<output>` envelope, which carries no geometry, so it never attaches to
+an act and two witnesses of a floor of three count. Since U10 that is a property
+of THE CHAIR and not only of the scripted body: `HistoricalDocument` has no
+coordinate vocabulary anywhere, so this chair reports no geometry in any framing
+it can be asked in, and `pipeline/test_live_reading_seam_e2e.py` reaches the
+same held export over declared acts. What closes it is U12, admitting the
+Perlector's existing `anchor-line` basis — not a body scripted with boxes. The
+envelope is kept here on purpose: the vendor's own reader still reads it, as
+retained history under a `retired-output-envelope` finding, and this module is
+about which acts exist rather than about how many witnesses reach them, so
+pinning the witness floor to a shape this suite does not vary keeps the two
+questions apart.
 """
 
 from __future__ import annotations
@@ -718,14 +722,16 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     read — which is the point of asserting it here as well: replacing declared
     acts with proposed ones moved the denominator, not the coverage.
 
-    The shortfall itself is the scripted Churro body, not the Churro chair. This
-    module answers it in the trained `<output>` envelope, which carries no
-    geometry, so it never attaches and two witnesses of a floor of three count.
-    Since Unit 12 the chair can be asked for block geometry and attach by its
-    own boxes; the live-seam suite over declared acts does that and delivers.
-    Keeping the envelope here is deliberate: this suite is about which acts
-    exist, and a witness floor pinned to a shape it does not vary keeps that
-    question separate from how many witnesses reach them.
+    The shortfall is the Churro chair, and this module's scripted body is not
+    what makes it one. The body here is the retired `<output>` envelope, which
+    carries no geometry, so it never attaches and two witnesses of a floor of
+    three count — and since U10 no framing this chair can be asked in carries
+    geometry either, `HistoricalDocument` having no coordinate vocabulary, so
+    the live-seam suite over declared acts reaches the same held export. U12
+    closes it at the Perlector, on the `anchor-line` basis. Keeping the envelope
+    here is deliberate: this suite is about which acts exist, and a witness
+    floor pinned to a shape it does not vary keeps that question separate from
+    how many witnesses reach them.
     """
     assert whole_run.tail == {
         "pipeline/5_recensor/run.py": EXIT_HELD,

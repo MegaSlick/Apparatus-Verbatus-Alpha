@@ -966,6 +966,12 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # by arithmetic, because a number carried forward by addition would wear a
 # measurement's authority without being one (GOVERNANCE 10).
 #
+# That last claim is asserted rather than left to this comment:
+# `operations/serving/test_serving_catalogue_capacity.py` re-weighs all three
+# shipped Churro rows at 1,631 + 208 and requires them to hold, so an edit that
+# eroded one of those margins turns a recorded finding into a named failure
+# instead of a shipped defect.
+#
 # A denser answer costs more, and that too is recorded rather than sealed: the
 # retired JSON contract's same 800 words in 12 blocks measured 1,818 and in 24
 # blocks 2,204.  Twenty-four blocks is not the convention the other four chairs
