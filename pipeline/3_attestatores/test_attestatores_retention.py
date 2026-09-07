@@ -2431,7 +2431,7 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     real_validate = attestatores.validate_testimonium_presentation
     validating: list[bool] = []
     reads: list[str] = []
-    reads_per_view: list[int] = []
+    reads_per_view: list[dict[str, object]] = []
 
     def counting_sealed_source_page(context, presented):
         if not validating:
@@ -2446,9 +2446,14 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
             validating.pop()
 
     def counting_publish_attempt(context, **fields):
+        # Keyed by `chair`, not appended as a bare count: a swapped
+        # `takes_page_size` capability changes which CHAIR's view reads twice,
+        # not how many views read twice in total, so a bare `sorted(...)`
+        # comparison would pass unchanged even after a chair's own read count
+        # moved to a different chair.
         before = len(reads)
         result = real_publish_attempt(context, **fields)
-        reads_per_view.append(len(reads) - before)
+        reads_per_view.append({"chair": fields["chair"], "reads": len(reads) - before})
         return result
 
     monkeypatch.setattr(attestatores, "_sealed_source_page", counting_sealed_source_page)
@@ -2480,4 +2485,17 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     # counts rather than asserts a ceiling: ONE read per view that needs it,
     # never one per derivation, and never zero because no view reached the
     # derivation at all.
-    assert sorted(reads_per_view) == [0, 0, 1, 1, 1, 1]
+    # Keyed by chair, not a bare sorted count list: `attestator_1` (Chandra)
+    # and `attestator_3` (Churro) each read once per act view, twice over the
+    # two acts, and `attestator_2` (act-scoped) never reads at all. A swapped
+    # `takes_page_size` capability moves a chair's read count to a different
+    # chair without changing the total the bare list checked, so the mapping
+    # is what makes that swap visible.
+    reads_by_chair: dict[str, list[int]] = {}
+    for row in reads_per_view:
+        reads_by_chair.setdefault(row["chair"], []).append(row["reads"])
+    assert reads_by_chair == {
+        "attestator_1": [1, 1],
+        "attestator_2": [0, 0],
+        "attestator_3": [1, 1],
+    }

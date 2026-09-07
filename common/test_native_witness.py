@@ -29,6 +29,9 @@ from common.native_witness import (
     validate_retained_response_refs,
     verify_native_capture_bytes,
 )
+from common.native_witness import (
+    detect_churro_repetition as detect_repetition,  # feeding.py's own alias
+)
 
 
 def _native_capture() -> dict:
@@ -1573,6 +1576,57 @@ def test_the_parse_outcome_wins_over_a_repeated_tail_and_the_repetition_is_still
     capture["stop_reason"] = "partial-post-hoc-repetition-detected"
     with pytest.raises(SchemaRefusal, match="disagrees with its parse and findings"):
         validate_native_capture(capture)
+
+
+def test_the_live_path_produces_a_validating_record_for_an_unrecognized_shape_that_also_repeats():
+    """The precedence above is pinned on a literal; this drives the live path itself.
+
+    `feeding.py` calls `derive_churro_capture` with `detect_repetition` (its own
+    alias for `detect_churro_repetition`); this test does the same, on a raw
+    body that is both a JSON object the wire contract does not declare
+    (`unrecognized-shape`) and repetitive at its tail. A valid JSON object
+    always closes on `}`, so a body cannot manufacture a repeating run of
+    ordinary text right up to that final byte -- but nested closing braces are
+    ordinary text too, and enough of them in a row is exactly the tail the
+    detector is built to find. The resulting capture must be the record
+    `validate_native_capture` actually admits: `derive_churro_capture`'s own
+    precedence (the parse outcome wins the stop reason; the finding survives in
+    `findings` regardless) is the same one the validator holds every capture
+    to, so a body built to exercise both facts at once must produce a record
+    that validates, not merely one whose fields were asserted by hand.
+    """
+    inner = "null"
+    for _ in range(80):
+        inner = '{"a":' + inner + "}"
+    body = ('{"schema":"something-else","nest":' + inner + "}").encode("utf-8")
+    derived = derive_churro_capture(
+        body, "eos", parser="churro", repetition_detector=detect_repetition
+    )
+    assert derived["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "churro",
+        "outcome": "unverified-response-schema",
+    }
+    assert derived["findings"] == [
+        {
+            "kind": "post-hoc-repetition",
+            "unit_characters": 24,
+            "repeats": 3,
+            "inspected": "raw-response",
+        }
+    ]
+    # The parse outcome wins: a repeated tail never overrides the stop reason
+    # an unrecognized shape already named.
+    assert derived["stop_reason"] == "partial-parse-unrecognized-shape"
+
+    capture = _native_capture()
+    capture["transport_stop_reason"] = "eos"
+    capture["raw_response_ref"]["sha256"] = digest_bytes(body)
+    capture["raw_response_ref"]["relative_path"] = "3_attestatores/blobs/sha256/" + digest_bytes(
+        body
+    )
+    capture.update(derived)
+    assert validate_native_capture(capture) is capture
 
 
 def test_the_repetition_detector_reads_the_transcription_under_the_wire_contract():

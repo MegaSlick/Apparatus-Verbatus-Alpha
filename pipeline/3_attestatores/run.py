@@ -4548,6 +4548,15 @@ def _page_capture_from_record(
         )
     capture = payload.get("native_capture")
     observation_payload = None
+    if capture is not None:
+        # A resumed pass reads this record's own claim to the adapter that
+        # produced it before resolving that name to a runnable binding --
+        # `resolve_runnable_adapter` and the `capture["parse"]["state"]` read
+        # below both assume the closed native-capture schema this validates.
+        # A malformed `native_capture` (a missing `adapter`, an unshaped
+        # `parse`) is refused by name here rather than surfacing as a raw
+        # `KeyError` out of the boolean chain that follows.
+        validate_native_capture(capture)
     if (
         capture is not None
         # A property of the ADAPTER, read off its registry entry, exactly as
