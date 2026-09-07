@@ -127,6 +127,13 @@ CHURRO_PRESETS_FILE_SHA256: Final = (
     "2ac4f259d0591554d1c56865a759cd45bc17ac32fe2d9016131b448592abc5a1"
 )
 CHURRO_SPECS_FILE_SHA256: Final = "70abb3e54718fb0f37a1111363fe91afe0587d276ad26fb68de232f865716043"
+# `ocr/systems/finetuned_ocr.py` at CHURRO_PAPER_COMMIT, the paper-era harness
+# file whose module-level `SYSTEM_MESSAGE` is the `paper-harness-ed09bc7`
+# variant.  Note the `ocr/systems/` prefix: the design cites this string as
+# `finetuned_ocr.py:17`, and that bare path does not exist in the repository.
+CHURRO_FINETUNED_OCR_FILE_SHA256: Final = (
+    "29c414cd0cb6e4bec21dbf8f935d9768989259e267b95daad142612c1bb36ac1"
+)
 
 CHURRO_MODEL_ID: Final = "stanford-oval/churro-3B"
 
@@ -182,18 +189,54 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# How deep into a module-level container the string walk below goes.  Six is
+# far past any shape a carried-bytes table has taken (U2's is two: variant name,
+# then field) and shallow enough that a pathological object cannot turn the walk
+# into the test's runtime.
+_MAX_CARRIED_DEPTH: Final = 6
+
+
 def _module_string_constants(module: ModuleType) -> dict[str, str]:
-    """Every module-level ``str`` attribute, by name.
+    """Every ``str`` a module carries at module level, by the path that reaches it.
+
+    Bare module-level constants *and* the strings nested inside module-level
+    mappings, sequences and sets all count, because placing the bytes is the
+    carrying unit's choice and both shapes are already in use: U1 carries
+    Chandra's prompt as a bare ``OCR_LAYOUT_PROMPT``, while U2 carries both
+    Churro system messages inside a per-variant table beside their provenance
+    (``CHURRO_PROMPT_VARIANTS[variant]["system"]``).  A walk that stopped at bare
+    strings would fail this file's own tests on correct vendor bytes.
 
     Looked up this way rather than by an agreed constant name because the name
     belongs to whichever unit places the string and the bytes belong to the
-    vendor.  A rename stays green; a changed byte does not.
+    vendor.  A rename or a reshuffle stays green; a changed byte does not.
     """
-    return {
-        name: value
-        for name, value in vars(module).items()
-        if isinstance(value, str) and not name.startswith("__")
-    }
+    found: dict[str, str] = {}
+    walked: set[int] = set()
+
+    def walk(label: str, value: Any, depth: int) -> None:
+        if isinstance(value, str):
+            found[label] = value
+            return
+        if depth >= _MAX_CARRIED_DEPTH or id(value) in walked:
+            return
+        if isinstance(value, Mapping):
+            walked.add(id(value))
+            for key, item in value.items():
+                walk(f"{label}[{key!r}]", item, depth + 1)
+        elif isinstance(value, (set, frozenset)):
+            walked.add(id(value))
+            for item in sorted(value, key=repr):
+                walk(f"{label}{{{item!r}}}", item, depth + 1)
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            walked.add(id(value))
+            for index, item in enumerate(value):
+                walk(f"{label}[{index}]", item, depth + 1)
+
+    for name, value in vars(module).items():
+        if not name.startswith("__"):
+            walk(name, value, 0)
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -212,7 +255,8 @@ def test_the_carried_chandra_prompt_is_the_vendors_own_rendered_bytes():
     }
 
     assert carried, (
-        "no module-level string in common/chandra_layout.py digests to "
+        "no string carried by common/chandra_layout.py — at module level or "
+        "inside a module-level table — digests to "
         f"{CHANDRA_OCR_LAYOUT_PROMPT_SHA256}, the rendered OCR_LAYOUT_PROMPT of "
         f"{CHANDRA_CODE_REPOSITORY}/chandra/prompts.py at {CHANDRA_CODE_COMMIT}. "
         "The prompt bytes are carried third-party content and may not be edited, "
@@ -244,7 +288,8 @@ def test_the_carried_churro_system_messages_are_the_vendors_own_bytes_per_varian
 
     for variant, expected in CHURRO_SYSTEM_MESSAGE_SHA256.items():
         assert expected in digests.values(), (
-            f"no module-level string in common/churro_document.py digests to {expected}, "
+            "no string carried by common/churro_document.py — at module level or "
+            f"inside a module-level table — digests to {expected}, "
             f"the {variant!r} Churro system message from {CHURRO_CODE_REPOSITORY}. "
             "The two variants differ by a vendor typo and one of them is what the "
             "fine-tune was trained on; neither may be normalized into the other."
@@ -1069,6 +1114,23 @@ VENDOR_FILES: Final[Mapping[str, tuple[str, str]]] = {
         f"{CHURRO_RAW}/src/churro_ocr/_internal/image.py",
         CHURRO_IMAGE_FILE_SHA256,
     ),
+    # The paper-era arm, at its own commit.  Without this fetch the
+    # `paper-harness-ed09bc7` digest is only ever checked against a literal in
+    # this same file, which proves the literal self-consistent and nothing at
+    # all about the vendor — so the arm this repository records as *not sent*
+    # would be the one pin no measurement stands behind.
+    #
+    # The design names `evaluation/xml_utils.py` at this commit too, and it is
+    # deliberately not fetched: this file pins no bytes from it.  Churro's
+    # output grammar is U2's port, and grammar conformance is the design's
+    # Offline test 3, which lives beside the parser in
+    # `common/test_churro_document.py` rather than here (see this module's
+    # docstring).  A fetch that asserted nothing about our tree would be
+    # ceremony, not measurement.
+    "churro_finetuned_ocr.py": (
+        f"{CHURRO_PAPER_RAW}/ocr/systems/finetuned_ocr.py",
+        CHURRO_FINETUNED_OCR_FILE_SHA256,
+    ),
     "dai_system.txt": (f"{DAI_RAW}/system.txt", DAI_CARRIED_FILE_SHA256["system.txt"]),
     "dai_query.txt": (f"{DAI_RAW}/query.txt", DAI_CARRIED_FILE_SHA256["query.txt"]),
     "dai_generation_config.json": (
@@ -1145,12 +1207,15 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
     strings the design names as carried cross, with their digests recorded
     beside them.
 
-    **The marker alone does not gate it.**  Both the gate and CI select tests
-    with ``-m "full or not full"``, which is a tautology that selects every
-    marker there is, so a registered marker would have put GitHub and Hugging
-    Face on the critical path of a green laptop gate.  The gate is asked what it
-    selected instead, and this test runs only when a run named this marker
-    deliberately.
+    **The marker alone does not gate it.**  Neither gate deselects by marker in
+    any way that would leave this test out: ``.githooks/check-all.sh`` runs
+    pytest with no ``-m`` expression at all, and ``.githooks/check-fast.sh``
+    runs ``-m "not full or scanner"``, which a test carrying only
+    ``vendor_network`` satisfies through its ``not full`` half.  Both therefore
+    collect it, and registering the marker would have put GitHub and Hugging
+    Face on the critical path of a green laptop gate.  The run is asked what it
+    selected instead, and this test runs only when that expression names this
+    marker deliberately.
     """
     selection = str(request.config.getoption("-m", default="") or "")
     if "vendor_network" not in selection:
@@ -1215,10 +1280,29 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
         assert "churro_3b_profile()" in payloads["churro_specs.py"].decode("utf-8"), (
             "churro_3b_profile is no longer built into the profile registry"
         )
+
+        # --- The paper-era arm, from the paper-era file ----------------------
+        finetuned = ast.parse(
+            payloads["churro_finetuned_ocr.py"].decode("utf-8"),
+            filename="ocr/systems/finetuned_ocr.py",
+        )
+        assert (
+            _assigned_literal(finetuned, "SYSTEM_MESSAGE")
+            == CHURRO_SYSTEM_MESSAGES["paper-harness-ed09bc7"]
+        ), (
+            "the paper-era harness's SYSTEM_MESSAGE is no longer the typo'd string "
+            "this repository records as arm A4b; the variant table is stating a "
+            "provenance the vendor does not have"
+        )
+
         if not _CHURRO_DOCUMENT_PENDING:
             module = importlib.import_module("common.churro_document")
             carried = set(_module_string_constants(module).values())
-            assert CHURRO_SYSTEM_MESSAGES["registry-v0.3.0"] in carried
+            for variant, message in CHURRO_SYSTEM_MESSAGES.items():
+                assert message in carried, (
+                    f"the {variant!r} Churro system message this repository carries is "
+                    "not byte-equal to the vendor's own at the commit it names"
+                )
 
         # --- DAI's three carried files, byte for byte ------------------------
         assert (

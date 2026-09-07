@@ -114,10 +114,11 @@ markers = [
     # stored, and `-m vendor_network` runs it on demand, which is what keeps the
     # offline parity pins re-measurable without making a green gate depend on
     # GitHub and Hugging Face being reachable. The marker does not gate it on its
-    # own -- the gate and CI both select `-m "full or not full"`, a tautology
-    # that selects every marker -- so the test also reads back what the run
-    # selected and skips itself unless this marker was named. See
-    # `common/test_vendor_parity.py`.
+    # own -- check-all.sh runs pytest with no `-m` expression at all, and
+    # check-fast.sh runs `-m "not full or scanner"`, which a test carrying only
+    # this marker satisfies through the `not full` half; both therefore collect
+    # it -- so the test also reads back what the run selected and skips itself
+    # unless this marker was named. See `common/test_vendor_parity.py`.
     "vendor_network: fetches the pinned vendor sources to re-measure the carried-bytes pins",
 ]
 # pytest skips every dotted directory by default, so the harness's own tests
