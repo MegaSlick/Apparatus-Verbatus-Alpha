@@ -479,6 +479,48 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
         raise ValueError(f"image bytes are not decodable for resize ({error})") from error
 
 
+def convert_png_to_rgb(png_bytes: bytes) -> bytes:
+    """Expand an image to three 8-bit colour samples, deterministically framed.
+
+    A vendor preprocessor may convert before it hands the model an image --
+    Churro's ``prepare_ocr_image`` calls ``ensure_rgb`` after its resize -- and
+    that conversion has to be *ours*, executed here and recorded in the
+    presentation's transform. Left to the engine's ``do_convert_rgb`` it would
+    happen server-side on a grayscale seal, unrecorded, and the exact image the
+    model saw would no longer be reproducible from the Exemplar plus the
+    recorded transforms (ARCHITECTURE invariant 3).
+
+    Expansion only. Grayscale samples are copied into all three channels, so no
+    ink value is lost and the operation is idempotent on an image already in
+    ``RGB``; a mode carrying alpha is refused rather than flattened, because
+    dropping a transparency channel is a substitution and none of the sealed
+    material this pipeline crops from carries one.
+    """
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height, "colour conversion")
+            image.load()
+            if image.mode == "RGB":
+                return encode_image_deterministic(image)
+            if image.mode not in {"1", "L", "P"}:
+                raise ValueError(
+                    f"image mode {image.mode!r} cannot be expanded to RGB without dropping "
+                    "samples; only bilevel, grayscale and palette sources expand losslessly"
+                )
+            if image.mode == "P" and (
+                "transparency" in image.info or "A" in getattr(image.palette, "mode", "RGB")
+            ):
+                raise ValueError(
+                    "a palette image carrying transparency cannot be expanded to RGB without "
+                    "dropping its alpha samples"
+                )
+            return encode_image_deterministic(image.convert("RGB"))
+    except _DECODE_FAILURES as error:
+        raise ValueError(
+            f"image bytes are not decodable for colour conversion ({error})"
+        ) from error
+
+
 def dimensions(png_bytes: bytes) -> tuple[int, int]:
     """The dimensions of a sealed page, including RGB PNG renders from the door."""
     try:

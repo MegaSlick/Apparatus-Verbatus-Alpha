@@ -9,11 +9,22 @@ from PIL import Image
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
-from common.imaging import crop_png
+from common.imaging import convert_png_to_rgb, crop_png, resize_png_lanczos
 from common.native_witness import (
+    ADAPTER_COLOUR_MODES,
+    ADAPTER_CROP_OPERATIONS,
+    CHANDRA_SCALE_GRID_PX,
+    CHANDRA_SCALE_MAX_PIXELS,
+    CHANDRA_SCALE_MIN_PIXELS,
+    CHURRO_MAX_IMAGE_DIM_PX,
+    CHURRO_OUTPUT_TOKENS,
     CHURRO_PARSERS,
     CHURRO_RESPONSE_NOT_BYTES,
+    NATIVE_CAPTURE_PARSERS,
+    RESIZING_ADAPTER_CROP_OPERATIONS,
     derive_churro_capture,
+    detect_churro_repetition,
+    detect_repetition,
     parse_churro_response,
     partition_disagreement,
     unpresented_region_ids,
@@ -26,8 +37,10 @@ from common.native_witness import (
     validate_presented_page_binding,
     validate_reportable_observations,
     validate_retained_response_refs,
+    validate_vendor_identity,
     verify_native_capture_bytes,
 )
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 
 def _native_capture() -> dict:
@@ -1632,3 +1645,550 @@ def test_a_parse_state_that_names_no_refusal_is_refused_rather_than_raising_a_ke
     for state in ("parsed", "pending", "not-requested"):
         with pytest.raises(SchemaRefusal, match="carries no refusal to name"):
             native_parse_refusal({"state": state, "text": "x"})
+
+
+# ============ Unit 3: the vocabulary the vendor grammars arrive through ===========
+#
+# Everything below closes a contract *before* the adapters that write it land:
+# the two vendor preprocessing operations, the colour step they may perform, the
+# parser names a retained model view may record, the chair-neutral repetition
+# scan, and the vendor pin that travels beside the model identity.
+
+
+def _vendor_presentation(operation: str, **resize_changes) -> dict:
+    """One `adapter-crop` presentation under a vendor preprocessing operation.
+
+    The defaults are a legal record for each operation, so every test below
+    changes exactly the one fact it is about and the refusal it asserts cannot
+    be the fixture's own.
+    """
+    defaults = {
+        "chandra-scale-to-fit.v1": {
+            "bounds": {"x": 0, "y": 0, "w": 100, "h": 80},
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "grid-28",
+                "source_width_px": 100,
+                "source_height_px": 80,
+                # 224 x 224 = 50,176 px: the vendor's own minimum area, and
+                # 8 x 28 on each side, so it is on the patch grid.
+                "target_width_px": 224,
+                "target_height_px": 224,
+            },
+        },
+        "churro-prepare-ocr-image.v1": {
+            "bounds": {"x": 0, "y": 0, "w": 4000, "h": 3000},
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": 4000,
+                "source_height_px": 3000,
+                "target_width_px": 2500,
+                "target_height_px": 1875,
+            },
+        },
+    }[operation]
+    value = payload()
+    value["presented"].update(
+        {
+            "kind": "adapter-crop",
+            "image_sha256": "c" * 64,
+            "image_path": "3_attestatores/blobs/sha256/" + "c" * 64,
+        }
+    )
+    value["presented"]["transform"].update(
+        {
+            "operation": operation,
+            "bounds": dict(defaults["bounds"]),
+            "resize": {**defaults["resize"], **resize_changes},
+        }
+    )
+    for field in ("source_width_px", "source_height_px"):
+        if field in resize_changes:
+            edge = "w" if field.startswith("source_width") else "h"
+            value["presented"]["transform"]["bounds"][edge] = resize_changes[field]
+    if operation == "churro-prepare-ocr-image.v1":
+        value["presented"]["transform"]["colour_mode"] = "rgb"
+    return value["presented"]
+
+
+def _grayscale_page(width: int = 100, height: int = 80) -> bytes:
+    buffer = BytesIO()
+    Image.new("L", (width, height), 200).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_both_vendor_preprocessing_operations_are_executable_adapter_crops():
+    """A resize recipe with no re-derivation would be a claim, not a transform."""
+    assert RESIZING_ADAPTER_CROP_OPERATIONS < ADAPTER_CROP_OPERATIONS
+    assert {"chandra-scale-to-fit.v1", "churro-prepare-ocr-image.v1"} < (
+        RESIZING_ADAPTER_CROP_OPERATIONS
+    )
+    for operation in ("chandra-scale-to-fit.v1", "churro-prepare-ocr-image.v1"):
+        assert validate_presented(_vendor_presentation(operation))
+
+
+@pytest.mark.parametrize("operation", [[], {}, {"name": "crop"}, 7, None])
+def test_an_unhashable_operation_is_a_named_refusal_not_a_python_traceback(operation):
+    """The operation now selects a schema by set membership, so it gets hashed.
+
+    Left unnormalized, a list or a dict there raises `TypeError` out of a
+    contract check instead of the refusal this schema owes its reader -- the
+    same fault `test_unhashable_enum_values_are_named_refusals_not_python_
+    tracebacks` pins for `kind` and `bounds_source`.
+    """
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    presented["transform"]["operation"] = operation
+    with pytest.raises(SchemaRefusal, match="page transform|disagrees with its source page"):
+        validate_presented(presented)
+
+
+@pytest.mark.parametrize("colour_mode", [[], {}, 7])
+def test_an_unhashable_colour_mode_is_a_named_refusal_too(colour_mode):
+    presented = _vendor_presentation("churro-prepare-ocr-image.v1")
+    presented["transform"]["colour_mode"] = colour_mode
+    with pytest.raises(SchemaRefusal, match="unknown colour conversion"):
+        validate_presented(presented)
+
+
+@pytest.mark.parametrize("parser", [[], {}, 7])
+def test_an_unhashable_parser_name_is_a_named_refusal_too(parser):
+    capture = _native_capture()
+    capture["adapter"] = "chandra.v1"
+    capture["parse"] = {"state": "parsed", "parser": parser, "text": "read"}
+    with pytest.raises(SchemaRefusal, match="which no vendor grammar"):
+        validate_native_capture(capture)
+
+
+def test_every_resizing_operation_requires_a_recipe_and_can_name_its_rounding_rule():
+    """The two lists are one list, so a recipe cannot be required with no rule to name.
+
+    Read the other way round: a resizing operation whose rounding word this
+    module does not know would reach a `KeyError` inside a contract check the
+    first time a record used it.
+    """
+    assert ADAPTER_CROP_OPERATIONS - RESIZING_ADAPTER_CROP_OPERATIONS == {"crop"}
+    for operation in sorted(RESIZING_ADAPTER_CROP_OPERATIONS):
+        presented = (
+            _resized_presentation()
+            if operation == "crop-resize-preserve-aspect"
+            else _vendor_presentation(operation)
+        )
+        assert presented["transform"]["operation"] == operation
+        validate_presented(presented)
+        del presented["transform"]["resize"]
+        with pytest.raises(SchemaRefusal, match="complete page transform"):
+            validate_presented(presented)
+
+
+def test_a_chandra_target_must_sit_on_the_vendors_own_patch_grid():
+    """`scale_to_fit` cannot emit an off-grid size, so a record naming one is false."""
+    assert CHANDRA_SCALE_GRID_PX == 28
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    presented["transform"]["resize"]["target_height_px"] = 225
+    with pytest.raises(SchemaRefusal, match="patch grid"):
+        validate_presented(presented)
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (196, 224),  # 43,904 px: on the grid, below the vendor's minimum area
+        (3080, 2044),  # 6,295,520 px: on the grid, above the vendor's maximum area
+    ],
+)
+def test_a_chandra_target_outside_the_vendors_area_bounds_is_refused(width, height):
+    assert width % CHANDRA_SCALE_GRID_PX == 0 and height % CHANDRA_SCALE_GRID_PX == 0
+    assert not CHANDRA_SCALE_MIN_PIXELS <= width * height <= CHANDRA_SCALE_MAX_PIXELS
+    presented = _vendor_presentation(
+        "chandra-scale-to-fit.v1", target_width_px=width, target_height_px=height
+    )
+    with pytest.raises(SchemaRefusal, match="area bounds"):
+        validate_presented(presented)
+
+
+def test_the_vendor_area_bounds_are_the_numbers_the_port_is_held_to():
+    """Both are areas, which is how the vendor applies them and how U8 tests them."""
+    assert CHANDRA_SCALE_MIN_PIXELS == 1792 * 28 == 50_176
+    assert CHANDRA_SCALE_MAX_PIXELS == 3072 * 2048 == 6_291_456
+
+
+def test_the_greedy_aspect_trim_is_not_held_to_the_preserve_aspect_identity():
+    """The vendor's own trim departs from the source aspect; our rule must not fight it.
+
+    A 100x80 crop is 1.25:1 and 224x224 is 1:1 -- exactly the kind of departure
+    `scale_to_fit` produces when it snaps to the grid. It costs nothing here:
+    Chandra reports `data-bbox` normalized 0-1000 and `to_page_bounds` maps
+    those against the *sealed page*, never through this resized view.
+    """
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    resize = presented["transform"]["resize"]
+    assert resize["source_width_px"] * resize["target_height_px"] != (
+        resize["source_height_px"] * resize["target_width_px"]
+    )
+    validate_presented(presented)
+
+    # The repository's own operation still is, in the same file, on the same run.
+    ours = _resized_presentation()
+    ours["transform"]["resize"]["target_height_px"] = 11
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(ours)
+
+
+def test_each_resizing_operation_must_name_its_own_publishers_rounding_rule():
+    """Calling a 28-pixel grid snap `floor` would be a record that reads false."""
+    chandra = _vendor_presentation("chandra-scale-to-fit.v1", dimension_rounding="floor")
+    with pytest.raises(SchemaRefusal, match="unknown executable resize recipe"):
+        validate_presented(chandra)
+
+    churro = _vendor_presentation("churro-prepare-ocr-image.v1", dimension_rounding="grid-28")
+    with pytest.raises(SchemaRefusal, match="unknown executable resize recipe"):
+        validate_presented(churro)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        # Past the vendor's 2500x2500 square on one side.
+        ({"target_width_px": 2501, "target_height_px": 1875}, "square"),
+        # An enlargement; `resize_image_to_fit` is downscale-only.
+        (
+            {
+                "source_width_px": 3000,
+                "source_height_px": 1500,
+                "target_width_px": 2500,
+                "target_height_px": 1800,
+            },
+            "downscale-only",
+        ),
+    ],
+)
+def test_a_churro_target_outside_the_vendors_fit_rule_is_refused(changes, message):
+    presented = _vendor_presentation("churro-prepare-ocr-image.v1", **changes)
+    with pytest.raises(SchemaRefusal, match=message):
+        validate_presented(presented)
+
+
+def test_a_churro_crop_already_inside_the_square_may_not_be_resized_at_all():
+    """Downscale-only settles the whole rule for a crop the vendor returns untouched."""
+    assert 2000 <= CHURRO_MAX_IMAGE_DIM_PX and 1500 <= CHURRO_MAX_IMAGE_DIM_PX
+    presented = _vendor_presentation(
+        "churro-prepare-ocr-image.v1",
+        source_width_px=2000,
+        source_height_px=1500,
+        target_width_px=2000,
+        target_height_px=1500,
+    )
+    validate_presented(presented)
+
+    presented["transform"]["resize"].update({"target_width_px": 1000, "target_height_px": 750})
+    with pytest.raises(SchemaRefusal, match="was resized anyway"):
+        validate_presented(presented)
+
+
+def test_the_churro_operation_must_say_what_it_did_to_the_colour_samples():
+    """`ensure_rgb` is half of `prepare_ocr_image`; silence is not a record of it."""
+    presented = _vendor_presentation("churro-prepare-ocr-image.v1")
+    del presented["transform"]["colour_mode"]
+    with pytest.raises(SchemaRefusal, match="complete page transform"):
+        validate_presented(presented)
+
+
+def test_a_colour_mode_is_optional_for_chandra_and_closed_to_the_known_conversions():
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    assert "colour_mode" not in presented["transform"]
+    validate_presented(presented)
+
+    for mode in sorted(ADAPTER_COLOUR_MODES):
+        presented["transform"]["colour_mode"] = mode
+        validate_presented(presented)
+
+    presented["transform"]["colour_mode"] = "cmyk"
+    with pytest.raises(SchemaRefusal, match="unknown colour conversion"):
+        validate_presented(presented)
+
+
+@pytest.mark.parametrize("kind", ["page", "region"])
+def test_a_resize_recipe_is_refused_on_a_kind_nothing_re_derives(kind):
+    """A transform nothing replays is a description, not a recorded operation."""
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    presented["kind"] = kind
+    if kind == "region":
+        presented["region_ref"] = {"region_id": "r-1"}
+    with pytest.raises(SchemaRefusal, match="only an adapter-crop is re-derived"):
+        validate_presented(presented)
+
+
+def test_an_operation_that_performs_no_colour_step_may_not_claim_one():
+    """The field is admitted where a vendor performs the conversion, not everywhere."""
+    ours = _resized_presentation()
+    ours["transform"]["colour_mode"] = "keep"
+    with pytest.raises(SchemaRefusal, match="complete page transform"):
+        validate_presented(ours)
+
+
+def test_a_vendor_preprocessing_blob_re_derives_through_resize_and_colour_step():
+    """The whole point of naming the operations: they replay from the sealed page.
+
+    The page is grayscale, so the RGB expansion genuinely changes the bytes. A
+    validator that admitted `colour_mode: rgb` and then skipped the conversion
+    would digest the grayscale image and this would fail -- which is what makes
+    the passing assertion evidence rather than decoration.
+    """
+    page_bytes = _grayscale_page()
+    bounds = {"x": 0, "y": 0, "w": 100, "h": 80}
+    grayscale = resize_png_lanczos(crop_png(page_bytes, bounds), 224, 224)
+    expected = convert_png_to_rgb(grayscale)
+    assert digest_bytes(expected) != digest_bytes(grayscale)
+
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    presented["transform"]["colour_mode"] = "rgb"
+    presented["image_sha256"] = digest_bytes(expected)
+    presented["image_path"] = "3_attestatores/blobs/sha256/" + digest_bytes(expected)
+    validate_presented(presented)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+        page_sha256=digest_bytes(page_bytes),
+        page_size=(100, 80),
+        page_bytes=page_bytes,
+    )
+
+    # The same blob under a record that says no conversion ran: the replay stops
+    # one step short and the digest no longer matches.
+    presented["transform"]["colour_mode"] = "keep"
+    with pytest.raises(SchemaRefusal, match="does not re-derive"):
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=1,
+            page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+            page_sha256=digest_bytes(page_bytes),
+            page_size=(100, 80),
+            page_bytes=page_bytes,
+        )
+
+
+def test_a_churro_presentation_re_derives_through_its_own_recorded_recipe():
+    """The identity case is still executed, not excused: crop, resize, convert."""
+    page_bytes = _grayscale_page()
+    bounds = {"x": 0, "y": 0, "w": 100, "h": 80}
+    expected = convert_png_to_rgb(resize_png_lanczos(crop_png(page_bytes, bounds), 100, 80))
+    presented = _vendor_presentation(
+        "churro-prepare-ocr-image.v1",
+        source_width_px=100,
+        source_height_px=80,
+        target_width_px=100,
+        target_height_px=80,
+    )
+    presented["image_sha256"] = digest_bytes(expected)
+    presented["image_path"] = "3_attestatores/blobs/sha256/" + digest_bytes(expected)
+    validate_presented(presented)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+        page_sha256=digest_bytes(page_bytes),
+        page_size=(100, 80),
+        page_bytes=page_bytes,
+    )
+
+
+def test_an_operation_with_no_re_derivation_is_refused_rather_than_trusted():
+    presented = _vendor_presentation("chandra-scale-to-fit.v1")
+    presented["transform"]["operation"] = "chandra-scale-to-fit.v2"
+    page_bytes = _grayscale_page()
+    with pytest.raises(SchemaRefusal, match="executable sealed-page crop transform"):
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=1,
+            page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+            page_sha256=digest_bytes(page_bytes),
+            page_size=(100, 80),
+            page_bytes=page_bytes,
+        )
+
+
+# -------------------------- the parser vocabulary --------------------------
+
+
+def test_the_capture_validator_admits_one_parser_per_vendor_grammar():
+    """Chandra's HTML, Churro's XML, DAI's plain text -- and nothing unnamed."""
+    assert NATIVE_CAPTURE_PARSERS == frozenset({"html", "xml", "text"})
+
+
+@pytest.mark.parametrize("parser", ["html", "text", "xml"])
+def test_every_vendor_grammar_name_is_recordable_on_a_capture(parser):
+    capture = _native_capture()
+    capture["adapter"] = "chandra.v1"
+    capture["parse"] = {"state": "parsed", "parser": parser, "text": "read"}
+    assert validate_native_capture(capture) is capture
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [
+        {"state": "parsed", "parser": "yaml", "text": "read"},
+        {"state": "failed", "parser": "", "reason": "no"},
+        {"state": "pending", "parser": "yaml"},
+        {"state": "unrecognized-shape", "parser": "sgml", "outcome": "unknown"},
+    ],
+)
+def test_a_capture_naming_a_parser_no_grammar_answers_to_is_refused_by_name(parse):
+    """A name no dispatcher answers to is a record that can never be re-derived.
+
+    Left as "any non-empty string" it surfaced as a `KeyError` from inside
+    `verify_native_capture_bytes` -- from a stage whose whole contract is that
+    a fault arrives with its cause attached (GOVERNANCE 2).
+    """
+    capture = _native_capture()
+    capture["adapter"] = "chandra.v1"
+    capture["parse"] = parse
+    with pytest.raises(SchemaRefusal, match="which no vendor grammar"):
+        validate_native_capture(capture)
+
+
+def test_a_not_requested_parse_still_names_no_parser_at_all():
+    capture = _native_capture()
+    capture["adapter"] = "chandra.v1"
+    capture["parse"] = {"state": "not-requested", "parser": None}
+    assert validate_native_capture(capture) is capture
+    capture["parse"] = {"state": "not-requested", "parser": "html"}
+    with pytest.raises(SchemaRefusal, match="no parse was requested"):
+        validate_native_capture(capture)
+    capture["parse"] = {"state": "not-requested", "parser": None, "text": "read"}
+    with pytest.raises(SchemaRefusal, match="wrong shape"):
+        validate_native_capture(capture)
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [
+        {"state": "not-requested", "parser": None},
+        {"state": "pending", "parser": "html"},
+        {"state": "parsed", "parser": "html", "text": "read"},
+        {"state": "failed", "parser": "html", "reason": "unparseable"},
+        {"state": "unrecognized-shape", "parser": "html", "outcome": "unverified-response-schema"},
+    ],
+)
+def test_every_parse_state_this_contract_names_stays_recordable(parse):
+    """Five states, and none of them may quietly stop being writable.
+
+    `unrecognized-shape` is the one the judges' lost-byte flaw turned on: a
+    parser that ran, read the whole response and could name no shape it knows
+    had nowhere to be recorded, so the retained model view was dropped and only
+    the blob survived.
+    """
+    capture = _native_capture()
+    capture["adapter"] = "chandra.v1"
+    capture["parse"] = parse
+    assert validate_native_capture(capture) is capture
+
+
+# ------------------- the chair-neutral tail-cycle scan --------------------
+
+
+def test_the_repetition_scan_kept_its_old_name_as_an_alias_of_the_same_function():
+    """One function, two names, so the two cannot drift into two thresholds."""
+    assert detect_churro_repetition is detect_repetition
+
+
+def test_the_repetition_scan_reads_text_and_bytes_to_the_same_finding():
+    """A caller holding the decoded reading should not re-encode it to ask."""
+    degenerate = "the same clause over and over again. " * 12
+    assert detect_repetition(degenerate) == detect_repetition(degenerate.encode("utf-8"))
+    assert detect_repetition(degenerate)["kind"] == "post-hoc-repetition"
+    assert detect_repetition("a short honest reading of one line") is None
+    assert detect_repetition("") is None
+
+
+def test_bytes_that_are_not_utf8_are_still_named_rather_than_raised():
+    """Unchanged by the generalisation: not scanned, and the record says so."""
+    assert detect_repetition(b"\xff\xfe not text") == {
+        "kind": "post-hoc-repetition-uninspected",
+        "reason": "response is not UTF-8 text",
+    }
+    assert detect_repetition(bytearray(b"\xff\xfe not text"))["kind"] == (
+        "post-hoc-repetition-uninspected"
+    )
+
+
+# ------------------------ Churro's declared bound -------------------------
+
+
+def test_the_churro_bound_is_twenty_thousand_and_is_the_declared_tables_own_entry():
+    """Re-exported, never restated: one chair's bound cannot drift from the table."""
+    assert CHURRO_OUTPUT_TOKENS == 20_000
+    assert CHURRO_OUTPUT_TOKENS == DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
+
+
+# --------------------------- the vendor pin -------------------------------
+
+
+def _vendor_identity() -> dict:
+    return {
+        "repository": "github.com/stanford-oval/Churro",
+        "sha": "4abb17386d9656199c2776195926545fc527a691",
+        "carried_strings": {"system_message": "d" * 64},
+    }
+
+
+def test_a_capture_may_record_the_vendor_pin_its_grammar_was_taken_from():
+    assert validate_vendor_identity(_vendor_identity()) == _vendor_identity()
+    capture = _native_capture()
+    capture["vendor_identity"] = _vendor_identity()
+    assert validate_native_capture(capture) is capture
+
+
+def test_a_capture_written_before_the_vendor_pin_existed_stays_valid():
+    """Additive, or every retained record and every fixture digest would move."""
+    capture = _native_capture()
+    assert "vendor_identity" not in capture
+    assert validate_native_capture(capture) is capture
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda value: value.update({"sha": "v0.3.0"}), "40-hex"),
+        (lambda value: value.update({"sha": "4ABB17386D9656199C2776195926545FC527A691"}), "40-hex"),
+        (lambda value: value.update({"repository": "  "}), "names no repository"),
+        (lambda value: value.update({"carried_strings": {}}), "no string digests"),
+        (
+            lambda value: value["carried_strings"].update({"system_message": "not-a-digest"}),
+            "without a sha256",
+        ),
+        (lambda value: value["carried_strings"].update({"": "d" * 64}), "with no name"),
+        (lambda value: value.update({"licence": "Apache-2.0"}), "closed"),
+        (lambda value: value.pop("carried_strings"), "closed"),
+    ],
+)
+def test_a_vendor_pin_that_cannot_be_checked_against_the_vendor_is_refused(change, message):
+    value = _vendor_identity()
+    change(value)
+    with pytest.raises(SchemaRefusal, match=message):
+        validate_vendor_identity(value)
+
+
+def test_a_capture_carrying_a_malformed_vendor_pin_is_refused_at_the_capture_seam():
+    """The pin is checked where the capture is closed, not only where it is built."""
+    capture = _native_capture()
+    capture["vendor_identity"] = {**_vendor_identity(), "sha": "main"}
+    with pytest.raises(SchemaRefusal, match="40-hex"):
+        validate_native_capture(capture)
+
+
+def test_the_vendor_pin_travels_through_the_byte_level_re_derivation_unchanged():
+    """The pin sits beside the capture, not inside what re-derives from the bytes."""
+    body = b"<output>plain reading</output>"
+    digest = digest_bytes(body)
+    capture = _native_capture()
+    capture["raw_response_ref"] = {
+        "relative_path": f"3_attestatores/blobs/sha256/{digest}",
+        "sha256": digest,
+    }
+    capture["transport_stop_reason"] = "eos"
+    capture["vendor_identity"] = _vendor_identity()
+    capture.update(derive_churro_capture(body, "eos", parser="xml"))
+    assert verify_native_capture_bytes(capture, body) is capture
+    assert capture["vendor_identity"] == _vendor_identity()

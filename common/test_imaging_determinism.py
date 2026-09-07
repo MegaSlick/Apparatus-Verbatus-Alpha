@@ -26,6 +26,7 @@ from common.imaging import (
     _encode_crop_deterministic,
     _to_display_mode,
     carries_only_image_chunks,
+    convert_png_to_rgb,
     crop_png,
     encode_grayscale_png,
     encode_grayscale_png_deterministic,
@@ -646,3 +647,80 @@ def test_a_resize_target_is_bounded_before_pillow_can_allocate_it(monkeypatch):
     with pytest.raises(ValueError, match="resize target.*pixel bound"):
         resize_png_lanczos(crop, 100_000_001, 1)
     assert called is False
+
+
+# ---- the colour step a vendor preprocessor performs before the model looks ----
+#
+# Churro's `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`. The
+# expansion has to happen here, framed by this encoder, or the engine's own
+# `do_convert_rgb` does it server-side on a grayscale seal and the exact image
+# the model saw stops being reproducible from the Exemplar plus the recorded
+# transforms.
+
+
+def test_a_grayscale_page_expands_to_three_channels_without_moving_a_sample():
+    page = grayscale_page(6, 4)
+    expanded = convert_png_to_rgb(page)
+
+    assert expanded != page
+    with Image.open(BytesIO(expanded)) as reread, Image.open(BytesIO(page)) as original:
+        reread.load()
+        original.load()
+        assert reread.mode == "RGB"
+        samples = reread.tobytes()
+        assert all(
+            samples[index] == samples[index + 1] == samples[index + 2]
+            for index in range(0, len(samples), 3)
+        )
+        assert reread.convert("L").tobytes() == original.tobytes()
+
+
+def test_expanding_an_image_that_is_already_rgb_changes_nothing_it_re_frames():
+    """Idempotent, so a record naming the step twice cannot mean two images."""
+    buffer = BytesIO()
+    Image.new("RGB", (5, 3), (10, 20, 30)).save(buffer, format="PNG")
+    once = convert_png_to_rgb(buffer.getvalue())
+    assert convert_png_to_rgb(once) == once
+    assert carries_only_image_chunks(once)
+
+
+def test_the_expansion_is_deterministic_across_calls():
+    page = grayscale_page(9, 7)
+    assert convert_png_to_rgb(page) == convert_png_to_rgb(page)
+
+
+def test_an_indexed_image_expands_through_its_palette():
+    page = Image.new("P", (4, 2))
+    page.putpalette([255, 0, 0, 0, 255, 0, 0, 0, 255] + [0] * (768 - 9))
+    page.putpixel((1, 0), 1)
+    buffer = BytesIO()
+    page.save(buffer, format="PNG")
+
+    with Image.open(BytesIO(convert_png_to_rgb(buffer.getvalue()))) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((1, 0)) == (0, 255, 0)
+
+
+def test_a_mode_that_cannot_expand_losslessly_is_refused_rather_than_flattened():
+    """Dropping an alpha channel is a substitution, and a silent one."""
+    buffer = BytesIO()
+    Image.new("RGBA", (4, 2), (10, 20, 30, 128)).save(buffer, format="PNG")
+    with pytest.raises(ValueError, match="cannot be expanded to RGB"):
+        convert_png_to_rgb(buffer.getvalue())
+
+
+def test_a_palette_carrying_transparency_is_refused_by_its_own_name():
+    source = Image.new("RGBA", (4, 2), (10, 20, 30, 0))
+    quantised = source.convert("P", palette=Image.Palette.ADAPTIVE)
+    assert quantised.palette.mode == "RGBA"
+    buffer = BytesIO()
+    quantised.save(buffer, format="PNG")
+
+    with pytest.raises(ValueError, match="dropping its alpha samples"):
+        convert_png_to_rgb(buffer.getvalue())
+
+
+def test_undecodable_bytes_reach_a_named_value_error_not_a_library_exception():
+    with pytest.raises(ValueError, match="not decodable for colour conversion"):
+        convert_png_to_rgb(b"not an image at all")
