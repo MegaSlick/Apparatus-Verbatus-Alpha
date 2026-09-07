@@ -13,7 +13,10 @@ The kit's own limits are worth keeping: it was syntax-checked, never executed,
 and it makes no claim that an admitted source reaches any of these branches.
 That trace was done separately and is what decided the fixes — every case below
 is reachable from a source the door admits, and the tests that prove *that* live
-at the end of this file rather than in the reviewer's original set.
+at the end of this file rather than in the reviewer's original set. The one
+exception is the palette-alpha refusal, which guards a route no decoder in this
+stack was measured to produce; its own docstring says so rather than borrowing
+the claim the rest of the file earns.
 
 All fixtures are tiny, written by an independent PNG writer rather than by the
 encoder under test, and Pillow is the rendering oracle.
@@ -30,7 +33,14 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from common.imaging import crop_png, decode_grayscale_png, grayscale_rows, image_shown
+from common.imaging import (
+    _grayscale_samples,
+    _to_display_mode,
+    crop_png,
+    decode_grayscale_png,
+    grayscale_rows,
+    image_shown,
+)
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -49,8 +59,11 @@ def _png(
     *,
     compression: int = 0,
     filter_method: int = 0,
+    bit_depth: int = 8,
 ) -> bytes:
-    header = struct.pack(">IIBBBBB", width, height, 8, color_type, compression, filter_method, 0)
+    header = struct.pack(
+        ">IIBBBBB", width, height, bit_depth, color_type, compression, filter_method, 0
+    )
     return (
         PNG_SIGNATURE
         + _chunk(b"IHDR", header)
@@ -324,6 +337,170 @@ def test_native_decoder_refuses_a_chunk_it_would_have_to_drop() -> None:
     with pytest.raises(ValueError, match="does not read"):
         decode_grayscale_png(source)
     assert image_shown(crop_png(source, {"x": 0, "y": 0, "w": 2, "h": 1})).width == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "byte_order"),
+    [("I;16", "<"), ("I;16L", "<"), ("I;16B", ">"), ("I;16N", "<")],
+)
+def test_every_16bit_mode_scales_rather_than_refusing_the_page(mode: str, byte_order: str) -> None:
+    """All four modes `_HIGH_PRECISION_SCALE` names, not only the one that worked.
+
+    Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only; the
+    three byte-order spellings raise `ValueError("point operation not supported
+    for this mode")` before a pixel is read, which `grayscale_rows` re-worded as
+    "not a decodable image" and turned into a dropped page (GOALS 1). Measured,
+    not assumed: this parametrisation failed on `I;16L`, `I;16B` and `I;16N`
+    before the fix and passes on all four after it.
+
+    `frombytes` rather than a file because `I;16N` has no container that spells
+    it; the test below carries the file half.
+    """
+    samples = struct.pack(f"{byte_order}4H", 0, 257, 32896, 65535)
+    image = Image.frombytes(mode, (4, 1), samples)
+
+    assert list(_grayscale_samples(image).tobytes()) == [0, 1, 128, 255]
+    assert list(_to_display_mode(image).tobytes()) == [0, 1, 128, 255]
+
+
+def test_a_big_endian_16bit_tiff_is_read_rather_than_called_undecodable() -> None:
+    """The file half: `I;16B` is a mode an ordinary decoder hands back.
+
+    `TiffImagePlugin.OPEN_INFO` maps a `MM` TIFF at 16 bits per sample to
+    `I;16B`, so the refusal above was reachable from a real page and not only
+    from a constructed image.
+    """
+    written = BytesIO()
+    Image.frombytes("I;16B", (4, 1), struct.pack(">4H", 0, 257, 32896, 65535)).save(
+        written, format="TIFF"
+    )
+    with Image.open(BytesIO(written.getvalue())) as reopened:
+        assert reopened.mode == "I;16B", "the fixture must reach the mode under test"
+
+    width, height, rows = grayscale_rows(written.getvalue())
+
+    assert (width, height) == (4, 1)
+    assert list(rows[0]) == [0, 1, 128, 255]
+
+
+def test_a_16bit_truecolour_page_crops_instead_of_being_refused() -> None:
+    """Pillow rescales 16-bit truecolour pixels to 8 bits and leaves tRNS alone.
+
+    The record still names `(65535, 65535, 65535)` beside samples that now run to
+    255, so the encoder measured a 16-bit record against the 8 bits it writes and
+    refused an ordinary page. The record is converted with the pixels instead —
+    by the decoder's own map, which for 16 bits keeps the high byte.
+    """
+    scanline = b"\0" + struct.pack(">6H", 0, 0, 0, 65535, 65535, 65535)
+    source = _png(
+        2, 1, 2, scanline, _chunk(b"tRNS", struct.pack(">3H", 65535, 65535, 65535)), bit_depth=16
+    )
+    with Image.open(BytesIO(source)) as opened:
+        opened.load()
+        assert opened.mode == "RGB", "Pillow reports 16-bit truecolour as plain RGB"
+        assert opened.info.get("transparency") == (65535, 65535, 65535)
+
+    result = crop_png(source, {"x": 0, "y": 0, "w": 2, "h": 1})
+
+    with Image.open(BytesIO(result)) as image:
+        image.load()
+        assert image.info.get("transparency") == (255, 255, 255)
+        assert image.convert("RGBA").tobytes()[7] == 0, "the white sample stays transparent"
+        assert image.convert("RGBA").tobytes()[3] == 255, "the black sample stays opaque"
+
+
+@pytest.mark.parametrize(
+    ("bit_depth", "packed", "declared", "expected"),
+    [
+        (4, 0x5A, 5, 85),
+        (2, 0b01100000, 1, 85),
+        # Depth 1 is the control: Pillow already restates a bilevel record in the
+        # 0/255 terms its decoded samples use, so this one must not be converted
+        # a second time.
+        (1, 0b10000000, 1, 255),
+    ],
+    ids=["4-bit", "2-bit", "1-bit-control"],
+)
+def test_a_sub_byte_grey_page_marks_the_pixel_its_own_tRNS_named(
+    bit_depth: int, packed: int, declared: int, expected: int
+) -> None:
+    """The right pixel, not the source number written out as an 8-bit sample.
+
+    A 2- or 4-bit greyscale PNG decodes to mode `L` with its samples spread over
+    the full range — 4-bit sample 5 becomes 85 — while `info["transparency"]`
+    still says 5. Writing 5 back out named a value no pixel in the crop holds, so
+    the page's declared transparency vanished and, had a pixel held 5, the wrong
+    one would have been marked. Pillow's own `convert("RGBA")` of the source
+    shows the same loss, which is why the depth-1 row is the oracle here: there
+    Pillow converts the record itself, and the crop must agree with it.
+    """
+    source = _png(
+        2,
+        1,
+        0,
+        b"\0" + bytes([packed]),
+        _chunk(b"tRNS", struct.pack(">H", declared)),
+        bit_depth=bit_depth,
+    )
+
+    result = crop_png(source, {"x": 0, "y": 0, "w": 2, "h": 1})
+
+    with Image.open(BytesIO(result)) as image:
+        image.load()
+        assert image.info.get("transparency") == expected
+        rgba = image.convert("RGBA").tobytes()
+        assert rgba[3] == 0, "the sample the file named transparent is transparent"
+        assert rgba[7] == 255, "and the other one is not"
+
+
+def _palette_page(alphas: tuple[int, ...], indices: tuple[int, ...]) -> Image.Image:
+    image = Image.new("P", (len(indices), 1))
+    palette = bytearray()
+    for entry, alpha in enumerate(alphas):
+        palette += bytes([entry * 10, entry * 10, entry * 10, alpha])
+    image.putpalette(bytes(palette), "RGBA")
+    image.putdata(list(indices))
+    return image
+
+
+def test_a_palette_that_hides_its_alpha_is_refused_by_name() -> None:
+    """`getbands()` says `("P",)`, so the band scan saw no alpha to refuse.
+
+    With no `info["transparency"]` either, the page went straight to
+    `convert("L")`, which reads the palette's *colour* for a fully transparent
+    index — 0 for the usual transparent-black entry, which every reader here
+    counts as ink.
+
+    Asserted against `_grayscale_samples` rather than `grayscale_rows` on
+    purpose: no decoder in this stack was measured to produce an RGBA palette
+    from a file (PNG, GIF, BMP, TIFF and WebP all return an `RGB` palette, with
+    any alpha in `info["transparency"]`), so claiming a reachable page here would
+    be a claim the measurement does not support (GOVERNANCE 10). The guard is
+    defence in depth beside the two crop-side callers that already ask the
+    palette the same question.
+    """
+    with pytest.raises(ValueError, match="palette entry 0"):
+        _grayscale_samples(_palette_page((0, 255, 255, 255), (0, 1, 2, 3)))
+
+
+def test_a_palette_whose_used_entries_are_opaque_still_reads() -> None:
+    """The refusal is about a transparent entry the page actually draws with.
+
+    An opaque palette reads, and so does a page whose transparent entry nothing
+    on it references — refusing either would cost an act (GOALS 1) for a byte
+    that changes no pixel.
+    """
+    assert list(_grayscale_samples(_palette_page((255,) * 4, (0, 1, 2, 3))).tobytes()) == [
+        0,
+        10,
+        20,
+        30,
+    ]
+    assert list(_grayscale_samples(_palette_page((0, 255, 255, 255), (1, 2, 3))).tobytes()) == [
+        10,
+        20,
+        30,
+    ]
 
 
 # The trace the reviewer could not run — that an admitted, ordinary source really
