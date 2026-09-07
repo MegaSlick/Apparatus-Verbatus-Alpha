@@ -11,6 +11,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.imaging import crop_png
 from common.native_witness import (
+    CHURRO_MAX_RESPONSE_BYTES,
     CHURRO_PARSERS,
     CHURRO_RESPONSE_NOT_BYTES,
     derive_churro_capture,
@@ -1441,6 +1442,31 @@ def test_a_body_that_is_not_bytes_is_refused_by_the_same_name_at_both_churro_doo
     assert parse_churro_response(raw) == {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
     with pytest.raises(SchemaRefusal, match=CHURRO_RESPONSE_NOT_BYTES):
         validate_churro_xml(raw)
+
+
+def test_an_oversized_response_is_refused_before_it_ever_reaches_json_loads(monkeypatch):
+    """The byte-length gate sits ahead of `json.loads`, not behind a caught error.
+
+    A body one byte over `CHURRO_MAX_RESPONSE_BYTES` must be named the same way
+    `derive_churro_capture` names an oversized response, and it must never be
+    handed to the JSON parser to find that out -- an unbounded parse over
+    retained bytes is exactly the cost this gate exists to avoid paying. Proven
+    here by making `json.loads` itself raise: if the dispatcher reached it, this
+    test would fail on that raise rather than on a mismatched record.
+    """
+
+    def _must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("json.loads must not run on an oversized response")
+
+    monkeypatch.setattr("common.native_witness.json.loads", _must_not_be_called)
+    oversized = b"x" * (CHURRO_MAX_RESPONSE_BYTES + 1)
+    assert parse_churro_response(oversized) == {
+        "state": "failed",
+        "reason": (
+            "Churro response exceeds the retained parsing limit of "
+            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(oversized)})"
+        ),
+    }
 
 
 def test_the_guard_admits_exactly_what_the_trained_door_behind_it_admits():

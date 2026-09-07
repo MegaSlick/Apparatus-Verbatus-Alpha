@@ -1097,6 +1097,14 @@ def parse_churro_response(raw: bytes) -> dict[str, Any]:
     """
     if not isinstance(raw, (bytes, bytearray)):
         return {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        return {
+            "state": "failed",
+            "reason": (
+                "Churro response exceeds the retained parsing limit of "
+                f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+            ),
+        }
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):

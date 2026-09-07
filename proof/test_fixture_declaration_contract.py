@@ -9,6 +9,7 @@ retain one reading with the same response shape as its base declaration.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 import tomllib
@@ -350,10 +351,11 @@ def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
                 "span": None,
             }
         ]
+        observed_snapshot = copy.deepcopy(observed)
         survivors, overshoots = native_witness.split_page_edge_overshoots(
             observed, page_size=page_size
         )
-        assert (survivors, overshoots) == (observed, []), (
+        assert (observed, survivors, overshoots) == (observed_snapshot, observed_snapshot, []), (
             f"declared observation {row!r} no longer survives page {page['ordinal']}'s edge split"
         )
         spare_x = page["width"] - (row["x"] + row["w"])

@@ -47,9 +47,11 @@ Two things that are not this chair's own:
   the Chandra chair's response. The geometry here is this chair's; the locating
   of its text is not.
 * **its prompt bytes.** Clauses 1–5 and the closing reading-order paragraph are
-  Apache-2.0 carried bytes from the Churro release; only the two output-format
-  instructions are this repository's wording, quoted beside their replacements
-  in `feeding.churro_layout_prompt`.
+  carried bytes from Churro (`stanford-oval/churro-3B`), whose code and prompts
+  are licensed Apache-2.0 (`config/models-real.toml`'s licence note); only the
+  two output-format instructions are this repository's wording, quoted beside
+  their replacements in `feeding.churro_layout_prompt`, which is where this
+  chair's layout instruction derives from that carried prompt.
 
 `pipeline/3_attestatores/HANDOFF.md` carries the contract; this file only says
 what sits in the chair.
