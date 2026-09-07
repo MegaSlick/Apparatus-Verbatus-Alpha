@@ -2,13 +2,14 @@
 
 The carried system strings are re-digested here, so an edit to either one
 fails offline in the gate rather than at a pod. The grammar cases are written
-by hand against the vendor's XSD and guide -- never pasted from the vendor's
-own example output -- and each of the four departures the module declares from
-`extract_actual_text_from_xml` is asserted as behaviour rather than left as a
-docstring claim: marked-up text is kept and indexed, a `Line` is one line, a
-broken response is `failed` rather than repaired or silently emptied, and no
-character of the response is rewritten beyond the declared whitespace
-collapsing.
+by hand in this project's own words, against the vendor's XSD and guide and
+never pasted from the vendor's own example output, and each of the five
+departures the module declares from `extract_actual_text_from_xml` is asserted
+as behaviour rather than left as a docstring claim: marked-up text is kept and
+indexed, a `Line` is one line, structural repair is refused while the vendor's
+lossless escape is kept and counted, no character of the response is rewritten
+beyond that escape and the declared whitespace collapsing, and every section a
+page owns is walked exactly once, however the response wrapped it.
 """
 
 from __future__ import annotations
@@ -105,7 +106,20 @@ def test_provenance_carries_the_vendor_code_identity():
     assert provenance["symbol"] == "CHURRO_3B_XML_TEMPLATE.system_message"
     assert provenance["licence"] == "Apache-2.0"
     assert provenance["system_sha256"] == CHURRO_PROMPT_VARIANTS[REGISTRY]["system_sha256"]
-    assert churro_prompt_provenance(PAPER)["commit"] == "ed09bc7fd6"
+    assert churro_prompt_provenance(PAPER)["commit"] == "ed09bc7fd6475c333a25427f3d0b9227af46ce27"
+    assert churro_prompt_provenance(PAPER)["symbol"] == "SYSTEM_MESSAGE"
+
+
+def test_every_variant_names_a_whole_commit():
+    """An abbreviation is written onto every Testimonium and can grow ambiguous.
+
+    A prefix resolves against whatever objects a repository holds at the moment
+    someone looks; the 40-hex name is the one that cannot become a different
+    commit later (GOVERNANCE 6).
+    """
+    for variant, entry in CHURRO_PROMPT_VARIANTS.items():
+        commit = entry["commit"]
+        assert len(commit) == 40 and set(commit) <= set("0123456789abcdef"), variant
 
 
 def test_an_unknown_variant_is_refused_by_name():
@@ -147,7 +161,7 @@ def test_module_imports_no_stage():
 
 def test_trim_leading_prompt_strips_newlines_and_spaces_only():
     prompt = churro_system_prompt(REGISTRY)
-    assert trim_leading_prompt(f"{prompt}\n \nAnno 1451", prompt) == "Anno 1451"
+    assert trim_leading_prompt(f"{prompt}\n \nL'an mil sept cent", prompt) == "L'an mil sept cent"
     # `lstrip("\n ")` is the vendor's exact character set: a tab and a carriage
     # return are not in it and survive.
     assert trim_leading_prompt(f"{prompt}\t x", prompt) == "\t x"
@@ -156,22 +170,22 @@ def test_trim_leading_prompt_strips_newlines_and_spaces_only():
 
 def test_trim_leading_prompt_leaves_a_body_that_does_not_open_with_it():
     prompt = churro_system_prompt(REGISTRY)
-    assert trim_leading_prompt("Anno 1451", prompt) == "Anno 1451"
-    assert trim_leading_prompt("Anno 1451", None) == "Anno 1451"
-    assert trim_leading_prompt("Anno 1451", "") == "Anno 1451"
+    assert trim_leading_prompt("L'an mil sept cent", prompt) == "L'an mil sept cent"
+    assert trim_leading_prompt("L'an mil sept cent", None) == "L'an mil sept cent"
+    assert trim_leading_prompt("L'an mil sept cent", "") == "L'an mil sept cent"
 
 
 def test_prompt_echo_is_a_finding_with_the_characters_it_removed():
     prompt = churro_system_prompt(REGISTRY)
-    record = _parse(f"{prompt}\nAnno domini 1451", system_prompt=prompt)
+    record = _parse(f"{prompt}\nL'an mil sept cent quarante", system_prompt=prompt)
     assert record["shape"] == "plain-text"
-    assert record["text"] == "Anno domini 1451"
+    assert record["text"] == "L'an mil sept cent quarante"
     assert record["findings"] == [{"kind": "prompt-echo-trimmed", "characters": len(prompt) + 1}]
 
 
 def test_only_the_framing_that_was_sent_is_ever_trimmed():
     """Trimming against a prompt the request did not send could delete real ink."""
-    echoed = f"{churro_system_prompt(PAPER)}\nAnno 1451"
+    echoed = f"{churro_system_prompt(PAPER)}\nL'an mil sept cent"
     record = _parse(echoed, system_prompt=churro_system_prompt(REGISTRY))
     assert record["findings"] == []
     assert record["text"] == echoed
@@ -182,10 +196,10 @@ def test_only_the_framing_that_was_sent_is_ever_trimmed():
 def test_a_trimmed_echo_in_front_of_the_grammar_still_parses_as_the_grammar():
     """The vendor trims first and parses second; so does this."""
     prompt = churro_system_prompt(REGISTRY)
-    document = _document(_page("<Line>Anno 1451</Line>"))
+    document = _document(_page("<Line>L'an mil sept cent</Line>"))
     record = _parse(f"{prompt}\n{document}", system_prompt=prompt)
     assert record["shape"] == "historical-document"
-    assert record["text"] == "Anno 1451"
+    assert record["text"] == "L'an mil sept cent"
     assert [finding["kind"] for finding in record["findings"]] == ["prompt-echo-trimmed"]
 
 
@@ -240,16 +254,16 @@ def test_a_default_namespace_is_matched_by_local_name():
 def test_metadata_is_outside_the_transcription():
     """`Language` and `Script` are not ink; they stay in the retained bytes."""
     document = _document(
-        "<Metadata><Language>lat</Language><Script>Latn</Script></Metadata>",
+        "<Metadata><Language>fra</Language><Script>Latn</Script></Metadata>",
         _page("<Line>alpha</Line>"),
     )
     record = _parse(document)
     assert record["text"] == "alpha"
-    assert "lat" not in record["text"]
+    assert "fra" not in record["text"]
 
 
 def test_a_document_with_no_pages_reads_as_empty_and_says_so():
-    record = _parse(_document("<Metadata><Language>lat</Language></Metadata>"))
+    record = _parse(_document("<Metadata><Language>fra</Language></Metadata>"))
     assert record["state"] == "parsed"
     assert record["text"] == ""
     assert record["pages"] == 0
@@ -261,12 +275,12 @@ def test_a_line_is_one_line_even_when_inline_markup_splits_its_text():
     record = _parse(
         _document(
             _page(
-                "<Paragraph><Line>\n  Nos <Addition>humiles</Addition> notarii\n"
-                "  subscripsimus.\n</Line></Paragraph>"
+                "<Paragraph><Line>\n  Le <Addition>dit</Addition> jour\n"
+                "  fut baptisée Marie.\n</Line></Paragraph>"
             )
         )
     )
-    assert record["text"] == "Nos humiles notarii subscripsimus."
+    assert record["text"] == "Le dit jour fut baptisée Marie."
 
 
 def test_whitespace_inside_a_line_collapses_but_a_joined_boundary_stays_joined():
@@ -345,6 +359,78 @@ def test_line_count_counts_line_elements_not_emitted_newlines():
 
 
 # --------------------------------------------------------------------------
+# Section ownership: the vendor's descendant scope, walked once
+# --------------------------------------------------------------------------
+
+
+def test_a_section_the_response_wrapped_is_still_that_pages_section():
+    """The vendor asks a page for `.//Body`; a wrapper may not hide a reading.
+
+    Matching direct children only would return this page as `parsed` with no
+    text and no finding -- the silent empty reading the module refuses.
+    """
+    page = "<Page><Content><Region><Body><Line>alpha</Line></Body></Region></Content></Page>"
+    record = _parse(_document(page))
+    assert record["text"] == "alpha"
+    assert [section["section"] for section in record["sections"]] == ["Body"]
+    assert record["findings"] == []
+
+
+def test_a_wrapped_section_keeps_the_fixed_header_body_footer_order():
+    page = (
+        "<Page><Content>"
+        "<Footer><Line>foot</Line></Footer>"
+        "<Body><Line>body</Line></Body>"
+        "<Header><Line>head</Line></Header>"
+        "</Content></Page>"
+    )
+    record = _parse(_document(page))
+    assert record["text"] == "head\nbody\nfoot"
+    assert [section["section"] for section in record["sections"]] == list(PAGE_SECTIONS)
+
+
+def test_a_section_under_a_nested_page_belongs_to_that_page_and_is_read_once():
+    """The vendor's two `.//` queries would read this page's text twice."""
+    page = (
+        "<Page><Body><Line>outer</Line></Body><Page><Body><Line>inner</Line></Body></Page></Page>"
+    )
+    record = _parse(_document(page))
+    assert record["text"] == "outer\n\ninner"
+    assert record["pages"] == 2
+    assert [section["page_ordinal"] for section in record["sections"]] == [1, 2]
+
+
+def test_a_section_inside_another_section_is_walked_by_the_one_enclosing_it():
+    """Its ink is read exactly once, in the place the response put it."""
+    record = _parse(
+        _document("<Page><Body><Header><Line>head</Line></Header><Line>body</Line></Body></Page>")
+    )
+    assert record["text"] == "head\nbody"
+    assert [(section["section"], section["lines"]) for section in record["sections"]] == [
+        ("Body", 2)
+    ]
+
+
+def test_text_a_page_carries_outside_every_section_is_a_finding_not_a_silence():
+    """The vendor drops it and says nothing; here the page names itself."""
+    record = _parse(
+        _document(
+            "<Page><Line>loose</Line><Body><Line>body</Line></Body></Page>",
+            _page("<Line>second</Line>"),
+        )
+    )
+    assert record["text"] == "body\n\nsecond"
+    assert record["findings"] == [{"kind": "page-text-outside-sections", "page_ordinal": 1}]
+
+
+def test_a_page_with_no_ink_outside_its_sections_reports_nothing():
+    """Indentation between sections is layout, and a blank page is not a loss."""
+    spaced = "<Page>\n  <Body>\n    <Line>alpha</Line>\n  </Body>\n</Page>"
+    assert _parse(_document(spaced))["findings"] == []
+    assert _parse(_document("<Page/>"))["findings"] == []
+
+
+# --------------------------------------------------------------------------
 # Marked spans: what the vendor deletes, kept and indexed
 # --------------------------------------------------------------------------
 
@@ -403,7 +489,7 @@ def test_an_empty_marker_at_the_end_of_a_line_marks_the_point_it_reached():
 
 
 def test_plain_text_is_returned_exactly_as_it_decoded():
-    body = "  Anno   domini 1451\n\n\n  Jean Baptiste  \n"
+    body = "  L'an   mil sept cent\n\n\n  Jean Baptiste  \n"
     record = _parse(body)
     assert record["shape"] == "plain-text"
     # No collapsing at all: there was no markup whose serialisation could have
@@ -415,9 +501,9 @@ def test_plain_text_is_returned_exactly_as_it_decoded():
 
 
 def test_a_bare_output_envelope_is_accepted_as_retired_history_and_says_so():
-    record = _parse("<output>Anno 1451</output>")
+    record = _parse("<output>L'an mil sept cent</output>")
     assert record["shape"] == "output-element"
-    assert record["text"] == "Anno 1451"
+    assert record["text"] == "L'an mil sept cent"
     assert record["findings"] == [{"kind": "retired-output-envelope"}]
     assert _parse("<output></output>")["text"] == ""
 
@@ -447,6 +533,54 @@ def test_broken_grammar_is_failed_never_repaired_and_never_silently_empty():
     assert record["response_bytes"] == len(broken.encode("utf-8"))
 
 
+def test_a_stray_ampersand_is_escaped_losslessly_counted_and_kept():
+    """`&c.` is routine in these registers; a page is not refused over one."""
+    record = _parse(_document(_page("<Line>Jean &c. Marie</Line>")))
+    assert record["state"] == "parsed"
+    assert record["text"] == "Jean &c. Marie"
+    assert record["findings"] == [{"kind": "stray-markup-escaped", "characters": 1}]
+
+
+def test_a_stray_angle_bracket_is_escaped_and_survives_as_the_character_it_is():
+    record = _parse(_document(_page("<Line>a < b &c. c</Line>")))
+    assert record["text"] == "a < b &c. c"
+    assert record["findings"] == [{"kind": "stray-markup-escaped", "characters": 2}]
+
+
+def test_a_reference_the_response_wrote_correctly_is_never_escaped_twice():
+    """The vendor escapes every `&`; a correct `&amp;` would become literal text."""
+    record = _parse(_document(_page("<Line>a &amp; b &#233;t&#xE9;</Line>")))
+    assert record["text"] == "a & b été"
+    assert record["findings"] == []
+
+
+def test_a_response_that_parses_is_never_escaped_at_all():
+    record = _parse(_document(_page("<Line>alpha</Line>")))
+    assert record["findings"] == []
+
+
+def test_the_escape_repairs_no_structure_and_a_truncated_answer_stays_failed():
+    """Escaping is lossless; closing a tag would be a repair, and is refused."""
+    truncated = "<HistoricalDocument><Page><Body><Line>Jean &c. Marie</Line></Body>"
+    record = _parse(truncated)
+    assert record["state"] == "failed"
+    assert "not parseable XML" in record["reason"]
+    assert "text" not in record
+
+
+def test_a_failure_that_survives_the_escape_names_itself_and_the_escape():
+    """The reason names what defeated the read, and how many characters were escaped.
+
+    Reporting the first parser error instead would point at the stray `<` the
+    escape had already dealt with, which is not why the response is `failed`.
+    """
+    record = _parse(_document(_page("<Line>a < b</Line>")) + "\ntrailing < text")
+    assert record["state"] == "failed"
+    assert "junk after document element" in record["reason"]
+    assert "after escaping 2 stray markup characters" in record["reason"]
+    assert record["findings"] == []
+
+
 def test_trailing_content_after_the_root_is_failed_rather_than_partially_read():
     record = _parse(_document(_page("<Line>alpha</Line>")) + "\nand that is all")
     assert record["state"] == "failed"
@@ -454,7 +588,7 @@ def test_trailing_content_after_the_root_is_failed_rather_than_partially_read():
 
 
 def test_text_that_merely_opens_with_an_angle_bracket_is_not_thrown_away():
-    body = "<< Anno domini 1451 >>"
+    body = "<< L'an mil sept cent >>"
     record = _parse(body)
     assert record["shape"] == "plain-text"
     assert record["text"] == body
@@ -530,7 +664,12 @@ def test_the_declared_vocabulary_is_what_the_records_use():
     assert CHURRO_PARSER == "xml"
     assert PARSE_STATES == {"parsed", "failed", "unrecognized-shape"}
     assert DOCUMENT_SHAPES == {"historical-document", "plain-text", "output-element"}
-    assert DOCUMENT_FINDING_KINDS == {"prompt-echo-trimmed", "retired-output-envelope"}
+    assert DOCUMENT_FINDING_KINDS == {
+        "prompt-echo-trimmed",
+        "retired-output-envelope",
+        "stray-markup-escaped",
+        "page-text-outside-sections",
+    }
     assert MARKED_SPAN_KINDS == {
         "Addition",
         "Deletion",
@@ -596,7 +735,17 @@ def test_every_produced_record_closes_its_own_schema(body):
         ),
         (
             lambda record: record["findings"].append({"kind": "prompt-echo-trimmed"}),
-            "prompt-echo finding is malformed",
+            "prompt-echo-trimmed finding is malformed",
+        ),
+        (
+            lambda record: record["findings"].append({"kind": "stray-markup-escaped"}),
+            "stray-markup-escaped finding is malformed",
+        ),
+        (
+            lambda record: record["findings"].append(
+                {"kind": "page-text-outside-sections", "page_ordinal": 0}
+            ),
+            "page-text-outside-sections finding is malformed",
         ),
         (lambda record: record.update(sections=None), "are not lists"),
     ],

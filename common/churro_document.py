@@ -19,9 +19,11 @@ system-only -- no user text at all, the image being the whole user turn:
   tag `v0.3.0` (`4abb17386d9656199c2776195926545fc527a691`), which
   `providers/specs.py::resolve_ocr_profile` returns for this model id, with
   `user_prompt=None`.
-* `paper-harness-ed09bc7` -- `FineTunedOCR.SYSTEM_MESSAGE` at
-  `ocr/systems/finetuned_ocr.py:17` in the paper-era release `ed09bc7fd6`, the
-  class the benchmark harness ran churro-3B through, with `user_message_text=None`.
+* `paper-harness-ed09bc7` -- the module constant `SYSTEM_MESSAGE` at
+  `ocr/systems/finetuned_ocr.py:17` in the paper-era release
+  `ed09bc7fd6475c333a25427f3d0b9227af46ce27` (short `ed09bc7fd6`, which is what
+  the variant is named after), read at line 33 by `FineTunedOCR`, the class the
+  benchmark harness ran churro-3B through, with `user_message_text=None`.
   Its two spelling errors ("entiretly", "documents") are part of the bytes that
   harness actually sent and are carried unaltered.  The same release's CLI
   default at `run_churro_ocr.py:230` spells both correctly, which is why these
@@ -68,7 +70,7 @@ asked for is visible rather than silent (GOVERNANCE 2).
 ## Departures from the vendor's own flattener, and why each
 
 `evaluation/xml_utils.py::extract_actual_text_from_xml` is the vendor's
-reading-order flattener.  Four of its behaviours are deliberately not
+reading-order flattener.  Five of its behaviours are deliberately not
 reproduced.  Each departure is toward keeping evidence, never toward changing a
 reading.
 
@@ -84,31 +86,60 @@ reading.
    are zero-length markers at the point they occurred.
 2. **A `Line` element is one line; the vendor makes every text node one.**  The
    vendor calls `itertext()` and strips each text node into its own line, which
-   breaks a line wherever inline markup appears -- `Nos <Addition>humiles</Addition>
-   notarii` becomes three lines in the vendor's output and one here.  Reading
+   breaks a line wherever inline markup appears -- `Le <Addition>dit</Addition>
+   jour` becomes three lines in the vendor's output and one here.  Reading
    order is what the model was fine-tuned to produce (paper §3, "a single text
    string per page in correct reading order"), and splitting a line at its
    markup is not that order.  Text that is *not* inside a `Line` (a
    `PageNumber`, a `CatchWord`, a `Formula`'s mixed content) still becomes its
    own line, so nothing in a walked section is dropped.
-3. **Malformed XML is refused, never repaired.**  The vendor escapes stray `&`,
-   `<` and `>` outside its known tag list and parses with `recover=True`, so a
-   broken response yields a partial reading that no record distinguishes from a
-   whole one; and on an outright parse error it returns `""`, which is a silent
-   empty reading.  Here a broken response is `failed` with the parser's own
-   reason, and the bytes remain retained under their digest for a later
-   re-parse.  Nothing here repairs, reorders, trims, or defaults a malformed
-   answer.
+3. **Structural repair is refused; a lossless escape is not repair.**  The
+   vendor does two separable things before it reads, and only one of them is
+   refused here.  It escapes stray `&`, `<` and `>` outside its known tag list,
+   which loses nothing -- those characters come back out of the parser as the
+   characters the model wrote; and it parses with `recover=True`, so a broken
+   response yields a partial reading that no record distinguishes from a whole
+   one, returning `""` on an outright parse error, which is a silent empty
+   reading.  The `recover=True` half is refused.  The escape is kept, narrowed,
+   and counted: a response that offers the grammar and does not parse is
+   escaped once and re-parsed, only `<` and `&` that cannot open markup are
+   touched (an `&amp;` the model wrote correctly is left alone, where the
+   vendor would escape it a second time), and a response that parses on the
+   first attempt is never escaped at all.  Where the escape is what made a
+   response readable, the finding `stray-markup-escaped` counts the characters,
+   because `&c.` is a routine abbreviation in these registers and refusing a
+   whole page over one ampersand loses ink this project exists to capture
+   (GOALS 1).  Everything structural is still refused: nothing here reorders,
+   trims, closes, or defaults a malformed answer, and a response that still
+   will not parse is `failed` with the parser's own reason for what survived
+   the escape and the count of what it escaped, its bytes retained under their
+   digest for a later re-parse.
 4. **No `<lb/>`/`<br>` scrubbing pass.**  The vendor regexes those out of the
    extracted text.  This parser rewrites no characters of the response beyond
-   the whitespace collapsing named below, so a stray tag survives as the text
-   it is rather than being silently removed.
+   the whitespace collapsing named below and the counted escape in departure 3,
+   so a stray tag survives as the text it is rather than being silently
+   removed.
+5. **Each section is walked once, by its nearest owner.**  The scope itself is
+   the vendor's: `Header`, `Body` and `Footer` are matched among a `Page`'s
+   *descendants* (`page.xpath(".//Header")` and its two siblings,
+   `xml_utils.py:104`), never among its direct children, so a page that wraps
+   its sections in an element the grammar does not name still reads instead of
+   coming back empty under state `parsed`.  Two bounds the vendor does not
+   draw: a section inside a nested `Page` belongs to that page's own walk, and
+   a section inside another section is walked by the section enclosing it.  The
+   vendor's `.//` queries emit each of those twice, and a doubled reading is
+   ink the response never wrote (GOALS 2).  Text a `Page` carries outside every
+   section of its own is outside the vendor's transcription and stays outside
+   it -- but the page says so, through the finding
+   `page-text-outside-sections` and its page ordinal, so ink the response put
+   out of the walk's reach is visible rather than simply absent (GOVERNANCE 2).
 
-Kept from the vendor unchanged: the walk scope (`Page` descendants, then
-`Header`, `Body`, `Footer` in that fixed order regardless of their order in the
-document), the `"\\n"` join between a page's sections and the `"\\n\\n"` join
-between pages, `Metadata` being outside the transcription (its `Language` and
-`Script` are not ink, and they remain in the retained bytes), and
+Kept from the vendor unchanged: the walk scope (`Page` descendants, then their
+`Header`, `Body` and `Footer` descendants in that fixed order regardless of the
+order they appear in, bounded as departure 5 says), the `"\\n"` join between a
+page's sections and the `"\\n\\n"` join between pages, `Metadata` being outside
+the transcription (its `Language` and `Script` are not ink, and they remain in
+the retained bytes), and
 `trim_leading_prompt` (`run_churro_ocr.py`), reproduced exactly including its
 `lstrip("\\n ")`, which strips newlines and spaces and nothing else.
 
@@ -185,7 +216,30 @@ _WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
 # What this parser can conclude.  `not-requested` and `pending` are states of
 # the caller's capture record, never of a parse that ran.
 PARSE_STATES: Final = frozenset({"parsed", "failed", "unrecognized-shape"})
-DOCUMENT_FINDING_KINDS: Final = frozenset({"prompt-echo-trimmed", "retired-output-envelope"})
+DOCUMENT_FINDING_KINDS: Final = frozenset(
+    {
+        "prompt-echo-trimmed",
+        "retired-output-envelope",
+        "stray-markup-escaped",
+        "page-text-outside-sections",
+    }
+)
+# The findings that count characters rather than name a place.
+_COUNTED_FINDING_KINDS: Final = frozenset({"prompt-echo-trimmed", "stray-markup-escaped"})
+
+# A `&` that opens one of XML's own references is markup the response meant; any
+# other `&` is a character it wrote, and only those are escaped (departure 3).
+# A `<` outside a markup token can never be markup, so every one of those is.
+_XML_REFERENCE_BODY: Final = r"(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z_:][A-Za-z0-9_.:-]*);"
+_STRAY_MARKUP: Final = re.compile(f"<|&(?!{_XML_REFERENCE_BODY})")
+# The markup an escape pass steps over rather than into: a CDATA section, a
+# comment, a declaration or processing instruction, and a tag.  A tag's
+# attribute values may not carry `<` or `>` unescaped, so a token never spans
+# one.
+_MARKUP_TOKEN: Final = re.compile(
+    r"<!\[CDATA\[.*?\]\]>|<!--.*?-->|<[!?][^>]*>|</?[A-Za-z_:][^<>]*>",
+    re.DOTALL,
+)
 
 CHURRO_PROMPT_VARIANTS: Final = {
     "registry-v0.3.0": {
@@ -203,9 +257,9 @@ CHURRO_PROMPT_VARIANTS: Final = {
         "user": None,
         "system_sha256": "dd7408ca72cf94f724b0522806427533a746f08cfa0cfd047e0272ebc4c4b489",
         "repository": "github.com/stanford-oval/Churro",
-        "commit": "ed09bc7fd6",
+        "commit": "ed09bc7fd6475c333a25427f3d0b9227af46ce27",
         "path": "ocr/systems/finetuned_ocr.py",
-        "symbol": "FineTunedOCR.SYSTEM_MESSAGE",
+        "symbol": "SYSTEM_MESSAGE",
         "licence": "Apache-2.0",
     },
 }
@@ -418,11 +472,47 @@ def _walk(
     return lines
 
 
+def _page_sections(page: ET.Element) -> tuple[list[tuple[str, ET.Element]], bool]:
+    """One `Page`'s own sections in document order, and whether ink lies outside them.
+
+    The vendor asks each page for `.//Header`, `.//Body` and `.//Footer`
+    (`xml_utils.py:104`), so a section is a *descendant* of its page and an
+    intermediate element the grammar does not name cannot hide one.  Two bounds
+    the vendor does not draw are drawn here, and departure 5 says why: a section
+    under a nested `Page` is left to that page, and a section under another
+    section is left to the section enclosing it, so no element is walked twice.
+
+    The descent is iterative because a response may nest as deeply as it likes;
+    only the walk that follows declares a depth bound, and a recursive search
+    would have exhausted the stack before reaching it.
+    """
+    sections: list[tuple[str, ET.Element]] = []
+    outside = bool((page.text or "").strip(_ASCII_WHITESPACE))
+    stack = list(reversed(page))
+    while stack:
+        element = stack.pop()
+        name = _local(element.tag)
+        # A tail belongs to the flow the element sits in, never to the element,
+        # so it is outside a section even when the element is one.
+        if (element.tail or "").strip(_ASCII_WHITESPACE):
+            outside = True
+        if name == PAGE_ELEMENT:
+            continue
+        if name in PAGE_SECTIONS:
+            sections.append((name, element))
+            continue
+        if (element.text or "").strip(_ASCII_WHITESPACE):
+            outside = True
+        stack.extend(reversed(element))
+    return sections, outside
+
+
 def _flatten_document(root: ET.Element) -> dict[str, Any]:
     """Walk `Page` descendants and their three sections in the vendor's order."""
     builder = _TextBuilder()
     spans: list[dict[str, Any]] = []
     sections: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     pages = [
         element
         for element in root.iter()
@@ -431,8 +521,14 @@ def _flatten_document(root: ET.Element) -> dict[str, Any]:
     for page_index, page in enumerate(pages, start=1):
         if page_index > 1:
             builder.break_line(2)
+        owned, outside = _page_sections(page)
+        if outside:
+            # Text no section of this page encloses is outside the vendor's
+            # transcription; saying so is what keeps it from disappearing
+            # behind a successful state (GOVERNANCE 2, departure 5).
+            findings.append({"kind": "page-text-outside-sections", "page_ordinal": page_index})
         for section_name in PAGE_SECTIONS:
-            for section in [child for child in page if _local(child.tag) == section_name]:
+            for section in [element for name, element in owned if name == section_name]:
                 builder.break_line(1)
                 mark = builder.begin_mark()
                 lines = _walk(section, builder, spans, inside_line=False, depth=1)
@@ -456,7 +552,33 @@ def _flatten_document(root: ET.Element) -> dict[str, Any]:
         # in the XSD, so this is the order they were read in as well.
         "marked_spans": sorted(spans, key=lambda span: (span["start"], span["end"], span["kind"])),
         "pages": len(pages),
+        "findings": findings,
     }
+
+
+def _escape_stray_markup(body: str) -> tuple[str, int]:
+    """Escape the `<` and `&` that cannot be markup, and count them (departure 3).
+
+    Everything the grammar could have meant as markup -- a tag, a comment, a
+    CDATA section, a declaration -- is stepped over whole, and in the text
+    between those tokens only a `<` and a `&` that opens no XML reference are
+    escaped.  The escape is lossless: the parser hands the same characters back.
+    """
+    escaped = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal escaped
+        escaped += 1
+        return "&lt;" if match.group(0) == "<" else "&amp;"
+
+    parts: list[str] = []
+    last = 0
+    for token in _MARKUP_TOKEN.finditer(body):
+        parts.append(_STRAY_MARKUP.sub(_replace, body[last : token.start()]))
+        parts.append(token.group(0))
+        last = token.end()
+    parts.append(_STRAY_MARKUP.sub(_replace, body[last:]))
+    return "".join(parts), escaped
 
 
 def _base(state: str, response_bytes: int, findings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -549,14 +671,34 @@ def parse_churro_document(
     # permits whitespace before a root element but not before a declaration, so
     # without this a `"\n<?xml ...?><HistoricalDocument>"` answer would be a
     # parse failure over a leading newline that is not part of any reading.
+    offered = body.lstrip()
     try:
-        root = ET.fromstring(body.lstrip())
+        root = ET.fromstring(offered)
     except ET.ParseError as error:
-        if DOCUMENT_ROOT_ELEMENT in body:
-            return _base("failed", response_bytes, findings) | {
-                "reason": f"Churro response is not parseable XML: {error}"
+        if DOCUMENT_ROOT_ELEMENT not in body:
+            return _parsed("plain-text", body, response_bytes, findings)
+        failed = _base("failed", response_bytes, findings) | {
+            "reason": f"Churro response is not parseable XML: {error}"
+        }
+        # One escape pass over characters that cannot be markup, then one
+        # re-parse (departure 3).  Nothing structural is repaired: a response
+        # that still will not parse is `failed`, and its reason names the
+        # failure that survived the escape rather than the stray character the
+        # escape had already dealt with -- with the count, so the reason is
+        # never mistaken for what the bytes said as they arrived.
+        escaped, characters = _escape_stray_markup(offered)
+        if not characters:
+            return failed
+        try:
+            root = ET.fromstring(escaped)
+        except ET.ParseError as retry_error:
+            return failed | {
+                "reason": (
+                    f"Churro response is not parseable XML: {retry_error} "
+                    f"(after escaping {characters} stray markup characters)"
+                )
             }
-        return _parsed("plain-text", body, response_bytes, findings)
+        findings.append({"kind": "stray-markup-escaped", "characters": characters})
 
     name = _local(root.tag)
     if name == DOCUMENT_ROOT_ELEMENT:
@@ -564,6 +706,7 @@ def parse_churro_document(
             flattened = _flatten_document(root)
         except _DocumentTooDeep as error:
             return _base("failed", response_bytes, findings) | {"reason": str(error)}
+        findings.extend(flattened["findings"])
         return _parsed(
             "historical-document",
             flattened["text"],
@@ -631,9 +774,18 @@ def validate_churro_document_parse(value: Any) -> dict[str, Any]:
     for finding in findings:
         if not isinstance(finding, dict) or finding.get("kind") not in DOCUMENT_FINDING_KINDS:
             raise SchemaRefusal("a Churro document parse has an unknown finding kind")
-        if finding["kind"] == "prompt-echo-trimmed":
+        kind = finding["kind"]
+        if kind in _COUNTED_FINDING_KINDS:
             if set(finding) != {"kind", "characters"} or not _positive_int(finding["characters"]):
-                raise SchemaRefusal("a Churro prompt-echo finding is malformed")
+                raise SchemaRefusal(f"a Churro {kind} finding is malformed")
+        elif kind == "page-text-outside-sections":
+            ordinal = finding.get("page_ordinal")
+            if (
+                set(finding) != {"kind", "page_ordinal"}
+                or not _positive_int(ordinal)
+                or ordinal < 1
+            ):
+                raise SchemaRefusal(f"a Churro {kind} finding is malformed")
         elif set(finding) != {"kind"}:
             raise SchemaRefusal("a Churro retired-envelope finding is malformed")
     if state != "parsed":
