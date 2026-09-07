@@ -280,16 +280,14 @@ def test_the_record_is_closed_and_names_every_image_it_counted():
 
 
 def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context():
-    """The measured finding, as a record: 7,134 prompt against 8,192, 1,058 left
-    for a 1,631-token dense-page answer.  Over by 573.
+    """The measured finding, as a record: 6,720 prompt against 8,192, 1,472 left
+    for a 1,631-token dense-page answer.  Over by 159.
 
-    Both halves are the layout instruction's, and it made the finding worse
-    rather than closing it: the prompt this chair is now sent is 441 tokens
-    against the trained framing's 281, and the JSON object it asks for costs
-    1,631 tokens on a dense page against the `<output>` envelope's 1,433.  At
-    the numbers this row used to state the request is refused by a wider
-    margin, which is the same finding measured over the request the seam
-    actually builds.
+    The image is what dominates it, and the vendor's own framing narrows the
+    margin without closing it: the prompt this chair is sent is one system
+    sentence at 27 tokens, where this repository's retired layout instruction
+    cost 441.  The finding survives that by 159 tokens, because a 300-dpi A4
+    page costs 6,693 image tokens on its own.
     """
 
     record = request_fits(
@@ -298,9 +296,9 @@ def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context(
         _live_framing_tokens("attestator_3"),
         dense_page_answer_budget("attestator_3"),
     )
-    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 7134
-    assert record["need"] == 8765
-    assert record["headroom"] == -573
+    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 6720
+    assert record["need"] == 8351
+    assert record["headroom"] == -159
     assert record["fits"] is False
 
 
@@ -312,7 +310,7 @@ def test_the_same_request_fits_once_the_row_states_a_larger_context():
         dense_page_answer_budget("attestator_3"),
     )
     assert record["fits"] is True
-    assert record["headroom"] == 16384 - 8765
+    assert record["headroom"] == 16384 - 8351
     assert record["reason"] is None
 
 

@@ -326,22 +326,23 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
 def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
     skeleton, chairs, adapters
 ):
-    """Unit 12 put the offline posture's declared rows through the page-edge split.
+    """A declared row that overshoots is moved out of the act view, not refused.
 
-    Before Unit 12 the split ran only for `chandra.v1`, and Churro's declared
-    `[[native_observation]]` row reached the act view untouched. Churro's adapter
-    now reports geometry (`takes_page_size=True`), so the row goes through
-    `split_page_edge_overshoots` like any other reported box -- and a row that
-    overshot would be moved out of the act view's `observed` list instead of
-    refused, which changes the published tree rather than failing. The offline
-    posture is therefore *not* untouched by that generalization; what is
-    unchanged is the outcome, because the committed row fits.
+    The split runs for a chair whose adapter reports geometry normalized against
+    the whole page (`takes_page_size`), which today is Chandra alone: Churro's
+    `HistoricalDocument` grammar carries no coordinate vocabulary, so its
+    adapter declares neither a quantization rule nor a page size, and its
+    declared `[[native_observation]]` row reaches the act view untouched -- held
+    only by the sibling containment test above, exactly as it was before Unit 12
+    asked that chair for rectangles.
 
-    So the fit is pinned rather than assumed. The sibling containment test
-    permits any row inside the page; this one pins the exact edge arithmetic of
-    the rows that now pass through the split, with the one-pixel counterfactual
-    beside it, so that widening the committed row by a pixel fails here by name
-    instead of moving `HAPPY_RUN_TREE_DIGEST` in silence.
+    For the rows that do pass through the split, the fit is pinned rather than
+    assumed: an overshooting row would be moved out of the act view's `observed`
+    list instead of refused, which changes the published tree rather than
+    failing. The sibling test permits any row inside the page; this one pins the
+    exact edge arithmetic with the one-pixel counterfactual beside it, so that
+    widening a committed row by a pixel fails here by name instead of moving
+    `HAPPY_RUN_TREE_DIGEST` in silence.
     """
     pages = declared_pages(skeleton)
     clearances = []
@@ -387,15 +388,16 @@ def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
             assert kept == [], axis
             assert [item["bounds"] for item in rejected] == [over[0]["bounds"]], axis
     # Every such row's exact distance to its page's far edges, written out. A
-    # one-pixel edit to any of them -- including the one that made Churro's row
-    # overshoot -- fails here, naming the row, rather than only as a moved
-    # whole-tree digest nobody can attribute. Churro's happy-scenario row is the
-    # flush one: `spare_x == 0`, so it is exactly one pixel from being split.
+    # one-pixel edit to any of them fails here, naming the row, rather than only
+    # as a moved whole-tree digest nobody can attribute. Churro's own default
+    # row is deliberately absent from this list: its adapter reports no geometry
+    # and takes no page size, so nothing splits it, and the sibling containment
+    # test is what holds it inside its page.
     assert sorted(clearances, key=repr) == [
         ("coverage-recovery", "attestator_1", 1, 190, 20),
         ("review", "attestator_1", 1, 190, 20),
-        (None, "attestator_3", 1, 0, 22),
     ]
+    assert clearances, "no declared row reached the split; this guard would pass vacuously"
 
 
 def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(

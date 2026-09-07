@@ -475,8 +475,18 @@ CHURRO_PAGE_RESPONSES = tuple(
         "scenario": "churro-native",
         "page_ordinal": 2,
         "chair": "attestator_3",
-        # The missing closing tag is retained fixture evidence for parse failure.
-        "raw_xml": f"<output>{_churro_native_page_text(2, 'attestator_3')}",
+        # Retained fixture evidence for parse failure, and it has to be cut in
+        # the *grammar* to be one. Under the vendor's own reader
+        # (`common/churro_document.py`) a body that offers no grammar at all is
+        # not malformed: it is the plain reading-order text the paper-era
+        # harness itself expected, and throwing a page of ink away over an
+        # unclosed tag is the loss GOALS 1 refuses. So a declared cut says
+        # `HistoricalDocument` and stops mid-element. The `<output>` rows around
+        # it stay as they are -- retained history, which the grammar still reads
+        # and names on the capture -- until U16 re-declares them.
+        "raw_xml": (
+            f"<HistoricalDocument><Page><Body><Line>{_churro_native_page_text(2, 'attestator_3')}"
+        ),
         "transport_stop_reason": "length",
     },
     {

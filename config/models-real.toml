@@ -26,13 +26,16 @@ armarium = "unproven-real-armarium"
 # so an A/B between the two is a line here rather than an edit to code on a pod.
 # The resolved name is written onto every Testimonium the chair produces.
 #
-# `churro-layout-prompt.v1` is Unit 12's instruction and is the value that was
-# already in force; **this declaration does not change it.** Whether the trained
-# framing (`churro-trained-prompt.v1`, the carried Table 6 prompt the model was
-# published with) should become the default is Tyrel's decision, and the
-# correction plan puts it to him as Q4 with a Stage 2 measurement behind it.
+# Both framings are now a vendor artifact's own bytes, and the two names this
+# file carried before them are gone with the prompts they named. `registry-v0.3.0`
+# is what `providers/specs.py::resolve_ocr_profile("stanford-oval/churro-3B")`
+# returns at tag `v0.3.0`; `paper-harness-ed09bc7` is the `SYSTEM_MESSAGE` the
+# paper's own benchmark harness sent, spelling errors included. Which of the two
+# the fine-tuning itself saw is stated nowhere in the paper, the model card or
+# the code, so the registry's current answer is what a run sends and the
+# comparison is Stage 2's A4b arm.
 [witness_framings]
-attestator_3 = "churro-layout-prompt.v1"
+attestator_3 = "registry-v0.3.0"
 
 [chairs.designator_structure]
 state = "configured"

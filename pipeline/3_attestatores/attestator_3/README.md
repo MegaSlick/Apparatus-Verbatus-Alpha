@@ -6,50 +6,62 @@ declared in `config/models.toml`.
 The chair path stays stable when its assigned model changes. The configuration, not
 this directory, encodes the assignment.
 
-## What the current occupant answers, and why it is asked twice over
+## What the current occupant answers, and in whose words it is asked
 
 Its adapter is `churro.v1` (`pipeline/3_attestatores/churro.py`), page-scoped: one
 call per page, one page Testimonium per (page, chair).
 
-The occupant's model card documents no output format at all — no layout, no
-bounding boxes, no reading order, no schema, no example body — and the trained
-prompt this repository carries verbatim asks for `<output>extracted text
-here</output>` and for reading order and layout *of the text*, never for
-coordinates. So this chair reported no geometry, its only observation was a
-`bounds_source="presented"` echo that routing and coverage exclude, and it never
-attached to an act on a live path.
+The chair runs the vendor's own system, under the ruling of 2026-09-06: the
+vendor's preprocessing, prompt bytes, message shape, generation values and
+output grammar are adopted verbatim and pinned by digest, and the vendor's
+harness is not.
 
-Unit 12 changed the question rather than the arithmetic. The served chair is
-asked, in its own two-message framing, for the closed shape
-`common/churro_response.py` declares (`feeding.churro_layout_prompt`), and **two
-answers are legal**:
+* **Asked** with one of two vendor-attested system strings and an image-only
+  user turn — the registry's answer for `stanford-oval/churro-3B` at tag
+  `v0.3.0` by default, the paper-era benchmark harness's own `SYSTEM_MESSAGE`
+  as its arm. Both profiles set the user prompt to `None`, so the user turn
+  carries the image alone. The bytes and their digests are in
+  `common/churro_document.py`; which one a run sends is
+  `config/models-real.toml`'s `[witness_framings]`, and the resolved name is
+  written onto every Testimonium the chair produces.
+* **Shown** the sealed page prepared the way `prepare_ocr_image` prepares it:
+  fit inside the vendor's 2,500-pixel square with LANCZOS, then converted to
+  RGB. Both steps are recorded on the presentation as
+  `churro-prepare-ocr-image.v1` with its `colour_mode`, so the exact image the
+  chair saw re-derives from the Exemplar.
+* **Read** through the vendor's `HistoricalDocument` grammar. Three answers
+  parse: the grammar itself, the plain reading-order text the paper-era harness
+  expected, and a bare `<output>` envelope, kept so retained history still reads
+  and carrying a finding that says a shape nobody asked for arrived. A
+  well-formed XML body rooted at anything else reaches the capture as
+  `unrecognized-shape` naming which root it was; a body that offers the grammar
+  and will not parse is `failed`, its bytes retained under their digest.
 
-* the wire contract — block text with normalized `box_1000` geometry, converted
-  to sealed-page pixels by the conversion the Designator and Chandra already
-  share. The chair then attaches to an act by **its own** boxes overlapping that
-  act's own sealed proposal, basis `geometric-overlap`. Nothing selects among
-  witnesses: two chairs may independently overlap one rectangle and both say so;
-* the trained `<output>` envelope, unchanged. A model that ignores the new
-  clause still reads, retains and aligns, and lands exactly where this chair
-  landed before — read, unattached, and the record says so.
+**This chair reports no geometry, and that is the vendor's design rather than a
+gap.** `HistoricalDocument` has `Page`, `Header`, `Body`, `Footer` and `Line`,
+and no coordinate anywhere in the guide or the XSD; Churro-DS, the fine-tuning
+target, is one continuous text string per page in reading order. So the only
+observation is a `bounds_source="presented"` echo, which routing and coverage
+exclude, and the adapter declares no float-to-pixel rule at all.
 
-Anything else is refused **by name**, with its bytes already retained: a JSON
-body in an undeclared shape reaches the capture as `unrecognized-shape` naming
-the shape, and a body that is neither JSON nor a parseable envelope as `failed`
-naming the refusal. The contract is this repository's question, not a vendor
-measurement, so the first pod reading either validates it or arrives as a named
-surprise (GOVERNANCE 10).
+Unit 12 asked this chair for block rectangles instead, in a modified carry of a
+prompt the model was never trained on, so that a geometry-blind page witness
+would have boxes to attach acts by. That question, its wire contract
+(`common/churro_response.py`) and its coordinate channel are retired: the
+attestation is the vendor's again, and attachment is solved where it belongs —
+the Perlector admits the existing `anchor-line` basis for a page witness whose
+alignment for an act is `aligned` with a located span.
 
 Two things that are not this chair's own:
 
 * **its comparability.** Counting toward the witness floor needs `attached` and
   an aligned status, and alignment is computed against the anchor derived from
-  the Chandra chair's response. The geometry here is this chair's; the locating
-  of its text is not.
-* **its prompt bytes.** Clauses 1–5 and the closing reading-order paragraph are
-  Apache-2.0 carried bytes from the Churro release; only the two output-format
-  instructions are this repository's wording, quoted beside their replacements
-  in `feeding.churro_layout_prompt`.
+  the Chandra chair's response. The locating of this chair's text is not this
+  chair's doing.
+* **its prompt bytes.** Both carried strings are Apache-2.0 from
+  `github.com/stanford-oval/Churro`, cited at the exact commit each was taken
+  from, digested where they are carried, and re-checked against the vendor by
+  `common/test_vendor_parity.py`. Not one word of either is this repository's.
 
 `pipeline/3_attestatores/HANDOFF.md` carries the contract; this file only says
 what sits in the chair.

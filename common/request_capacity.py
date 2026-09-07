@@ -710,25 +710,44 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="e371095d4ffe585f31f4974462931ddbac61ff64",
             ),
         ),
-        # Both of Churro's declared framings, measured together on 2026-09-06 by
-        # the harness of `TOKEN_COST_REPORT.md` section 3, at the pinned
-        # revision: `churro-layout-prompt.v1` (Unit 12's live instruction) at
-        # 441 over c5a8375b..., and `churro-trained-prompt.v1` (the carried
-        # Table 6 prompt, asking for the `<output>` envelope) at 281 over
-        # b6289913....  Both numbers are reproductions rather than new claims:
-        # 441 is Unit 12's own sealed value unchanged, and 281 is the value
-        # this table carried before Unit 12, re-derived here so the trained
-        # framing is sendable again rather than merely nameable.
+        # Re-measured 2026-09-07 for the two vendor-attested framings this
+        # chair can now be asked in (`common/churro_document.py`), which
+        # replace the two this repository wrote for it. Both are system-only
+        # single-sentence instructions where the retired pair were a two-message
+        # transcription brief, so the cost collapses by an order of magnitude:
+        # **441 -> 27** for the framing a run sends by default
+        # (`registry-v0.3.0`, `CHURRO_3B_XML_TEMPLATE.system_message` at tag
+        # `v0.3.0`) and **281 -> 29** for its arm (`paper-harness-ed09bc7`,
+        # `finetuned_ocr.py::SYSTEM_MESSAGE`, whose two spelling errors cost the
+        # two extra tokens).
+        #
+        # Measured by `TOKEN_COST_REPORT.md` section 3's own method and its own
+        # arithmetic: the repository's message list -- a system turn of one
+        # `{type: text}` part and an image-only user turn, which is what
+        # `live_witness._page_messages` builds for this shape -- rendered
+        # through the model's own `chat_template.json` with the real tokenizer
+        # at the revision below, `transformers 5.16.1`, the same version that
+        # report used, with the image placeholder expanded and the image tokens
+        # subtracted back out. The control is what makes it a measurement of the
+        # same thing rather than a new number in the same units: the identical
+        # harness re-renders the two retired framings and reproduces **441 and
+        # 281 exactly**, over the exact digests this table sealed for them.
+        # Message order does not enter it -- the retired two-message framing
+        # renders to 281 image-first and text-first alike.
+        #
+        # The retired entries are not kept beside these. A framing no code can
+        # send is a cost for text nobody sends, which is the one thing this
+        # table refuses to carry.
         "attestator_3": (
             SealedPromptTokens(
-                tokens=441,
-                prompt_digest="c5a8375b77b15fcd09ccd9ed6212cb650a87a3b2268019082916a1c7e32f209a",
+                tokens=27,
+                prompt_digest="13592f5580805cf12d2aa14c963b872e3a4e6a5834e5d2afd7b86effd42a8b4d",
                 repo="stanford-oval/churro-3B",
                 revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
             ),
             SealedPromptTokens(
-                tokens=281,
-                prompt_digest="b6289913d017e07fe66a0124ccf64c391b73e11821c4c83d0d732dbe2112336d",
+                tokens=29,
+                prompt_digest="dd7408ca72cf94f724b0522806427533a746f08cfa0cfd047e0272ebc4c4b489",
                 repo="stanford-oval/churro-3B",
                 revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
             ),
@@ -921,17 +940,36 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # act's reading rather than an ordinary act's 216.  Both are the demanding case,
 # because a row that cannot hold the demanding case cannot serve a dense page.
 #
-# **"Its own declared response shape" is what makes this expire with a prompt.**
-# Churro's 1,433 was an `<output>` envelope's answer; the live chair is now
-# asked for the closed JSON object `common/churro_response.py` declares, whose
-# per-block `box_1000` and key names are real tokens.  Re-measured over the same
-# 800 words in the same six blocks the other page chairs' numbers were taken
-# over -- so the five numbers stay comparable with each other -- it is 1,631.
-# A denser answer costs more, and that is recorded rather than sealed: the same
-# 800 words in 12 blocks measure 1,818 and in 24 blocks 2,204, and all three
-# fit every shipped Churro row.  Twenty-four blocks is not the convention the
-# other four chairs were measured under, and quietly moving one chair to a
-# stricter one would make this table's rows mean different things.
+# **"Its own declared response shape" is what makes this expire with a prompt,
+# and two of these five rows are now expired.**  Both page chairs were moved to
+# their vendor's own output grammar by the vendor systems units, and neither
+# number has been re-taken over section 8's own 800 words, which are not in this
+# tree: `attestator_1`'s 1,520 was a Chandra page JSON and its grammar is now
+# HTML (U9), and `attestator_3`'s 1,631 was the closed JSON object this
+# repository invented for Churro, whose coordinate channel is retired (U10).
+# U14 re-runs the whole table with that report's harness and its own body, which
+# is what keeps the five rows comparable with each other; re-pinning one chair
+# here over a body the other four were not measured on would make the rows mean
+# different things, which is the failure the paragraph below already names.
+#
+# **What Churro's row costs today is measured, and it is an under-reservation.**
+# Over one identical 800-word register body, tokenized by churro-3B's own
+# tokenizer at the pinned revision (2026-09-07, the same harness as the prompt
+# constants above), the three envelopes cost: bare words 1,224; the retired
+# `<output>` envelope 1,231; the retired JSON contract in six blocks 1,436; and
+# the vendor's `HistoricalDocument` grammar -- one `Page`, one `Body`, 67
+# `Line` elements -- 1,644.  So the grammar costs about **208 tokens more** than
+# the shape 1,631 was measured over, and the sealed budget is short by roughly
+# that much.  It changes no admission at any shipped row (a whole A4 page costs
+# this chair 2,280 image tokens and 27 prompt tokens, so even 1,839 clears
+# `max_model_len` at every tier), and it is recorded here rather than corrected
+# by arithmetic, because a number carried forward by addition would wear a
+# measurement's authority without being one (GOVERNANCE 10).
+#
+# A denser answer costs more, and that too is recorded rather than sealed: the
+# retired JSON contract's same 800 words in 12 blocks measured 1,818 and in 24
+# blocks 2,204.  Twenty-four blocks is not the convention the other four chairs
+# were measured under.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 1575,

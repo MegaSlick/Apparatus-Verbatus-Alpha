@@ -53,6 +53,7 @@ from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
     REPORTED_BOUNDS_SOURCES,
+    native_parse_refusal,
     partition_disagreement,
     reported_geometry_overlaps,
     split_page_edge_overshoots,
@@ -473,10 +474,12 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
     chair's offline record keeps the declared-observation route it has always
     taken, so no committed byte moves.
 
-    Generalized from a `witness_adapter == "chandra.v1"` comparison by Unit 12.
     The question the branch actually asks is "are there response bytes here to
-    derive geometry from", and answering it with one adapter's name is what left
-    Churro out of a partition it now belongs in.
+    derive geometry from", and it is answered from the registry's
+    `takes_page_size` rather than from an adapter's name. Chandra answers yes;
+    Churro answers no, because `HistoricalDocument` publishes no coordinates at
+    all, and its page record carries the presentation echo the no-geometry route
+    owns for every adapter.
     """
     if not isinstance(resolved, ChairIdentity):
         return False
@@ -498,9 +501,8 @@ def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     a `presented` echo by name: an echo restates the image the chair was shown,
     so turning one into a page-edge finding would report as witness geometry
     something no witness reported. Chandra's `observe` returns an empty list for
-    a body with no layout and so never handed one over; Churro's returns the
-    honest echo instead, and generalizing the partition branch off the adapter's
-    name made that difference reachable rather than created it.
+    a body whose blocks report no usable box, so the only adapter that reaches
+    this seam hands over reported boxes or nothing.
 
     Three cases, and the third is the point. All reported: the list, unchanged.
     None reported: empty, which is what the caller already detects as "this
@@ -2443,19 +2445,28 @@ def captured_churro_page_attempt(
     # relabel-proof seam accepts no adapter argument at all.
     capture = adapter.retain(
         context.tree,
-        # The fixture's frozen declaration, not `adapter.prompt()` -- the move
-        # `chandra.FIXTURE_PROMPT` already makes at this stage's other page
-        # witness. This view is sealed into the fixture's pinned bytes, the
-        # fixture never asks a chair anything, and the live instruction
-        # (`feeding.churro_layout_prompt`) must be free to change without moving
-        # them. `parser="xml"` for the same reason and one more: it reaches
-        # `validate_churro_xml` alone, so a fixture body could not take the JSON
-        # branch even if someone wrote one.
-        view={"prompt": feeding.churro_prompt(), "generation": feeding.churro_generation()},
+        # The adapter's own prompt under its default framing, not a frozen
+        # declaration of this stage's own. Chandra keeps a `FIXTURE_PROMPT`
+        # because its fixture rows are a JSON placeholder no chair was ever
+        # asked for; Churro's fixture rows are answers in shapes the vendor
+        # grammar actually reads, so the honest declaration beside them is the
+        # question the vendor's registry asks. `framing` is deliberately not
+        # recorded: the fixture asks nobody anything, so there is no run whose
+        # question a name would identify.
+        view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
         raw_response=raw,
         transport_stop_reason=stop,
+        # One grammar, one parser name, both postures
+        # (`common/native_witness.py::CHURRO_PARSERS`).
         parser="xml",
     )
+    # The adapter's own declared expressiveness, read off its registry entry,
+    # exactly as the live boundary reads it (`_declared_format_capabilities`).
+    # It is the blanket default's own two values today, so no committed byte
+    # moves; what it buys is that Churro's grammar and this posture cannot
+    # come to disagree about what that grammar can carry the day one of them
+    # is flipped (U12).
+    capabilities = _declared_format_capabilities(adapter)
     parsed = capture["parse"]
     # Post-hoc findings cannot decide whether the transport cut off the response.
     cut_off = stop in _CHURRO_CUTOFF_STOP_REASONS
@@ -2468,7 +2479,7 @@ def captured_churro_page_attempt(
                 "genuinely-empty" if text == "" else "read",
                 text,
                 None,
-                DEFAULT_FORMAT_CAPABILITIES,
+                capabilities,
                 content_health(text, completed=complete),
                 None,
             ),
@@ -2481,7 +2492,7 @@ def captured_churro_page_attempt(
                 "failed",
                 "",
                 None,
-                DEFAULT_FORMAT_CAPABILITIES,
+                capabilities,
                 content_health("", completed=False),
                 (
                     f"Churro response parsed empty after the provider stopped it at its bound "
@@ -2498,17 +2509,24 @@ def captured_churro_page_attempt(
         if cut_off
         else ""
     )
+    # `failed` names its refusal in `reason`; `unrecognized-shape` names the
+    # shape it could not place in `outcome`, and this posture can now reach the
+    # second: the vendor grammar reads any well-formed XML and refuses only the
+    # root elements it knows nothing about. One helper, shared with the live
+    # boundary and with the page validator that re-derives both of these
+    # sentences and compares them.
+    parse_refusal = native_parse_refusal(parsed)
     basis = (
-        f"response cut off by the provider ({stop!r}); {parsed['reason']}"
+        f"response cut off by the provider ({stop!r}); {parse_refusal}"
         if cut_off
-        else parsed["reason"]
+        else parse_refusal
     )
     return (
         Attempt(
             "failed",
             None,
             None,
-            DEFAULT_FORMAT_CAPABILITIES,
+            capabilities,
             {
                 "native_type": "unrecordable",
                 "encoding": "invalid-or-unrecordable",
@@ -2519,7 +2537,7 @@ def captured_churro_page_attempt(
                 "characters": None,
                 "truncation_basis": basis,
             },
-            f"Churro response retained but not usable: {cut_note}{parsed['reason']}",
+            f"Churro response retained but not usable: {cut_note}{parse_refusal}",
         ),
         capture,
     )
@@ -3026,8 +3044,8 @@ def publish_attempt(
         observed = fixture_observed
     elif takes_page_size:
         # A page witness's act view restates page-level geometry, so the
-        # wire contract's normalized boxes convert against the sealed page's
-        # size, never this one crop's (`chandra.observe`, `churro.observe`).
+        # grammar's normalized boxes convert against the sealed page's own
+        # size, never this one crop's (`chandra.observe`).
         observed = adapter.observe(
             presented,
             attempt.observation_payload
@@ -3047,10 +3065,7 @@ def publish_attempt(
     # Reported geometry only, through the same helper the page partition uses, so
     # the two seams cannot come to disagree about what a mixed response means:
     # all reported passes through, none reported is empty, a mix is refused by
-    # name rather than half-kept. Chandra never reached this at all -- its
-    # `observe` returns an empty list for a body with no layout -- while Churro's
-    # returns the honest `presented` echo, so generalizing this branch to the
-    # adapter made the case visible. An echo needs no split: it restates the
+    # name rather than half-kept. An echo needs no split: it restates the
     # presentation, which is inside its own page by construction, and routing and
     # coverage exclude it anyway.
     if presented and takes_page_size and (reported := _partition_geometry(observed)):
@@ -4602,12 +4617,11 @@ def _page_capture_from_record(
         # `_derives_partition_from_response` reads it, and never a comparison
         # against one adapter's name. `captured_page_attempt` carries the
         # response bytes forward as `observation_payload` for every page-scoped
-        # adapter; a name comparison here answered that question for one of them
-        # and silently answered `False` for Churro, so a resumed live pass
-        # rebuilt Churro's page from the presented echo instead of its own boxes
-        # and the republished geometry disagreed with the sealed record
-        # (GOVERNANCE 4). An adapter with no runnable binding is refused loudly
-        # by `resolve_runnable_adapter` rather than answered `False` here.
+        # adapter, and this flag says which of them has geometry in those bytes
+        # to rebuild from -- so a resume republishes exactly what the interrupted
+        # pass sealed rather than something the adapter's name happened to
+        # decide (GOVERNANCE 4). An adapter with no runnable binding is refused
+        # loudly by `resolve_runnable_adapter` rather than answered `False` here.
         and witness_adapters.resolve_runnable_adapter(capture["adapter"]).takes_page_size
         and capture["parse"]["state"] == "parsed"
         and record["outcome"] in WITNESS_READING_OUTCOMES

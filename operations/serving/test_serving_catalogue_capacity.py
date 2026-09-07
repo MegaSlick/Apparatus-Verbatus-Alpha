@@ -129,10 +129,10 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     1,058 tokens for a 1,631-token answer.  A row that provably cannot answer
     is not unproven; it is wrong, and the catalogue is not allowed to ship one.
 
-    Churro is weighed here as the live chair is really asked -- the 441-token
-    layout instruction and the JSON object it asks back -- not as the trained
-    `<output>` carry the fixture posture declares.  Both of its numbers rose
-    with that instruction and all three of its rows still hold the request.
+    Churro is weighed here as the live chair is really asked -- the vendor's
+    own registry-resolved system string, 27 tokens, and the dense-page answer it
+    reserves.  All three of its rows hold the request with the margin the
+    catalogue's own comment states.
     """
 
     _label, images, answer_budget = case

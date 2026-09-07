@@ -2471,13 +2471,14 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     )
 
     assert attestatores.main() == 0
-    # Six act views: two acts times three chairs. Both PAGE-SCOPED chairs need
-    # the sealed size -- `attestator_1` (Chandra) and, since Unit 12,
-    # `attestator_3` (Churro), whose adapter now reports geometry and whose
-    # declared fixture observations therefore get the same page-edge check
-    # Chandra's have always had. The act-scoped chair needs it for neither
-    # derivation. What this test protects is unchanged and is the reason it
-    # counts rather than asserts a ceiling: ONE read per view that needs it,
-    # never one per derivation, and never zero because no view reached the
-    # derivation at all.
-    assert sorted(reads_per_view) == [0, 0, 1, 1, 1, 1]
+    # Six act views: two acts times three chairs. One chair needs the sealed
+    # size -- `attestator_1` (Chandra), whose grammar reports boxes normalized
+    # against the whole page, so its declared fixture observations get the
+    # page-edge check. Neither of the other two does: DAI is act-scoped, and
+    # Churro's `HistoricalDocument` carries no coordinate anywhere, so its
+    # `observe` takes no page size and its registry entry says so
+    # (`takes_page_size`). What this test protects is unchanged and is the
+    # reason it counts rather than asserts a ceiling: ONE read per view that
+    # needs it, never one per derivation, and never zero because no view
+    # reached the derivation at all.
+    assert sorted(reads_per_view) == [0, 0, 0, 0, 1, 1]

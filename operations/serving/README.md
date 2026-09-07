@@ -627,16 +627,18 @@ chairs at all three tiers — so the selector under test is the sealed one, not 
 test-only switch.
 
 Two facts that suite establishes and no single-stage suite can. First, a live
-run reaches a **sealed terminal export**, and since Unit 12 that export is
-**delivered**: both acts are read, every reading names the exact bytes its
-engine sent, and three witnesses of a floor of three count. Chandra reads under
-its own response contract; DAI reads its act crops; Churro, which had no layout
-channel because nobody had asked it for one, is now asked for the closed shape
-`common/churro_response.py` declares and attaches by its own block geometry
-(`pipeline/3_attestatores/HANDOFF.md`). That is one scripted run over a fixture
-whose page text is exactly its two acts, and it is not a proven pipeline
-(GOVERNANCE 10): a real register page carries material no proposal covers, and
-testimony content coverage will hold it. Second, two independent drivers reach
+run reaches a **sealed terminal export**: both acts are read and every reading
+names the exact bytes its engine sent. That export is **held for review** on
+this tree, and the hold is the rules working rather than a defect. Chandra
+reads under its vendor's own layout grammar and attaches by its own block
+geometry; DAI reads its act crops; Churro reads its vendor's
+`HistoricalDocument` grammar, which carries no coordinate vocabulary anywhere,
+so it reports no geometry, does not attach, and two of a floor of three count.
+Attaching an aligned page witness that reports no geometry is the Perlector's
+`anchor-line` basis, which lands with the Perlector attachment unit. Even once
+it does, one scripted run over a fixture whose page text is exactly its two
+acts is not a proven pipeline (GOVERNANCE 10): a real register page carries
+material no proposal covers, and testimony content coverage will hold it. Second, two independent drivers reach
 the same
 fixture tree byte for byte: the orchestrator's own subprocess chain on one
 side, and — on the other — the identical driver this module uses for the live

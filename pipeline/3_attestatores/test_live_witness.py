@@ -265,30 +265,31 @@ def _churro_page_request(profile: Any):
     image_bytes = _png(50, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
-    # The live instruction, not the trained carry: `churro.prompt` is what the
-    # registry binds for a served chair, and the capacity check weighs the
-    # prompt the request will really carry (`feeding.churro_layout_prompt`).
-    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_layout_prompt)
+    # The adapter's own prompt: what the registry binds for a served chair is
+    # the vendor's registry-resolved system string, and the capacity check
+    # weighs the prompt the request will really carry.
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=churro.prompt)
     request = live_witness.page_chair_request(
         context, adapter, "churro.v1", presentation, profile=profile
     )
     return request, digest_bytes(image_bytes)
 
 
-def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_token_bound():
+def test_page_chair_request_builds_churros_system_only_framing_and_declares_the_token_bound():
     row = _sealed_churro_rows()[0]
     request, image_sha256 = _churro_page_request(row)
 
     assert request.image_sha256s == (image_sha256,)
     system, user = request.messages
     # Churro's own `HFChatTemplate.build_conversation` sends the system turn
-    # as a one-element list of text parts, not a bare string.
+    # as a one-element list of text parts, not a bare string, and the profile
+    # sets `user_prompt=None`, so the user turn carries the image alone.
     assert system == {
         "role": "system",
-        "content": [{"type": "text", "text": feeding.churro_layout_prompt()["system"]}],
+        "content": [{"type": "text", "text": churro.prompt()["system"]}],
     }
+    assert user["content"] == [user["content"][0]]
     assert user["content"][0]["type"] == "image_url"
-    assert user["content"][1]["text"] == feeding.churro_layout_prompt()["user"]
     # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
     # The sealed row is shorter than the declared bound, so the row is what
@@ -508,7 +509,7 @@ def _page_request_of_size(width: int, height: int, row):
     image_bytes = _png(width, height)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
-    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.churro_layout_prompt)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=churro.prompt)
     return live_witness.page_chair_request(context, adapter, "churro.v1", presentation, profile=row)
 
 
@@ -519,9 +520,10 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
     assert capacity["fits"] is True
     assert capacity["chair"] == "attestator_3"
     # Churro's own measured prompt cost and dense-page answer budget, not a
-    # guess -- both re-measured for the layout instruction the live chair is
-    # sent and the JSON object it asks back.
-    assert capacity["prompt_tokens"] == 441
+    # guess. The prompt cost is re-measured for the vendor's registry-resolved
+    # system string, which is a single sentence where the retired layout
+    # instruction was a two-message brief.
+    assert capacity["prompt_tokens"] == 27
     assert capacity["answer_budget"] == 1631
 
 
@@ -529,8 +531,8 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
     """The counterfactual this unit exists for, at the context the tree shipped.
 
     A 300-dpi A4 page is 2,480x3,508.  Against the 24 GB Churro row's
-    `max_pixels` it costs 2,280 image tokens; with the measured 441-token
-    layout prompt and a 1,631-token dense-page answer that is 4,352 -- against
+    `max_pixels` it costs 2,280 image tokens; with the measured 27-token vendor
+    system string and a 1,631-token dense-page answer that is 3,938 -- against
     the `max_model_len = 2048` this catalogue carried until this branch.  The
     request went to the endpoint and the engine answered HTTP 400; now nothing
     is built.  The shipped row is 8,192 and admits the same page, which is what
@@ -544,8 +546,8 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
         _page_request_of_size(2480, 3508, row)
     record = error.value.capacity
     assert record["image_prompt_tokens"] == 2280
-    assert record["need"] == 4352
-    assert record["headroom"] == 2048 - 4352
+    assert record["need"] == 3938
+    assert record["headroom"] == 2048 - 3938
     assert record["fits"] is False
     assert "downscaled" in str(error.value)
     # And the row the catalogue actually ships admits it.
@@ -626,13 +628,14 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
     # Churro carries a constant per declared framing, because a run can ask it
     # in either and a framing whose cost nobody measured could not be sent at
     # all.  Both are sealed to their own text, so an edit to one does not
-    # silently borrow the other's number.
-    layout = feeding.churro_layout_prompt()
-    assert sealed_prompt_tokens("attestator_3", layout["system"], layout["user"]) == 441
-    trained = feeding.churro_prompt()
-    assert sealed_prompt_tokens("attestator_3", trained["system"], trained["user"]) == 281
+    # silently borrow the other's number.  Both are the vendor's own bytes now:
+    # a single system sentence, where the retired pair were a two-message brief.
+    registry = churro.prompt("registry-v0.3.0")
+    assert sealed_prompt_tokens("attestator_3", registry["system"]) == 27
+    paper = churro.prompt("paper-harness-ed09bc7")
+    assert sealed_prompt_tokens("attestator_3", paper["system"]) == 29
     with pytest.raises(RequestCapacityRefusal) as expired:
-        sealed_prompt_tokens("attestator_3", layout["system"], layout["user"] + " ")
+        sealed_prompt_tokens("attestator_3", registry["system"] + " ")
     assert "the prompt changed after it was measured" in str(expired.value)
 
 
@@ -671,23 +674,22 @@ def test_page_chair_request_builds_chandras_single_user_turn():
 
 
 def test_page_messages_builds_churros_registry_fixed_system_only_framing():
-    """The third page-scoped shape, fixed by the design for Wave 2's Churro
-    adapter (`providers/specs.py::churro_3b_profile()` sets `user_prompt=None`)
-    and prepared here so U10 has a seam to send it into. Exercised directly
-    against `_page_messages` -- not through `page_chair_request` -- because no
-    shipped row yet carries a measured prompt-token constant for a prompt this
-    seam does not send today; the dispatch this unit owns is provable without
-    one.
+    """The shape a served Churro chair is asked in, and the only one it has.
+
+    `providers/specs.py::churro_3b_profile()` sets `user_prompt=None`, so the
+    system turn carries the whole instruction and the user turn carries the
+    image alone. Exercised directly against `_page_messages` as well as through
+    `page_chair_request` elsewhere, because the dispatch is pure and provable
+    without a sealed row standing in the way.
     """
 
     image_bytes = _png(12, 9)
-    system_text = "Transcribe the entirety of this historical document to XML format."
+    system_text = churro.prompt()["system"]
     messages = live_witness._page_messages("churro.v1", {"system": system_text}, image_bytes)
 
     assert len(messages) == 2
     system, user = messages
-    # A one-element list of text parts, the same shape DAI's and Churro's
-    # two-message framing send their system turn in.
+    # A one-element list of text parts, the same shape DAI's system turn takes.
     assert system == {"role": "system", "content": [{"type": "text", "text": system_text}]}
     assert user["role"] == "user"
     # Image-only: no vendor user text exists to send under this framing, so no
@@ -760,10 +762,7 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
             page_presentation,
             profile=row,
         )
-        for adapter_name, prompt in (
-            ("churro.v1", feeding.churro_layout_prompt),
-            ("chandra.v1", chandra_module.prompt),
-        )
+        for adapter_name, prompt in (("chandra.v1", chandra_module.prompt),)
     ]
 
     for request in [dai, *page_requests]:
@@ -771,27 +770,39 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
         types = [part["type"] for part in user["content"]]
         assert types == ["image_url", "text"]
 
+    # Churro's user turn carries no text at all under either attested framing,
+    # so "image first" is the whole of its content rather than an order.
+    churro_request, _ = _churro_page_request(row)
+    (user,) = [message for message in churro_request.messages if message["role"] == "user"]
+    assert [part["type"] for part in user["content"]] == ["image_url"]
+
 
 # --- the recorded framing selector (not a picker: hard rule 8) ----------------
 
 
-def test_the_default_framing_is_unit_twelves_layout_prompt_and_this_unit_does_not_move_it():
-    """Which framing is the *default* is Tyrel's decision (the correction
-    plan's Q4). What this pins is that adding the ability to name the other one
-    left the default exactly where Unit 12 put it."""
+def test_the_default_framing_is_the_vendors_own_registry_answer():
+    """Both arms are a vendor artifact's bytes; the default is the current one.
 
-    assert churro.DEFAULT_FRAMING == feeding.CHURRO_LAYOUT_PROMPT_VERSION
-    assert churro.prompt() == feeding.churro_layout_prompt()
+    `providers/specs.py::resolve_ocr_profile("stanford-oval/churro-3B")` at tag
+    `v0.3.0` is what the vendor ships today, and which of the two strings the
+    fine-tuning itself saw is stated nowhere -- so the default is the attested
+    current answer and the comparison is a Stage 2 arm, not a guess made here.
+    """
+
+    assert churro.DEFAULT_FRAMING == "registry-v0.3.0"
+    assert churro.prompt() == churro.prompt("registry-v0.3.0")
     assert churro.resolve_framing(None) == churro.DEFAULT_FRAMING
 
 
 def test_each_declared_framing_asks_its_own_prompt():
-    assert churro.prompt(feeding.CHURRO_LAYOUT_PROMPT_VERSION) == feeding.churro_layout_prompt()
-    assert churro.prompt(feeding.CHURRO_TRAINED_PROMPT_VERSION) == feeding.churro_prompt()
-    assert set(churro.FRAMINGS) == {
-        feeding.CHURRO_LAYOUT_PROMPT_VERSION,
-        feeding.CHURRO_TRAINED_PROMPT_VERSION,
-    }
+    registry = churro.prompt("registry-v0.3.0")
+    paper = churro.prompt("paper-harness-ed09bc7")
+    assert set(registry) == set(paper) == {"system"}
+    assert registry != paper
+    # The paper-era harness's two spelling errors are part of the bytes it
+    # actually sent, and are carried unaltered.
+    assert "entiretly" in paper["system"] and "documents" in paper["system"]
+    assert set(churro.FRAMINGS) == {"registry-v0.3.0", "paper-harness-ed09bc7"}
 
 
 @pytest.mark.parametrize("bad", ["churro-layout-prompt", "", None if False else "trained", 1])
@@ -806,18 +817,15 @@ def test_both_declared_framings_are_measured_and_therefore_sendable():
     send: `sealed_prompt_tokens` refuses it at the capacity check, which would
     make the selector a choice between one option and an error."""
 
-    for framing, expected in (
-        (feeding.CHURRO_LAYOUT_PROMPT_VERSION, 441),
-        (feeding.CHURRO_TRAINED_PROMPT_VERSION, 281),
-    ):
+    for framing, expected in (("registry-v0.3.0", 27), ("paper-harness-ed09bc7", 29)):
         prompt = churro.prompt(framing)
-        assert sealed_prompt_tokens("attestator_3", prompt["system"], prompt["user"]) == expected
+        assert sealed_prompt_tokens("attestator_3", prompt["system"]) == expected
 
 
 def test_a_named_framing_reaches_the_request_and_its_capacity_record():
     """End to end at the builder: the prompt bytes and the measured cost both
-    follow the name, so a request under the trained framing is admitted on the
-    trained framing's own arithmetic."""
+    follow the name, so a request under the paper-era harness's framing is
+    admitted on that framing's own arithmetic."""
 
     context = SimpleNamespace(tree=_FakeTree())
     image_bytes = _png(54, 72)
@@ -830,12 +838,13 @@ def test_a_named_framing_reaches_the_request_and_its_capacity_record():
         "churro.v1",
         presentation,
         profile=_sealed_churro_rows()[0],
-        framing=feeding.CHURRO_TRAINED_PROMPT_VERSION,
+        framing="paper-harness-ed09bc7",
     )
     system, user = request.messages
-    assert system["content"] == [{"type": "text", "text": feeding.churro_prompt()["system"]}]
-    assert user["content"][1]["text"] == feeding.churro_prompt()["user"]
-    assert request.capacity["prompt_tokens"] == 281
+    paper = churro.prompt("paper-harness-ed09bc7")
+    assert system["content"] == [{"type": "text", "text": paper["system"]}]
+    assert user["content"] == [user["content"][0]]
+    assert request.capacity["prompt_tokens"] == 29
 
 
 def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
@@ -854,11 +863,16 @@ def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
         "churro.v1",
         adapter,
         response,
-        framing=feeding.CHURRO_TRAINED_PROMPT_VERSION,
+        framing="paper-harness-ed09bc7",
     )
     view = attempt.native_capture["view"]
-    assert view["framing"] == feeding.CHURRO_TRAINED_PROMPT_VERSION
-    assert view["prompt"] == feeding.churro_prompt()
+    assert view["framing"] == "paper-harness-ed09bc7"
+    assert view["prompt"] == churro.prompt("paper-harness-ed09bc7")
+    # And the vendor pin follows the bytes, not the name: this framing's string
+    # comes from a different file at a different commit.
+    assert attempt.native_capture["vendor_identity"]["sha"] == (
+        "ed09bc7fd6475c333a25427f3d0b9227af46ce27"
+    )
 
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():
@@ -1895,12 +1909,44 @@ def test_captured_page_attempt_refuses_an_unsupported_adapter_name(tmp_path: Pat
 def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     """One integration point through the real churro.v1 adapter, not a stub.
 
-    The trained `<output>` envelope, which stays fully legal on the live path:
-    the live parser is `"churro"` and reads both of this chair's shapes, so a
-    model that ignores the layout clause still reads and retains exactly as
-    before. The bytes ride along as `observation_payload` for both page-scoped
-    adapters now -- `run.py` derives the page's block geometry from them, and
-    withholding them would hand `churro.observe` the joined page text instead.
+    The vendor's own `HistoricalDocument` grammar, read under the one parser
+    name this chair has. The bytes ride along as `observation_payload` for both
+    page-scoped adapters, because `captured_page_attempt` cannot know which of
+    them derives geometry from them; Churro derives none, and says so through
+    its registry entry rather than by being withheld here.
+    """
+    body = (
+        "<HistoricalDocument><Page><Body><Line>real churro text</Line>"
+        "</Body></Page></HistoricalDocument>"
+    )
+    response, _, blob_store = _read_one(
+        tmp_path,
+        script=ScriptedAnswer(content=body, finish_reason="stop"),
+    )
+    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+
+    attempt = live_witness.captured_page_attempt(
+        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == "real churro text"
+    assert attempt.native_capture["adapter"] == "churro.v1"
+    assert attempt.native_capture["parse"]["parser"] == "xml"
+    assert attempt.native_capture["findings"] == []
+    assert attempt.observation_payload == body.encode("utf-8")
+    assert blob_store.has(response.response_sha256)
+
+
+def test_captured_page_attempt_real_churro_adapter_still_reads_the_retired_envelope(
+    tmp_path: Path,
+):
+    """Retained history parses, and says on the record that it is history.
+
+    A bare `<output>` body is the framing this chair no longer sends. It still
+    reads -- throwing a page of ink away over an envelope would be the loss
+    GOALS 1 refuses -- and the capture carries `retired-output-envelope` so a
+    shape nobody asked for is visible rather than silent (GOVERNANCE 2).
     """
     response, _, blob_store = _read_one(
         tmp_path,
@@ -1914,53 +1960,22 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
 
     assert attempt.outcome == "read"
     assert attempt.native_payload == "real churro text"
-    assert attempt.native_capture["adapter"] == "churro.v1"
-    assert attempt.native_capture["parse"]["parser"] == "churro"
-    assert attempt.observation_payload == b"<output>real churro text</output>"
+    assert attempt.native_capture["findings"] == [{"kind": "retired-output-envelope"}]
     assert blob_store.has(response.response_sha256)
 
 
-def test_captured_page_attempt_real_churro_adapter_reads_the_wire_contract(tmp_path: Path):
-    """Churro live: the shape `feeding.churro_layout_prompt` asks for is a reading.
-
-    The page text is the block texts joined, and the bytes ride along as
-    `observation_payload` so `run.py` can derive this chair's own block geometry
-    from the response it actually returned -- which is what lets Churro attach to
-    an act at all.
-    """
-    body = (
-        '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
-        '{"box_1000": [110, 85, 890, 375], "text": "ACT ONE"}, '
-        '{"box_1000": [110, 470, 890, 835], "text": "ACT TWO"}]}'
-    )
-    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content=body, finish_reason="stop"))
-    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
-
-    attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
-    )
-
-    assert attempt.outcome == "read"
-    assert attempt.native_payload == "ACT ONE\nACT TWO"
-    assert attempt.native_capture["parse"] == {
-        "state": "parsed",
-        "parser": "churro",
-        "text": "ACT ONE\nACT TWO",
-    }
-    assert attempt.observation_payload == body.encode("utf-8")
-
-
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(tmp_path: Path):
-    """A JSON body nobody asked this chair for is a named surprise, not a failure.
+    """A body nobody asked this chair for is a named surprise, not a failure.
 
-    The state Chandra has had since it was written, now reachable for Churro:
-    the parser ran, read the whole response and could name no shape it knows.
-    The bytes are retained before the parse, so the refusal loses nothing.
+    The parser ran, read the whole response and could name no shape it knows,
+    and the outcome says *which* root element arrived rather than only that
+    something did. The bytes are retained before the parse, so the refusal
+    loses nothing.
     """
     response, _, blob_store = _read_one(
         tmp_path,
         script=ScriptedAnswer(
-            content='{"schema": "some-other-contract.v9", "pages": []}', finish_reason="stop"
+            content="<transcription><page>x</page></transcription>", finish_reason="stop"
         ),
     )
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
@@ -1970,13 +1985,12 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
     )
 
     assert attempt.outcome == "failed"
-    assert attempt.native_capture["parse"] == {
-        "state": "unrecognized-shape",
-        "parser": "churro",
-        "outcome": "unverified-response-schema",
-    }
+    parse = attempt.native_capture["parse"]
+    assert parse["state"] == "unrecognized-shape"
+    assert parse["parser"] == "xml"
+    assert "transcription" in parse["outcome"]
     assert attempt.native_capture["stop_reason"] == "partial-parse-unrecognized-shape"
-    assert "unverified-response-schema" in attempt.reason
+    assert "transcription" in attempt.reason
     assert blob_store.has(response.response_sha256)
 
 

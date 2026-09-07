@@ -11,23 +11,24 @@ remain stage-local and obey these constraints:
 * ``present(context, presentation)`` validates the closed ``presented`` block
   with run-tree access for an adapter-owned crop, while
   ``observe(presentation, native_payload)`` derives the closed ``observed``
-  entries from that exact image/response pair. Both page-scoped adapters'
-  ``observe`` also take a keyword ``page_size``: their wire contracts report
-  normalized boxes, and a page witness's act view presents one crop while
+  entries from that exact image/response pair. Chandra's ``observe`` also takes
+  a keyword ``page_size``: its grammar reports boxes normalized 0-1000 against
+  the sealed page, and a page witness's act view presents one crop while
   restating page-level geometry, so the sealed page's own size is the
   denominator, not the presentation's. That keyword is read off this registry
   entry (``takes_page_size``) rather than off the adapter's name: two hard-coded
   names in one branch is the third adapter's bug. Presentation kinds remain
   ``page``, ``region``, and ``adapter-crop``: an adapter crop is an
   adapter-owned derivative and not a third witness scope. DAI is act-scoped and
-  publishes one from its assigned proposal crop; Chandra publishes one from a
-  whole page, sized by its vendor's own ``scale_to_fit``;
-* a page-scoped adapter whose response carries no layout preserves its input
-  presentation and returns only a ``bounds_source='presented'`` echo. That
-  source is explicitly excluded from routing and coverage; no geometry is
-  fabricated from the presentation itself. It is Churro's answer to a trained
-  ``<output>`` body, and Chandra's is the empty list `run.py` gives the same
-  echo for -- the honest no-layout fallback, not either chair's whole story;
+  publishes one from its assigned proposal crop; both page-scoped adapters
+  publish one from a whole page, sized by their own vendor's preprocessing --
+  Chandra's ``scale_to_fit``, Churro's ``prepare_ocr_image``;
+* an adapter whose grammar reports no geometry returns only a
+  ``bounds_source='presented'`` echo of the image it was shown. That source is
+  explicitly excluded from routing and coverage; no geometry is fabricated from
+  the presentation itself. It is Churro's whole answer -- ``HistoricalDocument``
+  has no coordinate vocabulary at all -- and Chandra's is the empty list
+  `run.py` gives the same echo for when a body reports no usable box;
 * a new adapter must move the shared declared-name set, this local mapping, and
   any native parser/retention dispatch in :mod:`feeding` together. A failure
   while importing any callable binding propagates before ``main`` opens a run;
@@ -35,9 +36,8 @@ remain stage-local and obey these constraints:
 
 A native float-to-pixel rule is declared beside each adapter as
 ``quantization``; ``None`` prevents a no-layout adapter from acquiring another
-adapter's rule by omission. Churro declares its own from Unit 12 -- the same
-arithmetic Chandra's rule spells, under Churro's own name, because a rule
-acquired by omission is a rule nobody declared for that chair.
+adapter's rule by omission, and Churro's is ``None`` because its grammar
+publishes no coordinates for a rule to convert.
 """
 
 from __future__ import annotations
@@ -111,10 +111,11 @@ class RunnableAdapter:
     #:
     #: The default is exactly that old blanket value, so an adapter that has not
     #: yet declared its own records precisely what it recorded before. Chandra
-    #: declares its own here (`chandra.FORMAT_CAPABILITIES`); Churro's and DAI's
-    #: land with their own units, and the flip of their uncertainty flag is
-    #: ordered after the Perlector can compare a bracket-marker view, so that a
-    #: declared uncertainty never becomes a permanently uncomparable one.
+    #: and Churro declare their own here (`chandra.FORMAT_CAPABILITIES`,
+    #: `churro.FORMAT_CAPABILITIES`); DAI's lands with its own unit. Both
+    #: grammars that *can* carry a doubt keep `can_express_uncertainty` false
+    #: until the Perlector can compare a bracket-marker view, so that a declared
+    #: uncertainty never becomes a permanently uncomparable one.
     format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
     #: How this adapter reads the committed fixture's own declared bytes, where
     #: those are not in the vendor grammar a served chair answers in. ``None``
@@ -255,12 +256,36 @@ def validate_adapter_presentation(
     validate_presented(source)
     validate_presented(presented)
     if resolved == "churro.v1":
-        # Churro publishes no crop of its own at this commit: it presents the
-        # exact image it was given. (Its own vendor resize,
-        # `churro-prepare-ocr-image.v1`, lands with the Churro adapter unit.)
-        if presented != source:
+        # Churro prepares a whole page the way `prepare_ocr_image` does -- fit
+        # inside the vendor's 2,500-pixel square, then `ensure_rgb` -- and
+        # presents the result as an `adapter-crop`; an act compatibility view
+        # keeps its Designator crop unchanged, because no chair was shown those
+        # pixels and a vendor recipe over them would record a step that never
+        # ran (`churro.present`). Re-derived here from the *source* presentation
+        # alone, through the same writer the adapter uses, so this seam cannot
+        # come to disagree with it about a recipe.
+        if source["kind"] != "page":
+            if presented != source:
+                raise SchemaRefusal(
+                    f"{resolved} presentation differs from the exact image it was given"
+                )
+            return
+        bounds = source["transform"]["bounds"]
+        expected = churro.presented_transform(
+            source["source_page_id"],
+            source["source_page_ordinal"],
+            bounds,
+            imaging_ports.resize_to_fit_churro(bounds["w"], bounds["h"]),
+        )
+        if (
+            presented["kind"] != "adapter-crop"
+            or presented["source_page_id"] != source["source_page_id"]
+            or presented["source_page_ordinal"] != source["source_page_ordinal"]
+            or presented["transform"] != expected
+        ):
             raise SchemaRefusal(
-                f"{resolved} presentation differs from the exact image it was given"
+                "churro.v1 adapter-crop is not the sealed page prepared by the vendor's own "
+                "prepare_ocr_image rule"
             )
         return
     if resolved == "chandra.v1":
@@ -359,8 +384,16 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         retain=churro.retain,
         present=churro.present,
         observe=churro.observe,
-        quantization=churro.QUANTIZATION_RULE,
-        takes_page_size=True,
+        # No `quantization` and no `takes_page_size`, and both are the same
+        # fact: `HistoricalDocument` carries no coordinates anywhere, so this
+        # chair reports no normalized geometry, there is nothing for a
+        # float-to-pixel rule to convert, and its `observe` has no use for the
+        # sealed page's own size. Unit 12 declared both for the JSON coordinate
+        # channel this repository invented; the channel is retired with the
+        # prompt that asked for it, and a rule kept past the geometry it
+        # converted would be a rule nobody declared for what this chair now
+        # does.
+        format_capabilities=churro.FORMAT_CAPABILITIES,
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,

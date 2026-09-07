@@ -18,7 +18,6 @@ from common.native_witness import (
     CHURRO_MAX_IMAGE_DIM_PX,
     CHURRO_OUTPUT_TOKENS,
     CHURRO_PARSERS,
-    CHURRO_RESPONSE_NOT_BYTES,
     NATIVE_CAPTURE_PARSERS,
     RESIZING_ADAPTER_CROP_OPERATIONS,
     churro_fit_target,
@@ -28,7 +27,6 @@ from common.native_witness import (
     parse_churro_response,
     partition_disagreement,
     unpresented_region_ids,
-    validate_churro_xml,
     validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
@@ -48,7 +46,9 @@ def _native_capture() -> dict:
         "schema": "attestatores-model-view.v1",
         "adapter": "churro.v1",
         "view": {
-            "prompt": {"system": "system prompt", "user": "user prompt"},
+            # System-only, which is the shape both vendor-attested profiles
+            # send: the user turn carries the image alone.
+            "prompt": {"system": "system prompt"},
             "generation": {"max_new_tokens": 20_000},
         },
         "raw_response_ref": {
@@ -679,7 +679,7 @@ def _page_with_churro_capture() -> dict:
                 "schema": "attestatores-model-view.v1",
                 "adapter": "churro.v1",
                 "view": {
-                    "prompt": {"system": "system prompt", "user": "user prompt"},
+                    "prompt": {"system": "system prompt"},
                     "generation": {"max_new_tokens": 20_000},
                 },
                 "raw_response_ref": {
@@ -688,7 +688,10 @@ def _page_with_churro_capture() -> dict:
                 },
                 "transport_stop_reason": "eos",
                 "stop_reason": "eos",
-                "findings": [],
+                # A bare `<output>` body is the retired framing's envelope, and
+                # the vendor grammar reads it as retained history while saying
+                # so: a shape nobody asked for is visible rather than silent.
+                "findings": [{"kind": "retired-output-envelope"}],
                 "parse": {"state": "parsed", "parser": "xml", "text": text},
             },
         }
@@ -752,16 +755,6 @@ def _page_with_churro_capture() -> dict:
                 parse={"state": "parsed", "parser": "json", "text": "x"}
             ),
             "terminal parse record",
-        ),
-        (
-            # `unrecognized-shape` is coupled to the live `churro` parser. Under
-            # `xml` it is unreachable by construction -- `validate_churro_xml`
-            # returns text or raises -- so a record claiming it there is forged.
-            lambda value: value["native_capture"].update(
-                parse={"state": "unrecognized-shape", "parser": "xml", "outcome": "invalid-json"},
-                stop_reason="partial-parse-unrecognized-shape",
-            ),
-            "cannot reach one",
         ),
         (
             lambda value: value["native_capture"]["findings"].extend(
@@ -1366,165 +1359,195 @@ def test_native_capture_refuses_a_blank_relative_path():
         validate_native_capture(value)
 
 
-# ===================== Unit 12: Churro's live two-shape parser ====================
+# ============ U10: Churro reads its vendor's own HistoricalDocument grammar ========
 #
-# `parser` selects the branch, and the two postures re-derive through the branch
-# their own record was written under. Everything below is offline and byte-level.
+# One grammar, one parser name, in both postures. Unit 12's second parser and
+# the JSON coordinate contract behind it are retired with the prompt that asked
+# for them; what a Churro capture records now is what
+# `common/churro_document.py` read out of the vendor's own answer. Everything
+# below is offline and byte-level.
 
-_WIRE = (
-    b'{"schema": "verbatus-churro-page-response.v1", "blocks": '
-    b'[{"box_1000": [110, 85, 890, 375], "text": "ACT ONE"}, '
-    b'{"box_1000": [110, 470, 890, 835], "text": "ACT TWO"}]}'
+_DOCUMENT = (
+    b"<HistoricalDocument><Page><Body>"
+    b"<Line>ACT ONE</Line><Line>ACT TWO</Line>"
+    b"</Body></Page></HistoricalDocument>"
 )
+_SYSTEM = "Transcribe the entirety of this historical document to XML format."
 
 
-def test_the_two_parser_names_are_closed_to_the_two_this_chair_can_run():
-    assert CHURRO_PARSERS == frozenset({"xml", "churro"})
+def test_this_chair_has_one_parser_name_for_its_one_grammar():
+    """The `churro` dispatcher name is gone with the contract it dispatched to."""
+    assert CHURRO_PARSERS == frozenset({"xml"})
+    assert CHURRO_PARSERS <= NATIVE_CAPTURE_PARSERS
 
 
-def test_the_wire_contract_parses_to_the_joined_page_text():
-    assert parse_churro_response(_WIRE) == {"state": "parsed", "text": "ACT ONE\nACT TWO"}
+def test_the_vendor_grammar_parses_to_its_flattened_reading_order():
+    result = parse_churro_response(_DOCUMENT)
+    assert result["state"] == "parsed"
+    assert result["shape"] == "historical-document"
+    assert result["text"] == "ACT ONE\nACT TWO"
+    assert result["findings"] == []
 
 
-def test_the_trained_envelope_stays_fully_legal_on_the_live_parser():
-    assert parse_churro_response(b"<output>plain reading</output>") == {
-        "state": "parsed",
-        "text": "plain reading",
-    }
+def test_a_plain_reading_is_the_shape_the_paper_era_harness_expected_and_still_parses():
+    result = parse_churro_response("une transcription simple".encode("utf-8"))
+    assert result["state"] == "parsed"
+    assert result["shape"] == "plain-text"
 
 
-@pytest.mark.parametrize(
-    ("body", "outcome"),
-    [
-        # A JSON object answering a question nobody put to this chair.
-        (b'{"schema": "verbatus-chandra-page-response.v1", "blocks": []}', None),
-        (b'{"text": "no schema at all"}', None),
-        # This contract's own schema, refused inside it by name.
-        (b'{"schema": "verbatus-churro-page-response.v1"}', "missing-block-list"),
-        (
-            b'{"schema": "verbatus-churro-page-response.v1", "blocks": [{"box_1000": [0, 0, 0, 0],'
-            b' "text": "x"}]}',
-            "malformed-block-geometry",
-        ),
-        (
-            b'{"schema": "verbatus-churro-page-response.v1", "blocks": [], "blocks": []}',
-            "unverified-response-schema",
-        ),
-    ],
-)
-def test_a_json_body_this_parser_cannot_place_is_an_unrecognized_shape_not_a_failure(body, outcome):
+def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
+    """Retained history parses; a shape nobody asked for is visible (GOVERNANCE 2)."""
+    result = parse_churro_response(b"<output>plain reading</output>")
+    assert result["state"] == "parsed"
+    assert result["shape"] == "output-element"
+    assert result["text"] == "plain reading"
+    assert result["findings"] == [{"kind": "retired-output-envelope"}]
+
+
+def test_a_well_formed_body_rooted_elsewhere_is_an_unrecognized_shape_not_a_failure():
     """The parser ran, read the whole response, and could name no shape it knows.
 
-    Distinct from `failed`, where it refused the bytes. The last row is why the
-    dispatch decode is permissive and the contract's own decode is strict: two
-    `blocks` members declaring this schema must be refused BY this contract, not
-    fall through to the XML door wearing a last-wins value.
+    This is the state Unit 12 coupled to a parser name that no longer exists.
+    `validate_churro_xml` -- the door it replaced -- refused the vendor's own
+    grammar outright, because it admitted a bare `<output>` element and nothing
+    else, so a real `HistoricalDocument` answer would have landed as
+    unparseable bytes.
     """
-    result = parse_churro_response(body)
+    result = parse_churro_response(b"<transcription>x</transcription>")
     assert result["state"] == "unrecognized-shape"
-    assert result["outcome"] == (outcome or "unverified-response-schema")
+    assert "transcription" in result["reason"]
 
 
-@pytest.mark.parametrize(
-    "body",
-    (
-        b"not xml and not json",
-        b'["a json array, not an object"]',
-        b'"a bare json string"',
-        b"<output attr='no'>x</output>",
-        b"<notoutput>x</notoutput>",
-    ),
-)
-def test_a_non_object_body_reaches_the_trained_parser_and_fails_there(body):
-    result = parse_churro_response(body)
+def test_a_body_that_offers_the_grammar_and_will_not_parse_is_failed_with_its_reason():
+    result = parse_churro_response(b"<HistoricalDocument><Page>")
     assert result["state"] == "failed"
     assert result["reason"]
 
 
 @pytest.mark.parametrize("raw", ("<output>a str, not bytes</output>", None, 7, ["x"], {"a": 1}))
-def test_a_body_that_is_not_bytes_is_refused_by_the_same_name_at_both_churro_doors(raw):
-    """One boundary, two return conventions, one sentence for a non-bytes body.
-
-    `validate_churro_xml` has always named this; the dispatcher in front of it
-    reached `raw.decode` first and raised `AttributeError` off the caller's
-    object instead -- an unnamed interpreter error where the door one branch
-    away answers with a sentence a capture can record. Both now say the same
-    thing, and it is spelled once (`CHURRO_RESPONSE_NOT_BYTES`).
-    """
-    assert parse_churro_response(raw) == {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
-    with pytest.raises(SchemaRefusal, match=CHURRO_RESPONSE_NOT_BYTES):
-        validate_churro_xml(raw)
+def test_a_body_that_is_not_bytes_is_named_rather_than_crashing_the_seam(raw):
+    with pytest.raises(SchemaRefusal, match="not raw bytes"):
+        parse_churro_response(raw)
 
 
-def test_the_guard_admits_exactly_what_the_trained_door_behind_it_admits():
-    """`bytearray` is what `validate_churro_xml` has always taken, so it passes.
+def test_the_intake_ceiling_is_this_module_s_and_the_grammar_declares_none():
+    """One chair, one bound, applied where the bytes cross (`CHURRO_MAX_RESPONSE_BYTES`)."""
+    from common import churro_document
 
-    A guard in front of that door that admitted less would refuse a body the
-    door itself would have read -- which is the failure mode this fix exists to
-    remove, not one to introduce a branch earlier. What each contract behind the
-    dispatch then does with a `bytearray` is that contract's own answer:
-    `churro_response.parse` takes `bytes` alone and names its refusal
-    (`raw-response-not-bytes`), which is a placed shape, not an unnamed crash.
-    """
-    assert parse_churro_response(bytearray(b"<output>plain reading</output>")) == {
-        "state": "parsed",
-        "text": "plain reading",
-    }
-    assert parse_churro_response(bytearray(_WIRE)) == {
-        "state": "unrecognized-shape",
-        "outcome": "raw-response-not-bytes",
-    }
+    oversized = b"x" * (4 * 1024 * 1024 + 1)
+    assert parse_churro_response(oversized)["state"] == "failed"
+    # The grammar module itself applies no ceiling unless one is passed, which
+    # is what keeps the two from drifting into two different numbers.
+    assert churro_document.parse_churro_document(oversized)["state"] == "parsed"
 
 
-def test_the_fixture_parser_name_cannot_reach_the_json_branch_at_all():
-    """Fixture byte identity as a property of the dispatcher, not of the corpus.
+def test_the_vendors_own_prompt_echo_trim_runs_against_the_framing_that_was_sent():
+    """`trim_leading_prompt`, and only over the string this request actually sent."""
+    body = (_SYSTEM + "\nune transcription simple").encode("utf-8")
+    trimmed = parse_churro_response(body, system_prompt=_SYSTEM)
+    assert trimmed["text"] == "une transcription simple"
+    assert trimmed["findings"] == [{"kind": "prompt-echo-trimmed", "characters": len(_SYSTEM) + 1}]
+    # Not trimmed against a framing that was not sent: those bytes could be
+    # transcription that happens to begin the same way.
+    untrimmed = parse_churro_response(body)
+    assert untrimmed["text"] == body.decode("utf-8")
+    assert untrimmed["findings"] == []
 
-    A committed fixture body could not take the JSON branch even if someone
-    wrote one: `parser="xml"` reaches `validate_churro_xml` and nothing else.
-    """
-    derived = derive_churro_capture(_WIRE, "eos", parser="xml")
-    assert derived["parse"]["state"] == "failed"
-    assert derived["parse"]["parser"] == "xml"
-    assert derived["stop_reason"] == "partial-parse-failed"
+
+def test_a_parser_name_this_chair_cannot_run_is_refused_rather_than_recorded_unparsed():
+    with pytest.raises(SchemaRefusal, match="reads one grammar"):
+        derive_churro_capture(_DOCUMENT, "eos", parser="churro")
 
 
-def test_the_live_parser_name_records_the_wire_contract_as_parsed_page_text():
-    derived = derive_churro_capture(_WIRE, "eos", parser="churro")
-    assert derived["parse"] == {
-        "state": "parsed",
-        "parser": "churro",
-        "text": "ACT ONE\nACT TWO",
-    }
+def test_a_capture_derived_with_no_parser_asks_for_none_and_records_none():
+    derived = derive_churro_capture(_DOCUMENT, "eos", parser=None)
+    assert derived["parse"] == {"state": "not-requested", "parser": None}
+    assert derived["stop_reason"] == "eos"
+
+
+def test_the_grammar_records_the_page_text_as_parsed_under_the_one_parser_name():
+    derived = derive_churro_capture(_DOCUMENT, "eos", parser="xml")
+    assert derived["parse"] == {"state": "parsed", "parser": "xml", "text": "ACT ONE\nACT TWO"}
     assert derived["stop_reason"] == "eos"
     assert derived["findings"] == []
 
 
-def test_the_live_parser_records_an_unplaceable_shape_with_its_own_stop_reason():
-    derived = derive_churro_capture(b'{"schema": "something-else"}', "stop", parser="churro")
-    assert derived["parse"] == {
-        "state": "unrecognized-shape",
-        "parser": "churro",
-        "outcome": "unverified-response-schema",
-    }
+def test_an_unplaceable_shape_carries_the_grammars_own_sentence_as_its_outcome():
+    """The outcome names *which* root arrived; a short token would not.
+
+    `native_parse_refusal` renders it into the attempt reason and the page
+    validator re-derives the same sentence, so the record and the check cannot
+    describe one capture differently.
+    """
+    derived = derive_churro_capture(b"<transcription>x</transcription>", "stop", parser="xml")
+    assert derived["parse"]["state"] == "unrecognized-shape"
+    assert "transcription" in derived["parse"]["outcome"]
     assert derived["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_the_grammars_findings_travel_on_the_capture_beside_the_repetition_scans():
+    """Both halves of a capture's `findings`, and in that order.
+
+    A capture used to be allowed at most one finding, because the only producer
+    was the tail-cycle scan. The grammar reports facts of its own -- an echo
+    trimmed, a stray character escaped, ink outside every section, a retired
+    envelope -- and each is a fact about this response the page text alone
+    cannot show.
+    """
+    derived = derive_churro_capture(b"<output>plain reading</output>", "eos", parser="xml")
+    assert derived["findings"] == [{"kind": "retired-output-envelope"}]
+
+
+def test_a_capture_may_carry_several_grammar_findings_but_only_one_repetition():
+    capture = _native_capture()
+    capture["parse"] = {"state": "parsed", "parser": "xml", "text": "x"}
+    capture["findings"] = [
+        {"kind": "retired-output-envelope"},
+        {"kind": "prompt-echo-trimmed", "characters": 12},
+        {
+            "kind": "post-hoc-repetition",
+            "unit_characters": 24,
+            "repeats": 3,
+            "inspected": "parsed-text",
+        },
+    ]
+    capture["stop_reason"] = "partial-post-hoc-repetition-detected"
+    assert validate_native_capture(capture) is capture
+
+    capture["findings"].append(
+        {
+            "kind": "post-hoc-repetition",
+            "unit_characters": 30,
+            "repeats": 4,
+            "inspected": "parsed-text",
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="more than one repetition finding"):
+        validate_native_capture(capture)
+
+
+def test_a_finding_kind_from_neither_half_is_still_refused_by_name():
+    capture = _native_capture()
+    capture["parse"] = {"state": "parsed", "parser": "xml", "text": "x"}
+    capture["findings"] = [{"kind": "invented-finding"}]
+    with pytest.raises(SchemaRefusal, match="unknown finding kind"):
+        validate_native_capture(capture)
 
 
 def test_the_parse_outcome_wins_over_a_repeated_tail_and_the_repetition_is_still_recorded():
     """As `failed` already did, and the finding stays in `findings` (GOVERNANCE 2).
 
-    Pinned on the record rather than on a contrived body: an unrecognized shape
-    is inspected as raw bytes, and raw bytes that are a JSON object end in `"}`,
-    so the tail-anchored detector will not fire on one in practice. What the
-    validator must refuse is a capture that carries both facts and lets the
-    repetition name the stop reason -- which is the direction a later edit to
+    Pinned on the record rather than on a contrived body. What the validator
+    must refuse is a capture that carries both facts and lets the repetition
+    name the stop reason -- which is the direction a later edit to
     `derive_churro_capture`'s branch order would break.
     """
     capture = _native_capture()
     capture["transport_stop_reason"] = "eos"
     capture["parse"] = {
         "state": "unrecognized-shape",
-        "parser": "churro",
-        "outcome": "unverified-response-schema",
+        "parser": "xml",
+        "outcome": "rooted at 'transcription'",
     }
     capture["findings"] = [
         {
@@ -1541,51 +1564,55 @@ def test_the_parse_outcome_wins_over_a_repeated_tail_and_the_repetition_is_still
         validate_native_capture(capture)
 
 
-def test_the_repetition_detector_reads_the_transcription_under_the_wire_contract():
-    """`parse["text"]` is the joined page text, so the measurement moves off the JSON.
+def test_the_repetition_detector_reads_the_transcription_and_not_its_markup():
+    """`parse["text"]` is the flattened reading, so the measurement moves off the XML.
 
     That is the right input and the record already says which view was read:
     repetition is a fact about what the model transcribed, not about the
-    punctuation of the envelope it arrived in.
+    indentation of the grammar it arrived in.
     """
     unit = "the same clause over and over again. "
     body = (
-        b'{"schema": "verbatus-churro-page-response.v1", "blocks": [{"box_1000": '
-        b'[0, 0, 100, 100], "text": "' + (unit * 12).encode("utf-8") + b'"}]}'
+        b"<HistoricalDocument><Page><Body><Line>"
+        + (unit * 12).encode("utf-8")
+        + b"</Line></Body></Page></HistoricalDocument>"
     )
-    derived = derive_churro_capture(body, "eos", parser="churro")
+    derived = derive_churro_capture(body, "eos", parser="xml")
     assert derived["parse"]["state"] == "parsed"
     assert derived["findings"][0]["kind"] == "post-hoc-repetition"
     assert derived["findings"][0]["inspected"] == "parsed-text"
     assert derived["stop_reason"] == "partial-post-hoc-repetition-detected"
 
 
-def test_an_oversized_body_is_refused_before_either_parser_under_both_names():
+def test_an_oversized_body_is_refused_before_the_parser_and_before_the_scan():
     oversized = b"x" * (4 * 1024 * 1024 + 1)
-    for parser in sorted(CHURRO_PARSERS):
-        derived = derive_churro_capture(oversized, "eos", parser=parser)
-        assert derived["parse"]["state"] == "failed"
-        assert derived["parse"]["parser"] == parser
-        assert derived["stop_reason"] == "partial-parse-failed"
-        assert derived["findings"][0]["kind"] == "post-hoc-repetition-uninspected"
+    derived = derive_churro_capture(oversized, "eos", parser="xml")
+    assert derived["parse"]["state"] == "failed"
+    assert derived["parse"]["parser"] == "xml"
+    assert derived["stop_reason"] == "partial-parse-failed"
+    assert derived["findings"][0]["kind"] == "post-hoc-repetition-uninspected"
 
 
 @pytest.mark.parametrize(
     ("body", "state", "stop_reason"),
     [
-        (_WIRE, "parsed", "eos"),
+        (_DOCUMENT, "parsed", "eos"),
         (b"<output>trained</output>", "parsed", "eos"),
-        (b'{"schema": "unknown"}', "unrecognized-shape", "partial-parse-unrecognized-shape"),
-        (b"not parseable at all", "failed", "partial-parse-failed"),
+        ("une transcription simple".encode("utf-8"), "parsed", "eos"),
+        (
+            b"<transcription>x</transcription>",
+            "unrecognized-shape",
+            "partial-parse-unrecognized-shape",
+        ),
+        (b"<HistoricalDocument><Page>", "failed", "partial-parse-failed"),
     ],
 )
-def test_every_live_capture_state_validates_and_re_derives_from_its_own_bytes(
-    body, state, stop_reason
-):
+def test_every_capture_state_validates_and_re_derives_from_its_own_bytes(body, state, stop_reason):
     """The three stages that re-derive a Churro capture must reach the same facts.
 
-    `verify_native_capture_bytes` re-derives under `capture["parse"]["parser"]`,
-    so this is the check the Perlector's and the Recensor's reads make too.
+    `verify_native_capture_bytes` re-derives under `capture["parse"]["parser"]`
+    and under the system string the capture itself retained, so this is the
+    check the Perlector's and the Recensor's reads make too.
     """
     digest = digest_bytes(body)
     capture = _native_capture()
@@ -1594,16 +1621,45 @@ def test_every_live_capture_state_validates_and_re_derives_from_its_own_bytes(
         "sha256": digest,
     }
     capture["transport_stop_reason"] = "eos"
-    capture.update(derive_churro_capture(body, "eos", parser="churro"))
+    capture.update(derive_churro_capture(body, "eos", parser="xml", system_prompt="system prompt"))
     assert capture["parse"]["state"] == state
     assert capture["stop_reason"] == stop_reason
     assert validate_native_capture(capture) is capture
     assert verify_native_capture_bytes(capture, body) is capture
 
 
-def test_a_live_capture_whose_stop_reason_disagrees_with_its_shape_refusal_is_refused():
-    """12B pins both directions: the widening admits the state, not any stop reason."""
-    digest = digest_bytes(b'{"schema": "unknown"}')
+def test_re_derivation_reads_the_trim_prompt_off_the_record_it_is_checking():
+    """A capture written under one framing re-derives under that framing.
+
+    The echo trim is the vendor's own, and it is not a property of the bytes
+    alone: the same response, checked against the other attested framing, would
+    keep an echo this one removed. The capture retains what it sent, and the
+    re-derivation reads it back from there rather than guessing.
+    """
+    body = (_SYSTEM + "\nune transcription simple").encode("utf-8")
+    digest = digest_bytes(body)
+    capture = _native_capture()
+    capture["view"] = {"prompt": {"system": _SYSTEM}, "generation": {"max_new_tokens": 20_000}}
+    capture["raw_response_ref"] = {
+        "relative_path": f"3_attestatores/blobs/sha256/{digest}",
+        "sha256": digest,
+    }
+    capture["transport_stop_reason"] = "eos"
+    capture.update(derive_churro_capture(body, "eos", parser="xml", system_prompt=_SYSTEM))
+    assert capture["parse"]["text"] == "une transcription simple"
+    assert verify_native_capture_bytes(capture, body) is capture
+
+    # Rewrite the retained prompt and the record no longer re-derives: the
+    # reading it published is not the reading those bytes give under the
+    # framing it now claims to have sent.
+    capture["view"]["prompt"]["system"] = "a framing this request never sent"
+    with pytest.raises(SchemaRefusal, match="differs from its retained raw response"):
+        verify_native_capture_bytes(capture, body)
+
+
+def test_a_capture_whose_stop_reason_disagrees_with_its_shape_refusal_is_refused():
+    """Both directions: the widening admits the state, not any stop reason."""
+    digest = digest_bytes(b"<transcription>x</transcription>")
     capture = _native_capture()
     capture["raw_response_ref"] = {
         "relative_path": f"3_attestatores/blobs/sha256/{digest}",
@@ -1611,27 +1667,25 @@ def test_a_live_capture_whose_stop_reason_disagrees_with_its_shape_refusal_is_re
     }
     capture["parse"] = {
         "state": "unrecognized-shape",
-        "parser": "churro",
-        "outcome": "unverified-response-schema",
+        "parser": "xml",
+        "outcome": "rooted at 'transcription'",
     }
     capture["stop_reason"] = "stop"
     with pytest.raises(SchemaRefusal, match="disagrees with its parse and findings"):
         validate_native_capture(capture)
 
 
-def test_a_live_capture_cannot_be_re_derived_under_the_fixture_parser_name():
-    """The parser name is part of the record, and re-derivation honours it."""
-    digest = digest_bytes(_WIRE)
+def test_a_churro_capture_retains_a_system_only_prompt_view():
+    """The two-message framing is gone, and a record carrying one is refused.
+
+    Both attested profiles set the user prompt to `None`, so a retained `user`
+    member would be a record of text this chair is never sent.
+    """
     capture = _native_capture()
-    capture["raw_response_ref"] = {
-        "relative_path": f"3_attestatores/blobs/sha256/{digest}",
-        "sha256": digest,
-    }
-    capture["transport_stop_reason"] = "eos"
-    capture.update(derive_churro_capture(_WIRE, "eos", parser="churro"))
-    capture["parse"] = {**capture["parse"], "parser": "xml"}
-    with pytest.raises(SchemaRefusal, match="differs from its retained raw response"):
-        verify_native_capture_bytes(capture, _WIRE)
+    assert validate_native_capture(capture) is capture
+    capture["view"]["prompt"]["user"] = "the retired framing's user turn"
+    with pytest.raises(SchemaRefusal, match="system-only prompt view"):
+        validate_native_capture(capture)
 
 
 def test_a_parse_state_that_names_no_refusal_is_refused_rather_than_raising_a_key_error():

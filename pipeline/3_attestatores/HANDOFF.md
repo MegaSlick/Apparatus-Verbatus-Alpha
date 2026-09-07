@@ -280,24 +280,26 @@ no layout therefore aligns and stays `attached: false`, `comparable: false`,
 with its `aligned` alignment retained beside it and no span -- the record says
 both facts.
 
-**Unit 12 closed that for Churro by asking, not by anchoring.** Churro had no
-layout because nobody had asked it for one: its card documents no output format
-at all, and its trained prompt asks for `<output>` text and reading order, never
-coordinates. The served chair is now asked for the closed shape
-`common/churro_response.py` declares (`feeding.churro_layout_prompt`), and when
-it answers in that shape it attaches by **its own** boxes against the act's own
-sealed proposal, basis `geometric-overlap` -- exactly as Chandra does, with
-nothing selecting between them (GOVERNANCE 3, hard rule 8). The trained envelope
-stays fully legal, and a body in it lands exactly where a Churro body landed
-before: read, retained, aligned, unattached.
+**Unit 12 tried to close that for Churro by asking; U10 retired the question.**
+Unit 12 asked the served chair for a `box_1000` per block, in a modified carry
+of a prompt the model was never trained on, so that a geometry-blind page
+witness would have rectangles to attach acts by. The vendor systems ruling
+retired both halves: the vendor's own registry answer for this model is a single
+system instruction, and Churro-DS carries no geometry at all, so a coordinate
+channel was a channel the weights were never taught to fill. Churro therefore
+reports no geometry, its only observation is the `bounds_source="presented"`
+echo routing and coverage exclude, and it reads, aligns and stays unattached.
+What closes the attachment is the Perlector's `anchor-line` basis for a page
+witness whose alignment for an act is `aligned` with a located span (U12 of the
+vendor systems design), not a channel asked of a model that cannot fill it.
 
-**What the floor now rests on, said plainly.** `comparable` requires `attached`
+**What the floor rests on, said plainly.** `comparable` requires `attached`
 **and** `alignment.status == "aligned"`, and every page witness's alignment is
-computed against the anchor derived from the Chandra chair's response. So from
-Unit 12 forward the third witness counts toward the floor only because the first
-located its text. That is not the attachment rule this section forbids -- the
-geometry is Churro's own, and the anchor is a text-locating instrument the closed
-alignment schema already refuses to treat as a preference -- but it is a real
+computed against the anchor derived from the Chandra chair's response. So a
+third witness counts toward the floor only because the first located its text.
+That is not the attachment rule this section forbids -- the anchor is a
+text-locating instrument the closed alignment schema already refuses to treat as
+a preference -- but it is a real
 narrowing of what "three independent witnesses" means: two independent readings
 and one dependent comparability, not three unrelated readings agreeing. The
 dependency was inert while Churro could never count. It is load-bearing now, and
@@ -445,18 +447,20 @@ which carries the evidence that the revision ships two disagreeing chat
 templates and why the flag is safe under either).
 
 **Churro is asked in a named framing, and the name is on the record.**
-`churro.FRAMINGS` declares two — `churro-layout-prompt.v1`, Unit 12's
-instruction, and `churro-trained-prompt.v1`, the carried Table 6 prompt the
-model was published with — and `config/models-real.toml`'s `[witness_framings]`
-names which one a run asks in. **The default is unchanged**: which framing
-should be the default is Tyrel's decision (the correction plan's Q4), and what
-this adds is the ability to name the other one without editing code on a pod,
-plus a record of which was asked. `witness_adapters.framing_for` resolves it
+`churro.FRAMINGS` declares two, and both are a vendor artifact's own bytes —
+`registry-v0.3.0`, the string `providers/specs.py::resolve_ocr_profile` returns
+for this model id at tag `v0.3.0`, and `paper-harness-ed09bc7`, the
+`SYSTEM_MESSAGE` the paper's own benchmark harness sent — and
+`config/models-real.toml`'s `[witness_framings]` names which one a run asks in.
+The default is the registry's current answer; which of the two the fine-tuning
+itself saw is stated nowhere in the paper, the model card or the code, so the
+comparison is a Stage 2 arm rather than a guess made here.
+`witness_adapters.framing_for` resolves it
 once per pass from the sealed roster, `run.py` hands it to both live seams, and
 the resolved name is written onto every Churro capture as `view.framing`. This
 is not a picker (hard rule 8): it chooses the wording of a question before the
 page is read, never among readings, and it is recorded rather than inferred.
-Both framings carry their own measured prompt cost (441 and 281), because a
+Both framings carry their own measured prompt cost (27 and 29), because a
 framing whose cost nobody measured would be refused at the capacity check —
 which would make the selector a choice between one option and an error.
 
@@ -881,7 +885,8 @@ bounded fallback-recrop on it, against one absolute cap of three shared with
 every other recovery origin.
 
 **Evidence.** Published vendor specimens enter with their source and licence
-recorded, exactly as `feeding.churro_prompt` cites stanford-oval/churro. A vendor
+recorded, exactly as `common/churro_document.py` cites stanford-oval/Churro at
+the commit each carried string was taken from. A vendor
 that publishes no response specimen is not represented by a synthetic fixture
 wearing that status: the current DAI adapter records its published request
 framing and generation values as named carries, while its fixture response
@@ -898,53 +903,38 @@ unfinished choices in this contract:
   could not carry is a published vendor specimen, because none exists; the
   contract is this repository's question, and the first pod reading's retained
   bytes are the specimen.
-* **Unit 12 (Churro)** — landed. The fixture-only serve is replaced by the real
-  full-page boundary, with raw bytes, parse failure, truncation and
-  post-capture repetition all still visible, and the chair gains a layout
-  channel: `pipeline/3_attestatores/churro.py` owns its five operations, and
-  `common/churro_response.py` is the closed shape its live prompt asks for. Both
-  halves of this clause, answered:
-  - **Native quantization: none to inherit and none inherited.** Churro's card
-    documents no output format at all, so there was no native rule to apply.
-    `churro.QUANTIZATION_RULE` is its own declared rule -- the same arithmetic
-    Chandra's spells, under Churro's own name, because a rule acquired by
-    omission is a rule nobody declared for that chair.
-  - **Published specimen evidence: still none, and Unit 11's precedent is
-    consumed rather than re-argued.** The vendor publishes no response body, so
-    the contract is this repository's question and the first pod reading's
-    retained bytes are the specimen. A body in any other shape is refused by
-    name with its bytes already retained, reaching the capture as
-    `unrecognized-shape` -- the parser ran and could name no shape it knows,
-    which is a different fact from a parse failure and a state Churro could not
-    reach before.
+* **Unit 12 (Churro)** — landed, and its layout channel is retired by U10 of the
+  vendor systems design. The fixture-only serve it replaced with the real
+  full-page boundary stands: raw bytes, parse failure, truncation and
+  post-capture repetition are all still visible, and
+  `pipeline/3_attestatores/churro.py` owns the chair's five operations. What is
+  gone is the channel: `common/churro_response.py` and the modified-carry prompt
+  that asked for it. Both halves of the original clause, answered as they now
+  stand:
+  - **Native quantization: none to inherit and none declared.** Churro's
+    `HistoricalDocument` grammar carries no coordinate vocabulary anywhere in
+    the vendor's guide or its XSD, and Churro-DS carries none either, so there
+    is nothing for a float-to-pixel rule to convert. The adapter's
+    `quantization` is `None`, which is what keeps it from acquiring another
+    adapter's rule by omission, and its `takes_page_size` is `False` for the
+    same fact at the other seam.
+  - **Published specimen evidence: the vendor's own grammar is the specimen.**
+    The guide (`docs/guides/historical-document-xml.md`) and the XSD
+    (`evaluation/historical_doc.xsd`) say what the answer looks like, and
+    `common/churro_document.py` reads it. Three shapes parse — the grammar, the
+    plain reading-order text the paper-era harness expected, and the retired
+    `<output>` envelope kept as retained history with a finding that says so —
+    and a well-formed body rooted anywhere else reaches the capture as
+    `unrecognized-shape` naming which root arrived.
 
-  Two things a later reader should not have to rediscover. The **parser name
-  selects the parser**: `xml` is the fixture posture's and reaches
-  `validate_churro_xml` alone, `churro` is the live posture's and reaches both
-  legal shapes, and `verify_native_capture_bytes` re-derives under the name the
-  record carries -- so fixture byte identity is a property of the dispatcher,
-  not of the corpus. And the **contract lives in `common/`, not beside
-  `chandra_response.py`**, because three stages re-derive a Churro capture from
-  its retained blob and neither reader may import an Attestatores module; a
-  parser under the stage would leave both re-deriving through a branch they
-  cannot reach.
-* **Unit 13 (DAI)** adds DAI's exact registry rows and extends the closed
-  transform for its adapter-owned crop/resize so the shown pixels remain
-  reproducible. The landed adapter begins from its assigned Designator proposal;
-  it does not execute DAI's own detector, so it does not satisfy the staged
-  pipeline's separate native-detector requirement. DAI publishes no native
-  layout channel here: its honest
-  `bounds_source="presented"` fallback is excluded from routing and coverage,
-  while the separate secondary proposer remains Unit 9's chair and is not this
-  adapter's native channel. Its carried prompts and nine generation values are
-  named with source, digests, and the settled licence position; uncertainty
-  tokens are retained unchanged.
-* **Unit 14 (native-testimony integration)** removes the temporary
-  `payload.reported` bridge below and teaches the Perlector/Recensor consumers to
-  use each adapter's native retained text and partition facts without choosing a
-  witness boundary. It also owns the explicit hold for an unproposed cross-page
-  half act and the ink-map/proposal coverage reconciliation already assigned to
-  that unit.
+  Two things a later reader should not have to rediscover. There is **one
+  parser name for one grammar**, `xml`, in both postures: Unit 12's second name
+  existed only for the JSON contract, and `verify_native_capture_bytes`
+  re-derives under the name the record carries against the system string the
+  record itself retained. And the **grammar lives in `common/`, not beside the
+  stage**, because three stages re-derive a Churro capture from its retained
+  blob and neither reader may import an Attestatores module; a parser under the
+  stage would leave both re-deriving through a branch they cannot reach.
 
 For Units 11--13, the declared-name set, runnable mapping, parser/retention
 dispatch and occupant configuration move together. A special quantization

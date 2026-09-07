@@ -23,7 +23,7 @@ schedules a chair, and never touches ``run.py`` -- that is U6's job.
    but the landed ``operations.serving.client.ChairResponse`` (U2) defines
    ``raw_response`` as the *entire* HTTP response body -- the OpenAI JSON
    envelope -- while every adapter's native parser (``feeding.validate_dai_text``,
-   ``common.native_witness.validate_churro_xml``, ``chandra.parse``) expects the
+   ``churro.parse``, ``chandra.parse``) expects the
    model's own output bytes, exactly as the fixture declares them
    (``row["raw_xml"]``, a fixture Chandra placeholder body). ``response.content`` is
    the field ``operations.serving.http.parse_openai_reading`` already extracted
@@ -560,33 +560,31 @@ def _page_messages(
 ) -> tuple[Mapping[str, object], ...]:
     """The message tuple for one page-scoped request, dispatched on prompt shape.
 
-    Three shapes, closed and exact -- a fourth is refused rather than guessed
-    at. Extracted from `page_chair_request` so this dispatch (and, in
-    particular, a new shape) is provable without a sealed row or a measured
-    prompt-token constant standing in the way: it is pure, and every one of
-    its branches is decided by ``set(prompt)`` alone.
+    Two shapes, closed and exact -- a third is refused rather than guessed at.
+    Extracted from `page_chair_request` so this dispatch (and, in particular, a
+    new shape) is provable without a sealed row or a measured prompt-token
+    constant standing in the way: it is pure, and both of its branches are
+    decided by ``set(prompt)`` alone.
 
-    * ``{"system", "user"}`` -- Churro's carried two-message framing
-      (`feeding.churro_prompt`/`feeding.churro_layout_prompt`): a system turn
-      and a user turn carrying the image and the vendor's own user text.
     * ``{"user"}`` -- Chandra's framing (`chandra.prompt`): a single user turn
       carrying the image and the vendor's own ``OCR_LAYOUT_PROMPT`` bytes, with
       no system message at all -- the shape `chandra/model/vllm.py:64-76`
       builds.
-    * ``{"system"}`` -- Churro's registry-fixed framing (design's "Churro
-      {system}"): the whole instruction sits in the system turn and the user
-      turn carries the image alone -- `providers/specs.py::churro_3b_profile()`
-      sets ``user_prompt=None``, so there is no vendor user text to send.
+    * ``{"system"}`` -- Churro's framing (`churro.prompt`): the whole
+      instruction sits in the system turn and the user turn carries the image
+      alone -- both attested profiles set ``user_prompt``/``user_message_text``
+      to ``None``, so there is no vendor user text to send, and
+      `templates/hf.py::HFChatTemplate.build_conversation` builds exactly this.
+
+    The ``{"system", "user"}`` shape this seam also knew is gone from the page
+    path with the modified carry that produced it: neither page chair is asked
+    in two messages any more. `_prompt_texts` still knows it, because DAI is,
+    and DAI is act-scoped and never reaches here.
 
     Every system turn is sent as a one-element list of ``{type: text}`` parts
     (`_system_content`), the vendors' own shape for DAI and Churro alike.
     """
 
-    if set(prompt) == {"system", "user"}:
-        return (
-            {"role": "system", "content": _system_content(prompt["system"])},
-            {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
-        )
     if set(prompt) == {"user"}:
         return ({"role": "user", "content": _user_content(prompt["user"], image_bytes)},)
     if set(prompt) == {"system"}:
@@ -599,8 +597,8 @@ def _page_messages(
         )
     raise SchemaRefusal(
         f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "
-        f"{sorted(prompt)}; this seam knows the churro.v1 system/user framing, churro.v1's "
-        "system-only framing, and chandra.v1's single user turn"
+        f"{sorted(prompt)}; this seam knows churro.v1's system-only framing and chandra.v1's "
+        "single user turn"
     )
 
 
@@ -1026,12 +1024,16 @@ def captured_page_attempt(
     forward as ``observation_payload``, because `run.py` derives the page's
     block geometry from those same bytes rather than from the text.
 
-    Churro parses the closed shape `feeding.churro_layout_prompt` asks for
-    (`common/churro_response.py`) or the trained `<output>` envelope it was
-    fine-tuned on; a JSON body in any other shape lands on the
-    `unrecognized-shape` branch naming what it was, and anything else on the
-    unparseable branch. Both page witnesses carry their bytes forward as
-    ``observation_payload`` for the same reason.
+    Churro reads the vendor's own `HistoricalDocument` grammar
+    (`common/churro_document.py`, the answer `churro.prompt` asks for), the
+    plain reading-order text the paper-era harness itself expected, or the
+    retired `<output>` envelope kept so retained history still reads; a
+    well-formed XML body rooted at anything else lands on the
+    `unrecognized-shape` branch naming which root it was, and a body that offers
+    the grammar and will not parse on the unparseable branch. Both page
+    witnesses carry their bytes forward as ``observation_payload`` for the same
+    reason -- though Churro derives no geometry from them, because
+    `HistoricalDocument` publishes none.
 
     ``page_ordinal`` and ``chair`` are not read by this function's own logic;
     they are accepted to keep this call site self-describing at the one place
@@ -1046,14 +1048,13 @@ def captured_page_attempt(
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
     if adapter_name == "churro.v1":
         generation_declared: dict[str, Any] = dict(feeding.churro_generation())
-        # `"churro"`, not the fixture's `"xml"`. The name selects the parser
-        # (`common/native_witness.py::CHURRO_PARSERS`): a served chair is asked
-        # for the wire contract `feeding.churro_layout_prompt` describes and may
-        # answer in the trained `<output>` envelope instead, so the live branch
-        # is the one that reads both. The fixture caller keeps `"xml"`, which
-        # reaches the trained parser alone, and each posture re-derives through
-        # the branch its own record was written under.
-        parser = "churro"
+        # `"xml"`, the vendor's own `HistoricalDocument` grammar
+        # (`common/churro_document.py`). One name, because this chair has one
+        # grammar: Unit 12's second parser existed only for the JSON coordinate
+        # contract this repository invented, and that is retired with the prompt
+        # that asked for it, so the fixture posture and a served answer read the
+        # same three legal shapes through the same branch.
+        parser = "xml"
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         # `"html"`, the vendor's own layout grammar. The name selects the parser

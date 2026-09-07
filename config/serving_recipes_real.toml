@@ -52,15 +52,17 @@
 # ratio is restored because it is the one the rows were written with, and the
 # first authorized boot is what settles it.
 #
-# CHURRO'S NUMBERS ARE THE LAYOUT INSTRUCTION'S, not the trained carry's.  The
-# live chair is asked for block geometry (`feeding.churro_layout_prompt`) and
-# answers with the JSON object `common/churro_response.py` declares, so its
-# measured prompt is 441 tokens rather than 281 and its dense-page answer 1,631
-# rather than 1,433 -- 318 tokens more per request than the rows above were
-# first weighed with.  Every row still holds it: 4,352 / 6,100 / 8,765 against
-# 8,192 / 8,192 / 16,384.  The old contexts refuse it by a wider margin than
-# they refused the trained framing, which is the same finding, measured over
-# the request this pipeline actually builds.
+# CHURRO'S NUMBERS ARE THE VENDOR FRAMING'S.  The live chair is asked in the
+# system string the vendor's own registry resolves for `stanford-oval/churro-3B`
+# (`common/churro_document.py`), which is one sentence: its measured prompt is
+# 27 tokens.  Its dense-page answer budget is still the 1,631 measured over the
+# retired JSON contract, and `common/request_capacity.py` records that this is
+# an under-reservation of about 208 tokens against the vendor grammar's own
+# envelope, to be re-measured with the whole answer table.  Every row holds the
+# request either way: 3,938 / 5,686 / 8,351 against 8,192 / 8,192 / 16,384,
+# with 208 tokens of movement in the answer term nowhere near any of those
+# margins.  The old 2,048/4,096/8,192 contexts refused it, which is the finding
+# these rows were raised for.
 #
 # `max_pixels` is deliberately NOT reduced to fit.  To make the 24 GB Churro
 # row fit 2,048 tokens it would have to fall to roughly 262,000 -- a 470x700

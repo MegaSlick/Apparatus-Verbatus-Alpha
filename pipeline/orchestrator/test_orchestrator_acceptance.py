@@ -1610,13 +1610,82 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #
 #   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3.
 #
+# **Re-pin, U10 of the vendor-systems units: the Churro adapter on the vendor
+# grammar, onto U9's tree, 38af5b730d.** Both pins move and both file counts
+# move with them, for the same reason U9's did.
+#
+#   Three causes reach a fixture run, and the leaf inventory below accounts for
+#   every changed, added and removed leaf between them, so there is no fourth:
+#
+#     1. `pipeline/3_attestatores/churro.py::present` now prepares a whole page
+#        the way `prepare_ocr_image` does -- `resize_image_to_fit(img, 2500,
+#        2500)` through `common/imaging_ports.py`, then `ensure_rgb` -- and
+#        records it as an `adapter-crop` under the vendor's operation name with
+#        its `colour_mode`. This fixture's pages are 200x260, inside the
+#        vendor's square, so the resize is identity and the published blob is
+#        the RGB conversion of the sealed page. Both scenarios.
+#     2. The retained prompt view is the vendor's registry-resolved system
+#        string alone, where it was this repository's retired two-message carry.
+#        Happy only: the `review` scenario declares no `[[churro_page_response]]`
+#        row, so its Churro page Testimonia carry no `native_capture` at all.
+#     3. The vendor pin and the grammar's own finding now travel on the capture:
+#        `vendor_identity` (repository, commit, and the digest of the carried
+#        string) and `retired-output-envelope`, which says that the fixture's
+#        declared `<output>` bodies arrived in a framing this chair no longer
+#        asks for. Happy only, for the same reason.
+#
+#   **The reading itself is unmoved.** Not one `parse/text` or `payload/payload`
+#   leaf changes in either scenario: `common/churro_document.py` reads the
+#   fixture's `<output>` bodies to exactly the text the retired
+#   `validate_churro_xml` read out of them.
+#
+#   Leaf by leaf against 38af5b730d -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy goes
+#   13,882 -> 13,906 (+28 added, -4 removed) and review 14,402 -> 14,420 (+20,
+#   -2). Every one of those falls in exactly these buckets, and there is no
+#   other:
+#
+#     * 4 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/kind` "page" -> "adapter-crop" and
+#       `payload/presented/transform/operation` "whole" ->
+#       "churro-prepare-ocr-image.v1", on each of the two Churro page Testimonia.
+#     * 2 further changed leaves in happy alone: those two records'
+#       `native_capture/view/prompt/system`.
+#     * 14 added leaves per scenario: the six-field resize recipe plus
+#       `colour_mode = "rgb"` on those same two records.
+#     * 8 added leaves in happy alone: `vendor_identity`'s three fields and the
+#       one `findings[0]/kind`, on each of the two captures.
+#     * 2 removed leaves in happy alone: those two captures'
+#       `native_capture/view/prompt/user`, which the system-only vendor framing
+#       does not send.
+#     * 2 added leaves per scenario: the two new blob digests in the
+#       Attestatores manifest.
+#     * 4 added and 2 removed blob files per scenario: the two published
+#       RGB Churro page images (hence 98 -> 100 and 109 -> 111 files), plus the
+#       Perlector's cross-capture partition blob and the Armarium export bundle,
+#       whose content-addressed names are their own content and so are renamed
+#       rather than added.
+#     * 19 changed values in happy and 21 in review that are content-addressed
+#       blob paths -- the two page Testimonia's `presented/image_path` and
+#       `inputs[0]`, and the Perlector's and Armarium's references to the two
+#       renamed blobs.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 381 in
+#       happy and 437 in review.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3. The
+#   `churro-native` fixture row this unit re-declared in the vendor grammar
+#   (`proof/build_fixture.py`, the cut-mid-element body) belongs to a scenario
+#   neither pin covers, and neither pin moved for it.
+#
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
-# two roots agreed exactly on both scenarios.
-HAPPY_SNAPSHOT_FILES = 98
-REVIEW_SNAPSHOT_FILES = 109
-HAPPY_RUN_TREE_DIGEST = "c6500d87a69ca1c9bf1d414d3e8fa6a89e9782cc57f4cf6e3e221ba603e8f6a6"
-REVIEW_RUN_TREE_DIGEST = "3050e7275b217704c2e5a2596f815eae0d1d8b952dd69134851c10c15c47d3e7"
+# two roots agreed exactly on both scenarios, and the same harness reproduces
+# 38af5b730d's own literals -- c6500d87... and 3050e727..., 98 and 109 files --
+# exactly, which is what says it measures the same thing.
+HAPPY_SNAPSHOT_FILES = 100
+REVIEW_SNAPSHOT_FILES = 111
+HAPPY_RUN_TREE_DIGEST = "c512f0393b6f30d8d151a4f2bc185db3b998939f5db1cacff471d7585d191dcd"
+REVIEW_RUN_TREE_DIGEST = "64f9460623d0b1df87fe8608583c3eb80bbd77363a1ead876430c8e199a506d4"
 
 
 def orchestrate(
