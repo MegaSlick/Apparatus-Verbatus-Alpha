@@ -137,7 +137,14 @@ def test_a_duplicate_member_is_unverified_not_resolved_last_wins():
 
 
 def test_excessive_nesting_is_named_rather_than_crashing_the_stage():
-    body = b'{"schema": "x", "blocks": ' + b"[" * 20_000 + b"]" * 20_000 + b"}"
+    """Pinned at the depth `test_chandra_response.py` and
+    `common/test_structure_answer.py` pin the same refusal at. 20,000 was enough
+    to exhaust the recursive scanner on CPython 3.12 and 3.13; 3.14's scanner
+    walks that depth and the body then failed the schema check instead (PR #100
+    CI). 1,000,000 raises `RecursionError` on every interpreter this runs on,
+    which is what the outcome's name promises."""
+    depth = 1_000_000
+    body = b'{"schema": "x", "blocks": ' + b"[" * depth + b"]" * depth + b"}"
     assert churro_response.parse(body) == {"parse_outcome": "excessive-json-nesting"}
 
 
