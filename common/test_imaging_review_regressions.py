@@ -264,6 +264,11 @@ def _invalid_png(case: str) -> bytes:
             + _chunk(b"IDAT", zlib.compress(b"\0\x80") + b"appended")
             + _chunk(b"IEND", b"")
         )
+    if case == "second-ihdr":
+        header = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+        return valid[:-12] + _chunk(b"IHDR", header) + valid[-12:]
+    if case == "iend-carrying-data":
+        return valid[:-12] + _chunk(b"IEND", b"payload")
     raise AssertionError(f"Unknown test case: {case}")
 
 
@@ -280,6 +285,8 @@ def _invalid_png(case: str) -> bytes:
         # Two cases beyond the kit's list, found by CodeRabbit reviewing the fix.
         ("image-data-before-ihdr", "before its IHDR"),
         ("bytes-after-the-zlib-stream", "past the end of its own stream"),
+        ("second-ihdr", "more than one IHDR"),
+        ("iend-carrying-data", "IEND carries data"),
     ],
 )
 def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) -> None:

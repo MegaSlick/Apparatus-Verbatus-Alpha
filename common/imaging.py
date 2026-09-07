@@ -159,7 +159,9 @@ def _refuse_unreadable_transparency(image: Image.Image) -> None:
     # lose, and refusing it would cost a page for a channel that says nothing
     # (GOALS 1). One channel of the already-bounded page, so the check is a scan
     # of at most `MAX_PIXELS` bytes and never an RGBA materialisation.
-    minimum, _maximum = image.split()[alpha].getextrema()
+    # `getchannel`, not `split()[alpha]`: splitting materialises every band to
+    # read one of them. Found by CodeRabbit.
+    minimum, _maximum = image.getchannel(alpha).getextrema()
     if minimum < 255:
         raise _UnreadableTransparency(
             "a sealed page carries pixels that are not fully opaque, and reading it as "
