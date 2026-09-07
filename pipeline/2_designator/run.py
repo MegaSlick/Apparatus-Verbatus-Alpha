@@ -309,6 +309,12 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "prompt_version",
         "prompt_sha256",
         "answer_schema",
+        # The rule the record's text digests were taken under, and the vendor
+        # code whose prompt bytes were sent and whose grammar was read
+        # (`structure_prompt.vendor_identity`). Both arrived with
+        # `verbatus-structure-prompt.v3`; neither carries text.
+        "text_view",
+        "vendor",
         "call_record_ref",
         "raw_response_ref",
         "custody_ref",
@@ -322,6 +328,11 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "parse_outcome",
         "disposition",
         "reason_code",
+        # How many top-level blocks the chair's answer carried, and the ones
+        # that proposed no rectangle -- recorded rather than dropped, which is
+        # the whole of "malformed-bbox blocks recorded, never minted".
+        "block_count",
+        "blocks_without_proposal",
         "act_count",
         "acts",
         "findings",
@@ -337,7 +348,10 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
 )
 # Geometry, and both of the chair's free strings only as a digest and a length.
 # `label` and `text` are absent from this set on purpose: the day either name
-# reappears in the record, this refuses.
+# reappears in the record, this refuses. `label_vocabulary` is not that name
+# coming back -- it carries which of the vendor grammar's own twenty admitted
+# words the answer named, or `null`, and a closed range is not a reading
+# (`structure_pass._label_fields` argues it in full).
 _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
     {
         "ordinal",
@@ -345,14 +359,54 @@ _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
         "raw_bounds",
         "text_digest",
         "text_length",
+        "label_vocabulary",
+        "label_declared",
         "label_digest",
         "label_length",
+        "nested_bbox_count",
     }
 )
+# One of the chair's blocks that proposed no rectangle: everything an act row
+# carries except the geometry it does not have, plus the closed reason it has
+# instead. Closed separately from the act row, because the two are different
+# shapes and a field that wandered from one into the other should refuse.
+_STRUCTURE_ANSWER_UNPROPOSED_FIELDS = frozenset(
+    {
+        "ordinal",
+        "reason",
+        "blank_page",
+        "label_vocabulary",
+        "label_declared",
+        "label_digest",
+        "label_length",
+        "text_digest",
+        "text_length",
+        "nested_bbox_count",
+    }
+)
+_STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
+    {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
+)
 _STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
-# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
-# declared here or it does not publish.
-_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+# Seven finding kinds: this pass's own `duplicate-rectangle`, and the six the
+# Chandra layout grammar raises (`common/chandra_layout.py`), carried onto the
+# record by `structure_pass._designator_finding`. Declared here independently of
+# that function on purpose -- a validator that imported the producer's own table
+# would agree with the producer by construction and report nothing. `data_bbox`
+# is absent from the malformed-bbox row and `data_bbox_digest` stands in its
+# place: the quoted attribute is bytes the chair wrote, and this stage publishes
+# no string the chair wrote.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {
+    "duplicate-rectangle": frozenset({"kind", "ordinals"}),
+    "malformed-bbox": frozenset(
+        {"kind", "ordinal", "reason", "data_bbox_digest", "data_bbox_truncated"}
+    ),
+    "blank-page-retained": frozenset({"kind", "ordinal"}),
+    "nested-bbox-retained": frozenset({"kind", "blocks", "attributes"}),
+    "unclosed-block": frozenset({"kind", "ordinal", "detail"}),
+    "block-count-mismatch": frozenset({"kind", "parsed_blocks", "top_level_divs"}),
+    "content-outside-blocks": frozenset({"kind", "characters", "detail"}),
+}
 
 
 def _closed_object(value: object, fields: frozenset, what: str) -> dict:
@@ -375,11 +429,29 @@ def _validate_structure_answer_payload(payload: object) -> None:
     _closed_object(
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
+    _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
     for act in acts:
         _closed_object(act, _STRUCTURE_ANSWER_ACT_FIELDS, "structure-answer act")
+    unproposed = record["blocks_without_proposal"]
+    if not isinstance(unproposed, list):
+        raise ContractError(
+            "a Designator structure-answer payload carries no list of the blocks that "
+            "proposed nothing; a block dropped from the mint is recorded or it is lost"
+        )
+    for block in unproposed:
+        _closed_object(
+            block, _STRUCTURE_ANSWER_UNPROPOSED_FIELDS, "structure-answer unproposed block"
+        )
+        reason = block["reason"]
+        if reason not in structure_pass.NO_PROPOSAL_REASONS:
+            raise ContractError(
+                f"a Designator structure-answer block proposed nothing for reason {reason!r}, "
+                f"which is not one of the declared reasons "
+                f"{sorted(structure_pass.NO_PROPOSAL_REASONS)}"
+            )
     findings = record["findings"]
     if not isinstance(findings, list):
         raise ContractError("a Designator structure-answer payload carries no finding list")

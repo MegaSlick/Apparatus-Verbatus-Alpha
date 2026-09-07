@@ -655,18 +655,29 @@ def prompt_digest(*texts: str) -> str:
 # one-entry tuple and nothing else changes.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
-        # Re-measured for `verbatus-structure-prompt.v2` -- the single `user`
-        # turn Chandra's own inference code sends, replacing the system+user
-        # framing the fine-tune never saw. Not one word of the instruction
-        # moved; the system turn's sentence is now the instruction's opening
-        # paragraph, so the whole difference is the chat template's own
-        # per-turn overhead: **329 -> 325**, measured by the same harness, at
-        # the same pinned revision, that reproduces the superseded 329 exactly
-        # over the superseded two-turn prompt.
+        # Re-measured for `verbatus-structure-prompt.v3` -- the carried vendor
+        # prompt (`common/chandra_layout.py::OCR_LAYOUT_PROMPT`) replacing this
+        # repository's own v2 instruction, on tonight's ruling that each witness
+        # is asked in its developers' own bytes. **325 -> 593**, measured
+        # 2026-09-07 by the harness of `TOKEN_COST_REPORT_2026-09-05.md`
+        # section 3 at the same pinned revision, in the message shape
+        # `structure_pass.page_request` builds (one `user` turn, image part
+        # first). The same run reproduces the superseded 325 exactly over the
+        # superseded v2 text, which is what says the two numbers are comparable
+        # rather than merely both present.
+        #
+        # The prompt is 268 tokens dearer because it is a different and larger
+        # instruction: 2,161 characters against v2's 1,192, carrying the
+        # vendor's 36-tag and 14-attribute lists and its nineteen labels. That
+        # cost is not a regression to be tuned away -- trimming the carried
+        # bytes is exactly what would stop them being the vendor's -- and it is
+        # weighed where it belongs, in `request_fits` against the row's own
+        # `max_model_len` (`page_capacity`), on every page, before anything is
+        # sent.
         "designator_structure": (
             SealedPromptTokens(
-                tokens=325,
-                prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
+                tokens=593,
+                prompt_digest="025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8",
                 repo="datalab-to/chandra-ocr-2",
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),
@@ -941,16 +952,19 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # because a row that cannot hold the demanding case cannot serve a dense page.
 #
 # **"Its own declared response shape" is what makes this expire with a prompt,
-# and two of these five rows are now expired.**  Both page chairs were moved to
+# and two of these five rows are now expired.**  Both witness page chairs were moved to
 # their vendor's own output grammar by the vendor systems units, and neither
 # number has been re-taken over section 8's own 800 words, which are not in this
 # tree: `attestator_1`'s 1,520 was a Chandra page JSON and its grammar is now
 # HTML (U9), and `attestator_3`'s 1,631 was the closed JSON object this
 # repository invented for Churro, whose coordinate channel is retired (U10).
-# U14 re-runs the whole table with that report's harness and its own body, which
-# is what keeps the five rows comparable with each other; re-pinning one chair
-# here over a body the other four were not measured on would make the rows mean
+# U14 re-runs those two with that report's harness and its own body, which
+# is what keeps the five rows comparable with each other; re-pinning a chair
+# here over a body the others were not measured on would make the rows mean
 # different things, which is the failure the paragraph below already names.
+# `designator_structure`'s row below is not in that debt: it was re-taken over
+# section 8's own 800 words in the same six blocks, and the paragraph after the
+# Churro finding records the harness and both spellings it was measured over.
 #
 # **What Churro's row costs today is measured, and it is an under-reservation.**
 # Over one identical 800-word register body, tokenized by churro-3B's own
@@ -976,9 +990,40 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # retired JSON contract's same 800 words in 12 blocks measured 1,818 and in 24
 # blocks 2,204.  Twenty-four blocks is not the convention the other four chairs
 # were measured under.
+#
+# `designator_structure` moved with `verbatus-structure-prompt.v3`, for exactly
+# the reason the paragraph above gives: its declared response shape is no longer
+# the `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
+# (`common/chandra_layout.py`). Re-measured 2026-09-07 by this section's own
+# harness -- the same `FRENCH_ACT` to 800 words in the same six blocks, the same
+# tokenizer at the same pinned revision -- at **1575 -> 1645**. The same run
+# reproduces the superseded 1575 and `attestator_1`'s 1520 exactly, which is what
+# says the numbers are comparable.
+#
+# **The 70 tokens are the fixture's escaping, not the grammar's tags**, and that
+# is measured rather than assumed. Written literally, the same six blocks in
+# `<div data-bbox=... data-label=...><p>` measure 1506 -- sixty-nine tokens
+# *fewer* than the JSON object they replace, because the layout grammar's
+# scaffolding is the cheaper of the two. The 1645 is measured over a fixture
+# whose prose is entity-escaped, where the act's thirty-two apostrophes are
+# `&#x27;` at five tokens each rather than `'` at one; that is where all 139
+# tokens of the gap between the two spellings live.  139 rather than 4 x 32
+# because the escape also breaks the merge with the word around it -- "L'an" is
+# two tokens and "L&#x27;an" is seven.
+#
+# **The escaped fixture is what is sealed, deliberately.**
+# `chandra_layout.parse_layout_html` resolves character references
+# (`html.parser` with `convert_charrefs=True`), so a body that spells its
+# apostrophes `&#x27;` is a valid answer under the grammar this chair is read
+# by, and a reserve covering only the cheaper spelling would under-reserve a
+# body the parser accepts -- a cut-off answer is a missed act (GOALS 1). 1645 is
+# therefore an upper bound over the two spellings the grammar admits, and both
+# measurements are recorded here so a later reader can see which was sealed and
+# why. Neither number changes what any shipped row does: a whole 300-dpi page
+# is admitted on all three `designator_structure` tiers at either value.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "designator_structure": 1575,
+        "designator_structure": 1645,
         "attestator_1": 1520,
         "attestator_2": 1426,
         "attestator_3": 1631,

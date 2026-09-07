@@ -1,6 +1,7 @@
 """SPEC_D §1.1, §1.2, §4, §6 (D1 row).
 
-Covers `structure_prompt.py` (sealed prompt text and its digest, and the
+Covers `structure_prompt.py` (the sealed prompt text and its digest, that the
+text is Chandra's own carried bytes rather than a copy of them, and the
 GOVERNANCE 10 no-preference/no-severity/no-confidence check a test can
 actually pin) and the one equality this stage owns for
 `common/structure_answer.py`: its page-pixel conversion against
@@ -20,8 +21,9 @@ import structure_prompt
 from geometry_layer import RESPONSE_BLOB_PREFIX, chandra_layout
 from structure_prompt import STRUCTURE_PROMPT_VERSION, messages, prompt_sha256
 
+from common import chandra_layout as layout_grammar
 from common.contracts.errors import SchemaRefusal
-from common.structure_answer import STRUCTURE_ANSWER_SCHEMA, to_page_bounds
+from common.structure_answer import to_page_bounds
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
@@ -35,20 +37,31 @@ FORBIDDEN_WORDS = ("score", "rank", "prefer", "best", "confidence", "severity", 
 
 
 def test_prompt_version_is_the_declared_seal():
-    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v2"
+    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v3"
 
 
 def test_messages_is_one_user_turn_with_no_system_turn_and_no_image_block():
-    """v2: Chandra's own inference code sends a single `user` message and never
-    a system message, and this chair's occupant is Chandra. The fidelity
-    sentence that was the system turn is still sent, as the instruction's
-    opening paragraph -- the framing changed, not the words."""
+    """v3: Chandra's own inference code sends a single `user` message and never
+    a system message, and this chair's occupant is Chandra."""
     result = messages()
     assert isinstance(result, tuple)
     assert [message["role"] for message in result] == ["user"]
     assert all(isinstance(message["content"], str) and message["content"] for message in result)
-    assert result[0]["content"].startswith(structure_prompt._FIDELITY_TEXT + "\n\n")
-    assert result[0]["content"].endswith(structure_prompt._USER_TEXT)
+
+
+def test_the_sent_text_is_the_carried_vendor_prompt_and_not_a_copy_of_it():
+    """Identity against `common/chandra_layout.py`, not equality with a literal.
+
+    A second copy of 2,161 bytes in this file would pass a `==` check on the day
+    it was written and drift the first time either side was edited -- and the
+    drift that matters is the silent one, where the tree still *says* the chair
+    is asked in the vendor's bytes. There is one carried constant, and this is
+    what asserts that this pass sends that one and nothing else. What the bytes
+    are is the carrier's own business: `chandra_layout` refuses to import if
+    they no longer render to the sha256 recorded against the vendor commit.
+    """
+    (message,) = messages()
+    assert message["content"] is layout_grammar.OCR_LAYOUT_PROMPT
 
 
 def test_prompt_digest_is_stable_across_calls():
@@ -59,14 +72,36 @@ def test_prompt_digest_is_the_pinned_seal():
     """The mechanical half of the seal the module docstring promises: changing
     the prompt text must bump `STRUCTURE_PROMPT_VERSION` and re-pin this digest
     in the same commit, or this test catches the drift."""
-    assert prompt_sha256() == "59e960ae895f97aa949c2bfa627b36fbb9e5a7053a37dcde19752eb485ec1a9a"
+    assert prompt_sha256() == "a37ac6915191183b0ded823e8134cea907b2cf2653b1e715bd3ed3d84d60a054"
 
 
 def test_prompt_digest_changes_if_the_rendered_text_changes(monkeypatch):
     before = prompt_sha256()
-    monkeypatch.setattr(structure_prompt, "_USER_TEXT", structure_prompt._USER_TEXT + " ")
+    monkeypatch.setattr(
+        structure_prompt, "OCR_LAYOUT_PROMPT", layout_grammar.OCR_LAYOUT_PROMPT + " "
+    )
     after = prompt_sha256()
     assert before != after
+
+
+def test_the_vendor_identity_names_the_pin_the_carried_bytes_are_recorded_against():
+    """What every page's record carries beside the model's own provenance.
+
+    The digest field is the *carried prompt's* digest and not `prompt_sha256()`:
+    the two answer different questions -- "are these the vendor's bytes" and
+    "is this the message this pass sends" -- and a record that conflated them
+    would prove the wrong one.
+    """
+    identity = structure_prompt.vendor_identity()
+    assert identity == {
+        "repository": layout_grammar.VENDOR_REPOSITORY,
+        "commit": layout_grammar.VENDOR_COMMIT,
+        "licence": layout_grammar.VENDOR_LICENCE,
+        "prompt_source": layout_grammar.VENDOR_PROMPT_SOURCE,
+        "parser_source": layout_grammar.VENDOR_PARSER_SOURCE,
+        "prompt_sha256": layout_grammar.OCR_LAYOUT_PROMPT_SHA256,
+    }
+    assert identity["prompt_sha256"] != prompt_sha256()
 
 
 def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
@@ -79,28 +114,46 @@ def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
     assert not hits, f"the rendered prompt text contains forbidden word(s): {hits}"
 
 
-def test_prompt_asks_for_exactly_the_declared_json_shape_and_nothing_outside_it():
-    """The shape line is compared whole, not by substring (CodeRabbit round 1,
-    T5). Three `in` checks could not fail on a template that had grown a field,
-    lost `label`, or reordered its members, which is precisely what the
-    prompt's own "exactly this JSON shape and nothing else" sentence promises
-    the chair. The schema name inside the expected line comes from the imported
-    constant rather than a second hard-coded literal, so a schema bump that
-    forgot the prompt text still fails here.
+def test_the_sent_prompt_asks_for_the_grammar_this_pass_reads():
+    """The prompt and the reader agree about the answer they are talking about.
 
-    Its scope is the shape template only. An added *instruction* elsewhere in
-    the prompt is caught by `test_prompt_digest_is_the_pinned_seal`, which pins
-    the whole rendered text by digest; this test pins the one line a served
-    chair is told to answer in.
+    Three claims, each one a way the pair could silently disagree. The
+    instruction has to *ask* for HTML layout blocks with a `data-bbox` and a
+    `data-label`, because `chandra_layout.parse_layout_html` reads exactly
+    those and nothing else; the coordinate denominator the prompt states has to
+    be the `BBOX_SCALE` the conversion divides by, or every rectangle lands
+    scaled by a number the model was never given; and no line of the retired
+    `verbatus-structure-answer.v1` JSON envelope may survive in it, because a
+    chair asked for JSON and read as HTML answers into a reader that will find
+    no blocks at all.
+
+    The first two are also checked one layer down, at import, by
+    `chandra_layout._seal`. They are restated here because that module seals the
+    bytes against the *vendor* while this pass depends on what they ask *this
+    pipeline's reader* for -- and the day those two purposes part company is the
+    day only one of the two checks fails.
     """
-    shape = (
-        f'{{"schema": "{STRUCTURE_ANSWER_SCHEMA}", "acts": '
-        '[{"box_1000": [x0, y0, x1, y1], "text": "...", "label": "..."}]}'
-    )
     rendered = "\n".join(message["content"] for message in messages())
-    assert [line for line in rendered.splitlines() if line.startswith('{"schema"')] == [shape]
-    assert "and nothing else" in rendered
-    assert "reading order" in rendered
+    assert "OCR this image to HTML, arranged as layout blocks." in rendered
+    assert "data-bbox" in rendered and "data-label" in rendered
+    assert f"Bboxes are normalized 0-{layout_grammar.BBOX_SCALE}." in rendered
+    for retired in ('{"schema"', "verbatus-structure-answer", "box_1000"):
+        assert retired not in rendered
+
+
+def test_every_label_the_reader_can_publish_is_a_label_the_prompt_offered():
+    """The vocabulary `structure_pass._label_fields` publishes in clear.
+
+    Its range is closed only if the prompt really offers those words: a label
+    admitted here that the chair was never offered would be this pass reporting
+    a category nobody asked for. The `block` default is the one member that is
+    not offered by the prompt, and it is the vendor parser's own word for a
+    block that declared no label at all -- named apart, rather than folded in.
+    """
+    rendered = "\n".join(message["content"] for message in messages())
+    for label in layout_grammar.OCR_LAYOUT_LABELS:
+        assert f"\n- {label}\n" in rendered
+    assert f"\n- {layout_grammar.UNLABELLED_BLOCK_LABEL}\n" not in rendered
 
 
 # ---------------------------------------------------------------------------

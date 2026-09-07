@@ -445,7 +445,14 @@ def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
 @pytest.mark.parametrize(
     "chair, expected",
     [
-        ("designator_structure", 1575),
+        # Re-measured for `verbatus-structure-prompt.v3`: this chair's declared
+        # response shape is Chandra's layout HTML now (1575 -> 1645). The rise
+        # is the measured fixture's entity-escaped apostrophes, not the tags --
+        # the same blocks written literally measure 1506, below the JSON they
+        # replace -- and the dearer spelling is the one sealed because
+        # `parse_layout_html` accepts it. `common/request_capacity.py` carries
+        # both numbers and the reason.
+        ("designator_structure", 1645),
         ("attestator_1", 1520),
         ("attestator_2", 1426),
         ("attestator_3", 1631),
