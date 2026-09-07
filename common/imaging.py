@@ -496,6 +496,12 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
                 raise ValueError("unsupported PNG: interlaced images are not decodable here")
             seen_ihdr = True
         elif tag == b"IDAT":
+            if not seen_ihdr:
+                # PNG requires IHDR first, and without this an IDAT ahead of it is
+                # simply collected: a later, valid IHDR would then decode a stream
+                # made of bytes from before the header that describes it. Found by
+                # CodeRabbit.
+                raise ValueError("corrupt PNG: image data arrives before its IHDR")
             idat.extend(data)
         elif tag == b"IEND":
             if length != 0:
@@ -562,6 +568,13 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     # stream from one that merely got far enough.
     if not decompressor.eof:
         raise ValueError("corrupt PNG: image data stream is truncated")
+    if decompressor.unused_data or decompressor.unconsumed_tail:
+        # The zlib stream ended and the IDAT chunks kept going. Those bytes are
+        # not image data and not part of any stream this module wrote, and
+        # accepting them is the same smuggling channel as bytes after IEND, one
+        # layer down. The door's own PNG walker refuses the identical shape
+        # (`_inflate_exactly`). Found by CodeRabbit.
+        raise ValueError("corrupt PNG: image data carries bytes past the end of its own stream")
     if len(raw) != expected:
         raise ValueError("corrupt PNG: decompressed data has the wrong length")
 

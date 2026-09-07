@@ -123,6 +123,33 @@ def test_grayscale_crop_preserves_valid_gray_icc_profile() -> None:
         assert image.info.get("icc_profile") == profile
 
 
+def test_grayscale_crop_preserves_a_profile_with_no_system_profile_to_borrow() -> None:
+    """The same assertion as the case above, on a machine that has no profile.
+
+    The reviewer's case skips wherever no valid grayscale profile happens to be
+    installed, which on a CI worker is most of the time — and a regression that
+    skips on the machine that gates the merge is not a regression test
+    (GOVERNANCE 10: a metric that cannot be measured is a failure, not a pass).
+    Found by CodeRabbit. The profile here is a minimal, synthetic, structurally
+    valid grayscale ICC header rather than a vendored system asset: what is
+    under test is that the crop carries the bytes it was given, not that any
+    colour management interprets them.
+    """
+    profile = bytearray(132)
+    profile[0:4] = struct.pack(">I", 132)  # profile size
+    profile[12:16] = b"mntr"  # device class
+    profile[16:20] = b"GRAY"  # data colour space
+    profile[20:24] = b"XYZ "  # profile connection space
+    profile[36:40] = b"acsp"  # the ICC signature every profile carries
+    profile[128:132] = struct.pack(">I", 0)  # an empty tag table
+    profile = bytes(profile)
+    assert profile[36:40] == b"acsp" and profile[16:20] == b"GRAY"
+
+    source = _png(2, 1, 0, b"\0\x40\xc0", _chunk(b"iCCP", b"gray\0\0" + zlib.compress(profile)))
+
+    assert image_shown(crop_png(source, {"x": 0, "y": 0, "w": 2, "h": 1})).icc_profile == profile
+
+
 def test_grayscale_rows_rescales_16bit_samples_consistently() -> None:
     """Use the same full-range /257 policy already described for display crops."""
     image = Image.frombytes("I;16", (4, 1), struct.pack("<4H", 0, 257, 32896, 65535))
@@ -189,6 +216,22 @@ def _invalid_png(case: str) -> bytes:
         return _png(1, 1, 0, b"\0\x80", filter_method=1)
     if case == "trailing-data":
         return valid + b"unexpected-trailing-payload"
+    if case == "image-data-before-ihdr":
+        # A valid file with one extra IDAT in front of the header that describes
+        # it: the decoder must not collect bytes it has no geometry for.
+        return (
+            PNG_SIGNATURE + _chunk(b"IDAT", zlib.compress(b"\0\x80")) + valid[len(PNG_SIGNATURE) :]
+        )
+    if case == "bytes-after-the-zlib-stream":
+        # The zlib stream is complete and the IDAT keeps going, which is the
+        # bytes-after-IEND smuggling channel one layer down.
+        header = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+        return (
+            PNG_SIGNATURE
+            + _chunk(b"IHDR", header)
+            + _chunk(b"IDAT", zlib.compress(b"\0\x80") + b"appended")
+            + _chunk(b"IEND", b"")
+        )
     raise AssertionError(f"Unknown test case: {case}")
 
 
@@ -202,6 +245,9 @@ def _invalid_png(case: str) -> bytes:
         ("invalid-compression-method", "compression method 1"),
         ("invalid-filter-method", "filter method 1"),
         ("trailing-data", "follow IEND"),
+        # Two cases beyond the kit's list, found by CodeRabbit reviewing the fix.
+        ("image-data-before-ihdr", "before its IHDR"),
+        ("bytes-after-the-zlib-stream", "past the end of its own stream"),
     ],
 )
 def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) -> None:
