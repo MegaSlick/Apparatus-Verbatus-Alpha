@@ -1520,20 +1520,25 @@ REVIEW_SNAPSHOT_FILES = 107
 # Attributed by measurement, not by argument. A tree was built here from
 # `origin/main` c9890bab8e itself, and it reproduced that commit's own literals
 # exactly (5b225fa3... and 1936f76c...), so the comparison is against a tree
-# that is what it claims to be. Leaf by leaf against it, exactly one changed
-# leaf per scenario is not a 64-hex digest, a self-hash, or a
-# content-addressed blob path: `run.json.sealed_config_digests.alignment`,
-# which is the sha256 of `config/alignment.toml`. The cause arrives alone, and
-# the merge introduces no third cause of its own. Snapshot counts and exit
-# codes are unmoved at happy 96 / exit 0 and review 107 / exit 3.
+# that is what it claims to be. Leaf by leaf against it, this tree changes 75
+# files / 391 leaves (happy) and 87 / 471 (review), and **not one changed leaf
+# is a non-digest field**: 373 and 442 are 64-hex digests, the remaining 18 and
+# 29 are content-addressed blob paths, plus one renamed blob each in
+# `4_perlector` and `7_armarium` per scenario whose own name is its content
+# digest. In `run.json` exactly three leaves differ:
+# `sealed_config_digests.alignment` -- 925d16d0... -> b5563846..., which is the
+# sha256 of `config/alignment.toml` before and after this branch's edit -- and
+# the `config_digest` and `self_hash` computed over it. The cause arrives
+# alone, and the merge introduces no third cause of its own. Snapshot counts
+# and exit codes are unmoved at happy 96 / exit 0 and review 107 / exit 3.
 #
 # Both values below measured twice, in two independent temporary roots, at
 # canonical run id "r", through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers; the two roots agreed exactly on both
 # scenarios.
-HAPPY_RUN_TREE_DIGEST = "PLACEHOLDER_HAPPY"
+HAPPY_RUN_TREE_DIGEST = "08c97c8e235329c62800e20f8b54358c2c505f4eb504d7522772d5458b329dae"
 # Re-pinned by the same alignment-deadline byte named above the happy digest.
-REVIEW_RUN_TREE_DIGEST = "PLACEHOLDER_REVIEW"
+REVIEW_RUN_TREE_DIGEST = "5476a8f038eb3a98fff295a7c43110cfb22959d7b2cc6be28b3b2fa299b5737d"
 
 
 def orchestrate(
