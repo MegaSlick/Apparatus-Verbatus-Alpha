@@ -11,12 +11,38 @@
 #
 # Every configured witness chair must have an entry, or the dossier builder
 # refuses by name rather than describing a witness with no context at all.
+#
+# The three entries below describe the real vendor systems these chairs are
+# designed to eventually host (VENDOR_SYSTEMS_DESIGN_2026-09-06.md), not the
+# local fixture identity `config/models.toml` still resolves while the real
+# roster is commented out there. That is a deliberate, recorded mismatch, not
+# a GLOSSARY-mandated one: GLOSSARY binds a chair's occupant only in
+# `config/models.toml`, so under today's default fixture roster this file
+# still states the intended vendor's facts beside a rendered `model=attestator_N`
+# that names the fixture, not the vendor (pipeline/4_perlector/prompts.py).
+# The decision (U7, this unit) is to accept that mismatch under the fixture
+# roster rather than block on it or leave the chair with no context: a real
+# run always pairs this file with the real roster together, and no
+# fixture-roster dossier is offered as evidence of a real reading. A stricter
+# split -- a fixture-paired witness_context alongside the real one, refusing
+# when the two disagree -- is the `witness_context-real.toml` /
+# `models-real.toml` pattern on work/first-run-honesty; adopting it here is
+# later work, not this unit's.
+#
+# Every sentence is either read directly off the vendor's own published
+# material or names, in the same sentence, that the vendor publishes nothing
+# further -- no domain is filled in with a plausible guess where the source is
+# silent (RESEARCH_CHANDRA_PIPELINE.md, RESEARCH_DAI_PIPELINE.md,
+# RESEARCH_CHURRO_PIPELINE.md, workbench/raw/research-2026-09-06/).
 
+# datalab-to/chandra-ocr-2, attestator_1 / designator_structure.
 [attestator_1]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "Chandra-2, a Qwen3.5-VL vision-language model fine-tuned by Datalab for general document OCR to an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
 
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR, attestator_2.
 [attestator_2]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "a Qwen2.5-VL-7B fine-tune by Teklia whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries; its training data is two published, ungated Hugging Face Hub datasets linked from the model card and spanning the sixteenth through nineteenth centuries -- Teklia/DAI-CReTDHI-RecordGold-ATR (about 7,000 single-record IIIF-region crops, released under the MIT license) and Teklia/DAI-CReTDHI-RecordGeneanet-ATR (about 30,000 crops linked from geneanet.org page records, no license stated); neither has been inspected here beyond its dataset card."
 
+# stanford-oval/churro-3B, attestator_3.
 [attestator_3]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "a Qwen2.5-VL-3B-Instruct model fine-tuned (standard supervised fine-tuning, per the paper) by Stanford OVAL; the vendor's own model registry gives it a single system instruction to transcribe the entirety of the historical document to XML format, with no separate user message -- not the library's other, model-agnostic diplomatic-transcription default that this project previously mistook for the trained framing; the paper states it was fine-tuned for 5 epochs over roughly 100,000 pages on a training target with no layout geometry, a single continuous text string per page, and its training dataset is declared research-use-only and has not been inspected here beyond that."
