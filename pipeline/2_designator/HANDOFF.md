@@ -611,11 +611,14 @@ replaces the fixture's declared acts is one call per sealed page through
 (`main(serving_factory=...)`) exactly as the Attestatores and the Perlector
 inject theirs.
 
-**What is sent.** One `chat-completions` request per sealed page, the whole
-page, the exact sealed PNG bytes as one `data:image/png;base64` block, with
+**What is sent.** One `chat-completions` request per sealed page, as a single
+`user` turn with no system turn -- Chandra's own inference code sends exactly
+that, and this chair's occupant is Chandra -- carrying the exact sealed PNG
+bytes as one `data:image/png;base64` block **before** the instruction text,
+which is the order that model was fine-tuned in, with
 `image_sha256s=(source_sha256,)` so the client's digest check binds the request
 to the Exemplar. The prompt is code, sealed by digest
-(`structure_prompt.py`, `verbatus-structure-prompt.v1`); it asks for every act as
+(`structure_prompt.py`, `verbatus-structure-prompt.v2`); it asks for every act as
 one rectangle in normalized 0–1000 coordinates of the image as shown, its
 transcription as written, an optional label, in reading order, and states no
 preference, severity floor or confidence budget. No `max_tokens` and no
@@ -646,7 +649,7 @@ this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
 The capacity row is the only one decided before a request exists. A whole
 300-dpi page costs this chair 1,715 prompt tokens at the smallest tier's
 `max_pixels` and 5,100 at the largest, before a word of prompt is counted
-(`common/request_capacity.py`); with the measured 329-token prompt and a
+(`common/request_capacity.py`); with the measured 325-token prompt and a
 measured dense-page answer budget of 1,575, the 24 GB and 48 GB rows cannot
 hold one. vLLM answers such a request with HTTP 400 and no reading at all, so
 `ask_page` computes the arithmetic first and holds the page rather than paying

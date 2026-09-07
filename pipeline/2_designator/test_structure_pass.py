@@ -508,16 +508,17 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
 
     assert exit_code == EXIT_COMPLETE
-    # One whole-page call per sealed page, the sealed prompt first, the sealed
-    # page bytes as the one image, no generation knobs of the stage's own.
+    # One whole-page call per sealed page: one `user` turn and no system turn
+    # (v2, matching Chandra's own inference code), the sealed page bytes as the
+    # one image, no generation knobs of the stage's own.
     assert len(endpoint.requests) == 2
     for request in endpoint.requests:
         messages = request["messages"]
-        assert messages[0]["role"] == "system"
+        assert [message["role"] for message in messages] == ["user"]
         # Image block first, then the instruction -- upstream Chandra's own
         # trained order, and the token sequence the chat template emits.
-        assert messages[1]["content"][0]["type"] == "image_url"
-        assert messages[1]["content"][1]["type"] == "text"
+        assert messages[0]["content"][0]["type"] == "image_url"
+        assert messages[0]["content"][1]["type"] == "text"
         assert "max_tokens" not in request
         assert request["temperature"] == 0
     tree = RunTree(root, RUN_ID)
@@ -540,7 +541,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["findings"] == []
         assert payload["decoding"]["policy"] == "structure"
         assert payload["decoding"]["temperature"] == 0
-        assert payload["prompt_version"] == "verbatus-structure-prompt.v1"
+        assert payload["prompt_version"] == "verbatus-structure-prompt.v2"
         # The retained bytes, the custody binding and the call record all exist
         # under the digests the record names.
         for name in ("raw_response_ref", "custody_ref", "call_record_ref"):
@@ -1269,8 +1270,8 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     """The failure this check exists to move off a billing card.
 
     An A4 300-dpi page is 2,480x3,508. Against the shipped 24 GB row it costs
-    1,715 image tokens; with the measured 329-token structure prompt and a
-    1,575-token dense-page answer that is 3,619 against a `max_model_len` of
+    1,715 image tokens; with the measured 325-token structure prompt and a
+    1,575-token dense-page answer that is 3,615 against a `max_model_len` of
     2,048. Before this check the request went out and vLLM answered HTTP 400
     with a body the client discarded; now the page is held by name, its record
     is published with the whole arithmetic on it, and `_RefusingClient.read`
@@ -1285,10 +1286,10 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     assert answer.mint == ()
     capacity = answer.record["capacity"]
     assert capacity["image_prompt_tokens"] == 1715
-    assert capacity["prompt_tokens"] == 329
+    assert capacity["prompt_tokens"] == 325
     assert capacity["answer_budget"] == 1575
-    assert capacity["need"] == 3619
-    assert capacity["headroom"] == 2048 - 3619
+    assert capacity["need"] == 3615
+    assert capacity["headroom"] == 2048 - 3615
     assert capacity["fits"] is False
     # Nothing that describes a response is invented: there was none.
     for field in ("call_record_ref", "raw_response_ref", "custody_ref", "request_sha256"):
@@ -1308,7 +1309,7 @@ def test_the_same_page_is_admitted_once_the_row_states_a_larger_context():
 def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_that_is_sent():
     """The digest that expires the measured constant, checked where the prompt lives."""
 
-    assert structure_pass.structure_prompt_tokens() == 329
+    assert structure_pass.structure_prompt_tokens() == 325
 
 
 def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
@@ -1331,9 +1332,9 @@ def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
         assert capacity["schema"] == "verbatus-request-capacity.v1"
         assert capacity["fits"] is True
         assert capacity["image_prompt_tokens"] == 48
-        assert capacity["prompt_tokens"] == 329
+        assert capacity["prompt_tokens"] == 325
         assert capacity["answer_budget"] == 1575
-        assert capacity["headroom"] == 4096 - (48 + 329 + 1575)
+        assert capacity["headroom"] == 4096 - (48 + 325 + 1575)
         # The same record reached the retained call record, beside the request.
         tree = RunTree(root, RUN_ID)
         call_record = json.loads(

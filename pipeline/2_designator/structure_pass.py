@@ -418,9 +418,11 @@ def page_request(
     ``capacity`` is the record this request was admitted on; the client copies
     it onto the retained call record so a run's receipts carry the arithmetic.
     """
-    system, user = structure_prompt.messages()
+    # One `user` turn and no system turn: Chandra's own inference code sends
+    # exactly that, and this chair's occupant is Chandra
+    # (`structure_prompt.py`'s docstring carries the evidence and the v2 bump).
+    (user,) = structure_prompt.messages()
     messages = (
-        {"role": system["role"], "content": system["content"]},
         {
             "role": user["role"],
             # The image block first, then the instruction. The chat template

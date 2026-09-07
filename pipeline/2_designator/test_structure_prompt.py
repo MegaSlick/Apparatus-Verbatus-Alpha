@@ -35,14 +35,20 @@ FORBIDDEN_WORDS = ("score", "rank", "prefer", "best", "confidence", "severity", 
 
 
 def test_prompt_version_is_the_declared_seal():
-    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v1"
+    assert STRUCTURE_PROMPT_VERSION == "verbatus-structure-prompt.v2"
 
 
-def test_messages_is_a_system_and_user_turn_with_no_image_block():
+def test_messages_is_one_user_turn_with_no_system_turn_and_no_image_block():
+    """v2: Chandra's own inference code sends a single `user` message and never
+    a system message, and this chair's occupant is Chandra. The fidelity
+    sentence that was the system turn is still sent, as the instruction's
+    opening paragraph -- the framing changed, not the words."""
     result = messages()
     assert isinstance(result, tuple)
-    assert [message["role"] for message in result] == ["system", "user"]
+    assert [message["role"] for message in result] == ["user"]
     assert all(isinstance(message["content"], str) and message["content"] for message in result)
+    assert result[0]["content"].startswith(structure_prompt._FIDELITY_TEXT + "\n\n")
+    assert result[0]["content"].endswith(structure_prompt._USER_TEXT)
 
 
 def test_prompt_digest_is_stable_across_calls():
@@ -53,7 +59,7 @@ def test_prompt_digest_is_the_pinned_seal():
     """The mechanical half of the seal the module docstring promises: changing
     the prompt text must bump `STRUCTURE_PROMPT_VERSION` and re-pin this digest
     in the same commit, or this test catches the drift."""
-    assert prompt_sha256() == "a476df092ce6c628cab02b034b371da1b2057561f71f2a0c8422557a7600dc0e"
+    assert prompt_sha256() == "59e960ae895f97aa949c2bfa627b36fbb9e5a7053a37dcde19752eb485ec1a9a"
 
 
 def test_prompt_digest_changes_if_the_rendered_text_changes(monkeypatch):

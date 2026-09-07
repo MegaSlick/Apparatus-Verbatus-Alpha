@@ -637,9 +637,17 @@ def prompt_digest(*texts: str) -> str:
 # they were taken over.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyType(
     {
+        # Re-measured for `verbatus-structure-prompt.v2` -- the single `user`
+        # turn Chandra's own inference code sends, replacing the system+user
+        # framing the fine-tune never saw. Not one word of the instruction
+        # moved; the system turn's sentence is now the instruction's opening
+        # paragraph, so the whole difference is the chat template's own
+        # per-turn overhead: **329 -> 325**, measured by the same harness, at
+        # the same pinned revision, that reproduces the superseded 329 exactly
+        # over the superseded two-turn prompt.
         "designator_structure": SealedPromptTokens(
-            tokens=329,
-            prompt_digest="9e1a536bf5cdfda66e50e1d2f39df04de5130812c716f2e5b251092ee5973082",
+            tokens=325,
+            prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
             repo="datalab-to/chandra-ocr-2",
             revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
         ),

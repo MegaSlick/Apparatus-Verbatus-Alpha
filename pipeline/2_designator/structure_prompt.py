@@ -21,6 +21,19 @@ once at the edge from the sealed page's own dimensions
 changes only as a reviewed edit to this file -- rewording the instruction, not
 tuning it toward an answer -- and every change bumps the version so a run
 produced under one wording is never read as though it came from another.
+
+**One `user` turn, no system turn (v2).** The occupant of this chair is
+Chandra, and Chandra's own inference code sends a single `user` message and
+never a system message at all (`chandra/model/vllm.py`, `model/hf.py`); its
+`chat_template.jinja` at the pinned revision does not even admit an image in a
+system message. This pass prepended a system turn the fine-tune never saw, and
+so the two chairs the same model occupies -- `designator_structure` here and
+`attestator_1` in `pipeline/3_attestatores/chandra.py`, which has always sent
+one instruction -- did not match each other either. **Not one word of the
+instruction was dropped to fix that**: the sentence that was the system turn is
+now the instruction's opening paragraph, verbatim, exactly as
+`chandra.py::_LIVE_INSTRUCTION` already opens with its own fidelity sentence.
+What changed is the framing, and only the framing.
 """
 
 from __future__ import annotations
@@ -29,9 +42,11 @@ from typing import Final
 
 from common.contracts.canonical import digest_bytes
 
-STRUCTURE_PROMPT_VERSION: Final = "verbatus-structure-prompt.v1"
+STRUCTURE_PROMPT_VERSION: Final = "verbatus-structure-prompt.v2"
 
-_SYSTEM_TEXT: Final = (
+# Formerly this pass's `system` turn, now the instruction's opening paragraph
+# (module docstring). The words are unchanged; only the turn they travel in is.
+_FIDELITY_TEXT: Final = (
     "You are transcribing one page of a handwritten or printed record for "
     "an archival pipeline. Report exactly what is on the page: nothing "
     "corrected, modernized, summarized, or left out."
@@ -61,11 +76,8 @@ _USER_TEXT: Final = (
 
 
 def messages() -> tuple[dict[str, str], ...]:
-    """The system and user turns; the image block is appended by the pass."""
-    return (
-        {"role": "system", "content": _SYSTEM_TEXT},
-        {"role": "user", "content": _USER_TEXT},
-    )
+    """The one `user` turn; the image block is put before it by the pass."""
+    return ({"role": "user", "content": f"{_FIDELITY_TEXT}\n\n{_USER_TEXT}"},)
 
 
 def prompt_sha256() -> str:
