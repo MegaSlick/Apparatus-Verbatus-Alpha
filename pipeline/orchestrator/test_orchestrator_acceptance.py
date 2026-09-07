@@ -1441,64 +1441,66 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
 #
-# Request-capacity re-pin: `config/pod_placement.toml`'s `context_cap` moved
-# with the serving rows -- 2,048/4,096/8,192 to 8,192/16,384/16,384 -- because a
-# 300-dpi page costs a Qwen-VL chair between 1,715 and 6,693 prompt tokens and
-# the old caps admitted no row that could serve one. Unit 17 seals that file
-# byte-for-byte into every run's `config_digest`, so both scenario trees legally
-# move without gaining an artifact, exactly as its own ledger entry above
-# records for this file.
+# Merge re-pin (`origin/main` adfadbc0d4 -- the request-capacity unit -- into
+# `work/churro-native-layout`, Unit 12). **Both parents moved these pins, for
+# two different causes, and neither parent's literals describe this tree**:
+# each was measured before the other's change existed. One entry replaces the
+# two, because there is now one tree and it has one story.
 #
-# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
-# the preceding commit's bytes and every other change on this branch in place,
-# the happy tree reproduced 6dadabc8... at 96 files and exit 0 -- so the whole
-# move is those bytes, and nothing else on this branch reaches a fixture run.
-# (It does not: the capacity check runs only on the live path, and the real
-# serving catalogue these rows live beside is never sealed into either
-# scenario.)
+#   Cause 1 (from Unit 12, parent 56d74e4bb3). Tyrel's ruling on F2: a
+#   continuation page's testimony content coverage is recorded unmeasured by
+#   name rather than dropped. Page 2's finding carries `shortfall: None` with a
+#   reason instead of `shortfall: True`, and every Recensor review, recovery
+#   request, Armarium manifest entry and export row carries the new
+#   `testimony_content_coverage_continuation` restatement -- empty for an act
+#   that spans one page, one row for the act that continues onto page 2.
 #
-# Checked leaf by leaf against that same reverted tree: happy 75 changed files
-# and 397 changed JSON leaves, **not one of them a non-digest field** -- every
-# changed leaf is a 64-hex digest or a content-addressed blob path, plus one
-# renamed blob each in `4_perlector` and `7_armarium` whose own name is its
-# content digest. Counts and exits are unmoved: happy 96 at exit 0, review 107
-# at exit 3.
+#   Cause 2 (from the capacity unit, parent adfadbc0d4). `config/
+#   pod_placement.toml`'s `context_cap` moved with the raised serving rows --
+#   2,048/4,096/8,192 to 16,384 at every tier -- because a 300-dpi page costs a
+#   Qwen-VL chair between 1,715 and 6,693 prompt tokens and the old caps
+#   admitted no row that could serve one. Unit 17 seals that file byte-for-byte
+#   into every run's `config_digest`, so both scenario trees move without
+#   gaining an artifact.
 #
-# Measured twice, in two independent temporary roots, at canonical run id "r",
-# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
-# two roots agreed exactly on both scenarios.
-# Reviewer re-pin, and the cause is again `config/pod_placement.toml` alone.
-# An independent reader of the capacity unit found that the Perlector's own
-# request -- a region crop and a page render per capture view -- costs 14,014
-# tokens at an ordinary two-view act even at the 24 GB tier's `max_pixels`, so
-# the 8,192 that row stated could not serve it. The row moved to 16,384 and the
-# tier's `context_cap` moved with it, or preflight would refuse the row. That
-# file is sealed byte-for-byte into every run's `config_digest` (Unit 17), so
-# both scenario trees move again without gaining an artifact.
+# Neither cause adds or removes an artifact and neither moves an outcome:
+# counts and exits are unmoved on both sides at happy 96 / exit 0 and review
+# 107 / exit 3.
 #
-# Attributed, not assumed. With `config/pod_placement.toml` alone reverted to
-# the branch tip's bytes and every other change in place, happy reproduced
-# ef81b27f... at 96 files and exit 0 and review reproduced 6c3f5a42... at 107
-# files and exit 3 -- the two pins this entry replaces -- so the whole move is
-# those bytes. Nothing else applied here reaches a fixture run: the per-attempt
-# capacity refusal in the Attestatores and the Perlector's answer reserve are
-# both on the live path, which no scenario takes, and the real serving
-# catalogue is never sealed into either.
+# **Each cause is attributed to its own parent by measurement, not by
+# argument.** Both parent trees were built here from their own commits and each
+# reproduced its own superseded literals exactly -- 56d74e4bb3 gave
+# c97fee05... and 5c9b5bd2..., adfadbc0d4 gave ea065113... and 8a1027f3... --
+# so the two comparisons below are against trees that are what they claim to
+# be. Then, leaf by leaf:
 #
-# Checked leaf by leaf against that same reverted tree: happy 75 changed files
-# and 397 changed JSON leaves, review 87 and 444, and not one of them a
-# non-digest field -- every changed leaf is a 64-hex digest or a
-# content-addressed blob path, plus one renamed blob per scenario in
-# `4_perlector` and `7_armarium` whose own name is its content digest. Counts
-# and exits are unmoved: happy 96 at exit 0, review 107 at exit 3.
+#   * Against Unit 12's parent, this tree changes 75 files / 377 leaves (happy)
+#     and 87 / 444 (review), and **not one changed leaf is a non-digest
+#     field**: 365 and 427 are 64-hex digests, the remaining 12 and 17 are
+#     content-addressed blob paths, plus one renamed blob each in `4_perlector`
+#     and `7_armarium` per scenario whose own name is its content digest. That
+#     is cause 2 arriving on Unit 12's tree, and nothing else.
+#   * Against the capacity unit's parent, this tree changes 15 files / 154
+#     leaves (happy) and 20 / 114 (review), and **every non-digest leaf belongs
+#     to the new field** -- 99 in happy and 54 in review, all under
+#     `testimony_content_coverage_continuation` -- beside 53 and 58 digests,
+#     two content-addressed blob paths each, and the one renamed `7_armarium`
+#     bundle blob per scenario whose name is its own content digest. That is
+#     cause 1 arriving on main's tree, and nothing else.
+#
+# So the merge introduces no third cause of its own. Churro's re-measured
+# prompt and answer constants (`common/request_capacity.py`, re-sealed here
+# because Unit 12 changed the instruction the live chair is sent) reach no
+# fixture run: the capacity check is live-path only, and the real serving
+# catalogue is never sealed into either scenario.
 #
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "ea0651138240e5d3a4dca781bb2846c95723ee89a2e150e4244ba5fa9c96afc6"
-REVIEW_RUN_TREE_DIGEST = "8a1027f3bc7a542c13f86bd25dd9d1e6c4207c8f358d571c7dd81332fcda2fab"
+HAPPY_RUN_TREE_DIGEST = "5b225fa3d64f0131974fdd3b777c42265e5fe2e28c5264131b2e20b88602fa24"
+REVIEW_RUN_TREE_DIGEST = "1936f76c1b7063390fa4425c19df774e33161715e50867b4033b6465a6785b62"
 
 
 def orchestrate(
@@ -3368,6 +3370,67 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
     assert export["non_delivered"] == []
+    assert {item["category"] for item in export["delivered"]} == {"delivered"}
+
+
+def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
+    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+
+    Both acts are marked out on page 1; a2 continues onto page 2, and both page
+    witnesses transcribe page 2's whole text. No attachment there can ever be
+    `aligned` — the Perlector declares every continuation row
+    `continuation-page-no-act-anchor` because the act anchor is derived from the
+    act's own primary page — so the span union page 2's text was diffed against
+    is empty by declaration, not by measurement.
+
+    Until this ruling the Recensor called that `shortfall: True` on a page no
+    act's review read, and the export said DELIVERED over 34 transcribed
+    non-whitespace characters nothing accounted for. Now the observation is kept
+    and the verdict is withheld: `shortfall: None`, the reason naming the cause,
+    the chairs, the page and the count, restated on the act that spans the page
+    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    happy path still establishes both acts — this is a visible partial, not a
+    hold — and the Perlector gap that would make the measurement real is filed.
+    """
+    _, tree = happy_run
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "complete"
+    assert export["aggregate"]["reasons"] == []
+
+    review_records = artifacts(tree, RECENSOR, "review")
+    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
+    # Counted before anything is read out of it: a second review for one act is
+    # an accounting failure, and a lookup keyed by `act_key` would silently keep
+    # whichever of the two the manifest happened to list last.
+    assert len(reviews_by_key) == len(review_records)
+    assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
+    rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
+    assert [row["page_ordinal"] for row in rows] == [2]
+    row = rows[0]
+    assert row["shortfall"] is None
+    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"]
+    for chair, measured in sorted(row["by_chair"].items()):
+        assert measured["attached_spans"] == [], chair
+        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
+        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
+    assert "continuation-page-no-act-anchor" in row["reason"]
+    assert "page 2's testimony content coverage is unmeasured" in row["reason"]
+    # Unmeasured is not a hold and not a route input: a2 is delivered.
+    assert reviews_by_key["a2"]["outcome"] == "accepted"
+
+    entry_payloads = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    entries = {payload["act_key"]: payload for payload in entry_payloads}
+    delivered = {item["act_key"]: item for item in export["delivered"]}
+    # The same count, for the same reason, on both restatements.
+    assert len(entries) == len(entry_payloads)
+    assert len(delivered) == len(export["delivered"])
+    for restatement in (entries, delivered):
+        assert restatement["a1"]["testimony_content_coverage_continuation"] == []
+        assert restatement["a2"]["testimony_content_coverage_continuation"] == rows
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 

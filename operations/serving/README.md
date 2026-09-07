@@ -483,14 +483,17 @@ chairs at all three tiers — so the selector under test is the sealed one, not 
 test-only switch.
 
 Two facts that suite establishes and no single-stage suite can. First, a live
-run reaches a **sealed terminal export that is held for review, not delivered**:
-both acts are read and every reading names the exact bytes its engine sent, but
-two witnesses of a floor of three count. Chandra now reads under its own
-response contract and its act attachment aligns live; what is still missing is
-Churro, which publishes no native layout and so never attaches to an act by
-geometry on a live path — a Churro layout channel is Unit 12's obligation, and
-the export stays held until it lands (`pipeline/3_attestatores/HANDOFF.md`).
-Second, two independent drivers reach the same
+run reaches a **sealed terminal export**, and since Unit 12 that export is
+**delivered**: both acts are read, every reading names the exact bytes its
+engine sent, and three witnesses of a floor of three count. Chandra reads under
+its own response contract; DAI reads its act crops; Churro, which had no layout
+channel because nobody had asked it for one, is now asked for the closed shape
+`common/churro_response.py` declares and attaches by its own block geometry
+(`pipeline/3_attestatores/HANDOFF.md`). That is one scripted run over a fixture
+whose page text is exactly its two acts, and it is not a proven pipeline
+(GOVERNANCE 10): a real register page carries material no proposal covers, and
+testimony content coverage will hold it. Second, two independent drivers reach
+the same
 fixture tree byte for byte: the orchestrator's own subprocess chain on one
 side, and — on the other — the identical driver this module uses for the live
 seam, pointed at the committed fixture catalogue, with `--placement-tier`

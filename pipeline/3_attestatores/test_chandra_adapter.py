@@ -380,6 +380,55 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
         )
 
 
+def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary(
+    tmp_path, monkeypatch
+):
+    """The retain recipe inside that branch is Chandra's, and now it says so.
+
+    `FIXTURE_NATIVE_RESPONSE_ADAPTERS` decides whose fixture rows may declare
+    `raw_response` bytes; the branch it opens retains them through Chandra's own
+    registry entry, `chandra.FIXTURE_PROMPT` and the `json` parser. Widening the
+    set without writing the new adapter's own branch would therefore publish a
+    Testimonium whose retained view and parser name a chair that never produced
+    those bytes -- the resolved identity and the record disagreeing, which
+    GOVERNANCE 6 does not permit. A comment said so and nothing checked it; this
+    is the check, and it fires where the set widens rather than at whatever
+    later reads the misfiled record.
+    """
+    attestatores = _load_stage_module("run")
+    monkeypatch.setattr(
+        attestatores, "FIXTURE_NATIVE_RESPONSE_ADAPTERS", frozenset({"chandra.v1", "churro.v1"})
+    )
+    resolved = replace(
+        load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"],
+        witness_adapter="churro.v1",
+    )
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-raw",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared text",
+                    "raw_response": "<output>declared text</output>",
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="would be retained through Chandra's recipe"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+        )
+
+
 def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
@@ -572,7 +621,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
         "sha256": digest_bytes(raw),
     }
-    surviving, overshoots = attestatores.chandra_page_partition_entries(
+    surviving, overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert surviving == [
@@ -648,7 +697,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
 def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
     """Two acts on one page legitimately re-derive the same chair's response.
 
-    `publish_page_testimonia_and_attachments` calls `chandra_page_partition_entries`
+    `publish_page_testimonia_and_attachments` calls `page_partition_entries`
     once per act on a page for a page-scoped Chandra chair, and two acts commonly
     share one raw response (the page record already dedupes `raw_response_refs` for
     exactly this reason). Re-deriving an out-of-page block from that same response
@@ -667,10 +716,10 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     }
 
     # Two acts on the page independently re-derive the identical response.
-    first_survivors, first_overshoots = attestatores.chandra_page_partition_entries(
+    first_survivors, first_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
-    second_survivors, second_overshoots = attestatores.chandra_page_partition_entries(
+    second_survivors, second_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert first_overshoots == second_overshoots
@@ -756,7 +805,7 @@ def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, mess
     observed[0][field] = value
 
     with pytest.raises(SchemaRefusal, match=message):
-        attestatores.chandra_page_partition_entries(
+        attestatores.page_partition_entries(
             observed,
             page_size=(200, 260),
             raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
@@ -775,7 +824,7 @@ def test_an_in_page_observation_keeps_its_supported_text_span():
         }
     ]
 
-    survivors, findings = attestatores.chandra_page_partition_entries(
+    survivors, findings = attestatores.page_partition_entries(
         observed,
         page_size=(200, 260),
         raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
@@ -1094,3 +1143,33 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
     )
     assert out_of_order.returncode == 2
     assert not list((held_root / "r" / ATTESTATORES / "artifacts" / "stage-seal").glob("*.json"))
+
+
+def test_a_page_witness_that_mixed_reported_geometry_with_an_echo_is_refused_by_name():
+    """The partition seam fails closed on a shape no adapter has a rule for.
+
+    Both page adapters return either reported geometry or the no-geometry echo,
+    never both, so this is unreachable today. Filtering a mix instead of refusing
+    it would publish a page geometry derived from half a record and
+    indistinguishable from a complete one (GOVERNANCE 2), which is why the
+    behaviour is pinned rather than left to the adapters' current manners.
+    """
+    attestatores = _load_stage_module("run")
+    echo = {
+        "ordinal": 0,
+        "bounds": {"x": 0, "y": 0, "w": 4, "h": 4},
+        "bounds_source": "presented",
+        "span": None,
+    }
+    native = {
+        "ordinal": 1,
+        "bounds": {"x": 1, "y": 1, "w": 2, "h": 2},
+        "bounds_source": "native",
+        "span": None,
+    }
+
+    assert attestatores._partition_geometry([]) == []
+    assert attestatores._partition_geometry([echo]) == []
+    assert attestatores._partition_geometry([native]) == [native]
+    with pytest.raises(SchemaRefusal, match="reported geometry and a presentation echo"):
+        attestatores._partition_geometry([echo, native])

@@ -14,14 +14,16 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
 from threading import RLock
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Final, Iterator
 
+from common import churro_response
 from common.contracts.canonical import digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     derive_churro_capture,
+    parse_churro_response,
     validate_churro_xml,
 )
 from common.native_witness import (
@@ -56,7 +58,23 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")})
+_RUNNABLE_PARSERS = frozenset(
+    {
+        ("chandra.v1", "json"),
+        # Churro's two postures, and the name selects the parser rather than
+        # labelling one dispatcher: `xml` is the committed fixture's, reaching
+        # `validate_churro_xml` alone; `churro` is the live path's, reaching
+        # both of this chair's legal shapes. `verify_native_capture_bytes`
+        # re-derives under the name the record carries, so each posture
+        # re-derives through the branch it was recorded under. One name for both
+        # was refused twice over: `parser` sits inside the pinned capture the
+        # fixture retains, so renaming it would move `HAPPY_RUN_TREE_DIGEST`, and
+        # calling a JSON parse "xml" is a record that reads false (GOVERNANCE 10).
+        ("churro.v1", "xml"),
+        ("churro.v1", "churro"),
+        ("dai.v1", "text"),
+    }
+)
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 
@@ -101,6 +119,114 @@ def churro_prompt() -> dict[str, str]:
         "and layout of the text."
     )
     return {"system": system, "user": user}
+
+
+#: Names the wording `churro_layout_prompt` currently sends, so a commit, a
+#: report or a later comparison can say which instruction a reading was taken
+#: under without quoting the whole thing. Deliberately NOT written into the
+#: retained record: `view.prompt` already carries the live instruction's own
+#: `system` and `user` strings verbatim and nonblank
+#: (`_validate_churro_capture`), a rewording is visible there as different
+#: bytes, and any digest is recomputable from them -- so a version field beside
+#: them would be a third spelling of one fact. It lives here, in source, where a
+#: human reads it.
+CHURRO_LAYOUT_PROMPT_VERSION: Final = "churro-layout-prompt.v1"
+
+
+def churro_layout_prompt() -> dict[str, str]:
+    """The live instruction: the trained framing, asked for block geometry.
+
+    **A modified carry.** The bytes below are `churro_prompt`'s -- Apache-2.0,
+    from the Churro release's `prompts/ocr.py` via the quarantined prior adapter,
+    under the licence citation that function's docstring carries in full -- with
+    exactly two output-format instructions replaced by this repository's own
+    wording. Every instruction about *how to transcribe* is reproduced byte for
+    byte: clauses 1 through 5, and the closing paragraph asking for reading order
+    and layout. Only the format changes.
+
+    **What was replaced, quoted beside its replacement.**
+
+    The system message's third sentence was::
+
+        Only output the transcribed text between <output> and </output> tags.
+
+    and is now the sentence naming the JSON object below. Clause 6 was::
+
+        6. Output the OCR result in the following format:
+
+        <output>
+        extracted text here
+        </output>
+
+    and is now clause 6 as written below. The system sentence is replaced as
+    well as the numbered clause because leaving it would send two contradictory
+    format instructions in one call -- the honest reading of that record is not
+    "the model ignored the new clause" but "the request asked for two things",
+    and GOVERNANCE 10 does not let a measurement rest on which one it happened
+    to obey. The design note named clause 6 alone; this is the same edit carried
+    to the one other place the same instruction appears.
+
+    **The trained shape stays legal.** A model that answers in
+    `<output>...</output>` anyway still reads, retains and aligns, and lands
+    exactly where it lands today: `native_witness.parse_churro_response` accepts
+    both shapes on the live path. Nothing here can make the transcription worse
+    except these prompt bytes themselves, which is why the replaced text is
+    quoted above and the sent bytes are retained in `view.prompt` on every
+    capture -- a later comparison reads the wording, not a digest of it.
+
+    **No preference, floor or budget.** The instruction asks for the shape and
+    for the page; it does not tell the model how confident to be, how much to
+    report, or which way to resolve anything it finds (GOVERNANCE 10).
+    """
+    carried = churro_prompt()
+    replaced_sentence = " Only output the transcribed text between <output> and </output> tags."
+    layout_sentence = (
+        " Report the transcription as the JSON object described in the instructions, and "
+        "output nothing outside it."
+    )
+    replaced_clause = (
+        "6. Output the OCR result in the following format:\n\n"
+        "<output>\nextracted text here\n</output>\n\n"
+    )
+    layout_clause = (
+        "6. Report the result as layout blocks in reading order. For each block, report:\n\n"
+        "- box_1000: one rectangle [x0, y0, x1, y1] in normalized integer coordinates from 0 "
+        "to 1000, measured against the image exactly as shown -- x0,y0 the top-left corner "
+        "and x1,y1 the bottom-right corner.\n"
+        "- text: that block's transcription, following instructions 2 to 5 above.\n\n"
+        "Respond with exactly this JSON object and nothing else -- no explanation, no "
+        "markdown fencing, no text outside the JSON object:\n\n"
+        f'{{"schema": "{churro_response.PAGE_RESPONSE_SCHEMA}", "blocks": '
+        '[{"box_1000": [x0, y0, x1, y1], "text": "..."}]}\n\n'
+        "If the page holds no text, report an empty blocks list.\n\n"
+    )
+    # Both halves are derived from the carry by the same replace-and-refuse, and
+    # neither is spelled out again here. The system message used to be written
+    # as a whole new string beside the carried one: the guard below then proved
+    # the provenance of the user clause and asserted it for the system sentence,
+    # so an edit to `churro_prompt`'s system string -- a different transcription
+    # instruction, a reworded role -- would have left the live prompt silently
+    # carrying the old one while this function's docstring went on calling it a
+    # modified carry of the current bytes. One rule, applied twice, and each
+    # half refuses by name if the sentence it replaces has moved.
+    for what, clause, source in (
+        ("system message's output-format sentence", replaced_sentence, carried["system"]),
+        ("output-format clause", replaced_clause, carried["user"]),
+    ):
+        if clause not in source:
+            # The carried bytes are the thing being modified. If the text this
+            # function replaces is not in them, the carry moved and this is no
+            # longer the modified-carry it documents: refuse rather than send a
+            # prompt whose provenance the docstring above describes wrongly.
+            raise SchemaRefusal(
+                f"the carried Churro prompt no longer contains the {what} "
+                "churro_layout_prompt replaces; re-derive the modified carry against "
+                "churro_prompt before sending it"
+            )
+    return {
+        "system": carried["system"].replace(replaced_sentence, layout_sentence),
+        "user": carried["user"].replace(replaced_clause, layout_clause),
+    }
 
 
 def churro_generation() -> dict[str, int]:
@@ -436,6 +562,7 @@ def retain_model_view(
                 transport_stop_reason,
                 parser=parser,
                 xml_parser=validate_churro_xml,
+                churro_parser=parse_churro_response,
                 repetition_detector=detect_repetition,
             )
         )

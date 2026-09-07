@@ -2449,6 +2449,60 @@ def reconcile_page_roles(
             )
 
 
+#: The alignment reason the Perlector and the Attestatores both force onto every
+#: attachment row belonging to a page that is not its act's primary page
+#: (`pipeline/4_perlector/run.py`, `pipeline/3_attestatores/run.py`). The act
+#: anchor is derived from the act's own primary page, so a continuation page has
+#: none and no row on it can ever reach `aligned`.
+CONTINUATION_NO_ACT_ANCHOR = "continuation-page-no-act-anchor"
+
+
+def continuation_unmeasured_reason(
+    ordinal: int,
+    observations: list[tuple[str, int, list]],
+    *,
+    beside_a_measured_verdict: bool = False,
+) -> str:
+    """Say, in one sentence, why a declared-unanchored act's uncovered text has no verdict.
+
+    The observation itself is kept — the chair, the page, the uncovered count —
+    because it is real and somebody has to be able to act on it. What is refused
+    is calling it a shortfall: no span of a declared act can enter the union its
+    page text was diffed against, by declaration rather than by measurement
+    (GOVERNANCE 10).
+
+    Two situations, and the sentence names which one it is describing.  Where the
+    chair has no aligned spans on the page at all, the whole page is unmeasured
+    and this is the page's own `reason` — the wording Tyrel's ruling produced,
+    unchanged. Where it does have some, only the declared acts' share is
+    unmeasured; the page carries a real verdict and this rides beside it as
+    `unmeasured_reason`, scoped to those acts, because the page-wide sentence
+    would be a false statement about a page that *was* measured.
+    """
+    observed = "; ".join(
+        f"chair {chair!r} saw {count} uncovered non-whitespace character(s) beside "
+        f"{', '.join(acts)} declared unanchored"
+        for chair, count, acts in sorted(observations)
+    )
+    if beside_a_measured_verdict:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured for the acts the "
+            f"Perlector declares {CONTINUATION_NO_ACT_ANCHOR}, so no witness span can be "
+            "attached to them and what is uncovered beside them is not a measured shortfall"
+        )
+    else:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured: the Perlector declares "
+            f"every act attachment on this continuation page {CONTINUATION_NO_ACT_ANCHOR}, so no "
+            "witness span can be attached there and what is uncovered is not a measured shortfall"
+        )
+    return (
+        f"{subject} "
+        f"({observed}); continuation-page alignment in the Perlector is what would make this "
+        "measurement real"
+    )
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -2550,6 +2604,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
     # converse orphan (a page record no act owns) before any finding is built.
     reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
+    # Page ordinal -> the (chair, uncovered count, declared-unanchored acts) rows
+    # whose uncovered text no attachment on this page could ever have covered.
+    unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         # `current_page_testimonia` types only the page ordinal and the chair,
@@ -2634,6 +2691,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # retirement is meant to preserve.
             continue
         spans = []
+        declared_unanchored: list[str] = []
         for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
             alignment = row.get("alignment")
             if (
@@ -2648,6 +2706,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ):
                     raise FatalAccounting("attached page witness has malformed alignment span")
                 spans.append((span["start"], span["end"], act_id))
+            elif (
+                isinstance(alignment, dict)
+                and alignment.get("status") == "unaligned"
+                and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
+            ):
+                # Not attachment-conditional, deliberately. The declaration is
+                # written onto every continuation row whichever way `attached`
+                # came out (`pipeline/3_attestatores/run.py` derives the row per
+                # contributing page and forces this alignment before geometry is
+                # consulted), and it is the declaration -- not the geometry --
+                # that makes an aligned span unreachable here. Requiring
+                # `attached` would leave the live seam's own continuation page,
+                # whose rows are unattached, reported as a measured shortfall.
+                declared_unanchored.append(act_id)
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
@@ -2658,7 +2730,27 @@ def testimony_content_findings(context) -> dict[int, dict]:
             ],
             "uncovered_non_whitespace": uncovered,
         }
-        finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
+        if declared_unanchored and uncovered["count"]:
+            # Recorded whichever way the verdict goes: this chair saw uncovered
+            # text beside acts whose spans could never have covered it, and that
+            # observation is what names the gap the Perlector has yet to close.
+            # The settlement below decides whether it becomes the page's reason
+            # or rides beside a measured one.
+            unanchored_by_page.setdefault(ordinal, []).append(
+                (chair, uncovered["count"], sorted(declared_unanchored))
+            )
+        if spans or not declared_unanchored:
+            # Only an *empty* span union is unmeasured. Where this chair has
+            # aligned spans on the page, the diff was taken against a real union
+            # -- a mixed page carries one act starting here beside another
+            # continuing through -- so its uncovered text is a measurement like
+            # any other and raises the page's shortfall. Suppressing it because
+            # some other act on the page declared itself unanchorable would hide
+            # a real coverage loss behind a neighbour's declaration, which is
+            # the missed act GOALS 1 puts above every other cost. Tyrel's ruling
+            # (Unit 12 F2) withholds the verdict where the measurement cannot be
+            # made; here it can be.
+            finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
             continue
@@ -2673,6 +2765,33 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # bounded recovery.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
+    for ordinal, observations in unanchored_by_page.items():
+        finding = findings[ordinal]
+        if finding["shortfall"]:
+            # This page carries a real shortfall measured against a real span
+            # union -- by another chair, or by this same chair on a mixed page
+            # where one act's spans are aligned and another's are declared
+            # unanchorable. That verdict is a measurement and outranks the
+            # unmeasured one; the reason still records what could not be
+            # measured beside it, so neither half is lost (GOVERNANCE 2).
+            finding.setdefault(
+                "unmeasured_reason",
+                continuation_unmeasured_reason(
+                    ordinal, observations, beside_a_measured_verdict=True
+                ),
+            )
+            continue
+        # Tyrel's ruling on Unit 12's F2: unmeasured by name.
+        # Before it, this page's uncovered text became `shortfall: True` on a
+        # page no act's review reads, so the verdict reached nothing and the
+        # export said DELIVERED over it. `None` is this module's existing
+        # spelling for "not measured" (the `by_chair`-empty case above), and it
+        # is the honest one here: the diff was taken against a union the
+        # Perlector declared empty, so its result is not a shortfall the
+        # Recensor found. The count stays in `by_chair`, the reason names the
+        # cause, and every act spanning the page restates the row.
+        finding["shortfall"] = None
+        finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
     return findings
 
 
@@ -2743,6 +2862,44 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     absence rather than restating it as a measured, clean page.
     """
     return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONTENT_COVERAGE))
+
+
+def testimony_content_for_continuation_pages(
+    findings: dict[int, dict], act_regions: list[dict], primary_ordinal: int
+) -> list[dict]:
+    """Restate the content finding of every page this act spans but is not primary on.
+
+    The same derivation `page_coverage_for` already uses for residual ink —
+    "every page the act's proposal or recovery regions touch, not only its
+    primary `page_ordinal`" — applied to the measurement that did not have it.
+    Without this, a continuation page's finding reached no review at all: both
+    acts of the fixture are primary on page 1, so page 2's record was computed
+    every run and read by nobody.
+
+    These rows are **not** route inputs. Their verdict is `None` wherever the
+    Perlector declared the page unanchorable (`continuation_unmeasured_reason`),
+    and `review_route_from_findings` treats `None` as "no measurement exists" —
+    routing them would be routing an absence. What they do is make the absence
+    visible in the act's own record, in the export, and in the Armarium's
+    per-act restatement, which is what GOVERNANCE 2 asks of a partial result.
+
+    Present and empty for an act that spans one page, for the reason
+    `page_coverage_for`'s `checked_pages` is: a consumer that only ever sees the
+    field populated cannot tell "spans no continuation" from "never derived".
+    """
+    ordinals = sorted(
+        {
+            region["payload"]["transform"]["source_page_ordinal"]
+            for region in act_regions
+            if isinstance(region.get("payload"), dict)
+            and isinstance(region["payload"].get("transform"), dict)
+        }
+        - {primary_ordinal}
+    )
+    return [
+        {"page_ordinal": ordinal, **testimony_content_for_page(findings, ordinal)}
+        for ordinal in ordinals
+    ]
 
 
 def review_route_from_findings(
@@ -3157,6 +3314,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "coverage": coverage,
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
+                    # Derived from what was actually cut, exactly as
+                    # `page_coverage` below is: a Designator-held act whose
+                    # near-side region really was cut has continuation pages to
+                    # restate, and hardcoding this empty for the held shape
+                    # would drop the only record of them.
+                    "testimony_content_coverage_continuation": (
+                        testimony_content_for_continuation_pages(
+                            content_findings, hold_regions, act["page_ordinal"]
+                        )
+                    ),
                     "continuation": recensor_continuation_link(hold_regions, act_id),
                     "page_coverage": page_coverage_for(hold_regions, page_findings),
                     "recoveries_used": 0,
@@ -3242,6 +3409,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # needs the whole page, not a guess at which one act is "responsible".
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
+        # The testimony-content half of the same "every page this act touches"
+        # rule, off the same region set. Recorded, never routed: see
+        # `testimony_content_for_continuation_pages`.
+        continuation_content_coverage = testimony_content_for_continuation_pages(
+            content_findings, state["regions"], act["page_ordinal"]
+        )
 
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
@@ -3372,6 +3545,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,
                 "testimony_content_coverage": content_coverage,
+                "testimony_content_coverage_continuation": continuation_content_coverage,
                 "perlectio_ref": reading_ref,
                 "recovery_policy": budget,
             }
@@ -3409,6 +3583,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # and clear" from "never checked".
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
+                    "testimony_content_coverage_continuation": continuation_content_coverage,
                     "continuation": continuation_link,
                     "page_coverage": page_coverage,
                     "perlectio_ref": reading_ref,
@@ -3582,6 +3757,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,
                 "testimony_content_coverage": content_coverage,
+                "testimony_content_coverage_continuation": continuation_content_coverage,
                 "continuation": continuation_link,
                 "recoveries_used": used_total,
                 "budget_allowed": budget["allowed"],

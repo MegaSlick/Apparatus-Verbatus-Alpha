@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import feeding
 import pytest
 from feeding import (
+    CHURRO_LAYOUT_PROMPT_VERSION,
     CHURRO_OUTPUT_TOKENS,
     DAI_MAX_HEIGHT_PX,
     DAI_MAX_TOTAL_PIXELS,
@@ -18,6 +20,7 @@ from feeding import (
     SCHEDULING_POLICY,
     SingleChairResidency,
     churro_generation,
+    churro_layout_prompt,
     churro_prompt,
     dai_generation,
     dai_model_view,
@@ -31,6 +34,7 @@ from feeding import (
     validate_dai_text,
 )
 
+from common import churro_response
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
@@ -209,6 +213,179 @@ def test_churro_prompt_retains_the_trained_two_message_xml_bytes():
     )
     assert "<output>\nextracted text here\n</output>" in prompt["user"]
     assert "ſ" in prompt["user"] and "а" in prompt["user"]
+
+
+def test_the_live_layout_prompt_is_the_trained_carry_with_only_its_format_replaced():
+    """A modified carry, and what moved is exactly the two format instructions.
+
+    Clauses 1 through 5 -- every instruction about *how* to transcribe -- and
+    the closing reading-order paragraph are the carried bytes, character for
+    character. Only the system message's format sentence and clause 6 are this
+    repository's own wording, and neither states a preference, a severity floor
+    or a confidence budget (GOVERNANCE 10).
+    """
+    carried, live = churro_prompt(), churro_layout_prompt()
+    assert set(live) == set(carried) == {"system", "user"}
+    assert live != carried
+
+    # The transcription clauses, byte for byte out of the carried prompt.
+    head = carried["user"][: carried["user"].index("6. Output the OCR result")]
+    tail = carried["user"][carried["user"].index("Remember, your goal is") :]
+    assert head and tail
+    assert live["user"].startswith(head)
+    assert live["user"].endswith(tail)
+    assert "ſ" in live["user"] and "а" in live["user"]
+
+    # The system message is the same modified carry as the user message: the two
+    # sentences before the format sentence are the carried bytes, character for
+    # character, and only the third is this repository's. Pinned so that an edit
+    # to `churro_prompt`'s system string cannot leave the live prompt quietly
+    # carrying yesterday's role description.
+    system_head = carried["system"][: carried["system"].index(" Only output the transcribed")]
+    assert system_head
+    assert live["system"].startswith(system_head)
+    assert live["system"] == system_head + (
+        " Report the transcription as the JSON object described in the instructions, and "
+        "output nothing outside it."
+    )
+
+    # The two replaced instructions are gone from the live bytes, and the shape
+    # this repository declares is what stands in their place.
+    assert "<output>" not in live["user"]
+    assert "<output>" not in live["system"]
+    assert "Only output the transcribed text" not in live["system"]
+    assert churro_response.PAGE_RESPONSE_SCHEMA in live["user"]
+    assert "box_1000" in live["user"] and "blocks" in live["user"]
+
+    # Nothing that would report the instruction rather than the finding.
+    lowered = (live["system"] + live["user"]).lower()
+    for banned in ("confiden", "at least", "severity", "prefer", "if in doubt", "be sure"):
+        assert banned not in lowered
+
+
+def test_the_example_object_in_the_live_prompt_parses_as_the_contract_it_declares():
+    """The instruction and the parser are held to each other, not asserted apart.
+
+    Clause 6 shows the chair a JSON object and says "respond with exactly this".
+    Every other test of this prompt checks that the schema name, `blocks` and
+    `box_1000` appear *somewhere* in the bytes -- substring checks, which a
+    misspelled key, a stray trailing comma, a renamed member or a fourth key
+    would all survive. Then the chair would answer in the shape it was shown and
+    `churro_response.parse` would refuse its own request as
+    `unverified-response-schema`, with the bytes retained and the reading lost
+    for a defect on our side of the wire. GOVERNANCE 7 is that the pipeline's
+    obligation to the model is to feed it completely; asking for a shape this
+    repository refuses is not feeding it completely.
+
+    So the example is lifted out of the sent bytes, its four coordinate
+    placeholders replaced with integers -- the only thing in it that is not
+    literal JSON -- and put through the real parser.
+    """
+    user = churro_layout_prompt()["user"]
+    example = re.search(r'\{"schema".*?\]\}', user, re.S)
+    assert example, "clause 6 no longer shows a JSON object beginning with a schema name"
+    literal = example.group(0)
+    # Only the coordinates are placeholders. `"..."` is already legal JSON, and
+    # is left exactly as the chair is shown it.
+    coordinates = {"x0": "110", "y0": "85", "x1": "890", "y1": "375"}
+    concrete = re.sub(r"\b[xy][01]\b", lambda found: coordinates[found.group(0)], literal)
+    assert not re.search(r"\b[xy][01]\b", concrete)
+
+    decoded = json.loads(concrete)
+    assert set(decoded) == {"schema", "blocks"}
+    assert decoded["schema"] == churro_response.PAGE_RESPONSE_SCHEMA
+    assert [set(block) for block in decoded["blocks"]] == [{"box_1000", "text"}]
+
+    # And the parser this repository will actually read the answer with accepts
+    # it -- the assertion the key checks above cannot make.
+    parsed = churro_response.parse(concrete.encode("utf-8"))
+    assert not churro_response.is_refusal(parsed), parsed
+    assert parsed["schema"] == churro_response.PAGE_RESPONSE_SCHEMA
+    assert [block["box_1000"] for block in parsed["blocks"]] == [[110, 85, 890, 375]]
+    assert parsed["page_text"] == "..."
+
+
+def test_the_live_prompt_keeps_the_two_message_framing_the_serving_seam_dispatches_on():
+    """`live_witness.page_chair_request` splits on `{"system", "user"}`; untouched."""
+    assert set(churro_layout_prompt()) == {"system", "user"}
+    assert all(value.strip() for value in churro_layout_prompt().values())
+
+
+@pytest.mark.parametrize(
+    ("moved", "expected"),
+    [
+        ("system", "no longer contains the system message's output-format sentence"),
+        ("user", "no longer contains the output-format clause"),
+    ],
+)
+def test_the_layout_prompt_refuses_to_send_if_the_carry_it_modifies_has_moved(
+    monkeypatch, moved, expected
+):
+    """The docstring's provenance claim is checked, not asserted -- for both halves.
+
+    If the text this function replaces is not in the carried bytes, the carry
+    moved and this is no longer the modified carry it documents -- so it refuses
+    rather than sending a prompt whose provenance reads false. Both messages are
+    derived by that one rule, so both are checked here: the system half used to
+    be written out as a whole new string, which asserted a provenance it never
+    verified and would have gone on sending the old wording after an edit to
+    `churro_prompt`.
+    """
+    carried = feeding.churro_prompt()
+    monkeypatch.setattr(
+        feeding, "churro_prompt", lambda: {**carried, moved: "nothing this function replaces"}
+    )
+    with pytest.raises(SchemaRefusal, match=expected):
+        feeding.churro_layout_prompt()
+
+
+def test_the_layout_prompt_version_names_the_wording_and_is_not_in_the_record():
+    """The version is source, read by a human; `view.prompt` is the record.
+
+    A digest of bytes sitting beside those bytes is a third spelling of one
+    fact, and the retained view already carries the sent instruction verbatim.
+    """
+    assert CHURRO_LAYOUT_PROMPT_VERSION == "churro-layout-prompt.v1"
+    assert CHURRO_LAYOUT_PROMPT_VERSION not in churro_layout_prompt()["user"]
+    assert CHURRO_LAYOUT_PROMPT_VERSION not in churro_layout_prompt()["system"]
+
+
+def test_the_runnable_parser_names_are_exactly_the_ones_the_capture_contract_admits():
+    """Two modules name this chair's parsers; a drift would strand one posture.
+
+    `feeding` decides which `(adapter, parser)` pairs may be asked for, and
+    `common/native_witness.py::CHURRO_PARSERS` decides which a retained capture
+    may carry. A name in one and not the other is either a parse this boundary
+    can ask for and no record may hold, or a record shape nothing can produce.
+    """
+    from common.native_witness import CHURRO_PARSERS
+
+    assert {
+        parser for adapter, parser in feeding._RUNNABLE_PARSERS if adapter == "churro.v1"
+    } == set(CHURRO_PARSERS)
+
+
+def test_both_churro_parser_names_run_and_no_third_one_does():
+    tree = _Tree()
+    for parser in ("xml", "churro"):
+        record = retain_model_view(
+            tree,
+            adapter="churro.v1",
+            view={"prompt": churro_prompt(), "generation": churro_generation()},
+            raw_response=b"<output>read</output>",
+            transport_stop_reason="eos",
+            parser=parser,
+        )
+        assert record["parse"] == {"state": "parsed", "parser": parser, "text": "read"}
+    with pytest.raises(SchemaRefusal, match="does not run for adapter"):
+        retain_model_view(
+            tree,
+            adapter="churro.v1",
+            view={"prompt": churro_prompt(), "generation": churro_generation()},
+            raw_response=b"<output>read</output>",
+            transport_stop_reason="eos",
+            parser="json",
+        )
 
 
 def test_churro_validates_xml_without_discarding_the_raw_response():

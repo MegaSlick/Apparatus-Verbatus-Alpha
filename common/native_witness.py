@@ -8,11 +8,13 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+import json
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any, Final
 
+from common import churro_response
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
@@ -80,7 +82,11 @@ PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 # parser and the post-hoc repetition scan a hard ceiling whatever bound the
 # request carried.
 CHURRO_OUTPUT_TOKENS: Final = 24_000
-CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+# One name, so the chair's two legal shapes cannot acquire two intake bounds.
+# The number is declared beside the wire contract that also has to enforce it
+# (`common/churro_response.py`), and re-exported here because this module is
+# where `validate_churro_xml` and `derive_churro_capture` read it.
+CHURRO_MAX_RESPONSE_BYTES: Final = churro_response.MAX_RESPONSE_BYTES
 _CHURRO_REPETITION_WINDOW: Final = 24
 _CHURRO_REPETITION_MIN_REPEATS: Final = 3
 
@@ -609,15 +615,17 @@ def validate_page_testimonium_payload(
                     )
             else:
                 if payload["payload"] is not None:
-                    raise SchemaRefusal(
-                        "an unparseable Churro page capture claims retained page text"
-                    )
+                    raise SchemaRefusal("an unread Churro page capture claims retained page text")
                 cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                # `failed` names its refusal in `reason`; `unrecognized-shape`
+                # names the shape in `outcome`. One helper, so the record and
+                # this check cannot describe the same capture differently.
+                parse_refusal = native_parse_refusal(parse)
                 basis = (
                     "response cut off by the provider "
-                    f"({capture['transport_stop_reason']!r}); {parse['reason']}"
+                    f"({capture['transport_stop_reason']!r}); {parse_refusal}"
                     if cut_off
-                    else parse["reason"]
+                    else parse_refusal
                 )
                 expected_health = {
                     "native_type": "unrecordable",
@@ -634,11 +642,7 @@ def validate_page_testimonium_payload(
                         "an unparseable Churro page Testimonium health differs from its capture"
                     )
                 reason = payload.get("reason")
-                if (
-                    not isinstance(reason, str)
-                    or not reason.strip()
-                    or parse["reason"] not in reason
-                ):
+                if not isinstance(reason, str) or not reason.strip() or parse_refusal not in reason:
                     raise SchemaRefusal(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
@@ -1035,10 +1039,119 @@ _CHURRO_STOP_REASONS: Final = (
 )
 
 
+#: The two parser names `derive_churro_capture` can actually run for this
+#: chair, and what each reaches. `"xml"` is the fixture posture's parser and
+#: reaches `validate_churro_xml` alone -- byte for byte the branch it always
+#: was, so a committed fixture body could not take the JSON branch even if
+#: someone wrote one. `"churro"` is the live posture's and reaches both legal
+#: shapes through `parse_churro_response`. The name is not a label on one
+#: dispatcher: it selects the parser, and `verify_native_capture_bytes`
+#: re-derives under the name the record was written with, so each posture
+#: re-derives through the branch it was recorded under.
+CHURRO_PARSERS: Final = frozenset({"xml", "churro"})
+#: The one sentence both Churro doors name a non-bytes body by. Spelled once
+#: because `validate_churro_xml` and `parse_churro_response` are the same
+#: boundary wearing two return conventions, and a body that is not bytes is the
+#: same fact at either -- not an `AttributeError` at one and a named refusal at
+#: the other.
+CHURRO_RESPONSE_NOT_BYTES: Final = "Churro response is not raw bytes"
+
+
+def parse_churro_response(raw: bytes) -> dict[str, Any]:
+    """One live Churro body, read under whichever of its two legal shapes it wears.
+
+    Returns the `parse` record's own three fields minus `parser`: a
+    ``{"state": "parsed", "text": ...}``, a
+    ``{"state": "unrecognized-shape", "outcome": ...}``, or a
+    ``{"state": "failed", "reason": ...}``.
+
+    The dispatch, and why it is a shape question rather than a try-and-fall-back:
+
+    * a JSON object declaring `churro_response.PAGE_RESPONSE_SCHEMA` is this
+      repository's own wire contract and is read under it, refusals included --
+      so a malformed block inside a body that *did* answer the question asked is
+      named as a shape this parser could not place, not as unparseable bytes;
+    * any other JSON object answered a question nobody put to this chair. It is
+      `unverified-response-schema`, and it reaches the capture as
+      `unrecognized-shape`: the parser ran, read the whole response and could
+      name no shape it knows, which is a different fact from a parse failure and
+      the state Chandra has had since it was written;
+    * everything else -- including a JSON array or scalar -- goes to
+      `validate_churro_xml` unchanged, because the trained `<output>` envelope
+      is Churro's own answer and stays fully legal.
+
+    The dispatch decode is deliberately the stdlib's permissive one: it decides
+    only which contract owns the body. `churro_response.parse` then re-decodes
+    under its own duplicate-member guard, so a body with two `blocks` members
+    declaring this schema is refused by that contract as
+    `unverified-response-schema` rather than falling through to the XML door
+    wearing a last-wins value. `chandra.parse` splits the same way for the same
+    reason.
+
+    A body that is not bytes at all is named the way `validate_churro_xml` names
+    it, returned as this function's own `failed` state. The dispatch decode below
+    would otherwise raise `AttributeError` off the caller's object before either
+    contract was consulted -- an unnamed interpreter error at one door where the
+    same boundary one branch away already answers with a refusal sentence the
+    capture can record (GOVERNANCE 2).
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        return {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        return {
+            "state": "failed",
+            "reason": (
+                "Churro response exceeds the retained parsing limit of "
+                f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+            ),
+        }
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        decoded = None
+    if churro_response.declares_wire_contract(decoded):
+        parsed = churro_response.parse(raw)
+        if churro_response.is_refusal(parsed):
+            return {"state": "unrecognized-shape", "outcome": parsed["parse_outcome"]}
+        return {"state": "parsed", "text": parsed["page_text"]}
+    if isinstance(decoded, dict):
+        return {"state": "unrecognized-shape", "outcome": "unverified-response-schema"}
+    try:
+        return {"state": "parsed", "text": validate_churro_xml(raw)}
+    except SchemaRefusal as error:
+        return {"state": "failed", "reason": str(error)}
+
+
+def native_parse_refusal(parse: dict[str, Any]) -> str:
+    """The one sentence a non-parsed native capture is described by.
+
+    Two readers have to agree on it, or a record refuses itself: the live
+    boundary composes an attempt's `reason` and unrecordable `truncation_basis`
+    from it (`pipeline/3_attestatores/live_witness.py`), and this module's page
+    validator re-derives both and compares. It was one inline expression in each
+    place, identical by coincidence, and the second state Unit 12 admits --
+    `unrecognized-shape`, whose evidence is `outcome` and not `reason` -- is
+    where the coincidence would have ended in a `KeyError` from inside a
+    contract check.
+    """
+    if parse["state"] == "failed":
+        return parse["reason"]
+    if parse["state"] == "unrecognized-shape":
+        return f"the response shape was not recognized: {parse['outcome']}"
+    # Never reached by either caller -- both take this path only after their
+    # `parsed` branches have returned -- and stated rather than left to a
+    # `KeyError` from inside a contract check, which is the failure mode this
+    # helper exists to have removed once already.
+    raise SchemaRefusal(
+        f"a {parse['state']!r} native parse record carries no refusal to name; "
+        "only a failed or unrecognized-shape parse describes one"
+    )
+
+
 def validate_churro_xml(raw: bytes) -> str:
     """Validate one bounded native Churro response as a plain output element."""
     if not isinstance(raw, (bytes, bytearray)):
-        raise SchemaRefusal("Churro response is not raw bytes")
+        raise SchemaRefusal(CHURRO_RESPONSE_NOT_BYTES)
     if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
         raise SchemaRefusal(
             "Churro response exceeds the retained parsing limit of "
@@ -1088,6 +1201,7 @@ def derive_churro_capture(
     *,
     parser: str | None,
     xml_parser=validate_churro_xml,
+    churro_parser=parse_churro_response,
     repetition_detector=detect_churro_repetition,
 ) -> dict[str, Any]:
     """Derive the exact mutable-free facts a Churro capture may publish.
@@ -1095,6 +1209,15 @@ def derive_churro_capture(
     Oversized bytes have already crossed the response boundary, so they remain
     evidence in the caller's blob store.  They are not handed to either parser
     or detector; both unperformed operations are named in the retained facts.
+
+    `parser` selects the branch (`CHURRO_PARSERS`). `"xml"` is the committed
+    fixture's posture and reaches `validate_churro_xml` alone; `"churro"` is the
+    live posture and reaches both legal shapes. The repetition detector then
+    inspects `parse["text"]` where a parse produced one and the raw bytes
+    otherwise, naming which in the finding's `inspected` field -- unchanged, and
+    under the wire contract that text is the joined page text, which is the
+    right input: repetition is a fact about what the model transcribed, not
+    about the punctuation of the envelope it arrived in.
     """
     if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
         reason = (
@@ -1128,6 +1251,12 @@ def derive_churro_capture(
         except SchemaRefusal as error:
             parse = {"state": "failed", "parser": "xml", "reason": str(error)}
             stop_reason = "partial-parse-failed"
+    elif parser == "churro":
+        parse = {"parser": "churro", **churro_parser(raw)}
+        if parse["state"] == "failed":
+            stop_reason = "partial-parse-failed"
+        elif parse["state"] == "unrecognized-shape":
+            stop_reason = "partial-parse-unrecognized-shape"
     parsed_text = parse.get("text")
     inspected, basis = (
         (parsed_text.encode("utf-8"), "parsed-text")
@@ -1137,7 +1266,14 @@ def derive_churro_capture(
     findings: list[dict[str, Any]] = []
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
-        if finding["kind"] == "post-hoc-repetition" and parse["state"] != "failed":
+        # The parse outcome wins over a repeated tail, as `failed` already did:
+        # a body this parser could not place is the more load-bearing fact about
+        # the capture, and the repetition stays recorded in `findings` either
+        # way, so nothing is lost by the precedence (GOVERNANCE 2).
+        if finding["kind"] == "post-hoc-repetition" and parse["state"] not in {
+            "failed",
+            "unrecognized-shape",
+        }:
             stop_reason = "partial-post-hoc-repetition-detected"
     return {"parse": parse, "findings": findings, "stop_reason": stop_reason}
 
@@ -1221,8 +1357,19 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         raise SchemaRefusal(
             f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
         )
-    if state not in {"parsed", "failed"} or parser != "xml":
-        raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
+    # Widened by Unit 12 for the live posture, and additive: every record valid
+    # before it is valid now. `unrecognized-shape` is coupled to the `churro`
+    # parser, and the fixture posture's admissible set is unchanged by
+    # construction rather than by promise -- the `xml` branch reaches
+    # `validate_churro_xml`, which returns text or raises, so it can produce
+    # only `parsed` or `failed` and can never write the new state.
+    if state not in {"parsed", "failed", "unrecognized-shape"} or parser not in CHURRO_PARSERS:
+        raise SchemaRefusal("a retained Churro page capture has no terminal parse record")
+    if state == "unrecognized-shape" and parser != "churro":
+        raise SchemaRefusal(
+            "a retained Churro page capture names an unrecognized shape under a parser that "
+            "cannot reach one; only the live 'churro' parser reads a shape it can refuse"
+        )
     if len(findings) > 1:
         raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
     for finding in findings:
@@ -1253,6 +1400,11 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
     expected_stop = value["transport_stop_reason"]
     if state == "failed":
         expected_stop = "partial-parse-failed"
+    elif state == "unrecognized-shape":
+        # Ordered after `failed` and before the repetition clause, matching
+        # `derive_churro_capture`'s own precedence: the parse outcome is what
+        # the stop reason names, and the repetition finding stays in `findings`.
+        expected_stop = "partial-parse-unrecognized-shape"
     elif repeated:
         expected_stop = "partial-post-hoc-repetition-detected"
     if value["stop_reason"] != expected_stop:

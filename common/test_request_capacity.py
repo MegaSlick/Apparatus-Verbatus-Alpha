@@ -254,7 +254,7 @@ def test_a_row_that_does_not_state_its_image_geometry_is_refused_by_name(field):
 
 def test_a_row_missing_max_model_len_is_refused_before_any_arithmetic_runs():
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        request_fits(_row(max_model_len=None), [A4_300DPI], 281, 1433)
+        request_fits(_row(max_model_len=None), [A4_300DPI], 441, 1631)
     assert "max_model_len" in str(refusal.value)
 
 
@@ -262,14 +262,14 @@ def test_a_row_missing_max_model_len_is_refused_before_any_arithmetic_runs():
 
 
 def test_the_record_is_closed_and_names_every_image_it_counted():
-    record = request_fits(_row(), [A4_300DPI, FIXTURE_PAGE], 281, 1433)
+    record = request_fits(_row(), [A4_300DPI, FIXTURE_PAGE], 441, 1631)
     assert record["schema"] == SCHEMA
     assert record["chair"] == "attestator_3"
     assert [entry["image_prompt_tokens"] for entry in record["images"]] == [6693, 63]
     assert record["image_prompt_tokens"] == 6756
-    assert record["prompt_tokens"] == 281
-    assert record["answer_budget"] == 1433
-    assert record["need"] == 6756 + 281 + 1433
+    assert record["prompt_tokens"] == 441
+    assert record["answer_budget"] == 1631
+    assert record["need"] == 6756 + 441 + 1631
     assert record["headroom"] == 8192 - record["need"]
     assert record["fits"] is False
     assert record["prompt_tokens_basis"] == PROMPT_TOKENS_MEASURED_CONSTANT
@@ -280,30 +280,47 @@ def test_the_record_is_closed_and_names_every_image_it_counted():
 
 
 def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context():
-    """The measured finding, as a record: 6,974 prompt against 8,192, 1,218 left
-    for a 1,433-token dense-page answer.  Over by 215."""
+    """The measured finding, as a record: 7,134 prompt against 8,192, 1,058 left
+    for a 1,631-token dense-page answer.  Over by 573.
 
-    record = request_fits(_row(), [A4_300DPI], MEASURED_PROMPT_TOKENS["attestator_3"].tokens, 1433)
-    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 6974
-    assert record["need"] == 8407
-    assert record["headroom"] == -215
+    Both halves are the layout instruction's, and it made the finding worse
+    rather than closing it: the prompt this chair is now sent is 441 tokens
+    against the trained framing's 281, and the JSON object it asks for costs
+    1,631 tokens on a dense page against the `<output>` envelope's 1,433.  At
+    the numbers this row used to state the request is refused by a wider
+    margin, which is the same finding measured over the request the seam
+    actually builds.
+    """
+
+    record = request_fits(
+        _row(),
+        [A4_300DPI],
+        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        dense_page_answer_budget("attestator_3"),
+    )
+    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 7134
+    assert record["need"] == 8765
+    assert record["headroom"] == -573
     assert record["fits"] is False
 
 
 def test_the_same_request_fits_once_the_row_states_a_larger_context():
     record = request_fits(
-        _row(max_model_len=16384), [A4_300DPI], MEASURED_PROMPT_TOKENS["attestator_3"].tokens, 1433
+        _row(max_model_len=16384),
+        [A4_300DPI],
+        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        dense_page_answer_budget("attestator_3"),
     )
     assert record["fits"] is True
-    assert record["headroom"] == 16384 - 8407
+    assert record["headroom"] == 16384 - 8765
     assert record["reason"] is None
 
 
 def test_refuse_unless_it_fits_carries_the_whole_record_on_the_refusal():
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        refuse_unless_it_fits(_row(), [A4_300DPI], 281, 1433, what="one Churro page request")
+        refuse_unless_it_fits(_row(), [A4_300DPI], 441, 1631, what="one Churro page request")
     assert refusal.value.capacity is not None
-    assert refusal.value.capacity["need"] == 8407
+    assert refusal.value.capacity["need"] == 8765
     assert refusal.value.capacity["fits"] is False
     assert "one Churro page request" in str(refusal.value)
     # Never a silent downscale: the refusal says so in as many words.
@@ -312,14 +329,14 @@ def test_refuse_unless_it_fits_carries_the_whole_record_on_the_refusal():
 
 def test_refuse_unless_it_fits_returns_the_record_when_it_does_fit():
     record = refuse_unless_it_fits(
-        _row(max_model_len=16384), [A4_300DPI], 281, 1433, what="one Churro page request"
+        _row(max_model_len=16384), [A4_300DPI], 441, 1631, what="one Churro page request"
     )
     assert record["fits"] is True
 
 
 def test_an_unnamed_prompt_token_basis_is_refused():
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        request_fits(_row(), [A4_300DPI], 281, 1433, prompt_tokens_basis="guessed")
+        request_fits(_row(), [A4_300DPI], 441, 1631, prompt_tokens_basis="guessed")
     assert "basis" in str(refusal.value)
 
 
@@ -339,15 +356,15 @@ def test_a_request_is_never_admitted_on_a_lower_bound(basis):
     """
 
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        request_fits(_row(max_model_len=16384), [A4_300DPI], 281, 1433, prompt_tokens_basis=basis)
+        request_fits(_row(max_model_len=16384), [A4_300DPI], 441, 1631, prompt_tokens_basis=basis)
     assert "never admitted on one" in str(refusal.value)
     # And the same basis is accepted as the recorded floor beside an admitted
     # count, because recording a floor asserts nothing about admission.
     record = request_fits(
         _row(max_model_len=16384),
         [A4_300DPI],
-        281,
-        1433,
+        441,
+        1631,
         prompt_tokens_floor=200,
         prompt_tokens_floor_basis=basis,
     )
@@ -356,14 +373,14 @@ def test_a_request_is_never_admitted_on_a_lower_bound(basis):
 
 def test_a_recorded_floor_states_its_own_basis_and_a_basis_states_its_own_floor():
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        request_fits(_row(max_model_len=16384), [A4_300DPI], 281, 1433, prompt_tokens_floor=200)
+        request_fits(_row(max_model_len=16384), [A4_300DPI], 441, 1631, prompt_tokens_floor=200)
     assert "not one of" in str(refusal.value)
     with pytest.raises(RequestCapacityRefusal) as refusal:
         request_fits(
             _row(max_model_len=16384),
             [A4_300DPI],
-            281,
-            1433,
+            441,
+            1631,
             prompt_tokens_floor_basis=PROMPT_TOKENS_MEASURED_FLOOR,
         )
     assert "no floor to attach it to" in str(refusal.value)
@@ -371,7 +388,7 @@ def test_a_recorded_floor_states_its_own_basis_and_a_basis_states_its_own_floor(
 
 @pytest.mark.parametrize("field", ["prompt_tokens", "answer_budget"])
 def test_a_negative_count_is_refused_rather_than_defaulted(field):
-    kwargs = {"prompt_tokens": 281, "answer_budget": 1433, field: -1}
+    kwargs = {"prompt_tokens": 441, "answer_budget": 1631, field: -1}
     with pytest.raises(RequestCapacityRefusal) as refusal:
         request_fits(_row(), [A4_300DPI], **kwargs)
     assert field in str(refusal.value)
@@ -426,7 +443,7 @@ def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
         ("designator_structure", 1575),
         ("attestator_1", 1520),
         ("attestator_2", 1426),
-        ("attestator_3", 1433),
+        ("attestator_3", 1631),
         ("perlector", 1318),
     ],
 )

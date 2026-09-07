@@ -52,6 +52,7 @@ from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
+    REPORTED_BOUNDS_SOURCES,
     partition_disagreement,
     reported_geometry_overlaps,
     split_page_edge_overshoots,
@@ -415,13 +416,85 @@ def _fixture_native_observations(
     return observations
 
 
-def chandra_page_partition_entries(
+#: Adapters whose fixture rows may declare `raw_response` bytes. The committed
+#: corpus carries a synthetic Chandra body and nothing else, and the attempt
+#: boundary already refuses a fixture `raw_response` for any other adapter
+#: (`resolve_attempt`): fixture bytes may not be attributed to a model boundary
+#: that never produced them. Named here because the page-partition branch has to
+#: ask the same question -- "does this chair's response reach `observe` in this
+#: posture?" -- and answering it with an adapter name would put the fixture
+#: posture back on a hard-coded chair.
+FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
+
+
+def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
+    """Whether this chair's page partition is re-derived from its own response bytes.
+
+    True for any page-scoped adapter that reports geometry, on the live path,
+    where the chair really answered and `captured_page_attempt` carried its bytes
+    forward as `observation_payload`. In the fixture posture it is true only for
+    the adapters the fixture may declare response bytes for; every other page
+    chair's offline record keeps the declared-observation route it has always
+    taken, so no committed byte moves.
+
+    Generalized from a `witness_adapter == "chandra.v1"` comparison by Unit 12.
+    The question the branch actually asks is "are there response bytes here to
+    derive geometry from", and answering it with one adapter's name is what left
+    Churro out of a partition it now belongs in.
+    """
+    if not isinstance(resolved, ChairIdentity):
+        return False
+    # Not guarded: an adapter with no runnable binding is refused here, loudly,
+    # rather than answered `False` and routed down the no-geometry branch as
+    # though it had simply reported nothing.
+    adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+    if not adapter.takes_page_size:
+        return False
+    return page_captures is not None or (
+        resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+    )
+
+
+def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reported boxes a page partition may be derived from, or a named refusal.
+
+    `split_page_edge_overshoots` admits `native` and `derived` boxes and refuses
+    a `presented` echo by name: an echo restates the image the chair was shown,
+    so turning one into a page-edge finding would report as witness geometry
+    something no witness reported. Chandra's `observe` returns an empty list for
+    a body with no layout and so never handed one over; Churro's returns the
+    honest echo instead, and generalizing the partition branch off the adapter's
+    name made that difference reachable rather than created it.
+
+    Three cases, and the third is the point. All reported: the list, unchanged.
+    None reported: empty, which is what the caller already detects as "this
+    response reported no geometry" and answers by putting the presentation echo
+    back through `observed_from_presentation` -- the one path that owns that
+    fact for every adapter, so nothing is dropped and nothing is invented.
+    **A mix is refused**, not filtered: no adapter today returns one, and an
+    adapter that began to would be saying something this partition has no rule
+    for. Silently keeping half of it would publish a page geometry nobody
+    designed and no reader could tell from a complete one (GOVERNANCE 2).
+    """
+    reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
+    if reported and len(reported) != len(observed):
+        raise SchemaRefusal(
+            "a page witness reported geometry and a presentation echo in one response. "
+            "A partition derived from half of that record would look complete. "
+            "Return reported geometry or the no-geometry echo, not both."
+        )
+    # Ordinals stay dense and 0-based, which the page-edge check requires and
+    # reads as the response's own order. Untouched when nothing was filtered.
+    return reported
+
+
+def page_partition_entries(
     observed: list[dict[str, Any]],
     *,
     page_size: tuple[int, int],
     raw_response_ref: dict[str, str] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return surviving Chandra boxes and response-linked page-edge findings.
+    """Return a page witness's surviving boxes and response-linked page-edge findings.
 
     `page_size` is the sealed source page, never a presentation crop: a block
     may cross the crop edge while remaining valid page-space geometry.
@@ -438,9 +511,9 @@ def chandra_page_partition_entries(
         or len(raw_response_ref["sha256"]) != 64
     ):
         raise SchemaRefusal(
-            "a Chandra page-edge finding has no retained response reference. "
+            "a page-edge finding has no retained response reference. "
             "The rejected block cannot be traced to the response that produced it. "
-            "Retain the raw Chandra response before deriving the page partition."
+            "Retain the raw page-witness response before deriving the page partition."
         )
     return survivors, [
         {**finding, "response_sha256": raw_response_ref["sha256"]} for finding in overshoots
@@ -2334,7 +2407,15 @@ def captured_churro_page_attempt(
     # relabel-proof seam accepts no adapter argument at all.
     capture = adapter.retain(
         context.tree,
-        view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
+        # The fixture's frozen declaration, not `adapter.prompt()` -- the move
+        # `chandra.FIXTURE_PROMPT` already makes at this stage's other page
+        # witness. This view is sealed into the fixture's pinned bytes, the
+        # fixture never asks a chair anything, and the live instruction
+        # (`feeding.churro_layout_prompt`) must be free to change without moving
+        # them. `parser="xml"` for the same reason and one more: it reaches
+        # `validate_churro_xml` alone, so a fixture body could not take the JSON
+        # branch even if someone wrote one.
+        view={"prompt": feeding.churro_prompt(), "generation": feeding.churro_generation()},
         raw_response=raw,
         transport_stop_reason=stop,
         parser="xml",
@@ -2559,7 +2640,10 @@ def resolve_attempt(
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
-            if "raw_response" in response and resolved.witness_adapter != "chandra.v1":
+            if (
+                "raw_response" in response
+                and resolved.witness_adapter not in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+            ):
                 raise SchemaRefusal(
                     f"fixture raw_response has no native byte route for adapter "
                     f"{resolved.witness_adapter!r}"
@@ -2568,13 +2652,33 @@ def resolve_attempt(
                 raise SchemaRefusal(
                     "fixture raw_response is not text encoding retained response bytes"
                 )
-            if resolved.witness_adapter == "chandra.v1" and isinstance(
+            if resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS and isinstance(
                 response.get("raw_response"), str
             ):
                 # Geometry may derive only from explicitly declared response
                 # bytes; synthesizing JSON from `payload` would create native
                 # evidence no witness returned.
                 raw_response = response["raw_response"].encode("utf-8")
+                # `FIXTURE_NATIVE_RESPONSE_ADAPTERS` is a one-member set and this
+                # block is Chandra's own: the retained view below is
+                # `chandra.FIXTURE_PROMPT`, the fixture's frozen declaration, and
+                # the retain recipe is Chandra's `json` parser. Adding a second
+                # adapter to that set means writing that adapter's own branch
+                # here first, or its bytes would be filed under Chandra's model
+                # boundary (GOVERNANCE 6) -- a Testimonium whose retained view
+                # and parser name a chair that never produced it. The comment
+                # said so and nothing enforced it, so the refusal is written
+                # down: the coupling is between this set and this one recipe,
+                # and it fails closed at the moment the set widens rather than
+                # at whatever later reads the misfiled record.
+                if resolved.witness_adapter != "chandra.v1":
+                    raise SchemaRefusal(
+                        f"fixture raw_response for adapter {resolved.witness_adapter!r} would be "
+                        "retained through Chandra's recipe -- its own retained view, prompt and "
+                        "parser -- and filed under Chandra's model boundary; write that "
+                        "adapter's own fixture retain branch before adding it to "
+                        "FIXTURE_NATIVE_RESPONSE_ADAPTERS"
+                    )
                 adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
                 retained = adapter.retain(
                     context.tree,
@@ -2864,25 +2968,30 @@ def publish_attempt(
         if presented and not live
         else None
     )
-    is_chandra = isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1"
+    # A property of the ADAPTER, read off its registry entry, never a comparison
+    # against one adapter's name: "does this adapter's `observe` take the sealed
+    # page's own size?" Two hard-coded names in one branch is how the third page
+    # adapter is silently left out of a rule it belongs to, which is exactly what
+    # happened to Churro here until Unit 12.
+    takes_page_size = adapter is not None and adapter.takes_page_size
     # One presentation names one sealed page, and that page's size is a fact
     # about the page, not about this view of it. Bound once here: both
     # derivations below need it, and `_sealed_source_page` reads the whole
     # page blob and re-digests it on every call, so asking twice per act view
     # doubled the I/O and the hashing for one unchanging number (CodeRabbit
-    # round 1, T8). Read only where it is actually needed -- a Chandra act
-    # view with a presentation -- exactly as before.
+    # round 1, T8). Read only where it is actually needed -- a page-scoped act
+    # view with a presentation.
     sealed_page_size = (
-        _sealed_source_page(context, presented)[2] if presented and is_chandra else None
+        _sealed_source_page(context, presented)[2] if presented and takes_page_size else None
     )
     if not presented:
         observed: list[dict[str, Any]] = []
     elif fixture_observed is not None:
         observed = fixture_observed
-    elif adapter is not None and is_chandra:
+    elif takes_page_size:
         # A page witness's act view restates page-level geometry, so the
         # wire contract's normalized boxes convert against the sealed page's
-        # size, never this one crop's (`chandra.observe`).
+        # size, never this one crop's (`chandra.observe`, `churro.observe`).
         observed = adapter.observe(
             presented,
             attempt.observation_payload
@@ -2899,10 +3008,19 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
-    if presented and is_chandra:
+    # Reported geometry only, through the same helper the page partition uses, so
+    # the two seams cannot come to disagree about what a mixed response means:
+    # all reported passes through, none reported is empty, a mix is refused by
+    # name rather than half-kept. Chandra never reached this at all -- its
+    # `observe` returns an empty list for a body with no layout -- while Churro's
+    # returns the honest `presented` echo, so generalizing this branch to the
+    # adapter made the case visible. An echo needs no split: it restates the
+    # presentation, which is inside its own page by construction, and routing and
+    # coverage exclude it anyway.
+    if presented and takes_page_size and (reported := _partition_geometry(observed)):
         # The act view cannot retain partition findings, but it must exclude an
         # overshoot so one bad block does not prevent the page record retaining it.
-        observed, _ = split_page_edge_overshoots(observed, page_size=sealed_page_size)
+        observed, _ = split_page_edge_overshoots(reported, page_size=sealed_page_size)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -3525,14 +3643,16 @@ def publish_page_testimonia_and_attachments(
             )
             if not presented:
                 observed: list[dict[str, Any]] = []
-            elif isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1":
+            elif _derives_partition_from_response(resolved, page_captures):
                 # The fixture executes one retained Chandra response per
                 # compatibility act, while the durable page Testimonium owns
                 # their page partition. Re-derive that partition only from
                 # responses whose primary page is this page; a continuation's
                 # primary-page response must not become geometry on its far
-                # page merely because the act belongs to both.
-                adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+                # page merely because the act belongs to both. The comment about
+                # one response per compatibility act is the fixture walk and
+                # stands; the live path below takes exactly one source.
+                adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
                 observed = []
                 captured_geometry = False
                 needs_default_observation = False
@@ -3583,8 +3703,8 @@ def publish_page_testimonia_and_attachments(
                         and reference not in page_response_refs
                     ):
                         page_response_refs.append(reference)
-                    source_observed, overshoots = chandra_page_partition_entries(
-                        adapter.observe(presented, raw, page_size=page_size),
+                    source_observed, overshoots = page_partition_entries(
+                        _partition_geometry(adapter.observe(presented, raw, page_size=page_size)),
                         page_size=page_size,
                         raw_response_ref=reference,
                     )
@@ -4430,7 +4550,17 @@ def _page_capture_from_record(
     observation_payload = None
     if (
         capture is not None
-        and capture.get("adapter") == "chandra.v1"
+        # A property of the ADAPTER, read off its registry entry, exactly as
+        # `_derives_partition_from_response` reads it, and never a comparison
+        # against one adapter's name. `captured_page_attempt` carries the
+        # response bytes forward as `observation_payload` for every page-scoped
+        # adapter; a name comparison here answered that question for one of them
+        # and silently answered `False` for Churro, so a resumed live pass
+        # rebuilt Churro's page from the presented echo instead of its own boxes
+        # and the republished geometry disagreed with the sealed record
+        # (GOVERNANCE 4). An adapter with no runnable binding is refused loudly
+        # by `resolve_runnable_adapter` rather than answered `False` here.
+        and witness_adapters.resolve_runnable_adapter(capture["adapter"]).takes_page_size
         and capture["parse"]["state"] == "parsed"
         and record["outcome"] in WITNESS_READING_OUTCOMES
     ):
