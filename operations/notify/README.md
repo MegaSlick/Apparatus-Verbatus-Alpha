@@ -43,6 +43,15 @@ caller's job — never buy it by misreporting delivery.
 **If a send fails, say so in the session.** A decision ping nobody hears is a session
 waiting on a message that was never sent.
 
+**Success is reported too, on stderr.** A delivered post prints `notify: delivered
+(<event>)` and nothing else changes: exit 0, stdout untouched. Before 2026-09-06 the
+script printed nothing at all on success, so a caller reading silence after a stalled
+earlier command in the same chain could not tell "delivered" from "hung" — one session
+read the silence as failure twice and sent the same `done` ping three times for one
+close. Before resending anything, read this line (or the topic's own delivery log), never
+the absence of output. The bridges are unaffected: they key on the exit code and on
+`NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stream.
+
 ## The topic is a bearer secret
 
 Anyone holding the topic can publish to his phone. It lives in `private/ntfy.conf`, which

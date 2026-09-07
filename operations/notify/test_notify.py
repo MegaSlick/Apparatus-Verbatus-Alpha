@@ -212,6 +212,68 @@ def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
     assert result.stdout == ""
 
 
+@pytest.mark.full
+@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
+def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
+    """The 2026-09-06 fix: silence on success let a session read a stalled prior
+    command as a lost ping and resend it -- three `done` pings for one close.
+    Every event that actually reaches the server now says so, on stderr, once."""
+
+    script, env = notify_repo
+    result = run(script, env, event)
+    assert result.returncode == 0, result.stderr
+    # The whole stream, exactly: one event-specific line and nothing around it.
+    assert result.stderr == f"notify: delivered ({event})\n"
+    assert result.stdout == ""
+
+
+def test_a_closed_stderr_does_not_turn_a_delivery_into_a_failure(notify_repo):
+    """The script runs under `set -e`; if the diagnostic write could fail the
+    run, an accepted post would come back non-zero and be resent -- the very
+    duplicate the line exists to prevent."""
+
+    script, env = notify_repo
+    result = subprocess.run(
+        ["sh", "-c", 'exec "$1" "$2" "$3" 2>&-', "sh", str(script), "done", "finished"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout
+    assert result.stdout == ""
+    assert Path(env["FAKE_ARGS"]).exists()
+
+
+def test_a_failed_delivery_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    env["FAKE_STATUS"] = "503"
+    result = run(script, env)
+    assert result.returncode == 1
+    assert "NOT DELIVERED" in result.stderr
+    assert "notify: delivered" not in result.stderr
+
+
+def test_the_test_sink_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    env["NTFY_TOPIC"] = "verbatus-test-sink"
+    result = run(script, env)
+    assert result.returncode == 0, result.stderr
+    assert "notify: delivered" not in result.stderr
+
+
+def test_a_suppressed_start_prints_no_delivered_line(notify_repo):
+    script, env = notify_repo
+    seed_stamp(script, seconds_ago=60)
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert "suppressed" in result.stderr
+    # The suppression line itself says a start "was already delivered"; the
+    # claim under test is the delivery line, not the word.
+    assert "notify: delivered" not in result.stderr
+
+
 def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
     """A near-miss must still notify. A prefix or substring rule would make one
     mistyped character in the real topic silently stop every notification, which
