@@ -1228,9 +1228,20 @@ def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable()
     """Absence stays absence: never a measured clean page (GOVERNANCE 10)."""
     regions = [{"payload": {"transform": {"source_page_ordinal": 2}}}]
 
-    assert RUN.testimony_content_for_continuation_pages({}, regions, 1) == [
-        {"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}
-    ]
+    rows = RUN.testimony_content_for_continuation_pages({}, regions, 1)
+
+    # The two facts this restatement exists to carry, asserted against literals
+    # rather than against the constant the production code builds the row from:
+    # spreading `NO_PAGE_CONTENT_COVERAGE` into the expectation would make the
+    # row agree with whatever that constant became, including a `shortfall` of
+    # False -- the one value GOVERNANCE 10 forbids here.
+    assert len(rows) == 1
+    assert rows[0]["shortfall"] is None
+    assert rows[0]["by_chair"] is None
+    assert "was not measured" in rows[0]["reason"]
+    # Then the whole shape, which is what pins the row to no extra key and no
+    # missing one.
+    assert rows == [{"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}]
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
