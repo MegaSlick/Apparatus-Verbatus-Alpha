@@ -31,6 +31,7 @@ PNG and DEFLATE specifications decide any byte.
 import hashlib
 import math
 import struct
+import sys
 import zlib
 from collections.abc import Mapping
 from io import BytesIO
@@ -89,6 +90,213 @@ _DECODE_FAILURES = (
 # by the mode's own declared range rather than by the page's own maximum — a per-image
 # maximum would make the same ink a different grey on a different page.
 _HIGH_PRECISION_SCALE = {"I;16": 1 / 257, "I;16L": 1 / 257, "I;16B": 1 / 257, "I;16N": 1 / 257}
+
+# `I;16N` is the native-order spelling of the same 16-bit samples, so it is the
+# same bytes as whichever explicit-order mode this machine's byte order names.
+_NATIVE_16_BIT_MODE: Final = "I;16L" if sys.byteorder == "little" else "I;16B"
+
+
+def _point_scalable(image: Image.Image) -> Image.Image:
+    """The same samples in a mode Pillow's callable `point` will actually scale.
+
+    Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only. The
+    byte-order variants `I;16L`, `I;16B` and `I;16N` raise
+    `ValueError("point operation not supported for this mode")` before any pixel
+    is touched, and every scaling path in this module names all four modes in
+    `_HIGH_PRECISION_SCALE` — so a page in one of the three reached the `point`
+    call and came back out of `grayscale_rows` as "sealed page bytes are not a
+    decodable image", which drops the page (GOALS 1) while blaming the scan.
+    A big-endian 16-bit TIFF opens as exactly `I;16B` (`TiffImagePlugin.OPEN_INFO`
+    maps `MM` at 16 bits per sample to it), so this is a source the door admits,
+    not a mode only a synthetic fixture can reach. Found by CodeRabbit.
+
+    `convert("I")` is the one hop measured to keep the samples on 12.3.0:
+    `I;16L` and `I;16B` convert to `I` exactly, while `convert("I;16")` puts every
+    sample above 255 on 255 — the clip this module exists to refuse — and `I;16N`
+    clips through every target Pillow offers. `I;16N` is therefore respelled
+    through its own bytes first, which is exact rather than a conversion at all.
+    `frombytes` builds a bare image, so `info` is carried across with the samples:
+    `_to_display_mode` reads the transparency record out of it afterwards.
+    """
+    if image.mode == "I;16N":
+        respelled = Image.frombytes(_NATIVE_16_BIT_MODE, image.size, image.tobytes())
+        respelled.info.update(image.info)
+        image = respelled
+    if image.mode in {"I;16L", "I;16B"}:
+        return image.convert("I")
+    return image
+
+
+class _UnsettledReadingPolicy(ValueError):
+    """A page this module can decode and has no settled way to read as grey.
+
+    A `ValueError` like every other refusal this module raises, and its own class
+    only so the paths that re-word a decode failure can let it through unchanged:
+    it says the pipeline has not settled a policy, not that the bytes are
+    damaged, and those are two different sentences to write to an operator.
+    """
+
+
+class _UndefinedSampleRange(_UnsettledReadingPolicy):
+    """A mode whose samples declare no range, so no 8-bit reading of it is honest."""
+
+
+class _UnreadableTransparency(_UnsettledReadingPolicy):
+    """A page that declares transparency, which no grey value can stand for."""
+
+
+def _refuse_undefined_sample_range(mode: str) -> None:
+    """Refuse `I` and `F` by name rather than picking a black point for them.
+
+    `I` is unbounded signed integer and `F` is float: neither declares a range,
+    so any mapping to 8 bits is a policy choice about what black and white mean,
+    and this module is not the place that gets to make it. The door keeps both
+    modes losslessly (`pipeline/1_exemplar/image_formats.py`), so a refusal here
+    surfaces as an alarm instead of a silently flattened reading — and every
+    reader of a sealed page refuses the same modes for the same reason, rather
+    than one of them clipping while another says no.
+    """
+    if mode in {"I", "F"}:
+        raise _UndefinedSampleRange(
+            f"a sealed page in mode {mode!r} has no defined sample range to read as 8 bits, "
+            "and reading it would decide one silently; the door keeps these modes losslessly "
+            "and the value-range policy for reading them is not settled"
+        )
+
+
+def _refuse_unreadable_palette_alpha(image: Image.Image) -> None:
+    """The third place a page's transparency can hide: inside its own palette.
+
+    A `P` page reports `getbands() == ("P",)` and carries no `info["transparency"]`
+    when its alpha lives in an RGBA palette, so the band scan above saw no alpha
+    channel and let the page through — and `convert("L")` then reads the palette's
+    *colour* for a fully transparent index, which for the usual transparent-black
+    entry is 0, the value every reader in this pipeline counts as ink. That is the
+    same measurement of something not on the page the two refusals above exist to
+    prevent, reached by the one route neither of them looked down. The crop path
+    already asks the palette (`_encode_crop_deterministic`, `resize_png_lanczos`);
+    this is the reading path asking the same question. Found by CodeRabbit.
+
+    **Defence in depth, and said as that rather than as a fixed bug.** No decoder
+    in this stack was measured to produce it: PNG, GIF, BMP, TIFF and WebP were
+    each round-tripped from an RGBA source on Pillow 12.3.0 and every palette came
+    back `RGB`, with any alpha in `info["transparency"]`, which the check above
+    already refuses. An RGBA palette arrives from `convert("P")` and `quantize()`,
+    which happen in this process rather than at the door. The guard is kept
+    because it costs one bounded pass and because the two crop-side callers named
+    above already ask the palette the same question — a reading path that did not
+    would be the one place a palette's alpha could still be counted as ink.
+
+    Only the entries the page actually uses are asked. A palette carries 256 slots
+    whatever the page draws with, and refusing a readable page for a transparent
+    colour nothing on it references would cost an act (GOALS 1) for a byte that
+    changes no pixel. `getcolors` counts indices on the already-bounded page, so
+    this is one pass over at most `MAX_PIXELS` samples and no RGBA materialisation.
+    """
+    palette = image.palette
+    palette_mode = getattr(palette, "mode", "")
+    alpha = palette_mode.find("A")
+    if palette is None or alpha < 0:
+        return
+    entries = palette.tobytes()
+    stride = len(palette_mode)
+    # A `P` page has at most 256 distinct indices, so this never returns `None`
+    # for want of room; `or []` covers a Pillow that decides otherwise rather
+    # than letting a missing count read as "no transparent entry".
+    counts = image.getcolors(1 << 8) or []
+    for _count, index in counts:
+        offset = index * stride + alpha
+        if offset >= len(entries):
+            # Skipping it would be the silent loss this module refuses everywhere
+            # else: measured on Pillow 12.3.0, an index its palette does not
+            # describe reads through `convert("L")` as 0 — ink invented from a
+            # byte the page never defined. Refused rather than counted, and in
+            # its own words, because it is not a transparency question. No route
+            # was measured to produce it either: a decoded palette is as long as
+            # the file's own PLTE, and `quantize()` writes all 256 entries.
+            raise _UnsettledReadingPolicy(
+                f"a sealed page draws with palette entry {index}, which its own palette of "
+                f"{len(entries) // stride} entries does not describe, so there is no sample "
+                "to read there and no settled policy for reading one that is not there"
+            )
+        if entries[offset] < 255:
+            raise _UnreadableTransparency(
+                f"a sealed page draws with palette entry {index}, which its own palette "
+                f"marks {entries[offset]} of 255 opaque, and reading it as grey would "
+                "count that entry as ink or as paper without either being recorded; the "
+                "policy for reading a transparent page is not settled"
+            )
+
+
+def _refuse_unreadable_transparency(image: Image.Image) -> None:
+    """Refuse to read a transparent page as grey rather than inventing paper.
+
+    `convert("L")` drops an alpha channel and ignores a tRNS record, so every
+    transparent pixel is read as whatever sample happens to sit under it —
+    usually zero, which this pipeline's readers count as ink. A page whose blank
+    regions read as ink is not a small error: it is a measurement of something
+    that is not on the page, and the alternative (compositing against white)
+    would be this module deciding what colour the paper is, which is the same
+    kind of guess `_refuse_undefined_sample_range` exists to refuse.
+
+    A crop is the other case and behaves differently on purpose: it is a display
+    image, PNG can carry the transparency, and `crop_png` does carry it. This is
+    only about turning a page into grey *values* a stage will then count.
+
+    Found by CodeRabbit reviewing the transparency fix.
+    """
+    if "transparency" in image.info:
+        raise _UnreadableTransparency(
+            "a sealed page declares a transparent sample, and reading it as grey would "
+            "count that sample as ink or as paper without either being recorded; the "
+            "policy for reading a transparent page is not settled"
+        )
+    if image.mode == "P":
+        _refuse_unreadable_palette_alpha(image)
+        return
+    bands = image.getbands()
+    alpha = next((index for index, band in enumerate(bands) if band.upper() == "A"), None)
+    if alpha is None:
+        return
+    # A page whose alpha channel is entirely opaque carries no transparency to
+    # lose, and refusing it would cost a page for a channel that says nothing
+    # (GOALS 1). One channel of the already-bounded page, so the check is a scan
+    # of at most `MAX_PIXELS` bytes and never an RGBA materialisation.
+    # `getchannel`, not `split()[alpha]`: splitting materialises every band to
+    # read one of them. Found by CodeRabbit.
+    minimum, _maximum = image.getchannel(alpha).getextrema()
+    if minimum < 255:
+        raise _UnreadableTransparency(
+            "a sealed page carries pixels that are not fully opaque, and reading it as "
+            "grey would count them as ink or as paper without either being recorded; the "
+            "policy for reading a transparent page is not settled"
+        )
+
+
+def _grayscale_samples(image: Image.Image) -> Image.Image:
+    """One sealed page as 8-bit grey, scaling the modes a bare convert would clip.
+
+    `convert("L")` maps a high-precision sample straight through instead of
+    scaling it, so 1024 and 65535 both land on 255 and a 16-bit scan reads as
+    near-white — a page of ink returned as a blank one, which is a missed act
+    (GOALS 1) produced by the reader rather than by the page. The crop path has
+    scaled these modes by `_HIGH_PRECISION_SCALE` since it was written; this is
+    the same policy at the one other place that reads sample values, so the
+    grey a stage measures and the grey a model is shown come from one rule.
+    """
+    _refuse_unreadable_transparency(image)
+    if image.mode == "L":
+        return image
+    scale = _HIGH_PRECISION_SCALE.get(image.mode)
+    if scale is not None:
+        # No `int()` inside the expression: on the `I` family Pillow probes the
+        # callable with an `ImagePointTransform` to compile it into a scale and
+        # offset, and `int()` raises on that probe rather than on any pixel.
+        # `_point_scalable` first, because three of the four modes named in
+        # `_HIGH_PRECISION_SCALE` refuse a callable `point` outright.
+        return _point_scalable(image).point(lambda value: value * scale).convert("L")
+    _refuse_undefined_sample_range(image.mode)
+    return image.convert("L")
 
 
 class Bounds(TypedDict):
@@ -236,6 +444,142 @@ _PNG_LAYOUT: Final = {
 _ICC_PROFILE_NAME: Final = b"ICC Profile"
 
 
+def _png_source_bit_depth(png_bytes: bytes) -> int | None:
+    """The bit depth an image's own IHDR declares, or `None` if it declares none.
+
+    Read from the bytes rather than asked of Pillow because Pillow does not keep
+    it: `Image.open` uses the depth to pick a raw mode and `load()` then clears
+    the tile that named it, so after decoding there is nothing on the image that
+    says whether its `L` samples came from a 2-, 4- or 8-bit file. Only the
+    signature and the fixed 13-byte IHDR are read, and anything that is not a PNG
+    opening with one — a TIFF, a JPEG, a truncated file — answers `None`, which
+    every caller reads as "no depth to convert from".
+    """
+    if not png_bytes.startswith(PNG_SIGNATURE) or len(png_bytes) < 26:
+        return None
+    length, tag = struct.unpack(">I4s", png_bytes[8:16])
+    if tag != b"IHDR" or length != 13:
+        return None
+    return png_bytes[24]
+
+
+def _transparency_to_decoded_range(image: Image.Image, source_bit_depth: int | None) -> None:
+    """Restate a tRNS record in the range the decoder just put the pixels in.
+
+    PNG names a transparent sample in the file's own bit depth, and Pillow carries
+    that number into `info["transparency"]` untouched while rescaling the pixels
+    beside it. Two admitted sources therefore arrive with a record its own samples
+    can no longer be compared against, and each fails differently:
+
+    * 16-bit truecolour decodes to mode `RGB`, so `_transparency_chunk` measured a
+      record like `(65535, 65535, 65535)` against the 8 bits the crop is written
+      in and refused a perfectly ordinary page.
+    * 2- and 4-bit greyscale decode to mode `L` with the samples spread over the
+      full 0-255 range, so a record naming sample 5 was written out as 8-bit 5 —
+      a value no pixel holds — and the pixel that really was transparent (85) was
+      written opaque. A wrong pixel marked, with no error anywhere.
+
+    The conversions are the decoder's own, measured on Pillow 12.3.0 rather than
+    assumed: 16 bits keep the high byte, and the sub-byte depths replicate their
+    bits, which is exactly `value * 255 // source_maximum` for those depths and
+    *not* for 16. The record is validated in the source's range before it is
+    converted, so an out-of-range record is still refused by name — a record is
+    never identified as 16-bit by being larger than 255, which would silently
+    rescale a corrupt 8-bit record instead of refusing it. Found by CodeRabbit.
+
+    Mode `1` is deliberately absent: Pillow already reports a 1-bit page's record
+    in the 0/255 terms its decoded samples use, and converting again would refuse
+    255 as outside a one-bit range. So is the `I;16` family, whose samples are
+    still 16-bit here — `_to_display_mode` rescales those pixels and that record
+    together, in the one place that knows the factor it used.
+    """
+    if source_bit_depth is None or source_bit_depth == _BIT_DEPTH:
+        return
+    if image.mode not in {"L", "RGB"}:
+        return
+    record = image.info.get("transparency")
+    if record is None:
+        return
+    grouped = isinstance(record, tuple | list)
+    samples = tuple(record) if grouped else (record,)
+    if any(not isinstance(sample, int) or isinstance(sample, bool) for sample in samples):
+        # Left exactly as it arrived: `_transparency_chunk` is the one place that
+        # says what shape a record of this mode must have, and it says it by name.
+        return
+    source_maximum = (1 << source_bit_depth) - 1
+    if any(not 0 <= sample <= source_maximum for sample in samples):
+        raise ValueError(
+            f"a page decoded to mode {image.mode!r} carries a transparency record {record!r} "
+            f"that its own {source_bit_depth}-bit source samples cannot name"
+        )
+    if source_bit_depth == 16:
+        converted = tuple(sample >> 8 for sample in samples)
+    else:
+        converted = tuple(sample * 255 // source_maximum for sample in samples)
+    image.info["transparency"] = converted if grouped else converted[0]
+
+
+def _transparency_chunk(crop: Image.Image, bit_depth: int) -> bytes:
+    """The tRNS chunk a crop's own transparency record needs, or nothing.
+
+    A grayscale or truecolour PNG expresses transparency by naming one sample
+    value as fully transparent rather than by carrying an alpha channel, and
+    Pillow keeps that value in `info["transparency"]` across `open` and `crop`.
+    Nothing wrote it back out, so a geometric crop of a page with a transparent
+    background returned the same picture with the background turned to ink — a
+    reading change produced by a crop, which is precisely what ARCHITECTURE's
+    third invariant says a crop may not be. The sealed page really can carry it:
+    the door's whole-page render keeps `transparency` in `info` and Pillow's own
+    PNG writer emits the tRNS chunk again, so this arrives from an ordinary
+    admitted PNG, not from a synthetic fixture.
+
+    `LA` and `RGBA` carry alpha in the samples and never reach here with a
+    transparency record to add. A record this encoder cannot express is refused
+    by name rather than dropped, for the same reason the mode table is.
+    """
+    transparency = crop.info.get("transparency")
+    if transparency is None or crop.mode in {"LA", "RGBA"}:
+        return b""
+    maximum = (1 << bit_depth) - 1
+    if crop.mode in {"1", "L"}:
+        if not isinstance(transparency, int) or isinstance(transparency, bool):
+            raise ValueError(
+                f"a {crop.mode!r} crop carries a transparency record of type "
+                f"{type(transparency).__name__}, which is not one grey sample"
+            )
+        # Pillow reports a bilevel image's transparent sample in `1`-mode terms
+        # (0 or 255); PNG names it in the file's own one-bit sample space.
+        if crop.mode == "1":
+            if transparency not in (0, 255):
+                raise ValueError(
+                    f"a '1' crop names sample {transparency} as transparent, which is "
+                    "neither of the two samples a bilevel image has"
+                )
+            transparency = 0 if transparency == 0 else 1
+        if not 0 <= transparency <= maximum:
+            raise ValueError(
+                f"a {crop.mode!r} crop names sample {transparency} as transparent, which "
+                f"its own {bit_depth}-bit depth cannot hold"
+            )
+        return _chunk(b"tRNS", struct.pack(">H", transparency))
+    if crop.mode == "RGB":
+        if (
+            not isinstance(transparency, tuple | list)
+            or len(transparency) != 3
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in transparency)
+            or any(not 0 <= value <= maximum for value in transparency)
+        ):
+            raise ValueError(
+                f"an 'RGB' crop carries a transparency record {transparency!r} that is not "
+                "three samples this encoder can name"
+            )
+        return _chunk(b"tRNS", struct.pack(">3H", *transparency))
+    raise ValueError(
+        f"a crop in mode {crop.mode!r} carries a transparency record this encoder has no "
+        "defined tRNS layout for"
+    )
+
+
 def _encode_crop_deterministic(crop: Image.Image) -> bytes:
     """Write a decoded crop as a PNG no library gets to choose the bytes of.
 
@@ -295,6 +639,9 @@ def _encode_crop_deterministic(crop: Image.Image) -> bytes:
             b"iCCP",
             _ICC_PROFILE_NAME + b"\x00\x00" + _deterministic_stored_deflate(profile),
         )
+    # iCCP precedes tRNS: PNG orders the ancillary chunks a crop can carry, and
+    # this is the one place that writes them.
+    ancillary += _transparency_chunk(crop, bit_depth)
     return _deterministic_png(
         width,
         height,
@@ -311,6 +658,24 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     Interlaced images, other bit depths or colour types, other filter types, and
     truncated or non-PNG input all raise ValueError. A decoder that fell back to a
     best guess would hand a stage pixels nobody can account for.
+
+    **Strict about the file, not only about the pixels.** Every chunk's CRC is
+    verified, a zero width or height is refused, the compression and filter
+    methods must be the only ones PNG defines, IEND must be present, and nothing
+    may follow it. This decoder is an internal codec whose whole purpose is that
+    the bytes a stage reads are the bytes this module wrote; accepting a file
+    with a broken IHDR CRC or a payload appended after the end marker would be
+    accepting exactly what that purpose excludes. (`carries_only_image_chunks`
+    already says the same thing about a sealed crop; this says it at the point
+    the samples are actually read.)
+
+    **A refusal here is never a refused page.** `crop_png`, `dimensions` and
+    `grayscale_rows` all fall back to Pillow on a ValueError from this function,
+    so a real scan that this narrow codec declines still decodes — which is why
+    strictness here costs no act (GOALS 1) and why a chunk this decoder cannot
+    carry has to be a refusal rather than a silent drop (GOVERNANCE 2): the
+    fallback path preserves the colour profile and the transparency this one
+    would have thrown away.
     """
     if png_bytes[:8] != PNG_SIGNATURE:
         raise ValueError("not a PNG: missing signature")
@@ -318,7 +683,7 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     offset = 8
     width = height = None
     idat = bytearray()
-    seen_ihdr = False
+    seen_ihdr = seen_iend = False
 
     while offset < len(png_bytes):
         if offset + 8 > len(png_bytes):
@@ -330,27 +695,73 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
         if crc_end > len(png_bytes):
             raise ValueError("truncated PNG: chunk data runs past the end of the file")
         data = png_bytes[data_start:data_end]
+        (stored_crc,) = struct.unpack(">I", png_bytes[data_end:crc_end])
+        if zlib.crc32(tag + data) & 0xFFFFFFFF != stored_crc:
+            raise ValueError(f"corrupt PNG: chunk {tag!r} fails its own CRC")
 
         if tag == b"IHDR":
+            if seen_ihdr:
+                raise ValueError("unsupported PNG: more than one IHDR")
             if length != 13:
                 raise ValueError("unsupported PNG: malformed IHDR")
-            width, height, bit_depth, color_type, _comp, _filt, interlace = struct.unpack(
-                ">IIBBBBB", data
+            width, height, bit_depth, color_type, compression, filter_method, interlace = (
+                struct.unpack(">IIBBBBB", data)
             )
+            if width < 1 or height < 1:
+                raise ValueError(
+                    f"unsupported PNG: a {width}x{height} image declares no pixels at all"
+                )
             if bit_depth != _BIT_DEPTH or color_type != _COLOR_TYPE_GRAYSCALE:
                 raise ValueError("unsupported PNG: only 8-bit grayscale is decodable here")
+            if compression != 0:
+                raise ValueError(
+                    f"unsupported PNG: compression method {compression} is not the one "
+                    "method PNG defines"
+                )
+            if filter_method != 0:
+                raise ValueError(
+                    f"unsupported PNG: filter method {filter_method} is not the one "
+                    "method PNG defines"
+                )
             if interlace != 0:
                 raise ValueError("unsupported PNG: interlaced images are not decodable here")
             seen_ihdr = True
         elif tag == b"IDAT":
+            if not seen_ihdr:
+                # PNG requires IHDR first, and without this an IDAT ahead of it is
+                # simply collected: a later, valid IHDR would then decode a stream
+                # made of bytes from before the header that describes it. Found by
+                # CodeRabbit.
+                raise ValueError("corrupt PNG: image data arrives before its IHDR")
             idat.extend(data)
         elif tag == b"IEND":
+            if length != 0:
+                raise ValueError("corrupt PNG: IEND carries data")
+            seen_iend = True
+            offset = crc_end
             break
+        else:
+            # Everything this function returns is bare grey samples, so a chunk
+            # saying how those samples are to be shown — tRNS, iCCP, and the
+            # gAMA/sRGB rendering family alike — would be dropped here without
+            # a trace. Refused instead, by name: `crop_png`'s Pillow path reads
+            # the same bytes and carries what it can.
+            raise ValueError(
+                f"unsupported PNG: chunk {tag!r} carries information this grayscale "
+                "codec does not read, and decoding here would drop it silently"
+            )
 
         offset = crc_end
 
     if not seen_ihdr or width is None or height is None:
         raise ValueError("unsupported PNG: missing IHDR")
+    if not seen_iend:
+        raise ValueError("truncated PNG: no IEND chunk")
+    if offset != len(png_bytes):
+        raise ValueError(
+            f"unsupported PNG: {len(png_bytes) - offset} byte(s) follow IEND, so this file "
+            "is not only the image it declares"
+        )
 
     # Bounded before `expected` is even computed, not only before the
     # decompression that follows it. `stride * height` below is itself an
@@ -388,6 +799,13 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     # stream from one that merely got far enough.
     if not decompressor.eof:
         raise ValueError("corrupt PNG: image data stream is truncated")
+    if decompressor.unused_data or decompressor.unconsumed_tail:
+        # The zlib stream ended and the IDAT chunks kept going. Those bytes are
+        # not image data and not part of any stream this module wrote, and
+        # accepting them is the same smuggling channel as bytes after IEND, one
+        # layer down. The door's own PNG walker refuses the identical shape
+        # (`_inflate_exactly`). Found by CodeRabbit.
+        raise ValueError("corrupt PNG: image data carries bytes past the end of its own stream")
     if len(raw) != expected:
         raise ValueError("corrupt PNG: decompressed data has the wrong length")
 
@@ -503,8 +921,10 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     The fast path is this module's own lossless codec, so a synthetic fixture
     page decodes through exactly the same reader that verifies its crops. Real
     imagery -- anything this module's own encoder never wrote -- falls back to
-    Pillow's own grayscale conversion, under the same `MAX_PIXELS` bound and the
-    same decode failures as `dimensions`. A third hand-rolled decode-and-fallback
+    Pillow under the same `MAX_PIXELS` bound and the same decode failures as
+    `dimensions`, converting to grey through `_grayscale_samples` so a 16-bit
+    scan is scaled rather than clipped and an `I` or `F` page is refused by name
+    exactly as the crop path refuses it. A third hand-rolled decode-and-fallback
     pair here, beside the two `dimensions` and `crop_png` already carry, is
     exactly the drift this module exists to prevent.
     """
@@ -516,9 +936,14 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
         with Image.open(BytesIO(png_bytes)) as image:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
-            grayscale = image if image.mode == "L" else image.convert("L")
+            grayscale = _grayscale_samples(image)
             width, height = grayscale.width, grayscale.height
             data = grayscale.tobytes()
+    except _UnsettledReadingPolicy:
+        # This module's own policy refusal, not a statement about the bytes: it
+        # must not be re-worded as "not a decodable image", which would send an
+        # operator looking for a damaged scan.
+        raise
     except (*_DECODE_FAILURES, ValueError) as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
     stride = width
@@ -640,6 +1065,11 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
         with Image.open(BytesIO(png_bytes)) as image:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
+            # Before the cut, because `crop()` copies `info` and every later step
+            # reads the record as if it named a decoded sample. This is the only
+            # place that still has the source bytes, and so the only place that
+            # can say what depth the record was written in.
+            _transparency_to_decoded_range(image, _png_source_bit_depth(png_bytes))
             if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
                 raise ValueError(
                     f"crop bounds {{'x': {x}, 'y': {y}, 'w': {w}, 'h': {h}}} fall outside a "
@@ -696,18 +1126,38 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
         # the truncation to 8 bits.
         # Rescaled samples: the profile described the 16-bit tone response and
         # no longer describes these bytes.
-        return _without_colour_profile(crop.point(lambda value: value * scale).convert("L"))
-    if mode in {"I", "F"}:
-        # Genuinely undecided rather than quietly guessed. `I` is unbounded signed
-        # integer and `F` is float: neither declares a range, so any mapping to 8
-        # bits is a policy choice about what black and white mean, and this module
-        # is not the place that gets to make it. Refused by name so it surfaces as
-        # an alarm (ruling 2) instead of a silently flattened reading.
-        raise ValueError(
-            f"a sealed page in mode {mode!r} has no defined sample range to display, and "
-            "cropping it to 8 bits would decide one silently; the door keeps these modes "
-            "losslessly and the value-range policy for reading them is not settled"
-        )
+        #
+        # `_point_scalable` first, for the same reason `_grayscale_samples` calls
+        # it: `I;16L`, `I;16B` and `I;16N` refuse a callable `point` on Pillow
+        # 12.3.0, and here that `ValueError` escapes `crop_png` uncaught.
+        scalable = _point_scalable(crop)
+        display = _without_colour_profile(scalable.point(lambda value: value * scale).convert("L"))
+        # A 16-bit grayscale PNG names its transparent sample in 16-bit terms, and
+        # Pillow carries that number through `point`/`convert` untouched — so the
+        # record now names a value the 8-bit samples beside it cannot even hold.
+        # Scaled by the same factor as the pixels rather than dropped: this is one
+        # rescale of one image, and the transparent sample is a sample.
+        transparency = display.info.get("transparency")
+        if isinstance(transparency, int) and not isinstance(transparency, bool):
+            # Refused rather than clamped, which is the same rule
+            # `_transparency_to_decoded_range` follows one screen up: a record
+            # outside the range its own mode can hold is a record nobody can
+            # account for, and `min`/`max` turned it into a *different* sample
+            # that would have marked a pixel the file never named. A valid
+            # `I;16*` page cannot reach this — PNG parses tRNS as two bytes —
+            # so the refusal costs no act and the clamp bought no page.
+            if not 0 <= transparency <= 65535:
+                raise ValueError(
+                    f"a crop in mode {mode!r} names sample {transparency} as transparent, "
+                    "which its own 16-bit samples cannot hold"
+                )
+            display.info["transparency"] = int(transparency * scale)
+        return display
+    # Genuinely undecided rather than quietly guessed, and refused in the same
+    # words wherever a sealed page is read: `_refuse_undefined_sample_range` is
+    # the one place that sentence is written, so the crop path and
+    # `grayscale_rows` cannot come to disagree about `I` and `F`.
+    _refuse_undefined_sample_range(mode)
     # Premultiplied alpha first, because Pillow will not convert it to anything
     # else: `La` converts *only* to `LA`, and `RGBa` only to `RGBA`. The band name
     # is the tell and it is spelled in lower case, so `"A" in bands` read `La` as
