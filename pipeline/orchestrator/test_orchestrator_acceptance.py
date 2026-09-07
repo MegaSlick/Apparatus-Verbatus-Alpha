@@ -1499,8 +1499,46 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "5b225fa3d64f0131974fdd3b777c42265e5fe2e28c5264131b2e20b88602fa24"
-REVIEW_RUN_TREE_DIGEST = "1936f76c1b7063390fa4425c19df774e33161715e50867b4033b6465a6785b62"
+# Merge re-pin (`origin/main` c9890bab8e -- Unit 12's churro-native layout --
+# into `work/alignment-matcher`). Both parents moved these pins for different
+# causes, so neither parent's literals describe this tree; one entry replaces
+# the two.
+#
+#   Cause (from this branch). Hostile review C: `config/alignment.toml` raises
+#   `timeout_seconds` from 5 to 25. A fired alignment deadline is `unaligned`,
+#   an unaligned page witness is not `comparable`, and an incomparable chair
+#   leaves the act's witness floor -- so a deadline a real page can reach
+#   records a slow comparison as coverage that is missing (GOALS 1). A
+#   7,500-character page whose acts repeat one formula verbatim measures
+#   10.1 s, already past five. `common/stage.py` seals that file's bytes into
+#   every run's `config_digest`, so both trees move without gaining an artifact
+#   or changing a decision.
+#
+#   The other parent's cause is already recorded above and is unchanged by the
+#   merge: this branch touches no artifact that Unit 12 produced.
+#
+# Attributed by measurement, not by argument. A tree was built here from
+# `origin/main` c9890bab8e itself, and it reproduced that commit's own literals
+# exactly (5b225fa3... and 1936f76c...), so the comparison is against a tree
+# that is what it claims to be. Leaf by leaf against it, this tree changes 75
+# files / 391 leaves (happy) and 87 / 471 (review), and **not one changed leaf
+# is a non-digest field**: 373 and 442 are 64-hex digests, the remaining 18 and
+# 29 are content-addressed blob paths, plus one renamed blob each in
+# `4_perlector` and `7_armarium` per scenario whose own name is its content
+# digest. In `run.json` exactly three leaves differ:
+# `sealed_config_digests.alignment` -- 925d16d0... -> b5563846..., which is the
+# sha256 of `config/alignment.toml` before and after this branch's edit -- and
+# the `config_digest` and `self_hash` computed over it. The cause arrives
+# alone, and the merge introduces no third cause of its own. Snapshot counts
+# and exit codes are unmoved at happy 96 / exit 0 and review 107 / exit 3.
+#
+# Both values below measured twice, in two independent temporary roots, at
+# canonical run id "r", through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers; the two roots agreed exactly on both
+# scenarios.
+HAPPY_RUN_TREE_DIGEST = "08c97c8e235329c62800e20f8b54358c2c505f4eb504d7522772d5458b329dae"
+# Re-pinned by the same alignment-deadline byte named above the happy digest.
+REVIEW_RUN_TREE_DIGEST = "5476a8f038eb3a98fff295a7c43110cfb22959d7b2cc6be28b3b2fa299b5737d"
 
 
 def orchestrate(
