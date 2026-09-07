@@ -1000,7 +1000,9 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     # The third named half, since Tyrel's F2 ruling: the page neither act is
     # primary on. Delivered, and visibly unmeasured rather than silently clean.
     _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
+    assert len(export["payload"]["delivered"]) == 2, export["payload"]["delivered"]
     delivered = {item["act_key"]: item for item in export["payload"]["delivered"]}
+    assert len(delivered) == 2
     assert sorted(delivered) == ["a1", "a2"]
     assert delivered["a1"]["testimony_content_coverage_continuation"] == []
     assert [

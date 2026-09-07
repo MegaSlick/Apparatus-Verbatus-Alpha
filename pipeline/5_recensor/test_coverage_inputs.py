@@ -940,6 +940,9 @@ def _continuation_page_context(monkeypatch, *, reason):
     page["payload"]["page_role"] = "continuation"
     context = _context(page)
     attachment = _attachment(context, end=0)
+    # A real continuation-page-no-act-anchor row is unattached as well as
+    # unaligned; the fixture says both so the unattached case is the one read.
+    attachment["payload"]["attachments"][0]["attached"] = False
     attachment["payload"]["attachments"][0]["alignment"] = {
         "status": "unaligned",
         "reason": reason,
