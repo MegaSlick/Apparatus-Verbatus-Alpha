@@ -9,7 +9,9 @@ unverified file can be counted as sent.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import SplitResult, urlsplit
 
 import pytest
 
@@ -75,6 +77,26 @@ def _client_error(code: str, status: int) -> _ResponseError:
 
 def _spec() -> VolumeSpec:
     return VolumeSpec(datacenter_id="EU-CZ-1", volume_id="fixture-volume-id")
+
+
+_URL_TOKEN = re.compile(r"https?://\S+")
+
+
+def _urls_in(lines: list[str]) -> list[SplitResult]:
+    """Every URL-shaped token across `lines`, parsed rather than matched as text.
+
+    A substring check (`"runpod.io" in line`) also accepts a look-alike host
+    such as `s3api-eu-cz-1.runpod.io.attacker.example/` or a copy embedded in
+    an unrelated path segment. Parsing each token and comparing the exact
+    scheme/hostname/port/path is what an endpoint-confinement assertion
+    actually needs.
+    """
+
+    urls = []
+    for line in lines:
+        for token in _URL_TOKEN.findall(line):
+            urls.append(urlsplit(token.rstrip(").,")))
+    return urls
 
 
 def test_the_endpoint_lowercases_the_datacenter_and_the_region_does_not() -> None:
@@ -344,7 +366,13 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
 
     assert refusal.value.code is ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
 
-    assert any("https://s3api-eu-cz-1.runpod.io/" in line for line in messages)
+    expected = urlsplit(_spec().endpoint_url)
+    urls = _urls_in(messages)
+    assert any(
+        (u.scheme, u.hostname, u.port, u.path)
+        == (expected.scheme, expected.hostname, expected.port, expected.path)
+        for u in urls
+    )
     assert any("Nothing outside that sealed record is read or sent." in line for line in messages)
     assert any("zero GPU-hours" in line for line in messages)
 
@@ -386,7 +414,10 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
     surface.upload(source, sealed_manifest=manifest)
 
     assert any("fixture volume" in line for line in messages)
-    assert not any("runpod.io" in line for line in messages)
+    assert not any(
+        (u.hostname or "") == "runpod.io" or (u.hostname or "").endswith(".runpod.io")
+        for u in _urls_in(messages)
+    )
 
 
 # -- the read channel -------------------------------------------------------
