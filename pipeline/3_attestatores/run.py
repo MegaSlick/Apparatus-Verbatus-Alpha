@@ -110,6 +110,35 @@ DEFAULT_FORMAT_CAPABILITIES = {
 }
 
 
+def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
+    """What this adapter's own grammar can carry, validated, for a pre-send refusal.
+
+    Mirrors `live_witness._format_capabilities_for` (kept local rather than
+    imported for the same circular-import reason `DEFAULT_FORMAT_CAPABILITIES`
+    is duplicated in both modules): a `RequestCapacityRefusal` fires before any
+    request reaches the wire, but the refused attempt still names a real
+    adapter, and that adapter's declared expressiveness is a fact about it
+    whether or not this one request was sendable.
+    """
+
+    capabilities = getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
+    if not isinstance(capabilities, dict) or set(capabilities) != {
+        "can_express_uncertainty",
+        "can_express_layout",
+    }:
+        raise SchemaRefusal(
+            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
+            f"object this seam knows: {capabilities!r}"
+        )
+    for field in ("can_express_uncertainty", "can_express_layout"):
+        if not isinstance(capabilities[field], bool):
+            raise SchemaRefusal(
+                f"adapter {adapter!r} declares format_capabilities.{field} as "
+                f"{capabilities[field]!r}, not a boolean"
+            )
+    return capabilities
+
+
 def real_ingress(context) -> bool:
     """Whether this context opened a real submission, read off its run authority.
 
@@ -3807,7 +3836,19 @@ def publish_page_testimonia_and_attachments(
                     attempted=attempted_page,
                     receipt_ref=page_attempt_result.receipt_ref if captured is not None else None,
                 ),
-                format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                # The captured attempt's own declared value when this record
+                # derives from one real chair response (`page_attempt_result`
+                # is the `Attempt`/`LiveAttempt` `captured_page_attempt`
+                # built, format_capabilities and all); the legacy synthetic
+                # `PageJoin` -- built from possibly several acts' attempts,
+                # each free to declare its own -- carries no single value of
+                # its own, so it keeps the blanket default it always recorded
+                # (`page_join`, `PageJoin` above).
+                format_capabilities=(
+                    page_attempt_result.format_capabilities
+                    if captured is not None
+                    else DEFAULT_FORMAT_CAPABILITIES
+                ),
                 # A cut-off empty capture retains text without claiming absence.
                 native_payload=native_payload if reading or arrived else None,
                 witness_reported=None,
@@ -4967,7 +5008,11 @@ def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> Non
 
 
 def capacity_refusal_attempt(
-    error: RequestCapacityRefusal, *, receipt_ref: Mapping[str, str], what: str
+    error: RequestCapacityRefusal,
+    *,
+    receipt_ref: Mapping[str, str],
+    what: str,
+    adapter: Any = None,
 ) -> Attempt:
     """One chair's outcome for a request its sealed row could not hold.
 
@@ -4995,6 +5040,13 @@ def capacity_refusal_attempt(
     request was refused after that, on this laptop. Naming that receipt is what
     keeps the record a live one -- a resumed pass reads it back and must not
     mistake this for a fixture-posture record.
+
+    `adapter` names the chair that was refused, so `format_capabilities`
+    still records what its grammar can express even though no request
+    reached the wire (`_declared_format_capabilities`): what a chair's
+    grammar can carry is a fact about the chair, not about whether this one
+    request fit the row. Optional and defaulting to the blanket value only
+    for a caller with no adapter in hand.
     """
 
     reason = f"{what} was refused before it was sent: {error}"
@@ -5002,7 +5054,11 @@ def capacity_refusal_attempt(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        format_capabilities=(
+            _declared_format_capabilities(adapter)
+            if adapter is not None
+            else DEFAULT_FORMAT_CAPABILITIES
+        ),
         health=no_response_health(reason=reason),
         reason=reason,
         receipt_ref=dict(receipt_ref),
@@ -5028,8 +5084,10 @@ def _serve_act_unit(
             context,
             adapter,
             presentation,
-            # The sealed row this chair is actually running under: a page-fallback
-            # act's crop is a whole 300-dpi page and does not fit every row
+            # The sealed row this chair is actually running under: a
+            # page-fallback act's crop is one fallback band, not a whole page
+            # (`live_witness.act_chair_request`'s own docstring), and still
+            # needs checking against the row like any other DAI request
             # (`live_witness.request_capacity_or_refuse`).
             profile=client.handle.profile,
         )
@@ -5041,6 +5099,7 @@ def _serve_act_unit(
             error,
             receipt_ref=client.handle.receipt_reference,
             what=f"the {resolved.witness_adapter} request for act {act['act_id']}",
+            adapter=adapter,
         )
         attempts_by_pair[(act["act_id"], chair)] = attempt
         publish_attempt(
@@ -5182,6 +5241,7 @@ def _serve_page_unit(
             error,
             receipt_ref=client.handle.receipt_reference,
             what=f"the {resolved.witness_adapter} request for page {page_ordinal}",
+            adapter=adapter,
         )
         page_captures[(page_ordinal, chair)] = (attempt, None)
         return publish_page_act_views(

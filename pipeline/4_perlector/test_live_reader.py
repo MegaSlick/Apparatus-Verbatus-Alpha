@@ -564,7 +564,16 @@ def test_genuinely_empty_text_with_stop_is_reported_empty_not_refused(tmp_path: 
 # --- image order and digest binding -------------------------------------------
 
 
-def test_images_are_regions_then_page_renders_in_dossier_order(tmp_path: Path) -> None:
+def test_images_are_page_renders_then_regions_with_the_text_between_them(
+    tmp_path: Path,
+) -> None:
+    """Page render, text, region crops -- hostile-review item M
+    (SPEC_FINDINGS 2026-09-06): the page render is the one image shared,
+    byte-identical, across every act on the same page, so it goes first for
+    vLLM's automatic prefix cache to have a chance at a hit; the act's own
+    region crop is unique to this act, so it goes last.
+    """
+
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"REGION"), _image_bytes(b"PAGE")
     with client:
@@ -575,13 +584,14 @@ def test_images_are_regions_then_page_renders_in_dossier_order(tmp_path: Path) -
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
     posted = endpoint.requests[0]
-    image_parts = [
-        part for part in posted["messages"][0]["content"] if part.get("type") == "image_url"
-    ]
+    content = posted["messages"][0]["content"]
+    types = [part["type"] for part in content]
+    assert types == ["image_url", "text", "image_url"]
+    image_parts = [part for part in content if part.get("type") == "image_url"]
     posted_bytes = [
         base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) for part in image_parts
     ]
-    assert posted_bytes == [region_image, page_image]
+    assert posted_bytes == [page_image, region_image]
 
 
 def test_image_sha256s_are_the_dossiers_own_digests_in_the_same_order(tmp_path: Path) -> None:
@@ -608,8 +618,8 @@ def test_image_sha256s_are_the_dossiers_own_digests_in_the_same_order(tmp_path: 
         for part in image_parts
     ]
     assert posted_digests == [
-        dossier["regions"][0]["image_sha256"],
         dossier["page_renders"][0]["image_sha256"],
+        dossier["regions"][0]["image_sha256"],
     ]
 
 
@@ -679,7 +689,7 @@ def test_two_regions_whose_region_id_order_reverses_their_blob_path_order(tmp_pa
     posted_bytes = [
         base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) for part in image_parts
     ]
-    assert posted_bytes == [image_r2, image_r1, page_image]
+    assert posted_bytes == [page_image, image_r2, image_r1]
 
 
 def test_a_drifted_image_is_refused_before_anything_is_sent(tmp_path: Path) -> None:

@@ -48,7 +48,10 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS  # noqa: E402
+from common.request_capacity import (  # noqa: E402
+    DECLARED_ANSWER_BOUND_TOKENS,
+    RequestCapacityRefusal,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
@@ -903,6 +906,90 @@ def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pas
     assert records[("a1", "attestator_1")]["outcome"] == "read"
     assert records[("a2", "attestator_1")]["outcome"] == "read"
     assert page_records(tree)[(1, "attestator_1")]["outcome"] == "read"
+
+
+def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabilities():
+    """A pre-send refusal never reaches the chair, but the chair still has a
+    grammar, and `format_capabilities` is a fact about that grammar rather than
+    about whether this one request fit the row (hostile review, U5 round 2).
+    Exercised directly against `capacity_refusal_attempt` -- not through a full
+    live pass -- because the fact under test is local to that one function.
+    """
+
+    error = RequestCapacityRefusal("too many image tokens for this row")
+    receipt_ref = {"relative_path": "receipts/x", "sha256": "a" * 64}
+
+    # No adapter in hand: the old blanket default, unchanged.
+    bare = attestatores.capacity_refusal_attempt(
+        error, receipt_ref=receipt_ref, what="the test request"
+    )
+    assert bare.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
+
+    # An adapter that declares no attribute at all: today's real adapters,
+    # still the blanket default.
+    undeclared = attestatores.capacity_refusal_attempt(
+        error, receipt_ref=receipt_ref, what="the test request", adapter=SimpleNamespace()
+    )
+    assert undeclared.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
+
+    # An adapter that names its own grammar: that value, not the default.
+    declared = {"can_express_uncertainty": True, "can_express_layout": True}
+    adapter = SimpleNamespace(format_capabilities=declared)
+    named = attestatores.capacity_refusal_attempt(
+        error, receipt_ref=receipt_ref, what="the test request", adapter=adapter
+    )
+    assert named.format_capabilities == declared
+    assert named.outcome == "failed"
+
+
+def test_capacity_refusal_attempt_refuses_a_malformed_adapter_declaration():
+    """A declaration that is not the two-key boolean object is this seam's own
+    bug -- a broken adapter, not a broken response -- and is refused by name
+    rather than silently recorded (hostile review, U5 round 2)."""
+
+    error = RequestCapacityRefusal("too many image tokens for this row")
+    receipt_ref = {"relative_path": "receipts/x", "sha256": "a" * 64}
+    adapter = SimpleNamespace(format_capabilities={"can_express_layout": "yes"})
+
+    with pytest.raises(SchemaRefusal, match="format_capabilities"):
+        attestatores.capacity_refusal_attempt(
+            error, receipt_ref=receipt_ref, what="the test request", adapter=adapter
+        )
+
+
+def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
+    live_run, tmp_path, monkeypatch
+):
+    """The captured attempt's declared value must reach the sealed page record.
+
+    No shipped adapter names its own `format_capabilities` yet (Wave 2's
+    U9/U10/U11/U12), so this stands in for one: `attempt_from_live` is wrapped
+    to hand back the same `Attempt` with a distinctive, non-default
+    `format_capabilities`, exactly as if `captured_page_attempt` had read it
+    off a declaring adapter (`live_witness._format_capabilities_for`). Before
+    the fix this page write hardcoded `DEFAULT_FORMAT_CAPABILITIES` regardless
+    of what the captured attempt carried (hostile review, U5 round 2); this
+    proves the sealed page Testimonium now carries the captured value instead.
+    """
+
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path, default_scripts())
+    declared = {"can_express_uncertainty": True, "can_express_layout": True}
+    real_attempt_from_live = attestatores.attempt_from_live
+
+    def relabeled_attempt_from_live(live):
+        attempt = real_attempt_from_live(live)
+        return attempt._replace(format_capabilities=declared)
+
+    monkeypatch.setattr(attestatores, "attempt_from_live", relabeled_attempt_from_live)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    # attestator_3 (churro.v1) is page-scoped and served live, so its page
+    # record is derived from exactly the `Attempt` this wrapper relabeled.
+    page = page_records(tree)[(1, "attestator_3")]["payload"]
+    assert page["format_capabilities"] == declared
+    assert page["format_capabilities"] != attestatores.DEFAULT_FORMAT_CAPABILITIES
 
 
 def test_a_pass_interrupted_between_two_views_of_a_refused_page_resumes_over_it(

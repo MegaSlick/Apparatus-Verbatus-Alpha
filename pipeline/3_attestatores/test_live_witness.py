@@ -210,7 +210,12 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     assert request.image_sha256s == (digest_bytes(image_bytes),)
     assert _decoded_images(request) == [image_bytes]
     system, user = request.messages
-    assert system == {"role": "system", "content": feeding.dai_prompt()["system"]}
+    # DAI's README sends the system turn as a one-element list of text parts,
+    # not a bare string.
+    assert system == {
+        "role": "system",
+        "content": [{"type": "text", "text": feeding.dai_prompt()["system"]}],
+    }
     assert user["role"] == "user"
     assert user["content"][0]["type"] == "image_url"
     assert user["content"][1] == {"type": "text", "text": feeding.dai_prompt()["user"]}
@@ -276,7 +281,12 @@ def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_
 
     assert request.image_sha256s == (image_sha256,)
     system, user = request.messages
-    assert system == {"role": "system", "content": feeding.churro_layout_prompt()["system"]}
+    # Churro's own `HFChatTemplate.build_conversation` sends the system turn
+    # as a one-element list of text parts, not a bare string.
+    assert system == {
+        "role": "system",
+        "content": [{"type": "text", "text": feeding.churro_layout_prompt()["system"]}],
+    }
     assert user["content"][0]["type"] == "image_url"
     assert user["content"][1]["text"] == feeding.churro_layout_prompt()["user"]
     # The declaration is unchanged and still retained on every request.
@@ -656,6 +666,60 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
     }
 
 
+def test_page_messages_builds_churros_registry_fixed_system_only_framing():
+    """The third page-scoped shape, fixed by the design for Wave 2's Churro
+    adapter (`providers/specs.py::churro_3b_profile()` sets `user_prompt=None`)
+    and prepared here so U10 has a seam to send it into. Exercised directly
+    against `_page_messages` -- not through `page_chair_request` -- because no
+    shipped row yet carries a measured prompt-token constant for a prompt this
+    seam does not send today; the dispatch this unit owns is provable without
+    one.
+    """
+
+    image_bytes = _png(12, 9)
+    system_text = "Transcribe the entirety of this historical document to XML format."
+    messages = live_witness._page_messages("churro.v1", {"system": system_text}, image_bytes)
+
+    assert len(messages) == 2
+    system, user = messages
+    # A one-element list of text parts, the same shape DAI's and Churro's
+    # two-message framing send their system turn in.
+    assert system == {"role": "system", "content": [{"type": "text", "text": system_text}]}
+    assert user["role"] == "user"
+    # Image-only: no vendor user text exists to send under this framing, so no
+    # text part is built for it -- unlike every other shape this seam knows.
+    assert user["content"] == [
+        {"type": "image_url", "image_url": {"url": live_witness._data_uri(image_bytes)}}
+    ]
+    assert live_witness._prompt_texts({"system": system_text}) == (system_text,)
+
+
+def test_page_messages_builds_chandras_design_fixed_user_only_framing():
+    """The design's fixed Chandra shape (VENDOR_SYSTEMS_DESIGN_2026-09-06.md:
+    `{"user": str}`, no system turn), prepared here so U9's adapter unit has a
+    seam to send it into once it retires `chandra.py`'s interim
+    `{"instruction"}` return. Exercised directly against `_page_messages` --
+    not through `page_chair_request` -- for the same reason as the Churro
+    system-only case above: no shipped adapter sends this shape yet.
+    """
+
+    image_bytes = _png(13, 8)
+    user_text = "Transcribe this complete page and report layout blocks in reading order."
+    messages = live_witness._page_messages("chandra.v1", {"user": user_text}, image_bytes)
+
+    assert len(messages) == 1
+    (message,) = messages
+    assert message["role"] == "user"
+    assert message["content"][0]["type"] == "image_url"
+    assert message["content"][1] == {"type": "text", "text": user_text}
+    assert live_witness._prompt_texts({"user": user_text}) == (user_text,)
+
+
+def test_page_messages_refuses_a_prompt_shape_it_does_not_recognize():
+    with pytest.raises(SchemaRefusal, match="unrecognized prompt shape"):
+        live_witness._page_messages("churro.v1", {"caption": "x"}, _png(4, 4))
+
+
 def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
     """The rebuild regression, pinned once for all three witness chairs.
 
@@ -765,7 +829,7 @@ def test_a_named_framing_reaches_the_request_and_its_capacity_record():
         framing=feeding.CHURRO_TRAINED_PROMPT_VERSION,
     )
     system, user = request.messages
-    assert system["content"] == feeding.churro_prompt()["system"]
+    assert system["content"] == [{"type": "text", "text": feeding.churro_prompt()["system"]}]
     assert user["content"][1]["text"] == feeding.churro_prompt()["user"]
     assert request.capacity["prompt_tokens"] == 281
 
@@ -1133,6 +1197,130 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
     assert attempt.native_capture["transport_stop_reason"] == "stop"
     assert len(endpoint.requests) == 1  # no retry
     assert blob_store.has(response.response_sha256)  # raw blob retained
+
+
+def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(tmp_path: Path):
+    """`adapter.format_capabilities` read with the old default as fallback.
+
+    `_stub_adapter` declares no `format_capabilities` attribute at all --
+    exactly today's real adapters, which have not yet grown one (Wave 2's
+    U9/U10/U11/U12) -- so this seam must still record the blanket default
+    every live attempt used to hard-code, not raise `AttributeError` and not
+    silently record `None`.
+    """
+
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
+    assert not hasattr(adapter, "format_capabilities")
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.format_capabilities == live_witness.DEFAULT_FORMAT_CAPABILITIES
+
+
+def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_path: Path):
+    """The other half: once an adapter names its own grammar's capability, the
+    seam reports that rather than the blanket default -- a Testimonium stops
+    claiming every witness reports identically the moment its adapter says so.
+    """
+
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
+    declared = {"can_express_uncertainty": True, "can_express_layout": False}
+    adapter.format_capabilities = declared
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.format_capabilities == declared
+    assert attempt.format_capabilities != live_witness.DEFAULT_FORMAT_CAPABILITIES
+
+
+def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_own_grammar(
+    tmp_path: Path,
+) -> None:
+    """The malformed branch never ran an adapter parser, but what the adapter's
+    *grammar* can carry is a fact about the chair, not about whether this one
+    body happened to parse -- so it is read the same way there too."""
+
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(body=b"not json at all"))
+    assert response.parse_problem is not None
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
+    declared = {"can_express_uncertainty": True, "can_express_layout": True}
+    adapter.format_capabilities = declared
+
+    attempt = live_witness.live_attempt_from_response(
+        SimpleNamespace(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.native_capture is None  # the malformed branch, confirmed
+    assert attempt.format_capabilities == declared
+
+
+@pytest.mark.parametrize(
+    "bad_declaration",
+    [
+        "can_express_layout",  # not an object at all
+        {"can_express_layout": True},  # missing can_express_uncertainty
+        {"can_express_uncertainty": False, "can_express_layout": False, "extra": True},
+        {"can_express_uncertainty": "yes", "can_express_layout": False},  # not a bool
+        None,
+    ],
+)
+def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_declaration):
+    """A declaration that is not the two-key boolean object this seam knows is
+    this seam's own bug -- an adapter is code in this tree, not a vendor
+    response -- and is refused here, before an immutable Testimonium can carry
+    it, rather than only later at `run.py::validate_tallied_testimonium`
+    (hostile review, U5 round 2)."""
+
+    adapter = SimpleNamespace(format_capabilities=bad_declaration)
+    with pytest.raises(SchemaRefusal, match="format_capabilities"):
+        live_witness._format_capabilities_for(adapter)
+
+
+def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_live_attempt(
+    tmp_path: Path,
+):
+    """The same refusal reaches a caller that only asked for a `LiveAttempt`,
+    so a broken adapter cannot slip a bad declaration past this seam merely by
+    being read from a different call site."""
+
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
+    adapter.format_capabilities = {"can_express_layout": "not-a-bool"}
+
+    with pytest.raises(SchemaRefusal, match="format_capabilities"):
+        live_witness.live_attempt_from_response(
+            SimpleNamespace(tree=_FakeTree()),
+            adapter,
+            "dai.v1",
+            response,
+            generation_declared={},
+            parser="text",
+            **_dai_view_kwargs(),
+        )
 
 
 def test_live_attempt_from_response_refuses_a_non_dai_adapter_name(tmp_path: Path):
