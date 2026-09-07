@@ -382,6 +382,12 @@ def test_a_big_endian_16bit_tiff_is_read_rather_than_called_undecodable() -> Non
     assert (width, height) == (4, 1)
     assert list(rows[0]) == [0, 1, 128, 255]
 
+    # And the crop path on the same page, which reaches the same refusal through
+    # `_to_display_mode` and raises it where `crop_png` catches nothing.
+    with Image.open(BytesIO(crop_png(written.getvalue(), {"x": 1, "y": 0, "w": 3, "h": 1}))) as cut:
+        cut.load()
+        assert list(cut.tobytes()) == [1, 128, 255]
+
 
 def test_a_16bit_truecolour_page_crops_instead_of_being_refused() -> None:
     """Pillow rescales 16-bit truecolour pixels to 8 bits and leaves tRNS alone.
