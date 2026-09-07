@@ -207,9 +207,33 @@ def _format_capabilities_for(adapter: Any) -> Mapping[str, bool]:
     bundle of callables (`witness_adapters.RunnableAdapter`, or a test's
     stand-in), never a shared base class this module could name without
     creating the very circular import the module docstring already declines.
+
+    Validated the same two keys `run.py::format_capabilities_for` checks on
+    the fixture path (a local check, not an import of that function, for the
+    same circular-import reason `DEFAULT_FORMAT_CAPABILITIES` is duplicated
+    rather than shared): an adapter is code in this tree, so a declaration
+    that is not a two-key boolean mapping is this seam's own bug, and a
+    ``SchemaRefusal`` here says so before the value reaches an immutable
+    Testimonium, rather than only at `run.py::validate_tallied_testimonium`
+    after publication.
     """
 
-    return getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
+    capabilities = getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
+    if not isinstance(capabilities, Mapping) or set(capabilities) != {
+        "can_express_uncertainty",
+        "can_express_layout",
+    }:
+        raise SchemaRefusal(
+            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
+            f"object this seam knows: {capabilities!r}"
+        )
+    for field in ("can_express_uncertainty", "can_express_layout"):
+        if not isinstance(capabilities[field], bool):
+            raise SchemaRefusal(
+                f"adapter {adapter!r} declares format_capabilities.{field} as "
+                f"{capabilities[field]!r}, not a boolean"
+            )
+    return capabilities
 
 
 # The allow-listed subset of `feeding.dai_generation()` vLLM's OpenAI-compatible
@@ -371,7 +395,16 @@ def _prompt_texts(prompt: Mapping[str, Any]) -> tuple[str, ...]:
 
     if set(prompt) == {"system", "user"}:
         return (prompt["system"], prompt["user"])
+    if set(prompt) == {"user"}:
+        # Chandra's design-fixed shape (VENDOR_SYSTEMS_DESIGN_2026-09-06.md:
+        # `{"user": str}`, no system turn): a single user turn, one text
+        # part to measure. Accepted alongside {"instruction"} below because
+        # U9 (the Chandra adapter unit) has not yet retired the interim
+        # shape this seam was built against.
+        return (prompt["user"],)
     if set(prompt) == {"instruction"}:
+        # Interim shape: `chandra.py::prompt` still returns this until U9
+        # lands. Kept only until that unit retires it in favor of {"user"}.
         return (prompt["instruction"],)
     if set(prompt) == {"system"}:
         # Churro's registry-fixed shape (design's "Churro {system}"): the
@@ -380,8 +413,8 @@ def _prompt_texts(prompt: Mapping[str, Any]) -> tuple[str, ...]:
         return (prompt["system"],)
     raise SchemaRefusal(
         f"a witness adapter returned an unrecognized prompt shape {sorted(prompt)}; this seam "
-        "knows the churro.v1/dai.v1 system/user framing, churro.v1's system-only framing, and "
-        "chandra.v1's single instruction"
+        "knows the churro.v1/dai.v1 system/user framing, churro.v1's system-only framing, "
+        "chandra.v1's single user turn, and chandra.v1's interim single instruction"
     )
 
 
@@ -527,7 +560,7 @@ def _page_messages(
 ) -> tuple[Mapping[str, object], ...]:
     """The message tuple for one page-scoped request, dispatched on prompt shape.
 
-    Three shapes, closed and exact -- a fourth is refused rather than guessed
+    Four shapes, closed and exact -- a fifth is refused rather than guessed
     at. Extracted from `page_chair_request` so this dispatch (and, in
     particular, a new shape) is provable without a sealed row or a measured
     prompt-token constant standing in the way: it is pure, and every one of
@@ -536,9 +569,14 @@ def _page_messages(
     * ``{"system", "user"}`` -- Churro's carried two-message framing
       (`feeding.churro_prompt`/`feeding.churro_layout_prompt`): a system turn
       and a user turn carrying the image and the vendor's own user text.
-    * ``{"instruction"}`` -- Chandra's single-instruction framing
-      (`chandra.prompt`); no vendor wire schema exists to name a system/user
-      split for it (module docstring).
+    * ``{"user"}`` -- Chandra's design-fixed framing
+      (VENDOR_SYSTEMS_DESIGN_2026-09-06.md: ``{"user": str}``, no system
+      turn): a single user turn carrying the image and the adapter's text,
+      no system message.
+    * ``{"instruction"}`` -- Chandra's interim single-instruction framing
+      (`chandra.prompt`), kept only until U9 retires it in favor of
+      ``{"user"}`` above; no vendor wire schema exists to name a
+      system/user split for it (module docstring).
     * ``{"system"}`` -- Churro's registry-fixed framing (design's "Churro
       {system}"): the whole instruction sits in the system turn and the user
       turn carries the image alone -- `providers/specs.py::churro_3b_profile()`
@@ -553,6 +591,8 @@ def _page_messages(
             {"role": "system", "content": _system_content(prompt["system"])},
             {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
         )
+    if set(prompt) == {"user"}:
+        return ({"role": "user", "content": _user_content(prompt["user"], image_bytes)},)
     if set(prompt) == {"instruction"}:
         return ({"role": "user", "content": _user_content(prompt["instruction"], image_bytes)},)
     if set(prompt) == {"system"}:
@@ -566,7 +606,8 @@ def _page_messages(
     raise SchemaRefusal(
         f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "
         f"{sorted(prompt)}; this seam knows the churro.v1 system/user framing, churro.v1's "
-        "system-only framing, and chandra.v1's single instruction"
+        "system-only framing, chandra.v1's single user turn, and chandra.v1's interim single "
+        "instruction"
     )
 
 

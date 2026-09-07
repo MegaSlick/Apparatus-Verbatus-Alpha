@@ -694,6 +694,27 @@ def test_page_messages_builds_churros_registry_fixed_system_only_framing():
     assert live_witness._prompt_texts({"system": system_text}) == (system_text,)
 
 
+def test_page_messages_builds_chandras_design_fixed_user_only_framing():
+    """The design's fixed Chandra shape (VENDOR_SYSTEMS_DESIGN_2026-09-06.md:
+    `{"user": str}`, no system turn), prepared here so U9's adapter unit has a
+    seam to send it into once it retires `chandra.py`'s interim
+    `{"instruction"}` return. Exercised directly against `_page_messages` --
+    not through `page_chair_request` -- for the same reason as the Churro
+    system-only case above: no shipped adapter sends this shape yet.
+    """
+
+    image_bytes = _png(13, 8)
+    user_text = "Transcribe this complete page and report layout blocks in reading order."
+    messages = live_witness._page_messages("chandra.v1", {"user": user_text}, image_bytes)
+
+    assert len(messages) == 1
+    (message,) = messages
+    assert message["role"] == "user"
+    assert message["content"][0]["type"] == "image_url"
+    assert message["content"][1] == {"type": "text", "text": user_text}
+    assert live_witness._prompt_texts({"user": user_text}) == (user_text,)
+
+
 def test_page_messages_refuses_a_prompt_shape_it_does_not_recognize():
     with pytest.raises(SchemaRefusal, match="unrecognized prompt shape"):
         live_witness._page_messages("churro.v1", {"caption": "x"}, _png(4, 4))
@@ -1255,6 +1276,51 @@ def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_ow
 
     assert attempt.native_capture is None  # the malformed branch, confirmed
     assert attempt.format_capabilities == declared
+
+
+@pytest.mark.parametrize(
+    "bad_declaration",
+    [
+        "can_express_layout",  # not an object at all
+        {"can_express_layout": True},  # missing can_express_uncertainty
+        {"can_express_uncertainty": False, "can_express_layout": False, "extra": True},
+        {"can_express_uncertainty": "yes", "can_express_layout": False},  # not a bool
+        None,
+    ],
+)
+def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_declaration):
+    """A declaration that is not the two-key boolean object this seam knows is
+    this seam's own bug -- an adapter is code in this tree, not a vendor
+    response -- and is refused here, before an immutable Testimonium can carry
+    it, rather than only later at `run.py::validate_tallied_testimonium`
+    (hostile review, U5 round 2)."""
+
+    adapter = SimpleNamespace(format_capabilities=bad_declaration)
+    with pytest.raises(SchemaRefusal, match="format_capabilities"):
+        live_witness._format_capabilities_for(adapter)
+
+
+def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_live_attempt(
+    tmp_path: Path,
+):
+    """The same refusal reaches a caller that only asked for a `LiveAttempt`,
+    so a broken adapter cannot slip a bad declaration past this seam merely by
+    being read from a different call site."""
+
+    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
+    adapter.format_capabilities = {"can_express_layout": "not-a-bool"}
+
+    with pytest.raises(SchemaRefusal, match="format_capabilities"):
+        live_witness.live_attempt_from_response(
+            SimpleNamespace(tree=_FakeTree()),
+            adapter,
+            "dai.v1",
+            response,
+            generation_declared={},
+            parser="text",
+            **_dai_view_kwargs(),
+        )
 
 
 def test_live_attempt_from_response_refuses_a_non_dai_adapter_name(tmp_path: Path):
