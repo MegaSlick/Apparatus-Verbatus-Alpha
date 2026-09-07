@@ -225,34 +225,57 @@ offline — landed alongside the request-shape work this unit builds on.)
 Chandra-2 (`datalab-to/chandra-ocr-2`, serving both the `attestator_1` and
 `designator_structure` roles) and the Perlector (`Qwen/Qwen3.8-27B`) are both
 hybrid Mamba/attention (`qwen3_5`) checkpoints. `manager.start` refuses to
-launch either one with `enable_prefix_caching` on: that path is experimental
-over recurrent state, cannot hit at this catalogue's `max_num_seqs = 1`, and
-only costs recurrent-state memory (hostile review 2026-09-06 item L). The
-check is keyed on the identity's exact `repo`, never on role — role names
+launch either one with `enable_prefix_caching` on. vLLM v0.27.1 itself keeps
+prefix caching over recurrent state opt-in for hybrid models rather than
+unsupported (`arg_utils.py`'s own default is `not model_config.is_hybrid`,
+commented "keep it opt-in for now") — the caution here is this project's:
+it cannot hit at this catalogue's `max_num_seqs = 1` (nothing else is ever
+resident to share a cached prefix with) and only costs recurrent-state
+memory for the privilege (hostile review 2026-09-06 item L). The check is
+keyed on the identity's exact `repo`, never on role — role names
 (`attestator_1`, `perlector`, ...) are reused throughout this package's test
 suite as generic fixture identifiers unrelated to these two checkpoints, and
 every such fixture is pinned at an `example/...` placeholder rather than a
 real vendor repository, so the two never collide. The catalogue *schema*
 still admits `enable_prefix_caching` either way — the corrected value for the
-real rows is `config/serving_recipes_real.toml`, a later unit's data change,
-not this one's.
+real rows is `config/serving_recipes_real.toml`, a row-data change outside
+this file's ownership.
+
+**Known blocker, not resolved by this unit:** as committed today,
+`config/serving_recipes_real.toml` sets `enable_prefix_caching = true` for
+exactly the three rows above (attestator_1, designator_structure, perlector),
+so a real launch of any of them refuses right now. The design note recording
+those rows (`workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`, "Serving
+rows", marked Tyrel's decision under hard rule 1) lists `enable_prefix_caching`
+as unchanged and names no unit that flips it. Reconciling the two — amend
+the row values, or drop this refusal — is a row-data decision, not a
+schema/preflight one; it is recorded here so it is not lost silently before
+the next real launch attempt.
 
 ## Prompt-token accounting and a deterministic readiness rejection
 
-Every real profile now launches with `--enable-prompt-tokens-details`, so a
-served response's `usage` object reliably carries `prompt_tokens` (hostile
-review item H): without it, some engine builds omit or under-report it, and a
-silently dropped `mm_processor_kwargs` (vllm-project/vllm#49015, #54527)
-would otherwise read a page at the wrong scale with no error anywhere.
-`preflight.reconcile_usage_against_capacity` compares that observed count
-against the laptop's own image/text token arithmetic within a caller-supplied
-per-chair tolerance and returns a `UsageReconciliation`; a mismatch is
-published through `.to_finding()` as a `usage-capacity-mismatch` finding,
-never raised, because what a mismatch *means* is a GOVERNANCE 10 question,
-not a hard-coded verdict. `localized_to` names which half moved only when the
-request carries tokens of just one kind — an image-only user turn (Churro) or
-a text-only probe — and is honestly `"unlocalized"` for a mixed request
-rather than guessed at from one scalar.
+`usage.prompt_tokens` is present on every real vLLM v0.27.1 response
+regardless of launch flags. Every real profile now also launches with
+`--enable-prompt-tokens-details`, which gates a different field:
+`usage.prompt_tokens_details.multimodal_tokens`, a per-modality breakdown of
+the tokens already counted in `prompt_tokens` (hostile review item H) —
+without the flag, that breakdown is simply absent, and a silently dropped
+`mm_processor_kwargs` (vllm-project/vllm#49015, #54527) would otherwise read
+a page at the wrong scale with no error anywhere.
+`preflight.reconcile_usage_against_capacity` compares the observed
+`prompt_tokens` against the laptop's own image/text token arithmetic within a
+caller-supplied per-chair tolerance and returns a `UsageReconciliation`; a
+mismatch is published through `.to_finding()` as a `usage-capacity-mismatch`
+finding, never raised, because what a mismatch *means* is a GOVERNANCE 10
+question, not a hard-coded verdict. When the response carries the
+`multimodal_tokens` breakdown, `localized_to` compares the image half and the
+text half independently and can name which one moved even on a *mixed* real
+request — Chandra, DAI, and Churro all send image and text together, so this
+is the case that matters for every real request, not only the image-only or
+text-only ones a scalar-only comparison could ever tell apart. Without that
+breakdown it falls back to naming a half only when the *other* half carries
+no expected tokens at all, and is honestly `"unlocalized"` otherwise rather
+than guessed at from one scalar.
 
 `_wait_until_ready`'s readiness loop now tells apart an engine that is not
 warmed up yet from one that has fully initialized and is rejecting the exact
@@ -262,16 +285,22 @@ deterministic and breaks the loop immediately, rather than retrying to
 new. A `5xx`/connection failure still retries as before — that is ordinary
 boot-time unavailability.
 
-## `local.env` and three static preflight assertions
+## Env-override files and three static preflight assertions
 
-`preflight.assert_no_discoverable_local_env` refuses a real launch the moment
-a `local.env` file is discoverable in the process's current working
-directory — the same directory an owned vLLM subprocess inherits with no
-explicit `cwd`. Nothing in this package's config-inputs sealing or launch
-audit would ever see a value such a file silently injected into that
-subprocess's environment (a Hub token enabling a network fetch the real path
-forbids, a proxy, an engine flag), so it is refused by name before
-`manager.start` is ever called.
+`manager.assert_no_discoverable_local_env` refuses a real launch the moment
+an env-override file (`local.env`, or `.env`/`.env.*` other than the tracked
+`.env.example` — this repository's own credential-filename convention,
+per `.gitignore` and `.githooks/check_ingress.py`) is discoverable in the
+process's current working directory — the same directory an owned vLLM
+subprocess inherits with no explicit `cwd`. Nothing in this package's
+config-inputs sealing or launch audit would ever see a value such a file
+silently injected into that subprocess's environment (a Hub token enabling a
+network fetch the real path forbids, a proxy, an engine flag). It is checked
+inside `ServingManager.start` itself, not only from the smoke-preflight
+lifecycle: `start` is the one door every real launch already passes through,
+whether it arrives through `ServingSmokeReader.read` or directly through
+`ChairClient.__enter__`, so a check placed anywhere upstream of it would
+guard only the caller that happened to run it.
 
 Three further preflight primitives, generic and offline-testable, close
 hostile review item A's static-assertion gap so `proven` can never again be
@@ -280,10 +309,14 @@ units whose files actually render a request:
 
 - `assert_image_before_text_on_wire(content)` — refuses a rendered chat
   request whose first content part is not the image, checked against the
-  exact list that serializes onto the wire (vLLM's `string` content-format
-  auto-detection hoists every image ahead of text regardless of a caller's
-  own part order, vllm-project/vllm#14047, so this must run against the
-  rendered body, never the pre-render call).
+  exact list that serializes onto the wire. This means anything only because
+  `render_vllm_argv` pins `--chat-template-content-format openai`: under
+  vLLM's `string` format every image placeholder is hoisted ahead of the
+  text regardless of a caller's own part order (vllm-project/vllm#14047),
+  which would make a rendered-body check pass no matter what order the
+  caller assembled — so the format is pinned, and this check runs against
+  the rendered body, never the pre-render call, so it still catches an
+  adapter that built the wrong order.
 - `assert_resized_pixels_within_trained_geometry(...)` — refuses a
   post-resize image outside a chair's own declared trained pixel range.
 - `assert_generation_config_key_coverage(...)` — refuses a vendor

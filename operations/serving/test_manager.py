@@ -94,6 +94,7 @@ from .manager import (
     ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
+    assert_no_discoverable_local_env,
     assert_processor_geometry,
 )
 from .preflight import (
@@ -101,7 +102,6 @@ from .preflight import (
     UsageReconciliation,
     assert_generation_config_key_coverage,
     assert_image_before_text_on_wire,
-    assert_no_discoverable_local_env,
     assert_resized_pixels_within_trained_geometry,
     prepare_log_root,
     reconcile_usage_against_capacity,
@@ -996,6 +996,8 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
         "vllm",
         "--no-enable-log-requests",
         "--enable-prompt-tokens-details",
+        "--chat-template-content-format",
+        "openai",
         "--enable-prefix-caching" if switches_on else "--no-enable-prefix-caching",
         "--enforce-eager" if switches_on else "--no-enforce-eager",
         "--trust-remote-code" if switches_on else "--no-trust-remote-code",
@@ -5008,6 +5010,66 @@ def test_assert_no_discoverable_local_env_refuses_only_when_present(tmp_path: Pa
         assert_no_discoverable_local_env(directory=tmp_path)
 
 
+def test_assert_no_discoverable_local_env_also_catches_this_projects_own_dotenv_names(
+    tmp_path: Path,
+) -> None:
+    """`.env`/`.env.*` are this repo's own credential-filename convention.
+
+    `.gitignore` ignores `.env` and `.env.*` (keeping only the tracked
+    `.env.example`), and `.githooks/check_ingress.py` names `.env` a
+    sensitive filename -- `local.env` matches no such convention anywhere in
+    this repository or in vLLM, so the check must not rely on that name alone.
+    """
+
+    (tmp_path / ".env").write_text("HF_TOKEN=leaked\n")
+    with pytest.raises(ServingConfigurationError, match=r"\.env"):
+        assert_no_discoverable_local_env(directory=tmp_path)
+
+
+def test_assert_no_discoverable_local_env_catches_a_dotenv_variant_but_not_the_example(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env.example").write_text("HF_TOKEN=replace-me\n")
+    assert_no_discoverable_local_env(directory=tmp_path)  # the tracked example is not a leak
+
+    (tmp_path / ".env.production").write_text("HF_TOKEN=leaked\n")
+    with pytest.raises(ServingConfigurationError, match=r"\.env\.production"):
+        assert_no_discoverable_local_env(directory=tmp_path)
+
+
+def test_manager_start_refuses_a_discoverable_env_override_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`manager.start` itself must guard every real launch, not only the smoke reader.
+
+    `ChairClient.__enter__` calls `manager.start` directly, with no smoke
+    lifecycle in between; a check placed only in `ServingSmokeReader.read`
+    would never run on that path.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    operator_cwd = tmp_path / "operator-cwd"
+    operator_cwd.mkdir()
+    (operator_cwd / ".env").write_text("HF_TOKEN=leaked\n")
+    monkeypatch.chdir(operator_cwd)
+
+    with pytest.raises(ServingConfigurationError, match=r"\.env"):
+        manager.start(chair, TIER)
+
+    assert launcher.processes == []
+    assert registry.ensure_calls == []
+
+
 def test_serving_smoke_reader_refuses_a_discoverable_local_env_before_any_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5156,6 +5218,8 @@ def test_reconcile_usage_against_capacity_localizes_a_text_only_mismatch() -> No
 
 
 def test_reconcile_usage_against_capacity_reports_a_mixed_mismatch_as_unlocalized() -> None:
+    """With no per-modality breakdown in ``usage``, a mixed mismatch stays honest."""
+
     reconciled = reconcile_usage_against_capacity(
         chair="attestator_2",
         usage={"prompt_tokens": 5200},
@@ -5163,6 +5227,71 @@ def test_reconcile_usage_against_capacity_reports_a_mixed_mismatch_as_unlocalize
         expected_text_tokens=1024,
         tolerance=5,
     )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "unlocalized"
+
+
+def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_image() -> None:
+    """``multimodal_tokens.image`` localizes exactly even on a real mixed request."""
+
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5183,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "image"
+    assert finding["observed_image_tokens"] == 4159
+
+
+def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_text() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5200,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4059}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "text"
+
+
+def test_reconcile_usage_against_capacity_mixed_breakdown_both_off_stays_unlocalized() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5300,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "unlocalized"
+
+
+def test_reconcile_usage_against_capacity_ignores_a_malformed_multimodal_breakdown() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={"prompt_tokens": 5200, "prompt_tokens_details": {"multimodal_tokens": "image"}},
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    assert reconciled.observed_image_tokens is None
     finding = reconciled.to_finding()
     assert finding is not None
     assert finding["localized_to"] == "unlocalized"

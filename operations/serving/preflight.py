@@ -113,53 +113,23 @@ def prepare_log_root(log_root: str | Path) -> Path:
     return prepared
 
 
-def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> None:
-    """Refuse a live launch next to an undeclared ``local.env`` override file.
-
-    ``directory`` defaults to the process's own current working directory --
-    exactly what an owned vLLM subprocess inherits when
-    :class:`operations.serving.process.PopenServerProcess` launches it without
-    an explicit ``cwd``.  A ``local.env`` sitting there is exactly the kind of
-    side channel hard rule 6 exists to catch: nothing in this package's
-    config-inputs sealing or launch audit would ever see a value it silently
-    injected (a Hub token enabling a network fetch the real path forbids, a
-    proxy, an engine flag), because such a file is invisible to every check
-    that reads *this repository's* configuration.  A caller with a real reason
-    to launch from a directory that has one may pass ``directory`` explicitly;
-    there is no way to silence this for the default cwd.
-    """
-
-    target = Path(directory) if directory is not None else Path.cwd()
-    candidate = target / "local.env"
-    try:
-        discoverable = candidate.exists()
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot check for a discoverable local.env at {candidate}: {error}"
-        ) from error
-    if discoverable:
-        raise ServingConfigurationError(
-            f"a 'local.env' file is discoverable at {candidate}; a real serving launch must not "
-            "start next to an undeclared environment-override file, since nothing sealed by "
-            "this package's configuration inputs or launch audit could ever see a value it "
-            "injected into the launched subprocess's inherited environment. Remove or rename "
-            "it before starting a real chair."
-        )
-
-
 def assert_image_before_text_on_wire(content: Sequence[Mapping[str, object]]) -> None:
     """Refuse a rendered chat request whose first content part is not the image.
 
     Must be checked against the *rendered* content list -- the exact list
     that serializes onto the wire -- never the Python call an adapter built
-    before rendering.  Under vLLM's ``string`` chat-template
-    content-format auto-detection every image placeholder is hoisted ahead of
-    the text regardless of the caller's part order (vllm-project/vllm#14047),
-    which would make a check against the caller's own list a no-op that could
-    read green while the wire actually carries text-first (hostile review
-    item A).  Callers must therefore assert this against the body they are
-    about to send (or against ``openai``-format-rendered content), not
-    against whatever order they assembled it in.
+    before rendering.  This assertion means anything only because
+    ``render_vllm_argv`` pins ``--chat-template-content-format openai``: under
+    vLLM's ``string`` format (what ``auto`` can resolve to, and what a future
+    template revision could resolve to differently) every image placeholder
+    is hoisted ahead of the text regardless of the caller's own part order
+    (vllm-project/vllm#14047), so a rendered body checked under ``string``
+    format would read image-first and pass no matter what order the caller
+    actually assembled -- a no-op that could never catch a caller putting
+    text first (hostile review item A). Under the pinned ``openai`` format
+    the rendered content list keeps the caller's own order verbatim, so this
+    check against the rendered body reflects a real caller ordering bug
+    rather than the engine's own reformatting.
     """
 
     if not content:
@@ -257,13 +227,24 @@ def assert_generation_config_key_coverage(
 class UsageReconciliation:
     """One comparison between an engine's own reported usage and the laptop's count.
 
-    ``localized_to`` can only ever be more than a guess when one side of the
-    request carries no tokens of its kind at all: an image-only user turn
-    (Churro) puts every text token in the one fixed system string, so any
-    mismatch there is necessarily the image half; a text-only readiness probe
-    carries no image, so any mismatch there is necessarily the text half. A
-    mixed request is reported honestly as ``"unlocalized"`` rather than
-    guessed at from one scalar.
+    ``observed_image_tokens`` is the engine's own per-modality breakdown --
+    ``usage.prompt_tokens_details.multimodal_tokens["image"]`` -- when the
+    response carries one; vLLM v0.27.1 gates that breakdown (not
+    ``prompt_tokens`` itself, which is always present) behind
+    ``--enable-prompt-tokens-details``.  When it is present, ``localized_to``
+    compares the image half and the text half (the remainder) against their
+    own expected counts independently, so a *mixed* real request -- every
+    real request in this design, since Chandra/DAI/Churro all send image and
+    text together -- can still be localized exactly rather than only the
+    image-only and text-only requests a scalar-only comparison could ever
+    tell apart.  Without that breakdown, ``localized_to`` can only ever be
+    more than a guess when one side of the request carries no *expected*
+    tokens of its kind at all: an image-only user turn puts every text token
+    in the one fixed system string, so any mismatch there is necessarily the
+    image half; a text-only readiness probe carries no image, so any mismatch
+    there is necessarily the text half. A mixed request with no per-modality
+    breakdown is reported honestly as ``"unlocalized"`` rather than guessed
+    at from one scalar.
     """
 
     chair: str
@@ -271,6 +252,7 @@ class UsageReconciliation:
     expected_image_tokens: int
     expected_text_tokens: int
     tolerance: int
+    observed_image_tokens: int | None = None
 
     @property
     def expected_prompt_tokens(self) -> int:
@@ -288,6 +270,16 @@ class UsageReconciliation:
     def localized_to(self) -> str | None:
         if self.within_tolerance:
             return None
+        if self.observed_image_tokens is not None:
+            image_discrepancy = self.observed_image_tokens - self.expected_image_tokens
+            text_discrepancy = self.discrepancy - image_discrepancy
+            image_off = abs(image_discrepancy) > self.tolerance
+            text_off = abs(text_discrepancy) > self.tolerance
+            if image_off and not text_off:
+                return "image"
+            if text_off and not image_off:
+                return "text"
+            return "unlocalized"
         if self.expected_image_tokens == 0 and self.expected_text_tokens == 0:
             # Neither half carries an expected token at all -- nothing to
             # localize a mismatch to, honestly reported the same as a mixed
@@ -308,6 +300,7 @@ class UsageReconciliation:
             "kind": "usage-capacity-mismatch",
             "chair": self.chair,
             "observed_prompt_tokens": self.observed_prompt_tokens,
+            "observed_image_tokens": self.observed_image_tokens,
             "expected_prompt_tokens": self.expected_prompt_tokens,
             "expected_image_tokens": self.expected_image_tokens,
             "expected_text_tokens": self.expected_text_tokens,
@@ -315,6 +308,28 @@ class UsageReconciliation:
             "tolerance": self.tolerance,
             "localized_to": self.localized_to,
         }
+
+
+def _observed_image_tokens(usage: Mapping[str, object]) -> int | None:
+    """Read the engine's own image-token count from ``prompt_tokens_details``.
+
+    ``None`` whenever the shape is not exactly the OpenAI
+    ``prompt_tokens_details.multimodal_tokens.image`` int vLLM v0.27.1 sends
+    when ``--enable-prompt-tokens-details`` is set and the request carried
+    multimodal input -- a build or a text-only request that omits it is not
+    an error here, only a missing precision the caller falls back without.
+    """
+
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, Mapping):
+        return None
+    multimodal_tokens = details.get("multimodal_tokens")
+    if not isinstance(multimodal_tokens, Mapping):
+        return None
+    value = multimodal_tokens.get("image")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def reconcile_usage_against_capacity(
@@ -327,17 +342,21 @@ def reconcile_usage_against_capacity(
 ) -> UsageReconciliation:
     """Compare a live engine's own reported ``prompt_tokens`` against the laptop's count.
 
-    ``usage`` is the OpenAI-shaped object a response carries only once the
-    engine is launched with ``--enable-prompt-tokens-details``
-    (``render_vllm_argv``); every real profile now carries that flag.  This is
-    a *reconciliation*, not a gate: a mismatch is returned as a named finding
-    rather than raised, because a wrong laptop count would otherwise silently
-    disagree with a correct engine on every request with nothing surfaced
-    anywhere (hostile review item H) -- and because what the mismatch means
-    (a dropped ``mm_processor_kwargs``, a stale token-cost table, an engine
-    upgrade that changed rounding) is exactly the kind of thing GOVERNANCE 10
-    keeps out of a hard-coded verdict.  Refusing outright would make this
-    itself a picker among possible causes.
+    ``usage.prompt_tokens`` is present on every real response regardless of
+    launch flags (vLLM v0.27.1 sets it unconditionally). What
+    ``--enable-prompt-tokens-details`` (``render_vllm_argv``; every real
+    profile now carries it) actually gates is ``usage.prompt_tokens_details``,
+    whose ``multimodal_tokens`` breakdown this reconciliation reads when
+    present to localize a mismatch precisely -- see
+    :class:`UsageReconciliation`.  This is a *reconciliation*, not a gate: a
+    mismatch is returned as a named finding rather than raised, because a
+    wrong laptop count would otherwise silently disagree with a correct
+    engine on every request with nothing surfaced anywhere (hostile review
+    item H) -- and because what the mismatch means (a dropped
+    ``mm_processor_kwargs``, a stale token-cost table, an engine upgrade that
+    changed rounding) is exactly the kind of thing GOVERNANCE 10 keeps out of
+    a hard-coded verdict.  Refusing outright would make this itself a picker
+    among possible causes.
     """
 
     if expected_image_tokens < 0 or expected_text_tokens < 0:
@@ -347,10 +366,12 @@ def reconcile_usage_against_capacity(
     if tolerance < 0:
         raise ServingConfigurationError(f"chair {chair!r} usage tolerance must be non-negative")
     observed: int | None = None
+    observed_image: int | None = None
     if isinstance(usage, Mapping):
         candidate = usage.get("prompt_tokens")
         if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
             observed = candidate
+        observed_image = _observed_image_tokens(usage)
     if observed is None:
         raise ServingConfigurationError(
             f"chair {chair!r} response usage has no non-negative integer prompt_tokens to "
@@ -363,6 +384,7 @@ def reconcile_usage_against_capacity(
         expected_image_tokens=expected_image_tokens,
         expected_text_tokens=expected_text_tokens,
         tolerance=tolerance,
+        observed_image_tokens=observed_image,
     )
 
 
@@ -439,8 +461,10 @@ class ServingSmokeReader:
         # The same log-root guarantee the callback seam gives: refuse a
         # symlinked root and force it owner-only before anything can write a
         # launch log through it. Idempotent, so once per read is cheap.
+        # (`manager.start`, called next, is what actually refuses a
+        # discoverable env-override file -- the one door every real launch
+        # passes through, not only this smoke lifecycle.)
         prepare_log_root(self.manager.log_root)
-        assert_no_discoverable_local_env()
         handle = self.manager.start(
             identity,
             placement.identifier,
