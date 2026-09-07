@@ -123,8 +123,13 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     `max_pixels`, plus that chair's measured prompt, plus the answer that
     request reserves.  Before this branch none of the 24 GB rows could, two
     of the 48 GB rows could not fit the prompt alone, and Churro at 80 GB+ left
-    1,218 tokens for a 1,433-token answer.  A row that provably cannot answer
+    1,058 tokens for a 1,631-token answer.  A row that provably cannot answer
     is not unproven; it is wrong, and the catalogue is not allowed to ship one.
+
+    Churro is weighed here as the live chair is really asked -- the 441-token
+    layout instruction and the JSON object it asks back -- not as the trained
+    `<output>` carry the fixture posture declares.  Both of its numbers rose
+    with that instruction and all three of its rows still hold the request.
     """
 
     _label, images, answer_budget = case

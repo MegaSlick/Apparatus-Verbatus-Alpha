@@ -156,7 +156,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 import feeding
 
@@ -171,6 +171,7 @@ from common.contracts.serving import (
 )
 from common.contracts.stages import ATTESTATORES
 from common.imaging import dimensions
+from common.native_witness import native_parse_refusal
 from common.request_capacity import (
     act_answer_budget,
     dense_page_answer_budget,
@@ -464,6 +465,14 @@ def churro_generation_sent(
     if prompt_tokens + declared_bound <= max_model_len:
         return {"max_tokens": declared_bound}
     return {}
+
+
+#: The adapters this seam knows how to build a page request for and capture a
+#: page response from. It is named in `captured_page_attempt`'s refusal, which
+#: is the one place the set is *asked* a question: every branch after that
+#: refusal already knows it holds a page adapter, so a membership test there
+#: would be a second, quieter copy of this list rather than a check.
+_PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1"})
 
 
 def page_chair_request(
@@ -881,6 +890,13 @@ def captured_page_attempt(
     ``observation_payload``, because `run.py` derives the page's block geometry
     from those same bytes rather than from the text.
 
+    Churro parses the closed shape `feeding.churro_layout_prompt` asks for
+    (`common/churro_response.py`) or the trained `<output>` envelope it was
+    fine-tuned on; a JSON body in any other shape lands on the
+    `unrecognized-shape` branch naming what it was, and anything else on the
+    unparseable branch. Both page witnesses carry their bytes forward as
+    ``observation_payload`` for the same reason.
+
     ``page_ordinal`` and ``chair`` are not read by this function's own logic;
     they are accepted to keep this call site self-describing at the one place
     U6 will call it, exactly as `captured_churro_page_attempt` names them for
@@ -894,14 +910,21 @@ def captured_page_attempt(
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
     if adapter_name == "churro.v1":
         generation_declared: dict[str, Any] = dict(feeding.churro_generation())
-        parser = "xml"
+        # `"churro"`, not the fixture's `"xml"`. The name selects the parser
+        # (`common/native_witness.py::CHURRO_PARSERS`): a served chair is asked
+        # for the wire contract `feeding.churro_layout_prompt` describes and may
+        # answer in the trained `<output>` envelope instead, so the live branch
+        # is the one that reads both. The fixture caller keeps `"xml"`, which
+        # reaches the trained parser alone, and each posture re-derives through
+        # the branch its own record was written under.
+        parser = "churro"
     elif adapter_name == "chandra.v1":
         generation_declared = {}
         parser = "json"
     else:
         raise SchemaRefusal(
             f"captured_page_attempt has no capture recipe for adapter {adapter_name!r}; "
-            "only churro.v1 and chandra.v1 are page-scoped today"
+            f"the page-scoped adapters are {sorted(_PAGE_SCOPED_ADAPTERS)}"
         )
     view: dict[str, Any] = {"prompt": adapter.prompt()}
     if generation_declared:
@@ -935,9 +958,19 @@ def captured_page_attempt(
             call_record_ref=dict(response.call_record_ref),
             receipt_ref=dict(response.receipt_ref),
             raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
-            observation_payload=(
-                response.content.encode("utf-8") if adapter_name == "chandra.v1" else None
-            ),
+            # Both page-scoped adapters derive their block geometry in `run.py`
+            # from these same bytes rather than from the parsed text, so both
+            # carry them forward. Withholding them from Churro would hand its
+            # `observe` the joined page text and derive no geometry at all --
+            # the unattached page witness this unit exists to close.
+            # Unconditional, and that is the point: the dispatch above has
+            # already refused every adapter but the two page-scoped ones, so a
+            # membership test here could only ever be true. Written as a test it
+            # would be a second, quieter list of the page adapters -- and a third
+            # page chair added to the dispatch and forgotten here would then land
+            # with `observation_payload=None`, deriving no geometry, silently
+            # (GOVERNANCE 2). One list, at the refusal, where a miss is loud.
+            observation_payload=response.content.encode("utf-8"),
         )
     if parsed["state"] == "parsed":
         # An interrupted or unconfirmed empty response is not evidence of a
@@ -956,11 +989,11 @@ def captured_page_attempt(
             receipt_ref=dict(response.receipt_ref),
             raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
         )
-    parse_reason = (
-        parsed["reason"]
-        if parsed["state"] == "failed"
-        else f"the response shape was not recognized: {parsed.get('outcome')}"
-    )
+    # Shared with `common/native_witness.py`'s page validator, which re-derives
+    # this attempt's `reason` and `truncation_basis` and compares them: two
+    # inline copies of one sentence is a record that refuses itself the moment
+    # they drift.
+    parse_reason = native_parse_refusal(parsed)
     reason_suffix, basis = _failed_parse_composition(parse_reason, transport_stop_reason, cut_off)
     return LiveAttempt(
         outcome="failed",
