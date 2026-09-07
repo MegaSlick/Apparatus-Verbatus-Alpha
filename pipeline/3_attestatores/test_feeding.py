@@ -14,6 +14,7 @@ import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
     DAI_FORMAT_CAPABILITIES,
+    DAI_MAX_TOTAL_PIXELS,
     DAI_MAX_WIDTH_PX,
     SCHEDULING_POLICY,
     SingleChairResidency,
@@ -955,35 +956,70 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     limits = view["image_limits"]
-    # v3: the height and total-pixel ceilings retired with the vendor systems
-    # design (neither read off anything the model states); the one remaining
-    # ceiling is re-sourced to the model card rather than "design v2.1 section
-    # 2", which named the same number without the model's own source for it.
-    assert limits["schema"] == "dai-image-limits.v3"
+    # v4: the height ceiling stays retired (neither reads off anything the
+    # model states); the width ceiling is sourced to the model card rather
+    # than "design v2.1 section 2", which named the same number without the
+    # model's own source for it. The total-pixel ceiling `v3` dropped is
+    # restored -- a hostile review (U11) showed the served row's own ceiling
+    # is not redundant with the width ceiling alone -- sourced to the shipped
+    # serving catalogue rather than the retired `v2` constant it replaces.
+    assert limits["schema"] == "dai-image-limits.v4"
     ceilings = set(limits) - {"schema", "sources"}
-    assert ceilings == {"max_width_px"}
+    assert ceilings == {"max_width_px", "max_total_pixels"}
     assert ceilings == set(limits["sources"]), "every ceiling names a source, and only ceilings do"
     assert all(limits["sources"][name].strip() for name in ceilings)
     assert "Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR" in limits["sources"]["max_width_px"]
     assert "1500 pixels (max)" in limits["sources"]["max_width_px"]
+    assert "serving_recipes_real.toml" in limits["sources"]["max_total_pixels"]
+    assert limits["max_total_pixels"] == DAI_MAX_TOTAL_PIXELS
     assert view["image_limits_sha256"] == digest_of(limits)
+
+
+def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
+    """`DAI_MAX_TOTAL_PIXELS` is read off the file, not retyped from memory.
+
+    The floor every deployed tier's engine actually admits: the smallest
+    `max_pixels` shipped for the dai.v1 (`attestator_2`) row across every
+    tier in the real serving catalogue. A tier added below this floor, or a
+    lowered existing one, must move this constant with it or this test fails
+    before a stale ceiling ships.
+    """
+    import tomllib
+
+    repo_root = Path(__file__).resolve().parents[2]
+    recipes = tomllib.loads((repo_root / "config" / "serving_recipes_real.toml").read_text())
+    dai_max_pixels = [
+        profile["max_pixels"]
+        for profile in recipes["profiles"]
+        if profile.get("chair") == "attestator_2"
+    ]
+    assert dai_max_pixels, "the real serving catalogue ships no attestator_2 (DAI) row"
+    assert DAI_MAX_TOTAL_PIXELS == min(dai_max_pixels)
 
 
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected", "resized"),
     [
-        # Under `v2` this shape's height and total pixels each tripped a now-
-        # retired ceiling and were resized down; under `v3` a width already
-        # under 1,500 is an identity view, however tall the crop or however
-        # many total pixels it carries.
-        (500, 10_000, (500, 10_000), False),
-        (1_500, 3_000, (1_500, 3_000), False),
-        # Over the one remaining ceiling: floor-rounded aspect-preserving
-        # resize, no search -- 1,000 x 1,500 // 4,501 truncates to 333, not 334.
+        # `v3`'s bug, kept as the regression case: a width already under 1,500
+        # is not by itself an identity view -- this crop's 5,000,000px is
+        # nearly 3x the smallest shipped row's `max_pixels` (1,806,336), so
+        # `v3` recorded "identity" for a crop the engine would have resized
+        # again on the laptop-tier row, with that second resize captured
+        # nowhere (the hostile review's own finding). `v4`'s second pass
+        # catches it: beta = sqrt(5_000_000 / 1_806_336) ~= 1.66401, floored.
+        (500, 10_000, (300, 6_010), True),
+        # Also over the total-pixel ceiling alone (4,500,000px), even though
+        # its width sits exactly at the width ceiling and neither `v2` nor
+        # `v3` would have resized it a second time for total pixels here.
+        (1_500, 3_000, (950, 1_900), True),
+        # Over the width ceiling alone: floor-rounded aspect-preserving
+        # resize -- 1,000 x 1,500 // 4,501 truncates to 333, not 334 -- and
+        # its result (499,500px) is well under the total-pixel ceiling, so
+        # only the first pass runs.
         (4_501, 1_000, (1_500, 333), True),
     ],
 )
-def test_dai_resize_applies_only_its_sealed_width_ceiling(width_px, height_px, expected, resized):
+def test_dai_resize_applies_its_two_sealed_ceilings(width_px, height_px, expected, resized):
     source = _ref("designator/crops/tall.png")
     model = _ref("attestatores/model-views/tall.jpg", "b" * 64) if resized else source
     view = dai_model_view(
@@ -998,6 +1034,7 @@ def test_dai_resize_applies_only_its_sealed_width_ceiling(width_px, height_px, e
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
     assert target[0] <= DAI_MAX_WIDTH_PX
+    assert target[0] * target[1] <= DAI_MAX_TOTAL_PIXELS
     assert (view["transform"]["kind"] == "identity") != resized
 
 

@@ -9,6 +9,7 @@ complete when it reaches this module.  In particular, repetition is inspected
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -36,29 +37,59 @@ from common.native_witness import (
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 DAI_MAX_WIDTH_PX = 1_500
-# `DAI_MAX_HEIGHT_PX` (4096, "no model source") and `DAI_MAX_TOTAL_PIXELS`
-# (2,359,296, the old pipeline's serve_dai.sh) retired with the vendor systems
-# design: neither read off anything the model itself states, and the served
-# row's own `max_pixels` (`config/serving_recipes_real.toml`, DERIVED against
-# the largest 1,500-px-wide act crop this pipeline actually produces) is sized
-# so the engine never re-resizes what this one ceiling already sized -- a
-# second client-side ceiling on height or total pixels would be redundant with
-# that row, not merely retired for lack of a source. `dai-image-limits.v2` ->
-# `.v3` records the schema no longer names either.
+# `DAI_MAX_HEIGHT_PX` (4096, "no model source") retired with the vendor
+# systems design: it read off nothing the model itself states. The
+# total-pixel ceiling did **not** get to retire the same way, and `v4`
+# restores one -- a hostile review (U11) demonstrated the `v3` claim below
+# false on the unit's own kept test case: a DAI crop under 1,500px wide can
+# still carry more total pixels than a served row admits (a tall, narrow
+# marginal-note or signature-column crop, not merely an adversarial input),
+# and when it does, vLLM's own Qwen2.5-VL image processor (`smart_resize`,
+# `common/request_capacity.py`) resizes it *again* inside the engine before
+# the model sees it -- a second resize this schema had no field for and the
+# Testimonium's `identity`/`resize-preserve-aspect` claim then contradicted.
 #
-# The one ceiling that remains is read off something: the model card itself
-# (`https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
+# `DAI_MAX_TOTAL_PIXELS` is `min(max_pixels)` over every DAI (`attestator_2`)
+# row in the shipped real catalogue (`config/serving_recipes_real.toml`) --
+# 1,806,336, the `generic-24gb` tier -- pinned against that file by
+# `test_feeding.py::test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels`
+# so a future tier change cannot leave this stale. It is the *smallest*
+# across tiers, not the tier this run actually serves under, on purpose:
+# `dai_dimensions` is a pure function of the crop's own pixels, read back
+# unchanged by `witness_adapters._dai_present` (which publishes the model
+# bytes before any chair answers) and by `validate_adapter_presentation` /
+# `publish_attempt` (which re-derive the same crop from the sealed regions
+# alone, with no served row in hand, to prove a Testimonium was not forged).
+# Threading the live row into that function would make it depend on state
+# none of those three callers has, which is a bigger seam than one hostile
+# finding earns; a fixed, sourced, worst-tier ceiling keeps `dai_dimensions`
+# pure and still guarantees no row's engine ever needs a second resize. The
+# cost, named rather than hidden (GOVERNANCE 10): a crop close to the width
+# ceiling served on a larger tier is cut down to what the *smallest* tier
+# would need, even where its own row could have held more. That is a
+# resolution cost on a minority of wide, tall crops, not a correctness gap.
+#
+# Both ceilings are read off something. The width ceiling is the model card
+# itself (`https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
 # revision `e371095d4ffe585f31f4974462931ddbac61ff64`, Training/Parameters:
 # "Image width: 1500 pixels (max)") rather than "design v2.1 section 2", which
-# named the same number but not the model's own source for it. A number
-# nobody can trace is exactly what GOVERNANCE 10 refuses, so the one ceiling
-# left carries its provenance into the record it seals.
+# named the same number but not the model's own source for it. The total-pixel
+# ceiling is the shipped serving catalogue itself, named above. A number
+# nobody can trace is exactly what GOVERNANCE 10 refuses, so both ceilings
+# carry their provenance into the record they seal.
+DAI_MAX_TOTAL_PIXELS = 1_806_336
 DAI_LIMIT_SOURCES = {
     "max_width_px": (
         "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR model card, "
         "Training/Parameters: 'Image width: 1500 pixels (max)' "
         "(https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR "
         "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
+    ),
+    "max_total_pixels": (
+        "config/serving_recipes_real.toml: the smallest max_pixels shipped for "
+        "the dai.v1 (attestator_2) row across every tier (generic-24gb, "
+        "1,806,336) -- the floor every deployed tier's engine actually admits, "
+        "so a client-side crop within it is never re-resized by any of them"
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
@@ -399,18 +430,20 @@ def dai_model_view(
 
 
 def _dai_image_limits() -> dict[str, Any]:
-    """The one sealed statement of DAI's executable image ceilings.
+    """The sealed statement of DAI's executable image ceilings.
 
-    ``v3``: the height and total-pixel ceilings named in ``v2`` are gone, not
-    renamed. Neither read off anything the model card, the roster, or DAI's own
-    serving flags actually state, and the served row's own ``max_pixels`` is
-    sized so the engine never re-resizes what the one remaining ceiling already
-    sized (``feeding.DAI_MAX_WIDTH_PX``'s own comment). A schema that still
-    named them would seal two ceilings this pipeline no longer enforces.
+    ``v3`` dropped the height ceiling (no model source) and the total-pixel
+    ceiling together, on the claim that the served row's own ``max_pixels``
+    made the second redundant. ``v4`` restores the total-pixel ceiling alone
+    (``feeding.DAI_MAX_WIDTH_PX``'s own comment names the hostile-review
+    finding that claim did not survive) -- the height ceiling stays retired,
+    since nothing states one and a total-pixel ceiling already bounds height
+    indirectly for any width this rule can produce.
     """
     return {
-        "schema": "dai-image-limits.v3",
+        "schema": "dai-image-limits.v4",
         "max_width_px": DAI_MAX_WIDTH_PX,
+        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
         "sources": dict(DAI_LIMIT_SOURCES),
     }
 
@@ -507,16 +540,27 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
 
 
 def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest aspect-preserving view within DAI's one sealed ceiling.
+    """Largest aspect-preserving view within DAI's two sealed ceilings.
 
-    `v3` retired the height and total-pixel search this rule used to run
-    (`_dai_image_limits`'s own docstring): width is the only ceiling the model
-    card states, so this is a straight floor-rounded scale-down when the
-    source is wider than the ceiling, and an identity view otherwise -- no
-    search, because there is only one bound left to satisfy. Nothing here
-    bounds height or total pixels; the served row's own `max_pixels`
-    (`config/serving_recipes_real.toml`) is sized so the engine never
-    re-resizes what this rule already produced.
+    Two floor-rounded, aspect-preserving passes, applied in order: first the
+    width ceiling (`DAI_MAX_WIDTH_PX`), same as `v3`; then, only if the
+    resulting crop still carries more total pixels than `DAI_MAX_TOTAL_PIXELS`,
+    a second aspect-preserving scale-down against that ceiling. A width already
+    under 1,500px skips the first pass entirely, but a crop that is narrow and
+    *tall* can still carry more total pixels than any shipped row admits --
+    `v3` let exactly that case through as a claimed identity view, and a
+    hostile review (U11) demonstrated it against the unit's own kept test case
+    (a 500x10,000 crop, 5,000,000px, against a smallest shipped row of
+    1,806,336). This is why the ceiling is a second pass rather than folded
+    into one search the way `v2`'s used to run: the two ceilings come from
+    different places (the model's own trained width; the serving catalogue's
+    smallest admitted pixel count) and a crop can trip either alone.
+
+    Nothing here reaches for the row that will actually serve this request --
+    see `DAI_MAX_TOTAL_PIXELS`'s own comment for why this function stays a
+    pure function of the crop's own pixels. The guarantee it keeps is still
+    real: a view within `DAI_MAX_TOTAL_PIXELS` fits every shipped tier's own
+    `max_pixels`, so none of their engines needs to resize it again.
 
     Public because it decides which pixels a DAI witness is actually shown, and
     the presentation writer and the read-back validator in `witness_adapters`
@@ -533,9 +577,14 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     ):
         raise SchemaRefusal("DAI source dimensions must be positive integers")
     if width_px <= DAI_MAX_WIDTH_PX:
-        return width_px, height_px
-    target_width = DAI_MAX_WIDTH_PX
-    target_height = max(1, height_px * target_width // width_px)
+        target_width, target_height = width_px, height_px
+    else:
+        target_width = DAI_MAX_WIDTH_PX
+        target_height = max(1, height_px * target_width // width_px)
+    if target_width * target_height > DAI_MAX_TOTAL_PIXELS:
+        beta = math.sqrt((target_width * target_height) / DAI_MAX_TOTAL_PIXELS)
+        target_width = max(1, math.floor(target_width / beta))
+        target_height = max(1, math.floor(target_height / beta))
     return target_width, target_height
 
 

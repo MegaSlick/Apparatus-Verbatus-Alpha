@@ -563,9 +563,9 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     height, and total pixels): a fallback band's presented crop was
     1,291x1,826, costing 2,280 image tokens, which the 24 GB row cannot hold
     beside an 84-token prompt even with the *smaller* single-act answer budget
-    reserved. `v3` retired the height and total-pixel ceilings
-    (`feeding.py::_dai_image_limits`), so this size is no longer what
-    `feeding.dai_dimensions` produces for this input; ``adapter.present`` is
+    reserved. `feeding.dai_dimensions` no longer produces exactly this size for
+    this input (`v4` restored a total-pixel ceiling `v3` had dropped, and
+    1,291x1,826 -- 2,357,366px -- is itself over it); ``adapter.present`` is
     stubbed to hand the presentation back unchanged, so this drill exercises
     `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
     the resize rule, and the 1,291x1,826 probe stays valid for that. The image

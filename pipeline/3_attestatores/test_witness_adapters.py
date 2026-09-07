@@ -539,40 +539,42 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # A square once caught by the retired total-pixel ceiling: `v3` has only
-        # the width ceiling, and it alone still binds here (1,536 > 1,500), so
-        # the target is unchanged from `v2` even though the reason moved.
+        # `v3` recorded this as bound by the width ceiling alone (1,536 > 1,500)
+        # and left it at (1,500, 1,500) -- 2,250,000px, over even the smallest
+        # shipped row's `max_pixels` (1,806,336). `v4`'s second, total-pixel
+        # pass now runs after the width pass: beta = sqrt(2,250,000 /
+        # 1,806,336) ~= 1.11610, floored on both sides.
         pytest.param(
             1_536,
             1_536,
             "L",
-            (1_500, 1_500),
+            (1_344, 1_344),
             "crop-resize-preserve-aspect",
-            id="square-crop-still-bound-by-width-alone",
+            id="square-crop-also-bound-by-the-total-pixel-ceiling",
         ),
-        # Under `v2` this shape tripped the retired height ceiling (4,097 > the
-        # old 4,096) and was resized; under `v3` there is no height ceiling to
-        # trip, so a width this far under 1,500 is an identity view regardless
-        # of how tall the crop is.
+        # `v3`'s bug: a width this far under 1,500 was recorded as an identity
+        # view "however tall the crop or however many total pixels it
+        # carries" -- but 576x4,097 is 2,359,872px, over the smallest shipped
+        # row's `max_pixels` (1,806,336), so the engine would have resized it
+        # again on that tier with nothing here to say so. `v4`'s second pass
+        # catches it: beta = sqrt(2,359,872 / 1,806,336) ~= 1.14304, floored.
         pytest.param(
             576,
             4_097,
             "L",
-            (576, 4_097),
-            "crop",
-            id="tall-crop-past-the-retired-height-ceiling",
+            (503, 3_584),
+            "crop-resize-preserve-aspect",
+            id="tall-crop-past-the-restored-total-pixel-ceiling",
         ),
-        # Under `v2` this shape's 2,359,872 px tripped the retired total-pixel
-        # ceiling exactly one pixel-row past it and was resized down; under
-        # `v3` a width under 1,500 is never resized, however many total pixels
-        # the crop carries.
+        # One pixel-row further past the same ceiling; the floored result
+        # lands on the same target as the case above.
         pytest.param(
             576,
             4_098,
             "L",
-            (576, 4_098),
-            "crop",
-            id="tall-crop-past-the-retired-total-pixel-ceiling",
+            (503, 3_584),
+            "crop-resize-preserve-aspect",
+            id="tall-crop-one-row-past-the-restored-total-pixel-ceiling",
         ),
         pytest.param(1, 1, "L", (1, 1), "crop", id="one-pixel"),
         # A bilevel scan, which the door seals as mode `1` rather than promoting.
@@ -607,6 +609,7 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
         resize = presented["transform"]["resize"]
         assert (resize["target_width_px"], resize["target_height_px"]) == target
         assert resize["target_width_px"] <= 1_500
+        assert resize["target_width_px"] * resize["target_height_px"] <= 1_806_336
     validate_presented_page_binding(
         presented,
         page_ordinal=1,
