@@ -367,12 +367,13 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
     assert refusal.value.code is ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
 
     expected = urlsplit(_spec().endpoint_url)
+    expected_shape = (expected.scheme, expected.hostname, expected.port, expected.path)
     urls = _urls_in(messages)
-    assert any(
-        (u.scheme, u.hostname, u.port, u.path)
-        == (expected.scheme, expected.hostname, expected.port, expected.path)
-        for u in urls
-    )
+    assert urls, "expected at least one URL in the operator's messages"
+    assert any((u.scheme, u.hostname, u.port, u.path) == expected_shape for u in urls)
+    # Every URL surfaced must be the one named volume, not just one of them --
+    # a second, unnamed destination would be exactly the leak this guards against.
+    assert all((u.scheme, u.hostname, u.port, u.path) == expected_shape for u in urls)
     assert any("Nothing outside that sealed record is read or sent." in line for line in messages)
     assert any("zero GPU-hours" in line for line in messages)
 
@@ -414,10 +415,8 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
     surface.upload(source, sealed_manifest=manifest)
 
     assert any("fixture volume" in line for line in messages)
-    assert not any(
-        (u.hostname or "") == "runpod.io" or (u.hostname or "").endswith(".runpod.io")
-        for u in _urls_in(messages)
-    )
+    hostnames = ((u.hostname or "").rstrip(".") for u in _urls_in(messages))
+    assert not any(host == "runpod.io" or host.endswith(".runpod.io") for host in hostnames)
 
 
 # -- the read channel -------------------------------------------------------
