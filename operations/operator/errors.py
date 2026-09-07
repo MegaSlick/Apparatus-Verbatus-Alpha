@@ -66,6 +66,7 @@ class ErrorCode(StrEnum):
     TRIAGE_REFUSED = "triage-refused"
     SCANTAILOR_REFUSED = "scantailor-refused"
     SCANTAILOR_UNRESOLVED = "scantailor-unresolved"
+    NOT_A_CHECKOUT = "not-a-checkout"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -335,6 +336,14 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The Verbatus command was interrupted before it reported an end state.",
         "It is not called complete, and a provider or transfer action may already have started.",
         "Do not repeat a paid or destructive step blindly. Run `verbatus status`, preserve its records, and follow the named recovery step.",
+    ),
+    ErrorCode.NOT_A_CHECKOUT: ErrorCopy(
+        "Verbatus was started from something that is not a source checkout.",
+        "The configuration, stage code and proof material this needs live in the repository "
+        "beside the code, not inside an installed package, so a run started here could not "
+        "finish. Nothing was started and nothing was charged.",
+        "Run `verbatus` from a checkout of the repository, the same way the pod bootstrap "
+        "does: clone it at the commit you mean to run and use that working copy.",
     ),
     ErrorCode.UNEXPECTED: ErrorCopy(
         "Verbatus met a problem it could not classify.",
