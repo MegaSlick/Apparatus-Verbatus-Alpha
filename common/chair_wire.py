@@ -60,3 +60,30 @@ def chandra_wire_fields() -> dict[str, Any]:
     """
 
     return {"chat_template_kwargs": dict(CHANDRA_CHAT_TEMPLATE_KWARGS)}
+
+
+# **`chat_template_content_format` is not sendable per request, and nothing in
+# this tree should ever put it in `generation_sent` believing it is.** Hostile
+# review item A (SPEC_FINDINGS 2026-09-06) names pinning it to `"openai"` on
+# every row-derived request so a chat template that does not obviously branch
+# on `content` being a list cannot fall back to vLLM's `"string"` convention
+# and hoist every image ahead of the text regardless of the order a builder in
+# this tree actually sent (vLLM PR #14047). Verified against the pinned
+# `vllm==0.27.1` source rather than assumed:
+# `vllm/entrypoints/openai/chat_completion/protocol.py`'s
+# `ChatCompletionRequest.build_chat_params` (~line 558) takes
+# `default_template_content_format` as an argument and never reads a field
+# named `chat_template_content_format` off `self`; `.../serving.py` (~line
+# 120-186) sets `self.chat_template_content_format` once, at server
+# construction, from the value threaded down from `--chat-template-content-
+# format` (`vllm/entrypoints/openai/cli_args.py`, default `"auto"`) -- a launch
+# argument, never a request field. `OpenAIBaseModel`'s `model_config =
+# ConfigDict(extra="allow")` (`vllm/entrypoints/openai/engine/protocol.py`)
+# means a request that names it anyway is not refused; it is silently
+# accepted and never read, which is a quieter version of the exact "no-op on
+# the wire" risk item A itself warns the fix could become. Sending it would
+# document an intention this repository cannot make true from a request
+# builder. **The real fix is a launch argument in the vLLM invocation
+# `operations/serving/manager.py` builds (`operations/serving/config.py`'s
+# schema, U4's files) -- out of this module's reach, and named here as the
+# gap rather than papered over with a field that does nothing.**

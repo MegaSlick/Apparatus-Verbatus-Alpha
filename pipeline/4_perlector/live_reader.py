@@ -281,8 +281,8 @@ class VLLMReader:
                 "sent in cannot be recovered"
             )
         image_sha256s = tuple(
-            [ref["sha256"] for view in autopsia["views"] for ref in view["region_refs"]]
-            + [ref["sha256"] for view in autopsia["views"] for ref in view["page_render_refs"]]
+            [ref["sha256"] for view in autopsia["views"] for ref in view["page_render_refs"]]
+            + [ref["sha256"] for view in autopsia["views"] for ref in view["region_refs"]]
         )
         declared_sha256s = [region["image_sha256"] for region in dossier.get("regions", [])] + [
             render["image_sha256"] for render in dossier.get("page_renders", [])
@@ -296,8 +296,33 @@ class VLLMReader:
                 f"{sorted(declared_sha256s)!r})"
             )
 
-        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        content.extend(_image_content_blocks(region_images + page_render_images))
+        # Page render first, then the prompt text, then the act's own region
+        # crops -- hostile-review item M (SPEC_FINDINGS 2026-09-06). The page
+        # render is the one image shared, byte-identical, across every act on
+        # the same page; the region crop is the one image unique to this act.
+        # A chat template that renders a message's content parts in list order
+        # sees the shared block first and the act-unique block last, which is
+        # what gives vLLM's automatic prefix cache the longest run of
+        # identical leading tokens across the acts on one page; putting it
+        # after the act's own text, as this seam did until now, invalidated
+        # the cache on every act's own rendered dossier even though the page
+        # pixels never moved. **Whether the engine's chat template actually
+        # renders content in list order, rather than falling back to a
+        # string convention that would re-order it regardless, is a fact
+        # about the launch argument `common/chair_wire.py` documents
+        # (`--chat-template-content-format`, `operations/serving/manager.py`)
+        # and cannot be pinned from a request builder** (verified against the
+        # pinned `vllm==0.27.1` source: it is resolved once at server
+        # construction, never read from the request body). This reorder is
+        # therefore a necessary but not sufficient fix; the launch argument is
+        # the other half, out of this module's reach.
+        # `image_sha256s` below is built in the same order for the same
+        # reason `ChairClient` checks it against: the claimed digests and the
+        # wire bytes must agree exactly and in order, whatever the dossier's
+        # own `regions`/`page_renders` lists sort on.
+        content: list[dict[str, Any]] = _image_content_blocks(page_render_images)
+        content.append({"type": "text", "text": text})
+        content.extend(_image_content_blocks(region_images))
 
         # Before the request is built: does it fit the sealed row at all?
         # This is the seam with the most images in one request -- every region

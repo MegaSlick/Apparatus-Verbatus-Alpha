@@ -5028,8 +5028,10 @@ def _serve_act_unit(
             context,
             adapter,
             presentation,
-            # The sealed row this chair is actually running under: a page-fallback
-            # act's crop is a whole 300-dpi page and does not fit every row
+            # The sealed row this chair is actually running under: a
+            # page-fallback act's crop is one fallback band, not a whole page
+            # (`live_witness.act_chair_request`'s own docstring), and still
+            # needs checking against the row like any other DAI request
             # (`live_witness.request_capacity_or_refuse`).
             profile=client.handle.profile,
         )

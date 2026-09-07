@@ -98,8 +98,16 @@ chair-call record's ``generation_sent`` says which.
 is asked of every chair here.** The paragraph above bounds Churro's generation;
 it cannot say whether the request the engine receives is admissible at all. A
 whole 300-dpi page costs Chandra 1,715 prompt tokens and Churro 2,280 at the
-smallest tier's ``max_pixels``, before a word of prompt is counted, and a
-page-fallback act hands DAI a page-sized crop at the same cost.
+smallest tier's ``max_pixels``, before a word of prompt is counted. **A
+page-fallback act does not hand DAI a page-sized crop**: `config/
+designator_grouping.toml`'s ``fallback_bands`` divides the page into four
+horizontal bands, and a fallback act is assigned one band
+(``regions_by_act[act_id][0]``), roughly 2,550x927 at 300 dpi before DAI's own
+``crop-resize-preserve-aspect`` recipe brings it down toward its 1,500-px
+width cap (roughly 1,500x545) -- cheaper than a whole page, not equal to one.
+Every fallback-act crop is still checked against the sealed row exactly like
+any other DAI request; nothing here special-cases it because it no longer
+costs what a whole page would.
 ``request_capacity_or_refuse`` computes that from the sealed row's own
 ``min_pixels``/``max_pixels``/``patch_size``/``merge_size``
 (``common/request_capacity.py``), the chair's measured prompt cost, and its
@@ -172,14 +180,37 @@ from common.request_capacity import (
 )
 from operations.serving.client import ChairRequest, ChairResponse
 
-# Mirrors `run.py::DEFAULT_FORMAT_CAPABILITIES` exactly. A live witness never
-# self-reports a format capability -- `ChairResponse` carries none -- so this
-# is the one constant value this seam ever writes, kept local rather than
-# imported to avoid the circular import `run.py` importing this module creates.
+# Mirrors `run.py::DEFAULT_FORMAT_CAPABILITIES` exactly, and is now only the
+# *fallback* value -- see `_format_capabilities_for` below. Kept local rather
+# than imported to avoid the circular import `run.py` importing this module
+# creates.
 DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = {
     "can_express_uncertainty": False,
     "can_express_layout": False,
 }
+
+
+def _format_capabilities_for(adapter: Any) -> Mapping[str, bool]:
+    """What this adapter's own grammar can carry, or the old blanket default.
+
+    A live witness never self-reports a format capability from the response
+    itself -- `ChairResponse` carries none -- so this is a fact about the
+    *adapter's grammar*, not about any one reply. Read from the adapter as
+    ``adapter.format_capabilities`` (design's boundary section: Chandra
+    false/true, DAI true/false, Churro true/false, declared per adapter from
+    what its grammar can carry) rather than hard-coded here, so a Testimonium
+    stops claiming every witness reports identically the moment an adapter
+    declares its own value; until then, an adapter with no such attribute
+    falls back to exactly the blanket default every live attempt used to
+    record. Read with ``getattr`` rather than an ``isinstance`` check on a
+    known adapter type: this seam's ``adapter`` argument is a duck-typed
+    bundle of callables (`witness_adapters.RunnableAdapter`, or a test's
+    stand-in), never a shared base class this module could name without
+    creating the very circular import the module docstring already declines.
+    """
+
+    return getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
+
 
 # The allow-listed subset of `feeding.dai_generation()` vLLM's OpenAI-compatible
 # endpoint accepts as extra decoding parameters. Everything else in that carried
@@ -288,6 +319,24 @@ def _user_content(text: str, image_bytes: bytes) -> list[dict[str, Any]]:
     ]
 
 
+def _system_content(text: str) -> list[dict[str, str]]:
+    """One system turn's content: a single-element list of ``{type: text}`` parts.
+
+    DAI's README and Churro's own ``HFChatTemplate.build_conversation`` both
+    render a system message this way -- a one-element list, not the bare
+    string this seam sent until now. `common/test_vendor_parity.py`'s request
+    shape test (Wave 1, U8) is what pins this against the vendors' own shape;
+    here it is one small helper so both builders below carry it identically
+    rather than as two literals that can drift.  No token count moves with
+    this: the measured prompt constants are taken over the message *texts*,
+    and a plain string versus a one-element list of one text part carries
+    the same text either way -- what moves is only the JSON shape the engine's
+    chat template sees.
+    """
+
+    return [{"type": "text", "text": text}]
+
+
 def _presented_image_bytes(context: Any, presented: Mapping[str, Any]) -> bytes:
     """Read back exactly the bytes an adapter's own presentation names.
 
@@ -324,9 +373,15 @@ def _prompt_texts(prompt: Mapping[str, Any]) -> tuple[str, ...]:
         return (prompt["system"], prompt["user"])
     if set(prompt) == {"instruction"}:
         return (prompt["instruction"],)
+    if set(prompt) == {"system"}:
+        # Churro's registry-fixed shape (design's "Churro {system}"): the
+        # whole instruction is the system turn and the user turn carries no
+        # text of its own, so there is exactly one text part to measure.
+        return (prompt["system"],)
     raise SchemaRefusal(
         f"a witness adapter returned an unrecognized prompt shape {sorted(prompt)}; this seam "
-        "knows the churro.v1/dai.v1 system/user framing and chandra.v1's single instruction only"
+        "knows the churro.v1/dai.v1 system/user framing, churro.v1's system-only framing, and "
+        "chandra.v1's single instruction"
     )
 
 
@@ -388,10 +443,13 @@ def act_chair_request(
     returns the adapter-owned image this request actually embeds.
 
     ``profile`` is the sealed serving row this chair runs under
-    (``ChairClient.handle.profile``).  A page-fallback act -- an act whose
-    bounds are the whole page -- is the case this check exists for: its crop is
-    a whole 300-dpi page and costs the same 2,280 image tokens a page request
-    does, which the 2,048-token rows this catalogue shipped could not hold.
+    (``ChairClient.handle.profile``).  A page-fallback act -- an act whose only
+    proposal region comes from the Designator's page-level ``fallback-tiles``
+    disposition rather than ordinary grouping -- is part of why this check
+    exists: its crop is one fallback band (``config/designator_grouping.toml``'s
+    ``fallback_bands``, roughly 2,550x927 at 300 dpi before DAI's own resize),
+    not a whole page, but it is still real pixels this seam must weigh against
+    the row rather than assume away.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -406,7 +464,7 @@ def act_chair_request(
         what=f"the dai.v1 request for region {presentation.get('region_ref')!r}",
     )
     messages = (
-        {"role": "system", "content": prompt["system"]},
+        {"role": "system", "content": _system_content(prompt["system"])},
         {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
     )
     generation_declared = feeding.dai_generation()
@@ -464,6 +522,54 @@ def _framed_prompt(adapter: Any, framing: str | None) -> Mapping[str, Any]:
     return adapter.prompt() if framing is None else adapter.prompt(framing)
 
 
+def _page_messages(
+    adapter_name: str, prompt: Mapping[str, Any], image_bytes: bytes
+) -> tuple[Mapping[str, object], ...]:
+    """The message tuple for one page-scoped request, dispatched on prompt shape.
+
+    Three shapes, closed and exact -- a fourth is refused rather than guessed
+    at. Extracted from `page_chair_request` so this dispatch (and, in
+    particular, a new shape) is provable without a sealed row or a measured
+    prompt-token constant standing in the way: it is pure, and every one of
+    its branches is decided by ``set(prompt)`` alone.
+
+    * ``{"system", "user"}`` -- Churro's carried two-message framing
+      (`feeding.churro_prompt`/`feeding.churro_layout_prompt`): a system turn
+      and a user turn carrying the image and the vendor's own user text.
+    * ``{"instruction"}`` -- Chandra's single-instruction framing
+      (`chandra.prompt`); no vendor wire schema exists to name a system/user
+      split for it (module docstring).
+    * ``{"system"}`` -- Churro's registry-fixed framing (design's "Churro
+      {system}"): the whole instruction sits in the system turn and the user
+      turn carries the image alone -- `providers/specs.py::churro_3b_profile()`
+      sets ``user_prompt=None``, so there is no vendor user text to send.
+
+    Every system turn is sent as a one-element list of ``{type: text}`` parts
+    (`_system_content`), the vendors' own shape for DAI and Churro alike.
+    """
+
+    if set(prompt) == {"system", "user"}:
+        return (
+            {"role": "system", "content": _system_content(prompt["system"])},
+            {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
+        )
+    if set(prompt) == {"instruction"}:
+        return ({"role": "user", "content": _user_content(prompt["instruction"], image_bytes)},)
+    if set(prompt) == {"system"}:
+        return (
+            {"role": "system", "content": _system_content(prompt["system"])},
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}}],
+            },
+        )
+    raise SchemaRefusal(
+        f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "
+        f"{sorted(prompt)}; this seam knows the churro.v1 system/user framing, churro.v1's "
+        "system-only framing, and chandra.v1's single instruction"
+    )
+
+
 def page_chair_request(
     context: Any,
     adapter: Any,
@@ -496,22 +602,7 @@ def page_chair_request(
     image_bytes = _presented_image_bytes(context, presented)
     prompt = _framed_prompt(adapter, framing)
     image_sha256s = (presented["image_sha256"],)
-    if set(prompt) == {"system", "user"}:
-        # Churro's two-message framing (`feeding.churro_prompt`).
-        messages = (
-            {"role": "system", "content": prompt["system"]},
-            {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
-        )
-    elif set(prompt) == {"instruction"}:
-        # Chandra's single-instruction framing (`chandra.prompt`); no vendor
-        # wire schema exists to name a system/user split for (module docstring).
-        messages = ({"role": "user", "content": _user_content(prompt["instruction"], image_bytes)},)
-    else:
-        raise SchemaRefusal(
-            f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "
-            f"{sorted(prompt)}; this seam knows the churro.v1 system/user framing and "
-            "chandra.v1's single instruction only"
-        )
+    messages = _page_messages(adapter_name, prompt, image_bytes)
     # After the prompt shape is recognized, so an unknown adapter framing keeps
     # its own refusal, and before any generation bound is decided: whether the
     # request fits is a different question from what may be sent, and the
@@ -725,12 +816,15 @@ def _dai_model_view(
     )
 
 
-def _malformed_response_attempt(response: ChairResponse) -> LiveAttempt:
+def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> LiveAttempt:
     """A wire response `ChairClient` could not parse into a reading at all.
 
     Retained (the raw bytes are already on disk via ``raw_response_ref``),
     never repaired, never re-requested -- the same "malformed" branch
     `resolve_attempt` takes for a fixture-declared malformed response.
+    ``format_capabilities`` still names the adapter's own grammar
+    (`_format_capabilities_for`): what a chair's grammar can carry is a fact
+    about the chair, not about whether this one body happened to parse.
     """
 
     reason = f"the provider response was refused without repair: {response.parse_problem}"
@@ -738,7 +832,7 @@ def _malformed_response_attempt(response: ChairResponse) -> LiveAttempt:
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        format_capabilities=_format_capabilities_for(adapter),
         health=_unrecordable_health(reason),
         reason=reason,
         raw_response_ref=dict(response.raw_response_ref),
@@ -784,7 +878,7 @@ def live_attempt_from_response(
             "only dai.v1 is act-scoped today"
         )
     if response.parse_problem is not None:
-        return _malformed_response_attempt(response)
+        return _malformed_response_attempt(response, adapter=adapter)
 
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
     view = _dai_model_view(context, presentation, presented, prompt, generation_declared)
@@ -809,7 +903,7 @@ def live_attempt_from_response(
             outcome=outcome,
             native_payload=text,
             witness_reported=None,
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+            format_capabilities=_format_capabilities_for(adapter),
             health=_content_health(text, completed=completed),
             reason=None,
             raw_response_ref=dict(capture["raw_response_ref"]),
@@ -826,7 +920,7 @@ def live_attempt_from_response(
             outcome="failed",
             native_payload="",
             witness_reported=None,
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+            format_capabilities=_format_capabilities_for(adapter),
             health=_content_health("", completed=completed),
             reason=reason,
             raw_response_ref=dict(capture["raw_response_ref"]),
@@ -844,7 +938,7 @@ def live_attempt_from_response(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        format_capabilities=_format_capabilities_for(adapter),
         health=_unrecordable_health(basis),
         reason=f"the provider response was retained but not usable: {reason_suffix}",
         raw_response_ref=dict(capture["raw_response_ref"]),
@@ -897,7 +991,7 @@ def captured_page_attempt(
 
     del page_ordinal, chair
     if response.parse_problem is not None:
-        return _malformed_response_attempt(response)
+        return _malformed_response_attempt(response, adapter=adapter)
 
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
     if adapter_name == "churro.v1":
@@ -949,7 +1043,7 @@ def captured_page_attempt(
             outcome=outcome,
             native_payload=text,
             witness_reported=None,
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+            format_capabilities=_format_capabilities_for(adapter),
             health=_content_health(text, completed=completed),
             reason=None,
             raw_response_ref=dict(capture["raw_response_ref"]),
@@ -979,7 +1073,7 @@ def captured_page_attempt(
             outcome="failed",
             native_payload="",
             witness_reported=None,
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+            format_capabilities=_format_capabilities_for(adapter),
             health=_content_health("", completed=completed),
             reason=reason,
             raw_response_ref=dict(capture["raw_response_ref"]),
@@ -998,7 +1092,7 @@ def captured_page_attempt(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        format_capabilities=_format_capabilities_for(adapter),
         health=_unrecordable_health(basis),
         reason=f"the provider response was retained but not usable: {reason_suffix}",
         raw_response_ref=dict(capture["raw_response_ref"]),
