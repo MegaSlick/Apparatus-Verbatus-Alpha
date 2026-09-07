@@ -64,6 +64,14 @@ MAX_PIXELS = 100_000_000
 # speaks, with a message naming the page rather than a library's internal limit.
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
+# The modes a decoded crop may keep. `_crop_decoded_page` routes everything
+# else through `_to_display_mode` first, so this is the complete alphabet a
+# later step reading a crop has to answer for -- `convert_png_to_rgb` among
+# them. (`P` reaches the encoder, which expands it to true colour pixel-for-
+# pixel, so it survives as a mode here and not in the written bytes.) One
+# list, because a second copy of it would be the thing that drifts.
+PNG_CROP_MODES: Final = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
+
 
 def _refuse_past_pixel_bound(width: int, height: int, what: str = "page") -> None:
     """Keep every decode and allocation under the door's sealed pixel ceiling."""
@@ -490,11 +498,29 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
     model saw would no longer be reproducible from the Exemplar plus the
     recorded transforms (ARCHITECTURE invariant 3).
 
-    Expansion only. Grayscale samples are copied into all three channels, so no
-    ink value is lost and the operation is idempotent on an image already in
-    ``RGB``; a mode carrying alpha is refused rather than flattened, because
-    dropping a transparency channel is a substitution and none of the sealed
-    material this pipeline crops from carries one.
+    It is exactly ``Image.convert("RGB")``, which is the whole body of both
+    vendors' own step -- Churro's ``ensure_rgb`` and Chandra's ``load_image``
+    are each that one call -- so the samples this produces are the samples the
+    vendor's model is given. Grayscale and bilevel sources copy into all three
+    channels and lose no ink value; a palette source is read through its
+    palette; the operation is idempotent on an image already in ``RGB``.
+
+    **An alpha channel is dropped, not refused, and not composited.** Pillow's
+    conversion discards the band rather than flattening it against an invented
+    background, and both vendors take exactly that path, so replaying it is
+    what makes the presented blob the image the chair actually saw. Refusing it
+    instead would be worse than lossy: the Exemplar seals ``LA`` and ``RGBA``
+    pages as identity PNGs (``pipeline/1_exemplar/image_formats.py::
+    _PNG_IDENTITY_MODES``) and ``crop_png`` cuts crops in those modes, so a
+    refusal here would leave a page the door legitimately admitted with no
+    legal Churro presentation at all -- an act lost to a rule, which GOALS 1
+    ranks below a poorly read one. The drop is not silent: the presentation
+    records ``colour_mode: "rgb"``, this function replays it before the blob
+    digest is believed, and the alpha samples themselves stay in the sealed
+    page, which nothing here touches (GOVERNANCE 4).
+
+    Every mode a sealed crop can arrive in is handled; anything else is refused
+    by name rather than converted on a guess.
     """
     try:
         with Image.open(BytesIO(png_bytes)) as image:
@@ -502,17 +528,11 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
             image.load()
             if image.mode == "RGB":
                 return encode_image_deterministic(image)
-            if image.mode not in {"1", "L", "P"}:
+            if image.mode not in PNG_CROP_MODES:
                 raise ValueError(
-                    f"image mode {image.mode!r} cannot be expanded to RGB without dropping "
-                    "samples; only bilevel, grayscale and palette sources expand losslessly"
-                )
-            if image.mode == "P" and (
-                "transparency" in image.info or "A" in getattr(image.palette, "mode", "RGB")
-            ):
-                raise ValueError(
-                    "a palette image carrying transparency cannot be expanded to RGB without "
-                    "dropping its alpha samples"
+                    f"image mode {image.mode!r} is not a mode a sealed crop arrives in, so the "
+                    f"vendor's own RGB conversion of it cannot be replayed here (crop modes "
+                    f"{sorted(PNG_CROP_MODES)})"
                 )
             return encode_image_deterministic(image.convert("RGB"))
     except _DECODE_FAILURES as error:
@@ -688,7 +708,7 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
                     f"{image.width}x{image.height} page"
                 )
             crop = image.crop((x, y, x + w, y + h))
-            if crop.mode not in {"1", "L", "LA", "P", "RGB", "RGBA"}:
+            if crop.mode not in PNG_CROP_MODES:
                 crop = _to_display_mode(crop)
             return _encode_crop_deterministic(crop)
     except _DECODE_FAILURES as error:

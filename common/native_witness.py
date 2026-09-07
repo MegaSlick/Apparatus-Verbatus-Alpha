@@ -93,8 +93,8 @@ _DIMENSION_ROUNDING: Final = {
 #
 # `crop` and `crop-resize-preserve-aspect` are this repository's own recipes.
 # The two `.v1` operations are ports of a vendor's own preprocessing, adopted
-# verbatim under tonight's ruling and named after the vendor function they
-# reproduce, so a record says which vendor pipeline sized the pixels rather
+# under the ruling that admitted them and named after the vendor function each
+# reproduces, so a record says which vendor pipeline sized the pixels rather
 # than only that something resized them:
 #
 # * `chandra-scale-to-fit.v1` -- `chandra/model/util.py::scale_to_fit` at
@@ -110,6 +110,25 @@ _DIMENSION_ROUNDING: Final = {
 #   4abb17386d9656199c2776195926545fc527a691`: `ensure_rgb(resize_image_to_fit(
 #   img, 2500, 2500))`, LANCZOS, downscale-only, and the RGB step recorded as
 #   `colour_mode` because the vendor performs it before the model sees a pixel.
+#
+# **One departure, named here rather than discovered later.** Both ports resize
+# through `common/imaging.resize_png_lanczos`, which promotes a bilevel (mode
+# `"1"`) image to `"L"` before resampling, because Pillow 12.3.0 silently
+# substitutes NEAREST for LANCZOS on modes `"1"` and `"P"` -- a recipe that
+# said `pillow-lanczos` and delivered nearest-neighbour would be a record that
+# reads false. Churro's `resize_image_to_fit` resizes whatever it loaded
+# directly, so on a *bitonal* sealed page (triage's `bitonal` mode writes one,
+# and `_PNG_IDENTITY_MODES` seals it as `"1"`) the vendor gets Pillow's NEAREST
+# and this replay gets a true LANCZOS. The pixels differ, and the departure is
+# reproduced deliberately in the direction of the honest resampler rather than
+# corrected in the direction of the vendor's accident. `test_a_bitonal_crop_
+# replays_through_our_lanczos_not_the_vendors_nearest` pins it, and **U8's
+# vendor parity table needs a mode-`"1"` row that expects inequality here**;
+# a parity test that asserted byte equality on a bitonal source would be
+# asserting something neither port claims. Chandra is unaffected: its own
+# loader converts to RGB before anything resizes (`chandra/input.py::
+# load_image`), and LANCZOS-then-expand equals expand-then-LANCZOS on both
+# `"L"` and `"1"` sources.
 RESIZING_ADAPTER_CROP_OPERATIONS: Final = frozenset(_DIMENSION_ROUNDING)
 ADAPTER_CROP_OPERATIONS: Final = frozenset({"crop"}) | RESIZING_ADAPTER_CROP_OPERATIONS
 #: The colour conversions an adapter may perform between the resize and the
@@ -125,12 +144,28 @@ ADAPTER_COLOUR_MODES: Final = frozenset({"keep", "rgb"})
 #: it did to the colour samples has not recorded the vendor operation it names.
 _COLOUR_MODE_REQUIRED_OPERATIONS: Final = frozenset({"churro-prepare-ocr-image.v1"})
 _COLOUR_MODE_OPTIONAL_OPERATIONS: Final = frozenset({"chandra-scale-to-fit.v1"})
-# `chandra/model/util.py::scale_to_fit` at the pinned sha: grid 28, area
-# between min (1792, 28) and max (3072, 2048). Both bounds are areas, which is
-# how the vendor applies them and how `common/test_vendor_parity.py` states the
-# port's own property test.
+#: And which may name only one value. `prepare_ocr_image` is
+#: `ensure_rgb(resize_image_to_fit(...))` with no branch in it, so a Churro
+#: record saying `keep` says the RGB half of the operation it names did not
+#: run. Requiring the key and then admitting either answer would let a record
+#: name the vendor operation over a grayscale blob the vendor never sends --
+#: the same silence the required-field rule above was written to close, one
+#: level in. `keep` stays meaningful for Chandra, whose `scale_to_fit`
+#: performs no conversion of its own.
+_COLOUR_MODE_FIXED_VALUES: Final = {"churro-prepare-ocr-image.v1": "rgb"}
+# `chandra/model/util.py::scale_to_fit` at the pinned sha: LANCZOS onto a
+# 28-pixel grid, under a 3072x2048 = 6,291,456-pixel maximum area.
+#
+# **The vendor's 1792x28 = 50,176-pixel minimum is not a bound on its output
+# and is deliberately not checked here.** It is the *input* area below which
+# `scale_to_fit` scales up; the grid snap that follows rounds each side to the
+# nearest 28 and can land back under it. A 100x80 crop scales to 250.4x200.4,
+# snaps to 252x196, and 49,392 px is below the minimum the vendor was aiming
+# at -- a record its own function produced. Refusing that would refuse a legal
+# Chandra presentation, which is the one thing this vocabulary must never do.
+# The maximum is a real post-condition: the refinement loop trims blocks until
+# the area is under it, and its 1x1 escape is 784 px.
 CHANDRA_SCALE_GRID_PX: Final = 28
-CHANDRA_SCALE_MIN_PIXELS: Final = 1792 * 28
 CHANDRA_SCALE_MAX_PIXELS: Final = 3072 * 2048
 # `resize_image_to_fit(img, 2500, 2500)` at the pinned tag; the same 2,500 is
 # `_MAX_IMAGE_DIM` in the paper-era harness and `MAX_IMAGE_DIM` in the
@@ -229,6 +264,30 @@ def _bounds(value: Any, what: str, *, page_size: tuple[int, int] | None) -> dict
     return value
 
 
+def churro_fit_target(source_width: int, source_height: int) -> tuple[int, int]:
+    """The exact size `resize_image_to_fit(img, 2500, 2500)` returns for a crop.
+
+    `src/churro_ocr/_internal/image.py::resize_image_to_fit` at the pinned sha
+    is a guard and two lines of arithmetic: identity when both sides already
+    fit, otherwise one isotropic `scale = min(max_w / w, max_h / h)` and
+    `(max(1, int(w * scale)), max(1, int(h * scale)))`. There is no loop, no
+    ordering, and nothing left to a judgement call, so restating it pins a
+    record to the vendor rather than to a second copy of a procedure -- the
+    objection that keeps Chandra's greedy trim out of this module does not
+    reach here, because there is no procedure to drift into.
+
+    Checking only that a target fits the square and does not enlarge would
+    admit a stretch the vendor cannot produce: a 4000x3000 crop presented as
+    2500x100 passes both of those and re-derives, because re-derivation replays
+    whatever target the record asks for. It would then carry the vendor's name
+    over an image the vendor's own code would never have made.
+    """
+    if source_width <= CHURRO_MAX_IMAGE_DIM_PX and source_height <= CHURRO_MAX_IMAGE_DIM_PX:
+        return source_width, source_height
+    scale = min(CHURRO_MAX_IMAGE_DIM_PX / source_width, CHURRO_MAX_IMAGE_DIM_PX / source_height)
+    return max(1, int(source_width * scale)), max(1, int(source_height * scale))
+
+
 def _validate_resize_recipe(transform: dict[str, Any]) -> None:
     """Close the executable resize recipe, then the rules its operation names.
 
@@ -241,15 +300,18 @@ def _validate_resize_recipe(transform: dict[str, Any]) -> None:
     target the record asked for, so a target nothing constrains re-derives
     happily and is still the wrong image.
 
-    What each operation adds is only what its own publisher's rule makes
-    checkable from the recorded numbers. The exact fit arithmetic of the two
-    vendor ports is deliberately **not** re-implemented here: a second
-    hand-written copy of `scale_to_fit` or `resize_image_to_fit` in a contract
-    validator would be pinned to itself rather than to the vendor, and would
-    agree with a drifted port for exactly as long as both were wrong. That
-    equality is proved against the fetched vendor source in
-    `common/test_vendor_parity.py`; these are the bounds a record can be held
-    to offline, with no network and no vendor package installed.
+    What each operation adds is what its own publisher's rule makes checkable
+    from the recorded numbers, and the two publishers do not offer the same
+    thing. Churro's `resize_image_to_fit` is a closed formula, so the target is
+    held to it exactly (`churro_fit_target`). Chandra's `scale_to_fit` is a
+    scale, a grid snap and a greedy trim loop, and a second hand-written copy
+    of *that* in a contract validator would be pinned to itself rather than to
+    the vendor -- it would agree with a drifted port for exactly as long as
+    both were wrong -- so its target is held only to the grid and the maximum
+    area, the two facts its output always satisfies. The byte equality of
+    either port against the fetched vendor source is proved offline in
+    `common/test_vendor_parity.py`; these are the rules a record can be held to
+    here, with no network and no vendor package installed.
     """
     operation = transform["operation"]
     resize = transform["resize"]
@@ -308,35 +370,19 @@ def _validate_resize_recipe(transform: dict[str, Any]) -> None:
                 f"a {operation} target is not on the vendor's {CHANDRA_SCALE_GRID_PX}-pixel "
                 "patch grid, so it is not a size that port can have produced"
             )
-        if not (
-            CHANDRA_SCALE_MIN_PIXELS <= target_width * target_height <= CHANDRA_SCALE_MAX_PIXELS
-        ):
+        if target_width * target_height > CHANDRA_SCALE_MAX_PIXELS:
             raise SchemaRefusal(
-                f"a {operation} target of {target_width}x{target_height} px falls outside the "
-                f"vendor's own area bounds [{CHANDRA_SCALE_MIN_PIXELS}, "
-                f"{CHANDRA_SCALE_MAX_PIXELS}]"
+                f"a {operation} target of {target_width}x{target_height} px exceeds the "
+                f"vendor's own maximum area of {CHANDRA_SCALE_MAX_PIXELS} px"
             )
     elif operation == "churro-prepare-ocr-image.v1":
-        if target_width > CHURRO_MAX_IMAGE_DIM_PX or target_height > CHURRO_MAX_IMAGE_DIM_PX:
+        expected = churro_fit_target(source_width, source_height)
+        if (target_width, target_height) != expected:
             raise SchemaRefusal(
-                f"a {operation} target of {target_width}x{target_height} px does not fit the "
-                f"vendor's {CHURRO_MAX_IMAGE_DIM_PX}x{CHURRO_MAX_IMAGE_DIM_PX} square"
-            )
-        if target_width > source_width or target_height > source_height:
-            raise SchemaRefusal(
-                f"a {operation} target enlarges its crop; the vendor's resize is downscale-only"
-            )
-        # Downscale-only settles the whole rule for a crop that already fits:
-        # the vendor returns the image untouched, so any other target is a
-        # resize its own code would not have performed.
-        if (
-            source_width <= CHURRO_MAX_IMAGE_DIM_PX
-            and source_height <= CHURRO_MAX_IMAGE_DIM_PX
-            and (target_width, target_height) != (source_width, source_height)
-        ):
-            raise SchemaRefusal(
-                f"a {operation} crop already inside the vendor's "
-                f"{CHURRO_MAX_IMAGE_DIM_PX}x{CHURRO_MAX_IMAGE_DIM_PX} square was resized anyway"
+                f"a {operation} target of {target_width}x{target_height} px is not the size the "
+                f"vendor's fit rule produces from {source_width}x{source_height} px "
+                f"({expected[0]}x{expected[1]}): the {CHURRO_MAX_IMAGE_DIM_PX}x"
+                f"{CHURRO_MAX_IMAGE_DIM_PX} square, downscale-only, one isotropic scale"
             )
 
 
@@ -418,6 +464,14 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
             "a Testimonium presented transform names an unknown colour conversion; the exact "
             f"image the chair saw cannot be replayed from it (known modes "
             f"{sorted(ADAPTER_COLOUR_MODES)})"
+        )
+    fixed_colour_mode = _COLOUR_MODE_FIXED_VALUES.get(operation)
+    if fixed_colour_mode is not None and transform.get("colour_mode") != fixed_colour_mode:
+        raise SchemaRefusal(
+            f"a {operation} presentation records colour_mode "
+            f"{transform.get('colour_mode')!r}; the vendor's own operation performs "
+            f"{fixed_colour_mode!r} unconditionally, so any other answer records a half of it "
+            "that did not run"
         )
     if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
         # Only an `adapter-crop` is ever replayed against sealed page bytes

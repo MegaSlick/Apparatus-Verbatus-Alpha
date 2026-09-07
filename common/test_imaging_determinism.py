@@ -22,6 +22,7 @@ import pytest
 from PIL import Image
 
 from common.imaging import (
+    PNG_CROP_MODES,
     PNG_SIGNATURE,
     _encode_crop_deterministic,
     _to_display_mode,
@@ -702,22 +703,55 @@ def test_an_indexed_image_expands_through_its_palette():
         assert reread.getpixel((1, 0)) == (0, 255, 0)
 
 
-def test_a_mode_that_cannot_expand_losslessly_is_refused_rather_than_flattened():
-    """Dropping an alpha channel is a substitution, and a silent one."""
+@pytest.mark.parametrize("mode", ["LA", "RGBA"])
+def test_an_alpha_channel_is_dropped_exactly_where_the_vendors_drop_it(mode):
+    """`ensure_rgb` is `image.convert("RGB")`, and so is Chandra's `load_image`.
+
+    Refusing the mode instead would leave a sealed `LA` or `RGBA` page -- both
+    are identity PNGs at the door -- with no legal Churro presentation at all.
+    The band is discarded, not composited against an invented background, which
+    is what makes the replayed blob the image the chair was actually given.
+    """
+    source = Image.new(mode, (4, 2), (10, 128) if mode == "LA" else (10, 20, 30, 128))
     buffer = BytesIO()
-    Image.new("RGBA", (4, 2), (10, 20, 30, 128)).save(buffer, format="PNG")
-    with pytest.raises(ValueError, match="cannot be expanded to RGB"):
-        convert_png_to_rgb(buffer.getvalue())
+    source.save(buffer, format="PNG")
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((0, 0)) == ((10, 10, 10) if mode == "LA" else (10, 20, 30))
+        # The vendor's own one-line body, run here on the same source.
+        assert reread.tobytes() == source.convert("RGB").tobytes()
+    assert carries_only_image_chunks(converted)
 
 
-def test_a_palette_carrying_transparency_is_refused_by_its_own_name():
+def test_a_palette_carrying_transparency_converts_through_its_palette_too():
+    """The vendor asks the palette, not the tRNS chunk; so does the replay."""
     source = Image.new("RGBA", (4, 2), (10, 20, 30, 0))
     quantised = source.convert("P", palette=Image.Palette.ADAPTIVE)
     assert quantised.palette.mode == "RGBA"
     buffer = BytesIO()
     quantised.save(buffer, format="PNG")
 
-    with pytest.raises(ValueError, match="dropping its alpha samples"):
+    # Pillow says out loud that it is dropping the palette's alpha, which is
+    # the same thing this function's docstring says and the vendor never says.
+    with pytest.warns(UserWarning, match="Transparency"):
+        converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((0, 0)) == (10, 20, 30)
+
+
+def test_a_mode_no_sealed_crop_arrives_in_is_refused_by_name():
+    """`crop_png` normalises everything else, so this is the whole alphabet."""
+    buffer = BytesIO()
+    Image.new("I;16", (4, 2)).save(buffer, format="PNG")
+    with Image.open(BytesIO(buffer.getvalue())) as reread:
+        assert reread.mode not in PNG_CROP_MODES
+
+    with pytest.raises(ValueError, match="not a mode a sealed crop arrives in"):
         convert_png_to_rgb(buffer.getvalue())
 
 

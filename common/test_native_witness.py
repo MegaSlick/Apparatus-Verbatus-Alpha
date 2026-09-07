@@ -15,13 +15,13 @@ from common.native_witness import (
     ADAPTER_CROP_OPERATIONS,
     CHANDRA_SCALE_GRID_PX,
     CHANDRA_SCALE_MAX_PIXELS,
-    CHANDRA_SCALE_MIN_PIXELS,
     CHURRO_MAX_IMAGE_DIM_PX,
     CHURRO_OUTPUT_TOKENS,
     CHURRO_PARSERS,
     CHURRO_RESPONSE_NOT_BYTES,
     NATIVE_CAPTURE_PARSERS,
     RESIZING_ADAPTER_CROP_OPERATIONS,
+    churro_fit_target,
     derive_churro_capture,
     detect_churro_repetition,
     detect_repetition,
@@ -1670,10 +1670,14 @@ def _vendor_presentation(operation: str, **resize_changes) -> dict:
                 "dimension_rounding": "grid-28",
                 "source_width_px": 100,
                 "source_height_px": 80,
-                # 224 x 224 = 50,176 px: the vendor's own minimum area, and
-                # 8 x 28 on each side, so it is on the patch grid.
-                "target_width_px": 224,
-                "target_height_px": 224,
+                # What `scale_to_fit` itself returns for a 100x80 image at the
+                # pinned sha: 8,000 px is under its 50,176-px minimum, so it
+                # scales by sqrt(50176/8000) to 250.4x200.4 and snaps to 9x7
+                # blocks of 28. Both sides are on the grid; the area, 49,392,
+                # is under the minimum the vendor was aiming at, which is why
+                # that minimum is not a bound this schema may hold a record to.
+                "target_width_px": 252,
+                "target_height_px": 196,
             },
         },
         "churro-prepare-ocr-image.v1": {
@@ -1790,36 +1794,48 @@ def test_a_chandra_target_must_sit_on_the_vendors_own_patch_grid():
         validate_presented(presented)
 
 
-@pytest.mark.parametrize(
-    ("width", "height"),
-    [
-        (196, 224),  # 43,904 px: on the grid, below the vendor's minimum area
-        (3080, 2044),  # 6,295,520 px: on the grid, above the vendor's maximum area
-    ],
-)
-def test_a_chandra_target_outside_the_vendors_area_bounds_is_refused(width, height):
+def test_a_chandra_target_above_the_vendors_maximum_area_is_refused():
+    """The maximum is the one area bound the vendor's own output always obeys."""
+    width, height = 3080, 2044  # 6,295,520 px: on the grid, over the maximum
     assert width % CHANDRA_SCALE_GRID_PX == 0 and height % CHANDRA_SCALE_GRID_PX == 0
-    assert not CHANDRA_SCALE_MIN_PIXELS <= width * height <= CHANDRA_SCALE_MAX_PIXELS
+    assert width * height > CHANDRA_SCALE_MAX_PIXELS
     presented = _vendor_presentation(
         "chandra-scale-to-fit.v1", target_width_px=width, target_height_px=height
     )
-    with pytest.raises(SchemaRefusal, match="area bounds"):
+    with pytest.raises(SchemaRefusal, match="maximum area"):
         validate_presented(presented)
 
 
-def test_the_vendor_area_bounds_are_the_numbers_the_port_is_held_to():
-    """Both are areas, which is how the vendor applies them and how U8 tests them."""
-    assert CHANDRA_SCALE_MIN_PIXELS == 1792 * 28 == 50_176
+def test_the_vendors_minimum_area_is_not_a_bound_its_own_output_obeys():
+    """So this schema does not hold a record to it, and this is the counterexample.
+
+    `scale_to_fit` scales an under-sized image toward 1792x28 = 50,176 px and
+    *then* rounds each side to the nearest 28-pixel block, which can land back
+    under it. The fixture is the vendor's own answer for a 100x80 crop; a
+    minimum-area rule here would refuse a presentation Chandra actually
+    produces, and a refusal that costs a legal act is the one failure GOALS 1
+    ranks worst.
+    """
+    resize = _vendor_presentation("chandra-scale-to-fit.v1")["transform"]["resize"]
+    assert (resize["target_width_px"], resize["target_height_px"]) == (252, 196)
+    assert resize["target_width_px"] * resize["target_height_px"] < 1792 * 28
+    validate_presented(_vendor_presentation("chandra-scale-to-fit.v1"))
+
+
+def test_the_vendor_maximum_area_is_the_number_the_port_is_held_to():
+    """An area, which is how the vendor applies it and how U8 tests the port."""
     assert CHANDRA_SCALE_MAX_PIXELS == 3072 * 2048 == 6_291_456
 
 
 def test_the_greedy_aspect_trim_is_not_held_to_the_preserve_aspect_identity():
-    """The vendor's own trim departs from the source aspect; our rule must not fight it.
+    """The vendor's own snap departs from the source aspect; our rule must not fight it.
 
-    A 100x80 crop is 1.25:1 and 224x224 is 1:1 -- exactly the kind of departure
-    `scale_to_fit` produces when it snaps to the grid. It costs nothing here:
-    Chandra reports `data-bbox` normalized 0-1000 and `to_page_bounds` maps
-    those against the *sealed page*, never through this resized view.
+    A 100x80 crop is 1.25:1 and the 252x196 `scale_to_fit` returns for it is
+    1.2857:1 -- the grid snap moves each side to the nearest block
+    independently, so the target aspect is the source's only by accident. It
+    costs nothing here: Chandra reports `data-bbox` normalized 0-1000 and
+    `to_page_bounds` maps those against the *sealed page*, never through this
+    resized view.
     """
     presented = _vendor_presentation("chandra-scale-to-fit.v1")
     resize = presented["transform"]["resize"]
@@ -1847,26 +1863,44 @@ def test_each_resizing_operation_must_name_its_own_publishers_rounding_rule():
 
 
 @pytest.mark.parametrize(
-    ("changes", "message"),
+    "changes",
     [
         # Past the vendor's 2500x2500 square on one side.
-        ({"target_width_px": 2501, "target_height_px": 1875}, "square"),
+        {"target_width_px": 2501, "target_height_px": 1875},
         # An enlargement; `resize_image_to_fit` is downscale-only.
-        (
-            {
-                "source_width_px": 3000,
-                "source_height_px": 1500,
-                "target_width_px": 2500,
-                "target_height_px": 1800,
-            },
-            "downscale-only",
-        ),
+        {
+            "source_width_px": 3000,
+            "source_height_px": 1500,
+            "target_width_px": 2500,
+            "target_height_px": 1800,
+        },
+        # Inside the square on both sides, downscale-only satisfied, and a
+        # stretch the vendor's single isotropic scale cannot produce. Only the
+        # exact formula catches this one, and the digest re-derives happily:
+        # re-derivation replays whatever target the record asks for.
+        {"target_width_px": 2500, "target_height_px": 100},
+        # One pixel off the vendor's own floor, which is the drift a bound
+        # check never sees.
+        {"target_width_px": 2500, "target_height_px": 1874},
     ],
 )
-def test_a_churro_target_outside_the_vendors_fit_rule_is_refused(changes, message):
+def test_a_churro_target_the_vendors_fit_rule_cannot_produce_is_refused(changes):
     presented = _vendor_presentation("churro-prepare-ocr-image.v1", **changes)
-    with pytest.raises(SchemaRefusal, match=message):
+    with pytest.raises(SchemaRefusal, match="not the size the vendor's fit rule produces"):
         validate_presented(presented)
+
+
+def test_the_churro_fit_rule_is_the_vendors_two_lines_and_nothing_else():
+    """`resize_image_to_fit(img, 2500, 2500)`, restated where a record is held to it."""
+    assert CHURRO_MAX_IMAGE_DIM_PX == 2500
+    # Identity while both sides fit, including the exact corner.
+    assert churro_fit_target(2500, 2500) == (2500, 2500)
+    assert churro_fit_target(100, 80) == (100, 80)
+    # One isotropic scale, truncated, off the longer side.
+    assert churro_fit_target(4000, 3000) == (2500, 1875)
+    assert churro_fit_target(2480, 3508) == (1767, 2500)
+    # `max(1, ...)`: a wildly elongated crop keeps a pixel on the short side.
+    assert churro_fit_target(500_000, 100) == (2500, 1)
 
 
 def test_a_churro_crop_already_inside_the_square_may_not_be_resized_at_all():
@@ -1882,7 +1916,7 @@ def test_a_churro_crop_already_inside_the_square_may_not_be_resized_at_all():
     validate_presented(presented)
 
     presented["transform"]["resize"].update({"target_width_px": 1000, "target_height_px": 750})
-    with pytest.raises(SchemaRefusal, match="was resized anyway"):
+    with pytest.raises(SchemaRefusal, match="not the size the vendor's fit rule produces"):
         validate_presented(presented)
 
 
@@ -1891,6 +1925,22 @@ def test_the_churro_operation_must_say_what_it_did_to_the_colour_samples():
     presented = _vendor_presentation("churro-prepare-ocr-image.v1")
     del presented["transform"]["colour_mode"]
     with pytest.raises(SchemaRefusal, match="complete page transform"):
+        validate_presented(presented)
+
+
+def test_the_churro_operation_may_not_record_that_its_colour_half_did_not_run():
+    """`prepare_ocr_image` has no branch, so `keep` names an operation that is not it.
+
+    Required-and-any-value would admit a record that carries the vendor's name
+    over a grayscale blob the vendor never sends -- and it would re-derive,
+    because the replay simply skips a step the record says did not happen.
+    """
+    presented = _vendor_presentation("churro-prepare-ocr-image.v1")
+    assert presented["transform"]["colour_mode"] == "rgb"
+    validate_presented(presented)
+
+    presented["transform"]["colour_mode"] = "keep"
+    with pytest.raises(SchemaRefusal, match="performs 'rgb' unconditionally"):
         validate_presented(presented)
 
 
@@ -1937,7 +1987,7 @@ def test_a_vendor_preprocessing_blob_re_derives_through_resize_and_colour_step()
     """
     page_bytes = _grayscale_page()
     bounds = {"x": 0, "y": 0, "w": 100, "h": 80}
-    grayscale = resize_png_lanczos(crop_png(page_bytes, bounds), 224, 224)
+    grayscale = resize_png_lanczos(crop_png(page_bytes, bounds), 252, 196)
     expected = convert_png_to_rgb(grayscale)
     assert digest_bytes(expected) != digest_bytes(grayscale)
 
@@ -1990,6 +2040,100 @@ def test_a_churro_presentation_re_derives_through_its_own_recorded_recipe():
         page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
         page_sha256=digest_bytes(page_bytes),
         page_size=(100, 80),
+        page_bytes=page_bytes,
+    )
+
+
+@pytest.mark.parametrize("mode", ["LA", "RGBA"])
+def test_a_sealed_page_carrying_alpha_still_has_a_legal_churro_presentation(mode):
+    """The door seals `LA` and `RGBA` as identity PNGs, so this page can arrive.
+
+    `ensure_rgb` drops the band, this replay drops the same band, and the record
+    says `rgb`. Refusing the conversion instead would leave a page the Exemplar
+    legitimately admitted with no presentation Churro could ever be given --
+    a lost act, which GOALS 1 ranks below a poorly read one.
+    """
+    page = (
+        Image.new("L", (100, 80), 200)
+        if mode == "LA"
+        else Image.new("RGB", (100, 80), (200, 190, 180))
+    )
+    page.putalpha(Image.new("L", (100, 80), 128))
+    assert page.mode == mode
+    buffer = BytesIO()
+    page.save(buffer, format="PNG")
+    page_bytes = buffer.getvalue()
+
+    bounds = {"x": 0, "y": 0, "w": 100, "h": 80}
+    expected = convert_png_to_rgb(resize_png_lanczos(crop_png(page_bytes, bounds), 100, 80))
+    presented = _vendor_presentation(
+        "churro-prepare-ocr-image.v1",
+        source_width_px=100,
+        source_height_px=80,
+        target_width_px=100,
+        target_height_px=80,
+    )
+    presented["image_sha256"] = digest_bytes(expected)
+    presented["image_path"] = "3_attestatores/blobs/sha256/" + digest_bytes(expected)
+    validate_presented(presented)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+        page_sha256=digest_bytes(page_bytes),
+        page_size=(100, 80),
+        page_bytes=page_bytes,
+    )
+
+
+def test_a_bitonal_crop_replays_through_our_lanczos_not_the_vendors_nearest():
+    """The one named departure in the Churro port, pinned so U8 inherits it stated.
+
+    `resize_image_to_fit` resizes whatever it loaded, and Pillow 12.3.0 silently
+    substitutes NEAREST for LANCZOS on mode `"1"`. `resize_png_lanczos` promotes
+    to `"L"` first, so on a bitonal sealed page -- triage's `bitonal` writes one
+    and the door seals it as `"1"` -- the replayed pixels are a true LANCZOS and
+    the vendor's are nearest-neighbour. The departure is deliberate: a recipe
+    that recorded `pillow-lanczos` and delivered nearest neighbour would be a
+    record that reads false. U8's parity table needs a mode-`"1"` row that
+    expects this inequality rather than byte equality.
+    """
+    bitonal = Image.new("1", (2600, 40))
+    bitonal.putdata([(x * 7 + y * 3) % 2 for y in range(40) for x in range(2600)])
+    buffer = BytesIO()
+    bitonal.save(buffer, format="PNG")
+    page_bytes = buffer.getvalue()
+    bounds = {"x": 0, "y": 0, "w": 2600, "h": 40}
+    target = churro_fit_target(2600, 40)
+    assert target == (2500, 38)
+
+    crop = crop_png(page_bytes, bounds)
+    with Image.open(BytesIO(crop)) as decoded:
+        decoded.load()
+        assert decoded.mode == "1"
+        vendor_pixels = decoded.resize(target, resample=Image.Resampling.LANCZOS).convert("RGB")
+
+    expected = convert_png_to_rgb(resize_png_lanczos(crop, *target))
+    with Image.open(BytesIO(expected)) as replayed:
+        replayed.load()
+        assert replayed.tobytes() != vendor_pixels.tobytes()
+
+    presented = _vendor_presentation(
+        "churro-prepare-ocr-image.v1",
+        source_width_px=2600,
+        source_height_px=40,
+        target_width_px=target[0],
+        target_height_px=target[1],
+    )
+    presented["image_sha256"] = digest_bytes(expected)
+    presented["image_path"] = "3_attestatores/blobs/sha256/" + digest_bytes(expected)
+    validate_presented(presented)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/blobs/sha256/" + digest_bytes(page_bytes),
+        page_sha256=digest_bytes(page_bytes),
+        page_size=(2600, 40),
         page_bytes=page_bytes,
     )
 
