@@ -3397,9 +3397,12 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     assert export["aggregate"]["status"] == "complete"
     assert export["aggregate"]["reasons"] == []
 
-    reviews_by_key = {
-        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
-    }
+    review_records = artifacts(tree, RECENSOR, "review")
+    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
+    # Counted before anything is read out of it: a second review for one act is
+    # an accounting failure, and a lookup keyed by `act_key` would silently keep
+    # whichever of the two the manifest happened to list last.
+    assert len(reviews_by_key) == len(review_records)
     assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
     rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
     assert [row["page_ordinal"] for row in rows] == [2]
@@ -3415,15 +3418,16 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     # Unmeasured is not a hold and not a route input: a2 is delivered.
     assert reviews_by_key["a2"]["outcome"] == "accepted"
 
-    entries = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in (
-            tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])
-            for entry in tree.build_manifest(ARMARIUM)["artifacts"]
-            if entry["kind"] == "manifest-entry"
-        )
-    }
+    entry_payloads = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    entries = {payload["act_key"]: payload for payload in entry_payloads}
     delivered = {item["act_key"]: item for item in export["delivered"]}
+    # The same count, for the same reason, on both restatements.
+    assert len(entries) == len(entry_payloads)
+    assert len(delivered) == len(export["delivered"])
     for restatement in (entries, delivered):
         assert restatement["a1"]["testimony_content_coverage_continuation"] == []
         assert restatement["a2"]["testimony_content_coverage_continuation"] == rows

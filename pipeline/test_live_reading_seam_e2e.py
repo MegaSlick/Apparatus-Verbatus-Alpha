@@ -932,13 +932,17 @@ def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, 
     kept, on the act that spans the page. The counterfactual below drops the row
     again and requires this to fail.
     """
-    rows = {
-        (review["payload"]["act_key"], row["page_ordinal"]): row
+    # A list, not a lookup keyed by act and page: a second row for one act's
+    # page is an accounting failure, and a dict comprehension would collapse it
+    # into the row this helper then reads. The counterfactual below removes a
+    # row; nothing here may quietly absorb an added one.
+    rows = [
+        ((review["payload"]["act_key"], row["page_ordinal"]), row)
         for review in reviews
         for row in review["payload"]["testimony_content_coverage_continuation"]
-    }
-    assert set(rows) == {("a2", 2)}, sorted(rows)
-    row = rows[("a2", 2)]
+    ]
+    assert [key for key, _row in rows] == [("a2", 2)], sorted(key for key, _row in rows)
+    row = rows[0][1]
     assert row["shortfall"] is None, row
     assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"], row
     for chair, measured in sorted(row["by_chair"].items()):
