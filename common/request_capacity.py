@@ -924,12 +924,34 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # `designator_structure` moved with `verbatus-structure-prompt.v3`, for exactly
 # the reason the paragraph above gives: its declared response shape is no longer
 # the `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
-# (`common/chandra_layout.py`), whose `<div data-bbox=... data-label=...>` and
-# `<p>` tags are real tokens the JSON budget never counted. Re-measured
-# 2026-09-07 by this section's own harness -- the same `FRENCH_ACT` to 800 words
-# in the same six blocks, the same tokenizer at the same pinned revision -- at
-# **1575 -> 1645**. The same run reproduces the superseded 1575 and
-# `attestator_1`'s 1520 exactly, which is what says the numbers are comparable.
+# (`common/chandra_layout.py`). Re-measured 2026-09-07 by this section's own
+# harness -- the same `FRENCH_ACT` to 800 words in the same six blocks, the same
+# tokenizer at the same pinned revision -- at **1575 -> 1645**. The same run
+# reproduces the superseded 1575 and `attestator_1`'s 1520 exactly, which is what
+# says the numbers are comparable.
+#
+# **The 70 tokens are the fixture's escaping, not the grammar's tags**, and that
+# is measured rather than assumed. Written literally, the same six blocks in
+# `<div data-bbox=... data-label=...><p>` measure 1506 -- sixty-nine tokens
+# *fewer* than the JSON object they replace, because the layout grammar's
+# scaffolding is the cheaper of the two. The 1645 is measured over a fixture
+# whose prose is entity-escaped, where the act's thirty-two apostrophes are
+# `&#x27;` at five tokens each rather than `'` at one; that is where all 139
+# tokens of the gap between the two spellings live.  139 rather than 4 x 32
+# because the escape also breaks the merge with the word around it -- "L'an" is
+# two tokens and "L&#x27;an" is seven.
+#
+# **The escaped fixture is what is sealed, deliberately.**
+# `chandra_layout.parse_layout_html` resolves character references
+# (`html.parser` with `convert_charrefs=True`), so a body that spells its
+# apostrophes `&#x27;` is a valid answer under the grammar this chair is read
+# by, and a reserve covering only the cheaper spelling would under-reserve a
+# body the parser accepts -- a cut-off answer is a missed act (GOALS 1). 1645 is
+# therefore an upper bound over the two spellings the grammar admits, and both
+# measurements are recorded here so a later reader can see which was sealed and
+# why. Neither number changes what any shipped row does: a whole 300-dpi page
+# is admitted on all three `designator_structure` tiers at either value.
+#
 # `attestator_1` is untouched here: it is still asked for the JSON page shape on
 # this base, and it moves when its own prompt does.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(

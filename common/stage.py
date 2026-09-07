@@ -3077,8 +3077,11 @@ def _verify_proposal_act_row(
     here; what it cannot do is publish one rectangle and mint a different one.
     Re-deriving the acts from the retained blob would close that gap and is a
     design change, not a correction: it would make `common/stage.py` a second
-    parser of the chair's wire contract, which today has exactly one
-    (`common/structure_answer.py`).
+    parser of the chair's wire contract, which today has exactly one. That
+    contract is Chandra's layout HTML since `verbatus-structure-prompt.v3`, and
+    its one reader is `common/chandra_layout.py::parse_layout_html`, shared with
+    the page witness; `common/structure_answer.py::parse` reads the retired
+    `verbatus-structure-answer.v1` JSON and has no live caller.
 
     Three claims, and each is refused separately so the refusal says which one
     failed. The **page** must have been scanned: the page's own

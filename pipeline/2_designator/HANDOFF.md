@@ -677,21 +677,33 @@ status. Nothing is repaired, reordered, or re-asked.
 
 The capacity row is the only one decided before a request exists. A whole
 300-dpi page costs this chair 1,715 prompt tokens at the smallest tier's
-`max_pixels` and 5,100 at the largest, before a word of prompt is counted
-(`common/request_capacity.py`); with the measured 593-token prompt and a
-measured dense-page answer budget of 1,645, the 24 GB and 48 GB rows cannot
-hold one. **Both numbers moved with v3 and both were re-measured** by the
-harness of `TOKEN_COST_REPORT_2026-09-05.md` §3 and §8, at the same pinned
-tokenizer, in the message shape `page_request` builds: 325 → 593 for the
-prompt, because the carried instruction is 2,161 characters against v2's 1,192
-and carries the vendor's 36 tags, 14 attributes and 19 labels; 1,575 → 1,645
-for the dense-page answer, because an answer in layout HTML costs `<div>`,
-`data-bbox`, `data-label` and `<p>` tags the JSON budget never counted. The
-same runs reproduce the superseded 325 and 1,575 exactly, which is what says
-the pairs are comparable rather than merely both present. The dearer prompt is
-not a regression to be tuned away — trimming the carried bytes is what would
-stop them being the vendor's — and it is weighed where it belongs, in
-`page_capacity`, on every page, before anything is sent. vLLM answers such a request with HTTP 400 and no reading at all, so
+`max_pixels`, 3,102 at the 48 GB tier's and 5,100 at the largest, before a word
+of prompt is counted (`common/request_capacity.py`); with the measured
+593-token prompt and a measured dense-page answer budget of 1,645 that is
+3,953, 5,340 and 7,338 against the 8,192 every shipped `designator_structure`
+row states (`config/serving_recipes_real.toml`), so **every shipped row holds a
+dense page** — the largest tier by 854 tokens, which is the narrowest of the
+three margins, and `operations/serving/test_serving_catalogue_capacity.py`
+asserts it row by row rather than leaving it to this paragraph. **Both numbers
+moved with v3 and both were re-measured** by the harness of
+`TOKEN_COST_REPORT_2026-09-05.md` §3 and §8, at the same pinned tokenizer, in
+the message shape `page_request` builds: 325 → 593 for the prompt, because the
+carried instruction is 2,161 characters against v2's 1,192 and carries the
+vendor's 36 tags, 14 attributes and 19 labels; 1,575 → 1,645 for the dense-page
+answer, which is **not** the cost of the layout grammar's tags — the same six
+blocks written literally measure 1,506, sixty-nine tokens *fewer* than the JSON
+they replace. The 1,645 is measured over a fixture whose prose is
+entity-escaped, where the act's thirty-two apostrophes cost `&#x27;` at five
+tokens each rather than `'` at one, and it is sealed that way on purpose:
+`parse_layout_html` resolves character references, so an escaped body is a
+valid answer under this grammar and the reserve covers the dearer of the two
+spellings it admits (`common/request_capacity.py` records both). The same runs
+reproduce the superseded 325 and 1,575 exactly, which is what says the pairs
+are comparable rather than merely both present. The dearer prompt is not a
+regression to be tuned away — trimming the carried bytes is what would stop
+them being the vendor's — and it is weighed where it belongs, in
+`page_capacity`, on every page, before anything is sent. A request that does
+not fit its row is one vLLM answers with HTTP 400 and no reading at all, so
 `ask_page` computes the arithmetic first and holds the page rather than paying
 a card to be refused. The page is never downscaled to make it fit: 300 dpi is
 what `config/pdf_render.toml` argues is needed to read the ink, and trading a
@@ -889,11 +901,18 @@ every act the chair proposed was read.
 planning value, and a whole-page transcription plus geometry may not fit it;
 `structure-answer-cut-off` on every page of the first real run is the
 measurement that says so. **v3 made that risk larger, measurably**: the request
-now costs 268 more prompt tokens and reserves 70 more for the answer, which is
-338 fewer for the reading on every row. The shipped rows state 8,192, which
-holds an A4 page at the smallest tier's pixel cap with room to spare and does
-not at the largest (5,100 + 593 + 1,645 = 7,338 fits; the arithmetic is
-`page_capacity`'s, per page, before anything is sent). The serving rows the
+costs 268 more prompt tokens, and that is 268 fewer left for the reading on
+every row, since what the engine leaves generation is `max_model_len` less the
+image and the prompt (`sendable_max_tokens`). The 70 extra reserved for the
+answer does not come off the reading as well — the reserve is an admission
+term at the capacity check, not a bound sent on the wire, and this chair still
+sends none. The shipped rows state 8,192, and that holds a whole A4 page at
+every tier's pixel cap — 5,100 + 593 + 1,645 = 7,338 at the largest, 3,953 at
+the smallest — so no shipped row refuses the request (the arithmetic is
+`page_capacity`'s, per page, before anything is sent). What 8,192 does not
+promise is that a real page's transcription fits the 1,645 reserved for it:
+that reserve is a measurement over one 800-word, six-block page, and a denser
+page is where `structure-answer-cut-off` would appear. The serving rows the
 vendor-systems design proposes for this chair are a separate, unmerged unit and
 are Tyrel's decision (hard rule 1); nothing here changes a shipped row.
 

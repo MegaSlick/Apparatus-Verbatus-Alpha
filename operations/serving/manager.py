@@ -1492,10 +1492,7 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
             entry.name
             for entry in target.iterdir()
             if entry.name in _ENV_OVERRIDE_EXACT_NAMES
-            or (
-                entry.name.startswith(".env.")
-                and entry.name not in _ENV_OVERRIDE_EXCLUDED_NAMES
-            )
+            or (entry.name.startswith(".env.") and entry.name not in _ENV_OVERRIDE_EXCLUDED_NAMES)
         )
     except OSError as error:
         raise ServingConfigurationError(
