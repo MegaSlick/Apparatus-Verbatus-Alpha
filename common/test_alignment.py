@@ -117,7 +117,7 @@ def test_markup_that_decodes_to_the_same_text_keeps_independent_raw_offsets():
 
 def test_an_anchor_that_repeats_the_witness_text_still_aligns_without_crashing():
     """A phrase appearing twice in the anchor (a repeated formulaic opening,
-    most plainly) must not raise or silently drop the witness: `SequenceMatcher`
+    most plainly) must not raise or silently drop the witness: the matcher
     resolves it to a real, well-formed span selection, never a partial map."""
     result = align_to_anchor(
         "alpha beta",
@@ -178,28 +178,30 @@ def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monke
     stopped partway through and pretend it was complete (GOVERNANCE 2/10).
 
     The deadline is forced deterministically: a matcher that sleeps past the
-    timeout stands in for `SequenceMatcher`, so the alarm always fires. Racing
+    timeout stands in for the real one, so the alarm always fires. Racing
     real inputs against the wall clock made the test's verdict a machine claim
     -- a fast runner finishes the comparison and goes red for no code reason,
     and a loaded runner is what makes it pass, so a genuine loss of the
-    deadline would not reliably show up either.
+    deadline would not reliably show up either. Since the sealed deadline was
+    raised above the slowest input the pair bound admits (hostile review C),
+    forcing it is not merely the robust way to test this path but the only
+    way: no admissible input reaches 25 seconds.
     """
 
-    class _StuckMatcher:
-        def __init__(self, a="", b="", autojunk=False):
-            pass
+    def _stuck_matcher(witness_text, anchor_text):
+        time.sleep(30)
+        raise AssertionError("the deadline never fired")
 
-        def get_matching_blocks(self):
-            time.sleep(30)
-            raise AssertionError("the deadline never fired")
-
-    monkeypatch.setattr(alignment_module, "SequenceMatcher", _StuckMatcher)
+    monkeypatch.setattr(alignment_module, "_matching_blocks", _stuck_matcher)
     limits = AlignmentLimits(max_characters=100_000, max_character_pairs=10**9, timeout_seconds=1)
 
     result = align_to_anchor("alpha beta gamma", "alpha beta gamna", limits)
 
     assert result["status"] == "unaligned"
-    assert result["reason"] == "timeout"
+    # Named for what happened -- this module's backstop fired -- so a receipt
+    # cannot be read as saying the witness itself timed out or that coverage
+    # was measured and found absent.
+    assert result["reason"] == alignment_module.DEADLINE_REASON == "alignment-deadline-exceeded"
     assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
 
 
@@ -243,12 +245,12 @@ def test_alignment_clears_its_alarm_and_restores_the_handler_on_an_exception(mon
     def caller_handler(signum, frame):
         pass
 
-    def broken_matcher(**kwargs):
+    def broken_matcher(witness_text, anchor_text):
         raise RuntimeError("matcher failed")
 
     signal.alarm(0)
     signal.signal(signal.SIGALRM, caller_handler)
-    monkeypatch.setattr(alignment_module, "SequenceMatcher", broken_matcher)
+    monkeypatch.setattr(alignment_module, "_matching_blocks", broken_matcher)
     try:
         with pytest.raises(RuntimeError, match="matcher failed"):
             align_to_anchor(
@@ -306,8 +308,229 @@ def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(
 
     assert fired, "the alignment armed no alarm, so this window was never exercised"
     assert result["status"] == "unaligned"
-    assert result["reason"] == "timeout"
+    assert result["reason"] == alignment_module.DEADLINE_REASON
     assert "spans" not in result
+
+
+# --- The matcher's contract (hostile review C) -------------------------------
+#
+# Written while trying to replace `difflib` with RapidFuzz, and kept after that
+# swap was refused on measurement. They pin what `align_to_anchor`'s callers
+# actually depend on, so the next attempt fails loudly instead of quietly
+# redefining what "aligned" means: fidelity to the codepoints handed in,
+# monotonicity, and -- the one that killed the swap -- which of two equally
+# large attachments wins.
+
+
+def _matcher_limits() -> AlignmentLimits:
+    """The shipped limits, loaded, never a copy of them.
+
+    CodeRabbit pass 1. Restating 100,000 / 10^8 / 25 here would have made the
+    two tests below assert against numbers that agree with
+    `config/alignment.toml` only until someone edits it -- and the deadline is
+    the number hostile review C is about, so a test that cannot notice it
+    changing is the wrong test.
+    """
+    return load_alignment_limits()[0]
+
+
+@pytest.mark.parametrize(
+    "witness,anchor",
+    [
+        ("alpha beta gamma", "alpha beta gamna"),
+        ("L'an mil sept cent quarante-trois", "L'an mil sepc cent quarante-troys"),
+        ("Geneviève née à Saint-Aubin", "Genevieve nee a Saint-Auban"),
+        ("abcabcabcabc", "cbacbacba"),
+        ("", "alpha"),
+        ("alpha", ""),
+    ],
+)
+def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor):
+    """The one assertion that makes a span a measurement rather than a guess:
+    the witness slice and the anchor slice it claims must be the same
+    characters. A matcher that normalized, case-folded, or truncated either
+    side would still return plausible-looking offsets, and only this check
+    would notice."""
+    blocks = alignment_module._matching_blocks(witness, anchor)
+    for witness_start, anchor_start, size in blocks:
+        assert (
+            witness[witness_start : witness_start + size]
+            == anchor[anchor_start : anchor_start + size]
+        )
+        assert size > 0
+
+
+def test_matched_blocks_are_strictly_ordered_and_non_overlapping_on_both_sides():
+    """`pipeline/3_attestatores/run.py` clips a whole-page alignment to one
+    act's anchor range and hulls what survives. That is only sound while the
+    blocks advance monotonically on BOTH sides: out-of-order blocks would let
+    an act's anchor range pull in witness text from the far end of the page,
+    which is the F-X2 failure the clipping was written to end."""
+    witness = "et de Marie Bernard, laboureur de cette paroisse, en presence de Jean Moreau"
+    anchor = "et de Marie Bernart, laboureur de ceste parroisse, en presence de Jan Moreau"
+    blocks = alignment_module._matching_blocks(witness, anchor)
+    assert len(blocks) > 1, "this pair must exercise more than a single block"
+    previous_witness_end = previous_anchor_end = 0
+    for witness_start, anchor_start, size in blocks:
+        assert witness_start >= previous_witness_end
+        assert anchor_start >= previous_anchor_end
+        previous_witness_end = witness_start + size
+        previous_anchor_end = anchor_start + size
+    assert previous_witness_end <= len(witness)
+    assert previous_anchor_end <= len(anchor)
+
+
+def test_the_matcher_folds_no_case_and_composes_no_accents():
+    """`markup_text_view` decides normalization -- NFC and whitespace collapse,
+    both recorded as loss. The matcher must add none of its own, or two
+    readings that differ in the ink would be reported as agreeing."""
+    assert alignment_module._matching_blocks("ABC", "abc") == []
+    # Composed vs decomposed: the same grapheme, different codepoints. Only
+    # `markup_text_view` may reconcile those, and it records the count when it
+    # does; a matcher that did it silently would hide the difference.
+    assert alignment_module._matching_blocks("\u00e9", "e\u0301") == []
+    assert alignment_module._matching_blocks("\u00e9", "\u00e9") == [(0, 0, 1)]
+
+
+def test_offsets_are_codepoint_indices_even_past_the_basic_multilingual_plane():
+    """The offsets index the same normalized string `markup_text_view` built
+    its offset map against, so they must be Python `str` indices -- codepoints,
+    not UTF-8 bytes and not UTF-16 units. An astral character counting as two
+    would shift every later offset and mis-place the raw span."""
+    witness = "\U0001f600\U0001f600abc"
+    assert alignment_module._matching_blocks(witness, "abc") == [(2, 0, 3)]
+
+
+def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
+    """The property that refused the RapidFuzz swap (hostile review C), pinned
+    so it is not lost the next time someone reaches for a faster matcher.
+
+    Register acts open with the same formula, so a page of them contains the
+    same opening several times. A witness that read only the second act
+    presents a genuine ambiguity, and the two readings of it attach exactly the
+    same number of characters:
+
+      * the whole reading against the second act's range -- what this matcher
+        returns, and what the witness actually did; or
+      * the shared opening against the FIRST act, plus the remainder against
+        the second -- what a coverage-maximizing matcher returns, because it
+        ties on characters and breaks the tie towards the earliest match.
+
+    RapidFuzz's Indel/LCS opcodes take the second. It is not a smaller answer,
+    it is a wrong one, and the pipeline's `confirmed-blank` scenario failed on
+    it: twelve characters of page text fell outside every act attachment, the
+    Recensor read that as incomplete testimony coverage, and both acts were
+    held instead of the blank being sealed. Longest verbatim agreement wins;
+    that is the disambiguation this module is for.
+    """
+    anchor = "SYNTHETIC ACT ONE alpha beta gamma SYNTHETIC ACT TWO delta epsilon zeta eta"
+    witness = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+    second_act_start = anchor.index("SYNTHETIC ACT TWO")
+
+    blocks = alignment_module._matching_blocks(witness, anchor)
+
+    assert sum(size for _, _, size in blocks) == len(witness), (
+        "the witness read one act verbatim, so all of it has a counterpart"
+    )
+    assert all(anchor_start >= second_act_start for _, anchor_start, _ in blocks), (
+        "no part of a reading of the second act may be attributed to the first, "
+        "however many characters the two acts' openings share"
+    )
+
+
+@pytest.mark.full
+def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
+    """Hostile review C: the workload that decided `timeout_seconds`, run
+    against the sealed value, so lowering that value goes red here.
+
+    A fired deadline is `unaligned`, an unaligned page witness is not
+    `comparable`, and an incomparable chair leaves the act's witness floor -- so
+    a comparison that is merely slow is recorded as coverage that is missing
+    (GOALS 1). The input below is what made five seconds too short: 7,500
+    characters of register prose whose acts repeat one formula verbatim, which
+    is what a scribe copying one form actually produces, and which is the shape
+    Ratcliff-Obershelp works hardest on. It measures 10.1 s. Under the five
+    seconds this config used to carry it came back `unaligned`, and a page that
+    had been read perfectly well was recorded as an act nobody corroborated.
+
+    The bar is the sealed deadline itself, not a fraction of it derived here
+    (CodeRabbit pass 3): the claim is "this page aligns under the shipped
+    limits", and a second invented threshold would be a different, weaker
+    claim. Marked `full` so a ten-second alignment stays out of the fast loop
+    (CodeRabbit pass 2, which also asked for the timing to go away entirely --
+    declined: the deadline's adequacy is this change's whole subject, and a
+    claim no test can notice going wrong is not a claim).
+
+    What no deadline value can claim is that nothing reaches it: two different
+    low-entropy chair responses at the pair ceiling measure 283.9 s, so the
+    deadline still fires on degenerate output and is still an honest non-verdict
+    when it does. `pipeline/3_attestatores/HANDOFF.md` carries that measurement
+    and the design that would close it.
+    """
+    act = (
+        "L'an mil sept cent quarante-trois, le douziesme jour du mois de may, "
+        "a este baptise par nous soubsigne Jean, fils legitime de Pierre Moreau, "
+        "laboureur, et de Marie Bernard sa femme, de cette paroisse de Saint-Pierre. "
+    )
+    anchor = (act * 40)[:7_500]
+    witness = anchor.replace("este", "esté").replace("legitime", "legitirne")[:7_500]
+    limits = _matcher_limits()
+    start = time.perf_counter()
+    result = align_to_anchor(witness, anchor, limits)
+    elapsed = time.perf_counter() - start
+
+    assert result["status"] == "aligned", (
+        f"the page that set the deadline took {elapsed:.1f}s against a sealed "
+        f"{limits.timeout_seconds}s and came back {result.get('reason')}; a page read "
+        "perfectly well would be recorded as an act nobody corroborated"
+    )
+
+
+def test_no_input_the_sealed_bounds_admit_is_silently_truncated():
+    """The largest input the sealed bounds admit at all, derived from the
+    shipped limits rather than restated: a witness at `max_characters` against
+    an anchor of `max_character_pairs // max_characters` sits exactly on both
+    ceilings, and both bounds are `>`, so this runs rather than being refused.
+    The retained view must carry every character, and the spans must still name
+    equal text -- a matcher that clipped its inputs to some internal ceiling
+    would pass every small-input test above and fail here.
+
+    The anchor is planted verbatim at the end of the witness, so the correct
+    answer is known independently of which library computes it: every anchor
+    character has a counterpart.
+    """
+    # Trailing whitespace is trimmed off both, because `markup_text_view`
+    # collapses a trailing separator away and this test's whole claim is that
+    # the retained view is the same length as its input.
+    limits = _matcher_limits()
+    anchor_size = limits.max_character_pairs // limits.max_characters
+    anchor = ("et de Marie Bernard, laboureur de cette paroisse. " * 21)[:anchor_size].rstrip()
+    filler = ("Jean Moreau, tisserand, et de Perrine Girard. " * 2_300)[
+        : limits.max_characters - len(anchor)
+    ]
+    witness = (filler + anchor).rstrip()
+    assert len(witness) <= limits.max_characters and len(anchor) <= anchor_size
+    assert len(witness) > limits.max_characters - 10, "the ceiling must actually be exercised"
+    assert len(witness) * len(anchor) <= limits.max_character_pairs
+    result = align_to_anchor(witness, anchor, limits)
+
+    assert result["status"] == "aligned"
+    witness_text, anchor_text = result["witness"]["text"], result["anchor"]["text"]
+    # No whitespace runs and no markup in either input, so the normalized view
+    # is the input itself; a shorter one would mean the matcher's inputs, not
+    # the normalization, had been clipped.
+    assert len(witness_text) == len(witness), "the retained witness view was clipped"
+    assert len(anchor_text) == len(anchor)
+    for span in result["spans"]:
+        assert (
+            witness_text[span["witness"]["start"] : span["witness"]["end"]]
+            == anchor_text[span["anchor"]["start"] : span["anchor"]["end"]]
+        )
+    matched = sum(span["anchor"]["end"] - span["anchor"]["start"] for span in result["spans"])
+    assert matched == len(anchor_text), (
+        "the anchor appears verbatim inside the witness, so every anchor character "
+        "has a counterpart; a short match means the comparison stopped early"
+    )
 
 
 # --- The limits loader: the only gate between config/alignment.toml and every run

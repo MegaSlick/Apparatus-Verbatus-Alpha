@@ -3,4 +3,14 @@
 [limits]
 max_characters = 100000
 max_character_pairs = 100000000
-timeout_seconds = 5
+# 25 seconds, not five, and chosen from the legitimate ceiling rather than the
+# pathological one. An unaligned page witness is not comparable, so it leaves
+# the act's witness floor: a deadline that fires on real work records a slow
+# comparison as coverage that is missing. A 7,500-character page whose acts
+# repeat one formula verbatim -- what a scribe copying one form produces --
+# measures 10.1 s, already past five seconds. Twenty-five clears it with load
+# headroom. It does NOT clear everything the pair bound admits: two different
+# low-entropy chair responses at 100,000,000 pairs measure 283.9 s. That case is
+# reported as a named non-verdict, and closing it needs the matcher, not this
+# number. See pipeline/3_attestatores/HANDOFF.md.
+timeout_seconds = 25

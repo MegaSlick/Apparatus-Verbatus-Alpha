@@ -1497,8 +1497,24 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # two roots agreed exactly on both scenarios.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "ea0651138240e5d3a4dca781bb2846c95723ee89a2e150e4244ba5fa9c96afc6"
-REVIEW_RUN_TREE_DIGEST = "8a1027f3bc7a542c13f86bd25dd9d1e6c4207c8f358d571c7dd81332fcda2fab"
+# Re-pinned for hostile review C: `config/alignment.toml` raises
+# `timeout_seconds` from 5 to 25. A fired alignment deadline is `unaligned`, an
+# unaligned page witness is not `comparable`, and an incomparable chair leaves
+# the act's witness floor -- so a deadline a real page can reach records a slow
+# comparison as coverage that is missing (GOALS 1). A 7,500-character page whose
+# acts repeat one formula verbatim measures 10.1 s, already past five.
+# `common/stage.py` seals that file's bytes into every run's `config_digest`, so
+# both trees move without gaining an artifact or changing a decision: file counts
+# and exits are unchanged (happy 96/0, review 107/3), and a leaf-by-leaf diff
+# against the same tree built with the old byte finds exactly one changed leaf
+# that is not a digest, a self-hash, or a content-addressed blob path --
+# `run.json.sealed_config_digests.alignment`, which is the sha256 of that file.
+# Both values below measured twice in independent temporary roots at canonical
+# run id "r" through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers; each pair agreed exactly.
+HAPPY_RUN_TREE_DIGEST = "34cfc6334e82095a00e7030a544af0c6d0f9ef8c01f364a3ddfc285d1b3c1b97"
+# Re-pinned by the same alignment-deadline byte named above the happy digest.
+REVIEW_RUN_TREE_DIGEST = "4db4647401938f3ce7e52b9212c2d967ea1e230c5e29f5f9072cddf0e3e02b87"
 
 
 def orchestrate(
