@@ -655,9 +655,21 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, SealedPromptTokens]] = MappingProxyTy
             repo="Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
             revision="e371095d4ffe585f31f4974462931ddbac61ff64",
         ),
+        # Re-measured for `feeding.churro_layout_prompt` --
+        # `churro-layout-prompt.v1`, the instruction the live chair is actually
+        # sent since Churro's native layout landed.  The sealed 281 was taken
+        # over `feeding.churro_prompt`'s trained `<output>` framing, which is
+        # now what the *fixture* posture declares and not what any served
+        # request carries, and its digest expired the moment the live prompt
+        # changed -- which is the mechanism working, not a defect.  The
+        # replacement clause asks for a JSON object with one `box_1000` per
+        # block, so the prompt is longer: 441 tokens over
+        # c5a8375b..., measured by the same harness, at the same pinned
+        # revision, that reproduces the superseded 281 exactly over the carried
+        # prompt it was taken from.
         "attestator_3": SealedPromptTokens(
-            tokens=281,
-            prompt_digest="b6289913d017e07fe66a0124ccf64c391b73e11821c4c83d0d732dbe2112336d",
+            tokens=441,
+            prompt_digest="c5a8375b77b15fcd09ccd9ed6212cb650a87a3b2268019082916a1c7e32f209a",
             repo="stanford-oval/churro-3B",
             revision="ca2150ea465d5a3d67818c50e234b9422619c75d",
         ),
@@ -846,12 +858,24 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # ordinary act answer is 230); the Perlector's is likewise its page-fallback
 # act's reading rather than an ordinary act's 216.  Both are the demanding case,
 # because a row that cannot hold the demanding case cannot serve a dense page.
+#
+# **"Its own declared response shape" is what makes this expire with a prompt.**
+# Churro's 1,433 was an `<output>` envelope's answer; the live chair is now
+# asked for the closed JSON object `common/churro_response.py` declares, whose
+# per-block `box_1000` and key names are real tokens.  Re-measured over the same
+# 800 words in the same six blocks the other page chairs' numbers were taken
+# over -- so the five numbers stay comparable with each other -- it is 1,631.
+# A denser answer costs more, and that is recorded rather than sealed: the same
+# 800 words in 12 blocks measure 1,818 and in 24 blocks 2,204, and all three
+# fit every shipped Churro row.  Twenty-four blocks is not the convention the
+# other four chairs were measured under, and quietly moving one chair to a
+# stricter one would make this table's rows mean different things.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 1575,
         "attestator_1": 1520,
         "attestator_2": 1426,
-        "attestator_3": 1433,
+        "attestator_3": 1631,
         "perlector": 1318,
     }
 )

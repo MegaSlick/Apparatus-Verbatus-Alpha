@@ -16,7 +16,7 @@
 # `max_pixels`, before a word of prompt is counted; against 2,048 the request
 # is refused by the engine with HTTP 400 and no reading at all, and it was
 # refused for every chair at that tier.  At the 48 GB tier Churro's page prompt
-# alone was 4,309 against 4,096, and the Perlector's 5,296.  Those are
+# alone was 4,469 against 4,096, and the Perlector's 5,296.  Those are
 # arithmetic, not predictions: `common/request_capacity.py` computes them from
 # the fields below, and `common/test_request_capacity.py` pins them against the
 # per-chair processor measurement they were taken from.
@@ -25,7 +25,7 @@
 # `max_model_len` that holds a whole A4 page at its own `max_pixels`, plus that
 # chair's measured prompt, plus that chair's measured answer over a dense
 # 800-word page: 8,192 everywhere, and 16,384 for Churro at 80 GB+ (whose page
-# prompt alone is 6,974) and for the Perlector at EVERY tier.  The Perlector's
+# prompt alone is 7,134) and for the Perlector at EVERY tier.  The Perlector's
 # act request carries a region crop *and* a page render per capture view, so an
 # ordinary two-view act costs 14,014 tokens even at the 24 GB tier's
 # `max_pixels` and no 8,192 row could serve one.
@@ -51,6 +51,16 @@
 # batch budget -- is a POD QUESTION.  Nothing here has run an engine, the
 # ratio is restored because it is the one the rows were written with, and the
 # first authorized boot is what settles it.
+#
+# CHURRO'S NUMBERS ARE THE LAYOUT INSTRUCTION'S, not the trained carry's.  The
+# live chair is asked for block geometry (`feeding.churro_layout_prompt`) and
+# answers with the JSON object `common/churro_response.py` declares, so its
+# measured prompt is 441 tokens rather than 281 and its dense-page answer 1,631
+# rather than 1,433 -- 358 tokens more per request than the rows above were
+# first weighed with.  Every row still holds it: 4,352 / 6,100 / 8,765 against
+# 8,192 / 8,192 / 16,384.  The old contexts refuse it by a wider margin than
+# they refused the trained framing, which is the same finding, measured over
+# the request this pipeline actually builds.
 #
 # `max_pixels` is deliberately NOT reduced to fit.  To make the 24 GB Churro
 # row fit 2,048 tokens it would have to fall to roughly 262,000 -- a 470x700

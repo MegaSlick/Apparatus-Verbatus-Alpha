@@ -9,6 +9,7 @@ retain one reading with the same response shape as its base declaration.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 import tomllib
@@ -17,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from common import native_witness
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
@@ -311,6 +313,82 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
             and row["x"] + row["w"] <= page["width"]
             and row["y"] + row["h"] <= page["height"]
         ), f"native_observation {row!r} falls outside page {page['ordinal']}"
+
+
+def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
+    skeleton, chairs, adapters
+):
+    """Unit 12 put the offline posture's declared rows through the page-edge split.
+
+    Before Unit 12 the split ran only for `chandra.v1`, and Churro's declared
+    `[[native_observation]]` row reached the act view untouched. Churro's adapter
+    now reports geometry (`takes_page_size=True`), so the row goes through
+    `split_page_edge_overshoots` like any other reported box -- and a row that
+    overshot would be moved out of the act view's `observed` list instead of
+    refused, which changes the published tree rather than failing. The offline
+    posture is therefore *not* untouched by that generalization; what is
+    unchanged is the outcome, because the committed row fits.
+
+    So the fit is pinned rather than assumed. The sibling containment test
+    permits any row inside the page; this one pins the exact edge arithmetic of
+    the rows that now pass through the split, with the one-pixel counterfactual
+    beside it, so that widening the committed row by a pixel fails here by name
+    instead of moving `HAPPY_RUN_TREE_DIGEST` in silence.
+    """
+    pages = declared_pages(skeleton)
+    clearances = []
+    for row in skeleton.get("native_observation", []):
+        chair = chairs[row["chair"]]
+        if not adapters.resolve_runnable_adapter(chair.witness_adapter).takes_page_size:
+            continue
+        page = pages[row["page_ordinal"]]
+        page_size = (page["width"], page["height"])
+        observed = [
+            {
+                "ordinal": 0,
+                "bounds": {key: row[key] for key in ("x", "y", "w", "h")},
+                "bounds_source": "native",
+                "span": None,
+            }
+        ]
+        observed_snapshot = copy.deepcopy(observed)
+        survivors, overshoots = native_witness.split_page_edge_overshoots(
+            observed, page_size=page_size
+        )
+        assert (observed, survivors, overshoots) == (observed_snapshot, observed_snapshot, []), (
+            f"declared observation {row!r} no longer survives page {page['ordinal']}'s edge split"
+        )
+        spare_x = page["width"] - (row["x"] + row["w"])
+        spare_y = page["height"] - (row["y"] + row["h"])
+        clearances.append(
+            (row.get("scenario"), row["chair"], row["page_ordinal"], spare_x, spare_y)
+        )
+        # The counterfactual, one pixel past this row's own far edge: the box is
+        # split out of the act view rather than refused, which is the failure
+        # this pin exists to make visible instead of silent. Both edges, because
+        # a page has two of them: an implementation that measured only the far x
+        # edge would pass the first case and let a box hanging off the bottom of
+        # the page into the act view, which is the same silent loss on the other
+        # axis. Neither edge is the one this fixture's rows are near -- the flush
+        # row has `spare_x == 0` -- so the pair is what says the check is about
+        # the page, not about this corpus.
+        for axis, spare in (("w", spare_x), ("h", spare_y)):
+            over = [
+                {**observed[0], "bounds": {**observed[0]["bounds"], axis: row[axis] + spare + 1}}
+            ]
+            kept, rejected = native_witness.split_page_edge_overshoots(over, page_size=page_size)
+            assert kept == [], axis
+            assert [item["bounds"] for item in rejected] == [over[0]["bounds"]], axis
+    # Every such row's exact distance to its page's far edges, written out. A
+    # one-pixel edit to any of them -- including the one that made Churro's row
+    # overshoot -- fails here, naming the row, rather than only as a moved
+    # whole-tree digest nobody can attribute. Churro's happy-scenario row is the
+    # flush one: `spare_x == 0`, so it is exactly one pixel from being split.
+    assert sorted(clearances, key=repr) == [
+        ("coverage-recovery", "attestator_1", 1, 190, 20),
+        ("review", "attestator_1", 1, 190, 20),
+        (None, "attestator_3", 1, 0, 22),
+    ]
 
 
 def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(

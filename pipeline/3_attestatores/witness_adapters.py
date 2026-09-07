@@ -11,18 +11,22 @@ remain stage-local and obey these constraints:
 * ``present(context, presentation)`` validates the closed ``presented`` block
   with run-tree access for an adapter-owned crop, while
   ``observe(presentation, native_payload)`` derives the closed ``observed``
-  entries from that exact image/response pair. Chandra's ``observe`` also
-  takes a keyword ``page_size``: its wire contract reports normalized boxes,
-  and a page witness's act view presents one crop while restating page-level
-  geometry, so the sealed page's own size is the denominator, not the
-  presentation's. Presentation kinds remain
+  entries from that exact image/response pair. Both page-scoped adapters'
+  ``observe`` also take a keyword ``page_size``: their wire contracts report
+  normalized boxes, and a page witness's act view presents one crop while
+  restating page-level geometry, so the sealed page's own size is the
+  denominator, not the presentation's. That keyword is read off this registry
+  entry (``takes_page_size``) rather than off the adapter's name: two hard-coded
+  names in one branch is the third adapter's bug. Presentation kinds remain
   ``page``, ``region``, and ``adapter-crop``: an adapter crop is an
   adapter-owned derivative and not a third witness scope; DAI is act-scoped and
   publishes one from its assigned proposal crop;
-* the Churro fixture adapter preserves its input presentation and returns only a
-  ``bounds_source='presented'`` echo because its native payload has no layout.
-  That source is explicitly excluded from routing and coverage; no geometry is
-  fabricated from the presentation itself;
+* a page-scoped adapter whose response carries no layout preserves its input
+  presentation and returns only a ``bounds_source='presented'`` echo. That
+  source is explicitly excluded from routing and coverage; no geometry is
+  fabricated from the presentation itself. It is Churro's answer to a trained
+  ``<output>`` body and Chandra's to the contract's page-text form -- the honest
+  no-layout fallback, not either chair's whole story;
 * a new adapter must move the shared declared-name set, this local mapping, and
   any native parser/retention dispatch in :mod:`feeding` together. A failure
   while importing any callable binding propagates before ``main`` opens a run;
@@ -30,7 +34,9 @@ remain stage-local and obey these constraints:
 
 A native float-to-pixel rule is declared beside each adapter as
 ``quantization``; ``None`` prevents a no-layout adapter from acquiring another
-adapter's rule by omission.
+adapter's rule by omission. Churro declares its own from Unit 12 -- the same
+arithmetic Chandra's rule spells, under Churro's own name, because a rule
+acquired by omission is a rule nobody declared for that chair.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Final
 
 import chandra
+import churro
 import feeding
 
 from common.chairs.models import AbsentChair, ModelsConfig
@@ -58,9 +65,17 @@ class RunnableAdapter:
     Geometry must derive from the presented image and retained response, never
     from a different arm or presentation metadata alone. ``quantization`` is
     data recorded beside the raw digest; ``None`` means the response supplies no
-    native geometry to convert. The Churro fixture response carries no layout,
-    so its honest fallback is a ``bounds_source='presented'`` echo that coverage
-    and routing expressly exclude.
+    native geometry to convert at all -- an adapter whose *response* carried no
+    layout on this call still returns the ``bounds_source='presented'`` echo
+    coverage and routing expressly exclude, which is a fact about one body
+    rather than about the adapter.
+
+    ``takes_page_size`` says this adapter's ``observe`` accepts the sealed
+    page's own size, because its response can report geometry normalized against
+    the whole page rather than against the view it was handed. Declared here so
+    a caller asks the registry "does this adapter take page_size?" instead of
+    comparing adapter names: the name comparison worked while one adapter
+    reported normalized geometry and silently excluded the second one that did.
     """
 
     prompt: Callable[..., Any]
@@ -69,55 +84,7 @@ class RunnableAdapter:
     present: Callable[..., Any]
     observe: Callable[..., Any]
     quantization: str | None = None
-
-
-def _present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
-    """Accept a closed presentation with access to its run-tree image source.
-
-    Churro uses the image unchanged but shares the context-bearing signature
-    required by adapters that publish their own derived crop.
-    """
-    validate_presented(presentation)
-    return presentation
-
-
-def _observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str, Any]]:
-    """Derive Churro's no-layout fallback beside the response it inspected.
-
-    The common interface retains ``native_payload`` so layout-bearing adapters
-    cannot be wired through a seam that is unable to inspect their output.
-    """
-    validate_presented(presentation)
-    return [
-        {
-            "ordinal": 0,
-            "bounds": dict(presentation["transform"]["bounds"]),
-            "bounds_source": "presented",
-            "span": None,
-        }
-    ]
-
-
-def _retain_churro_model_view(
-    tree: Any,
-    *,
-    view: dict[str, Any],
-    raw_response: bytes,
-    transport_stop_reason: str,
-    parser: str | None = None,
-    served: bool = False,
-) -> dict[str, Any]:
-    """Retain one Churro view without letting its registry identity be relabeled."""
-
-    return feeding.retain_model_view(
-        tree,
-        adapter="churro.v1",
-        view=view,
-        raw_response=raw_response,
-        transport_stop_reason=transport_stop_reason,
-        parser=parser,
-        served=served,
-    )
+    takes_page_size: bool = False
 
 
 def _retain_dai_model_view(
@@ -313,13 +280,16 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         present=chandra.present,
         observe=chandra.observe,
         quantization=chandra.QUANTIZATION_RULE,
+        takes_page_size=True,
     ),
     "churro.v1": RunnableAdapter(
-        prompt=feeding.churro_prompt,
-        parse=feeding.validate_churro_xml,
-        retain=_retain_churro_model_view,
-        present=_present,
-        observe=_observe,
+        prompt=churro.prompt,
+        parse=churro.parse,
+        retain=churro.retain,
+        present=churro.present,
+        observe=churro.observe,
+        quantization=churro.QUANTIZATION_RULE,
+        takes_page_size=True,
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,
