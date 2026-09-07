@@ -1267,6 +1267,11 @@ ALIGNED_ON_THE_ACT_ANCHOR = {
     "anchor_chair": "attestator_1",
     "anchor_span": {"start": 0, "end": len(PAGE_TEXT)},
     "witness_span": {"start": 0, "end": len(PAGE_TEXT)},
+    "anchor_line_match": {
+        "anchor_characters": len(PAGE_TEXT),
+        "matched_characters": len(PAGE_TEXT),
+        "longest_matched_run": len(PAGE_TEXT),
+    },
     "line_geometry": [],
     "loss": {"witness": {"markup_characters": 0}, "anchor": {"markup_characters": 0}},
     "offset_maps": {"witness": [], "anchor": []},
@@ -1467,6 +1472,45 @@ def test_a_zero_length_anchored_span_does_not_attach_a_page_witness(monkeypatch)
                 **ALIGNED_ON_THE_ACT_ANCHOR,
                 "anchor_span": {"start": 0, "end": 0},
                 "witness_span": {"start": 0, "end": 0},
+                "anchor_line_match": {
+                    "anchor_characters": 0,
+                    "matched_characters": 0,
+                    "longest_matched_run": 0,
+                },
+            },
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+def test_a_coincidental_anchor_line_match_does_not_attach_a_page_witness(monkeypatch):
+    """The reader re-derives the MEASUREMENT, not just the aligned status.
+
+    A witness whose text has nothing to do with the page still aligns: the
+    matcher keeps every matching block of one character, the producer clips
+    whatever falls inside this act's anchor range, and the hull across two
+    coincidental characters is a positive span. That was enough to attach on
+    `anchor-line` and to put the chair on the witness floor (hostile review of
+    Unit 12, must-fix 1). The record now carries how much of the act's own
+    anchor line was matched, and a producer that claims an attachment on a
+    coincidence is refused here exactly as one that claims it on geometry it
+    never reported.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True,
+            basis="anchor-line",
+            alignment={
+                **ALIGNED_ON_THE_ACT_ANCHOR,
+                "witness_span": {"start": 3, "end": 5},
+                "anchor_line_match": {
+                    "anchor_characters": len(PAGE_TEXT),
+                    "matched_characters": 2,
+                    "longest_matched_run": 1,
+                },
             },
         ),
         observed=PRESENTED_ECHO_ONLY,

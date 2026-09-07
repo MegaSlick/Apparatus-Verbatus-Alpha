@@ -727,7 +727,13 @@ where one content-addressed blob is honestly reachable by two names.
 (`common/contracts/outcomes.py::page_attachment_basis`): `geometric-overlap` where the
 chair's reported observations cover the act's sealed regions on that page, and —
 only where it reported no such ink — `anchor-line`, where the chair's page text carries
-an alignment that located this act's own anchor line with a positive-length span.
+an alignment that located this act's own anchor line. *Located* is measured, not
+inferred from an aligned status: the alignment's `anchor_line_match` must show a
+contiguous run of this act's anchor line at least `ANCHOR_LINE_RUN_FLOOR` characters
+long (or the whole line, where the line is shorter). A positive-length span was the
+earlier test and was not one — the aligner keeps every matching block of a single
+character, so a witness whose text had nothing to do with the page attached on two
+coincidental characters and counted toward the floor.
 The second basis is what a grammar that publishes no coordinates at all (Churro's, by
 vendor design) can reach; without it every such chair was unattached at every act and
 every act stood one witness under a floor of three on a shortfall that had not happened.

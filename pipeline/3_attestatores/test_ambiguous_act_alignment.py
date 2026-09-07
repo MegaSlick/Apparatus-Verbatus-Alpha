@@ -36,17 +36,30 @@ def _load_stage():
 stage = _load_stage()
 
 
-def _entry(chair="attestator_1", page_ordinal=1, span=None, page_witness=True, attached=True):
+def _entry(
+    chair="attestator_1",
+    page_ordinal=1,
+    span=None,
+    page_witness=True,
+    attached=True,
+    basis="geometric-overlap",
+):
     if span is None:
         alignment = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
         act_span = None
     else:
+        length = span["end"] - span["start"]
         alignment = {
             "status": "aligned",
             "anchor_basis": "act-anchor",
             "anchor_chair": chair,
             "anchor_span": {"start": 0, "end": 0},
             "witness_span": dict(span),
+            "anchor_line_match": {
+                "anchor_characters": length,
+                "matched_characters": length,
+                "longest_matched_run": length,
+            },
             "line_geometry": [],
             "loss": {},
             "offset_maps": {},
@@ -58,7 +71,7 @@ def _entry(chair="attestator_1", page_ordinal=1, span=None, page_witness=True, a
         "page_ordinal": page_ordinal,
         "attached": attached,
         "comparable": attached and span is not None,
-        "attachment_basis": "geometric-overlap" if attached else "unattached",
+        "attachment_basis": basis if attached else "unattached",
         "alignment": alignment,
         "span": act_span,
     }
@@ -81,6 +94,29 @@ def test_two_overlapping_act_spans_are_both_refused_and_neither_is_preferred():
         # The chair really did report ink over this act's geometry, and that
         # fact is not what became ambiguous.
         assert entry["attached"] is True
+
+
+def test_an_anchor_line_pair_loses_the_attachment_the_alignment_was():
+    """The basis decides what survives the unalignment.
+
+    A chair attached by `anchor-line` has no evidence but the alignment, so
+    when the alignment becomes ambiguous the attachment goes with it. Leaving
+    it `attached: true` published a row both readers refuse -- each re-derives
+    attachment through `common/contracts/outcomes.py::page_attachment_basis`,
+    which answers `unattached` for a witness with no geometry and no located
+    line. Unreachable before Unit 12, when nothing attached on text alone.
+    """
+    first = _entry(span={"start": 0, "end": 40}, basis="anchor-line")
+    second = _entry(span={"start": 30, "end": 200}, basis="anchor-line")
+
+    stage.refuse_ambiguous_act_alignments([[first], [second]])
+
+    for entry in (first, second):
+        assert entry["attached"] is False
+        assert entry["attachment_basis"] == "unattached"
+        assert entry["comparable"] is False
+        assert entry["span"] is None
+        assert entry["alignment"]["reason"] == "ambiguous-overlapping-act-alignment"
 
 
 def test_a_third_act_that_overlaps_neither_keeps_its_alignment():

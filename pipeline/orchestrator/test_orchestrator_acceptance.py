@@ -1581,10 +1581,39 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
+# **Re-pin, Unit 12 hostile-review response.** Both digests move; both counts
+# and both exit codes hold. Two causes, and the attribution below is leaf by
+# leaf against 6005108d7b -- every JSON file in both trees flattened to its
+# scalar leaves -- rather than argued from the diff.
+#
+#   1. Every ALIGNED page-witness alignment gains `anchor_line_match`, the
+#      measurement `anchor_line_located` now reads: three integers on four
+#      records in happy (12 leaves) and three in review (9). A positive span
+#      was never evidence that a witness had been placed in an act -- a scatter
+#      of coincidental single characters produced one -- so the producer now
+#      records how much of the act's own anchor line it actually matched. In
+#      both canonical trees the answer is 27 to 40 contiguous characters
+#      against anchor lines of 34 and 40, so no fixture attachment changes
+#      hands and no act's coverage, category or exit code moves with it.
+#   2. `NATIVE_GRANULARITY_BASIS` is renamed to
+#      `native-per-chair-attachment-basis`: 8 coverage receipts in happy and 10
+#      in review carry the new string. The old one, `native-observation-overlap`,
+#      claimed an observation overlap for chairs that attached with no
+#      observation at all (GOVERNANCE 10).
+#
+#   Everything else that moved is a consequence: 115 digest-or-`self_hash`
+#   leaves in happy and 137 in review, plus the one Armarium bundle blob per
+#   scenario whose filename IS its content digest (one key renamed, its two
+#   references updated). There is no third bucket, and no leaf is lost.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios; counts and exits held at 96/0
+# (happy) and 107/3 (review).
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "eba7cbda45d230a24fa473f3c27d3dba85c9eb4f9bb62fd0cb887e2c1231efb6"
-REVIEW_RUN_TREE_DIGEST = "adfc009c79b8e369b0fa290f67f20b8099737f6839ea2c46b0b90f155373a198"
+HAPPY_RUN_TREE_DIGEST = "1a5648fdaee522f8ebf612168fe87577abbf4c375b33e7171bd352ae76a079c9"
+REVIEW_RUN_TREE_DIGEST = "fdfbcadaeeaf7b1abd4cbabbb559d109c161a46699d58faa573399c969ffb163"
 
 
 def orchestrate(

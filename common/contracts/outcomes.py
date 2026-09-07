@@ -75,7 +75,16 @@ _A = ArmariumCategory
 # that depends on it is a silent divergence waiting to happen.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
-NATIVE_GRANULARITY_BASIS: Final = "native-observation-overlap"
+# Renamed from `native-observation-overlap`, which claimed a measurement the
+# field never made: an act-scoped chair attaches by `presented-region` with no
+# observation at all, and a page witness whose grammar carries no coordinates
+# attaches by `anchor-line`. What this word actually distinguishes is
+# act-granularity facts that each name their OWN basis from the older, weaker
+# interim derivation, so that is what it now says (GOVERNANCE 10; the deferral
+# the previous comment left open is closed under hard rule 13). The string is a
+# receipt value and nothing in the tree or on disk carried the old spelling
+# outside its own constant and one assertion.
+NATIVE_GRANULARITY_BASIS: Final = "native-per-chair-attachment-basis"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 # Which evidence decided one attachment. Producer and consumer must agree, and
 # the floor arithmetic below reads it to decide whether the native granularity
@@ -84,12 +93,42 @@ LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 ATTACHMENT_BASES: Final = frozenset(
     {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
 )
+# The shortest contiguous run of this act's anchor line a witness must have
+# matched before the alignment counts as having LOCATED that line.
+#
+# Measured, not guessed, against the tree's own `align_to_anchor` (the numbers
+# are reproduced by `common/contracts/test_contracts_algebra.py::
+# test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading`).
+# Against a 145-character register line, the longest run one chair's text
+# shares with an act's anchor range is:
+#
+#   * 1 for unrelated prose ("Lorem ipsum ..."), at 55 characters and at 1,784;
+#   * 3 to 5 for random text over the anchor's own alphabet, at 200, 1,000,
+#     4,000 and 12,000 characters -- the ceiling coincidence reached at all;
+#   * 7 for a DIFFERENT, unrelated act written in the same register formula;
+#   * 145, 25 and 14 for a genuine reading of this line at 0%, 10% and 20%
+#     synthetic character error, and 8 to 10 at 30% to 50% -- one sample per
+#     rate, so the last of those is the order of magnitude, not a bound.
+#
+# Total matched coverage does NOT separate those: `SequenceMatcher`'s recursive
+# longest-block search is not monotone in error rate, so a real reading at 20%
+# error covered 0.41 of the line while 12,000 characters of random text covered
+# 0.48. The longest run does separate them, so the run is what decides and the
+# coverage travels beside it as disclosure. `min(FLOOR, anchor_characters)`
+# keeps the rule reachable for an anchor line shorter than the floor: there,
+# nothing less than the whole line, matched contiguously, is enough.
+#
+# The bar is deliberately set where the instrument is decisive and no further.
+# It cannot tell a heavily misread line from another act's line in the same
+# formula, and nothing character-level can (GOVERNANCE 10); what it does refuse
+# is a coincidence.
+ANCHOR_LINE_RUN_FLOOR: Final = 8
 
 
 def anchor_line_located(alignment: Any) -> bool:
     """Whether a page alignment placed THIS act's own anchor line in the witness text.
 
-    Not "the alignment succeeded". Three separate things have to hold, and each
+    Not "the alignment succeeded". Four separate things have to hold, and each
     of them is a different way the same record can be honest and still place
     nothing here:
 
@@ -106,6 +145,22 @@ def anchor_line_located(alignment: Any) -> bool:
       `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
       placed in, and counting it would put a chair on the witness floor for a
       reading that placed nothing (GOVERNANCE 10).
+    * an `anchor_line_match` whose longest contiguous run reaches
+      `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
+      shorter than the floor).
+
+    **The fourth is what makes the third mean anything, and it was missing.**
+    A positive span is not evidence of a placement: `align_to_anchor` keeps
+    every matching block of size one (`common/alignment.py`), the producer's
+    clip keeps every fragment with `start < end`, and the hull across those
+    fragments is positive as soon as any two characters coincide. Fifty-five
+    characters of Lorem ipsum therefore aligned against this repository's own
+    fixture anchor, attached on `anchor-line`, and put a third chair on the
+    witness floor for having placed the two characters of "em" -- the exact
+    reading of "placed nothing" the bullet above says it refuses (hostile review
+    of Unit 12, must-fix 1). The producer now measures how much of the act's own
+    anchor line the clipped fragments actually matched, records it, and this
+    reads the measurement.
 
     Defensive about shape rather than validating it: this is read from
     untrusted retained evidence at three seams, and each of those seams
@@ -123,7 +178,24 @@ def anchor_line_located(alignment: Any) -> bool:
     start, end = span.get("start"), span.get("end")
     if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
         return False
-    return end > start
+    if end <= start:
+        return False
+    match = alignment.get("anchor_line_match")
+    if not isinstance(match, Mapping):
+        return False
+    anchor_characters = match.get("anchor_characters")
+    matched = match.get("matched_characters")
+    longest = match.get("longest_matched_run")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool)
+        for value in (anchor_characters, matched, longest)
+    ):
+        return False
+    # An incoherent measurement is not a measurement. Nothing below the floor
+    # can be reached by relaxing these, so they refuse rather than clamp.
+    if not 0 <= longest <= matched <= anchor_characters or anchor_characters <= 0:
+        return False
+    return longest >= min(ANCHOR_LINE_RUN_FLOOR, anchor_characters)
 
 
 def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:
@@ -629,18 +701,18 @@ def witness_coverage(
         # Attachments are computed facts, never asserted ones, and the claim is
         # made only when every fact says which basis decided it.
         #
-        # The name is older than the rule it names, and the gap is recorded
-        # rather than papered over: `native-observation-overlap` was coined when
-        # reported geometry was the only way anything attached. It is not, and
-        # was not even then -- an act-scoped chair attaches by `presented-region`
-        # with no observation at all, and a page witness whose grammar carries no
-        # coordinates attaches by `anchor-line` (`page_attachment_basis`). What
-        # this field actually distinguishes is act-granularity facts that each
-        # name their own basis from the older, weaker interim derivation. Which
-        # basis decided any one chair travels per chair on the attachment record
-        # and is re-derived by both readers, so nothing is lost here; the word is
-        # simply narrower than the fact. Renaming it moves a receipt string and
-        # is left to whoever owns that migration (GOVERNANCE 10).
+        # This field names the GRANULARITY of the evidence, never which evidence
+        # attached one chair: act-granularity facts that each name their own
+        # basis, against the older, weaker interim derivation. The authoritative
+        # claim about one chair is that chair's own `attachment_basis` on the
+        # attachment record, re-derived by both readers.
+        #
+        # The old spelling, `native-observation-overlap`, asserted an
+        # observation overlap for acts whose chairs attached with no observation
+        # at all, so it was renamed rather than defended: a receipt string is a
+        # claim, and a claim is made only about what was measured (GOVERNANCE
+        # 10). Its former comment left the rename to "whoever owns that
+        # migration", which is the deferral hard rule 13 forbids.
         "granularity_basis": (
             NATIVE_GRANULARITY_BASIS
             if native_evidence

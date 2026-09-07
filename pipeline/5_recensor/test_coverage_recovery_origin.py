@@ -355,7 +355,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     assert facts["attestator_1"]["attached"] is False
     assert facts["attestator_1"]["attachment_basis"] == "unattached"
     coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
-    assert coverage["granularity_basis"] == "native-observation-overlap"
+    assert coverage["granularity_basis"] == "native-per-chair-attachment-basis"
     assert coverage["page_granularity_only"] == 1
     assert coverage["under_witnessed"] is True
 

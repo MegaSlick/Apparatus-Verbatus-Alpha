@@ -826,6 +826,7 @@ def act_attachment_facts(
                         "anchor_chair",
                         "anchor_span",
                         "witness_span",
+                        "anchor_line_match",
                         "line_geometry",
                         "loss",
                         "offset_maps",
@@ -858,8 +859,12 @@ def act_attachment_facts(
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-            # `attached` proves geometry, not text. The floor also requires an
-            # aligned slice from the referenced page record.
+            # `attached` proves that SOME evidence placed this chair's reading
+            # in this act -- its own reported ink over the sealed proposal, or
+            # an alignment that located this act's anchor line in its page text
+            # (the derivation above). It does not prove there is a slice of
+            # retained text to compare, and the floor requires that as well:
+            # an aligned record AND a string on the referenced page record.
             if entry["comparable"] != (
                 entry["attached"]
                 and alignment["status"] == "aligned"

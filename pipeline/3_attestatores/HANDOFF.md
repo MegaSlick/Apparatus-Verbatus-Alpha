@@ -304,9 +304,11 @@ dependency was inert while Churro could never count. It is load-bearing now, and
 any later claim about witness independence has to say so.
 
 **A page witness's geometry on a continuation page is a record the Perlector
-now reads.** `attached` is derived from geometry alone on every contributing
-page, so a served Chandra whose page-2 block overlaps an act's continuation
-region publishes that act's page-2 entry as `attached: true`,
+now reads.** A continuation page carries no act anchor, so geometry is the only
+basis that can attach anything there (the alignment is forced to
+`continuation-page-no-act-anchor` before geometry is consulted). A served
+Chandra whose page-2 block overlaps an act's continuation region therefore
+publishes that act's page-2 entry as `attached: true`,
 `attachment_basis: geometric-overlap`, alignment
 `continuation-page-no-act-anchor`, `comparable: false`, no span
 (`test_attestatores_live_pass.py` pins it). `pipeline/4_perlector/run.py::act_attachment_view`
@@ -1262,7 +1264,8 @@ pair set against the regions it actually read
 claim a page the ink does not support, or drop one the ink does.
 
 - aligned: the closed key set `{status, anchor_basis, anchor_chair,
-  anchor_span, witness_span, line_geometry, loss, offset_maps}`, with
+  anchor_span, witness_span, anchor_line_match, line_geometry, loss,
+  offset_maps}`, with
   `anchor_chair` naming the sole configured Chandra witness
   (`declared_chandra_anchor_chair`) — a string exactly when `anchor_basis` is
   `act-anchor`, and null otherwise, refused either way round by both readers.
@@ -1282,6 +1285,15 @@ claim a page the ink does not support, or drop one the ink does.
   confirmation stays open), or `act-line-not-located` (the page's anchor
   exists but locates no line for this act — the Recensor's
   `blank_corroboration` refuses to seal a terminal blank on it).
+  `anchor_line_match` is how much of THIS act's anchor line the witness
+  actually matched -- `{anchor_characters, matched_characters,
+  longest_matched_run}`, all three measured in the normalized space the matcher
+  ran in, over the fragments clipped to this act's anchor range before they were
+  hulled into `witness_span`. `anchor_line_located` reads the longest run,
+  because a hull is positive as soon as any two characters coincide and total
+  coverage does not separate a real reading from a long enough coincidence; the
+  other two travel as disclosure. A trivial zero-length attach records
+  `matched_characters: 0`, never an absent field.
   `witness_span` and its top-level `span` mirror index the raw retained page
   reading. Alignment is computed over the markup-stripped,
   whitespace-collapsed view and translated back to raw character offsets before
@@ -1301,9 +1313,19 @@ claim a page the ink does not support, or drop one the ink does.
   strength of another act), and `continuation-page-no-act-anchor` for a
   contributing page that is not the act's primary one.
 
-For a page witness, `attached` is derived from geometry alone since Unit 10C:
-this chair's reported boxes overlap one of the act's sealed proposal regions and
-its outcome is a reading. `comparable` is the separate question of whether text
+For a page witness, `attached` is derived from one of two bases since Unit 12
+(`common/contracts/outcomes.py::page_attachment_basis`, re-derived by both
+readers): this chair's reported boxes overlap one of the act's sealed proposal
+regions and its outcome is a reading (`geometric-overlap`), or -- only where it
+reported no such ink -- its alignment located this act's own anchor line inside
+its page text (`anchor-line`). The second basis exists because a witness grammar
+can carry no coordinates at all, and *located* is a measurement, not an aligned
+status: the alignment's `anchor_line_match` must show a contiguous run of this
+act's anchor line at least `ANCHOR_LINE_RUN_FLOOR` characters long, or the whole
+line where the line is shorter. Without that measurement two coincidental
+characters attached a witness whose text had nothing to do with the page.
+
+`comparable` is the separate question of whether text
 exists to compare for THIS act — a page witness is comparable exactly when it is
 attached, its alignment is `aligned`, and its page record retains a string; an
 act-scoped chair, exactly when it is attached and its own retained derived

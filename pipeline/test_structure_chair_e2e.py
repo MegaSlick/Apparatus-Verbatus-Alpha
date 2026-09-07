@@ -721,33 +721,36 @@ def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(wh
 def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     """Every stage after the Designator reads a tree whose acts a model drew.
 
-    The export is **held for review, not delivered**, and nothing about the
-    shortfall is a fact about the structure chair — every act it proposed was
-    read — which is the point of asserting it here as well: replacing declared
-    acts with proposed ones moved the denominator, not the coverage.
+    The export is **delivered**, and nothing in that is a fact about the
+    structure chair: every act it proposed was marked out, read by all three
+    witness chairs, and established. Replacing declared acts with proposed ones
+    moved the denominator, not the coverage.
 
-    The shortfall itself is the scripted Churro body, not the Churro chair. This
-    module answers it in the trained `<output>` envelope, which carries no
-    geometry, so it never attaches and two witnesses of a floor of three count.
-    Since Unit 12 the chair can be asked for block geometry and attach by its
-    own boxes; the live-seam suite over declared acts does that and delivers.
-    Keeping the envelope here is deliberate: this suite is about which acts
-    exist, and a witness floor pinned to a shape it does not vary keeps that
-    question separate from how many witnesses reach them.
+    **It used to be held, and the assertions here outlived the behaviour.** This
+    module answers Churro in its trained `<output>` envelope, which carries no
+    coordinates at all; while attachment came from geometry alone that chair
+    reached no act, so each act stood at two witnesses of a floor of three and
+    the run held on a shortfall that had not happened. Unit 12 gave exactly that
+    chair the `anchor-line` basis, and this test was left describing the run the
+    change replaced -- red on its own branch, and found while fixing that unit's
+    hostile review rather than by the suite that should have caught it.
+
+    What the third witness costs is stated where the floor is counted
+    (`pipeline/test_live_reading_seam_e2e.py`), not here: it counts because the
+    first chair's response located its text, so "three witnesses" is two
+    independent readings and one dependent placement.
     """
     assert whole_run.tail == {
-        "pipeline/5_recensor/run.py": EXIT_HELD,
+        "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
-        "pipeline/7_armarium/run.py": EXIT_HELD,
+        "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(whole_run.run_root, RUN_ID))
-    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
+    assert export["outcome"] == ArmariumCategory.DELIVERED.value
     aggregate = export["payload"]["aggregate"]
-    assert aggregate["status"] == "partial"
-    assert sorted(aggregate["reasons"]) == sorted(
-        [f"act {key} is held-for-review" for key in ACT_KEYS]
-        + [f"act {key} is under-witnessed (2 of a floor of 3)" for key in ACT_KEYS]
-    )
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+    assert aggregate["by_category"] == {ArmariumCategory.DELIVERED.value: len(ACT_KEYS)}
     readings = published_readings(whole_run.run_root)
     assert len(readings) == len(ACT_KEYS)
     assert {record["outcome"] for record in readings} == {"read"}

@@ -1337,6 +1337,7 @@ def act_attachment_view(
                         "anchor_chair",
                         "anchor_span",
                         "witness_span",
+                        "anchor_line_match",
                         "line_geometry",
                         "loss",
                         "offset_maps",

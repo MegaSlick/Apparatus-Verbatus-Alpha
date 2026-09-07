@@ -89,7 +89,11 @@ for _stage_directory in (ATTESTATORES_DIR, PERLECTOR_DIR):
 from live_reader import EngineSignalRefusal  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.outcomes import ArmariumCategory  # noqa: E402
+from common.contracts.outcomes import (  # noqa: E402
+    ANCHOR_LINE_RUN_FLOOR,
+    ArmariumCategory,
+    witness_coverage,
+)
 from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
@@ -189,6 +193,18 @@ CHURRO_PAGE_ONE = (
 # (`pipeline/3_attestatores/test_attestatores_live_pass.py::test_a_churro_continuation_page_wire_body_attaches_and_carries_no_act_anchor`),
 # where the same question is already pinned for Chandra.
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+# The same chair answering with a page that is not this page. Fifty-five
+# characters with nothing in common with the ink, and the exact body the hostile
+# review of Unit 12 used. Aligned against this fixture's anchor it still shares
+# characters with both acts: 'e' and 'm', one at a time, inside a1's
+# thirty-four-character anchor line, and eleven characters in runs of at most two
+# inside a2's. That was enough to attach it on `anchor-line`, call it comparable,
+# and read the floor as three of three for a witness that placed nothing. It is
+# scripted here so the seam owns the counterfactual rather than the unit tests
+# alone.
+CHURRO_PAGE_ONE_UNRELATED = (
+    "<output>Lorem ipsum dolor sit amet, consectetur adipiscing elit</output>"
+)
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 # Long enough that `truncation.is_length_suspicious` never fires on this
@@ -1154,8 +1170,10 @@ def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor
     Three separate facts, asserted separately so that whichever regresses says
     which: the chair reports NO geometry a derivation may read (only the
     excluded `presented` echo); it is nevertheless attached and comparable on
-    the `anchor-line` basis with a located, positive-length span; and the act's
-    own witness coverage counts three of three.
+    the `anchor-line` basis with a span whose own measurement shows this act's
+    anchor line matched, not merely coincided with; and the act's own witness
+    coverage counts three of three. The chair that answers with a page that is
+    not this page is the sibling test below, and it counts two of three.
 
     The counterfactual is the last block, and it is what stops this from being a
     test that cannot fail: the old rule is re-run here over this tree's own
@@ -1202,6 +1220,13 @@ def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor
             assert item["attachment_basis"] == "anchor-line", record["subject_id"]
             assert item["alignment"]["anchor_basis"] == "act-anchor", record["subject_id"]
             assert item["span"]["end"] > item["span"]["start"], record["subject_id"]
+            # What the span is worth, measured: this chair transcribed the whole
+            # of the act's anchor line, so the run is the line and the floor is
+            # nowhere near binding. The sibling test below is the same assertion
+            # from the other side.
+            match = item["alignment"]["anchor_line_match"]
+            assert match["longest_matched_run"] >= ANCHOR_LINE_RUN_FLOOR, record["subject_id"]
+            assert match["matched_characters"] == match["anchor_characters"], record["subject_id"]
             # The counterfactual, over this act's own sealed evidence: geometry
             # alone attaches nothing here.
             page = page_payloads[(1, "attestator_3")]
@@ -1215,6 +1240,87 @@ def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor
         coverage = review["payload"]["coverage"]
         assert coverage["floor"] == 3
         assert coverage["under_witnessed"] is False, coverage
+
+
+def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designated, tmp_path):
+    """The counterfactual for the basis above: `anchor-line` is not free.
+
+    The chair answers in its own trained envelope with a body that has nothing
+    to do with the ink. That body still ALIGNS -- `align_to_anchor` keeps every
+    matching block of one character, so a few letters of Lorem ipsum land inside
+    act one's anchor range and the hull across them is a positive span. Until
+    this unit's correction that was the whole of the test: the record attached on
+    `anchor-line`, called itself comparable, and put a third chair on a floor of
+    three for having placed two characters (hostile review of Unit 12, must-fix
+    1).
+
+    So the alignment is kept -- it is evidence, and evidence is never discarded
+    (GOVERNANCE 4) -- while the measurement beside it says what it is worth, and
+    the attachment does not happen. The act is then honestly one witness short,
+    which is a visible partial rather than a silent overcount (GOVERNANCE 2/10).
+
+    The other two chairs are asserted attached in the same breath: if the
+    fixture ever stopped attaching anybody, this test would pass for the wrong
+    reason.
+    """
+    run_root = fresh_tree(designated, tmp_path, name="unrelated-page-runs")
+    scripts = {
+        **witness_scripts(),
+        "attestator_3": [
+            ScriptedAnswer(content=CHURRO_PAGE_ONE_UNRELATED, finish_reason="stop"),
+            ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop"),
+        ],
+    }
+    read_by_live_witnesses(designated, run_root, tmp_path / "unrelated-witness-world", scripts)
+
+    tree = RunTree(run_root, RUN_ID)
+    outcomes_by_act: dict[str, dict[str, str]] = {}
+    for (act_id, chair), record in act_records(tree).items():
+        outcomes_by_act.setdefault(act_id, {})[chair] = record["outcome"]
+
+    checked = 0
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "act-attachment":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        act_id = record["subject_id"]
+        primary = {
+            item["chair"]: item
+            for item in record["payload"]["attachments"]
+            if item["page_ordinal"] in (None, 1)
+        }
+        churro = primary["attestator_3"]
+        assert churro["attached"] is False, act_id
+        assert churro["comparable"] is False, act_id
+        assert churro["attachment_basis"] == "unattached", act_id
+        assert churro["span"] is None, act_id
+        # The alignment is retained, and it is retained as what it was: a real
+        # aligned result whose own measurement refuses to call the act's anchor
+        # line located.
+        alignment = churro["alignment"]
+        assert alignment["status"] == "aligned", act_id
+        assert alignment["anchor_basis"] == "act-anchor", act_id
+        assert alignment["witness_span"]["end"] > alignment["witness_span"]["start"], act_id
+        match = alignment["anchor_line_match"]
+        assert match["anchor_characters"] > 0, act_id
+        assert 0 < match["matched_characters"] < match["anchor_characters"], act_id
+        assert match["longest_matched_run"] < ANCHOR_LINE_RUN_FLOOR, act_id
+        # Not vacuous: the two chairs that really did read this page still count.
+        for chair, basis in (
+            ("attestator_1", "geometric-overlap"),
+            ("attestator_2", "presented-region"),
+        ):
+            assert primary[chair]["attached"] is True, (act_id, chair)
+            assert primary[chair]["attachment_basis"] == basis, (act_id, chair)
+        # The floor arithmetic itself, through the function the Recensor calls
+        # on exactly these facts.
+        coverage = witness_coverage(outcomes_by_act[act_id], 3, attachments=primary)
+        assert coverage["floor"] == 3, act_id
+        assert coverage["under_witnessed"] is True, coverage
+        assert coverage["page_granularity_only"] == 1, coverage
+        assert coverage["shortfalls"]["unaligned"] == 1, coverage
+        checked += 1
+    assert checked == 2, checked
 
 
 def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held(
