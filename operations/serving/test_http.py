@@ -258,3 +258,102 @@ def test_transport_ignores_an_ambient_proxy_and_reaches_the_loopback_model(
 
     assert response.body == b'{"model":"real"}'
     assert not reached_proxy.is_set(), "the loopback request reached the proxy"
+
+
+_BROKEN_BODIES = {
+    # A chunk header promising 0x40 bytes, then three, then a close.
+    "malformed-chunk": (
+        b"Transfer-Encoding: chunked\r\n\r\n",
+        b"40\r\nabc",
+    ),
+    # A complete Content-Length that the responder never finishes delivering.
+    "interrupted-body": (
+        b"Content-Length: 64\r\n\r\n",
+        b'{"partial":true}',
+    ),
+}
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"404 Not Found", b"503 Service Unavailable"])
+@pytest.mark.parametrize("shape", sorted(_BROKEN_BODIES))
+def test_a_broken_body_is_one_transport_refusal_whatever_the_status_was(
+    status: bytes, shape: str
+) -> None:
+    """The status line must not decide which exception class a broken body becomes.
+
+    The 4xx/5xx body used to be read inside a sibling `except urllib.error.HTTPError`
+    clause, where nothing that failed *inside* it could reach the transport clause
+    beside it.  The same truncated body therefore left here as `EndpointUnavailable`
+    at 200 and as a bare `http.client.IncompleteRead` at 503 — and the readiness
+    poll retries the first while the second aborts a start that was one interval
+    from succeeding.
+    """
+
+    tail, partial = _BROKEN_BODIES[shape]
+
+    def broken(connection: socket.socket) -> None:
+        connection.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n" + tail)
+        connection.sendall(partial)
+
+    with _raw_server(broken) as base:
+        with pytest.raises(EndpointUnavailable) as caught:
+            UrllibHttpTransport().request(
+                "GET", f"{base}/v1/models", body=None, timeout_seconds=3.0
+            )
+
+    # A body that stopped short says nothing about whether a listener owns the port.
+    assert caught.value.definitively_absent is False
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"404 Not Found", b"503 Service Unavailable"])
+def test_a_body_that_never_arrives_is_one_transport_refusal_whatever_the_status_was(
+    status: bytes,
+) -> None:
+    """A read that times out mid-body classifies the same way at every status."""
+
+    stop = threading.Event()
+
+    def stalled(connection: socket.socket) -> None:
+        connection.sendall(
+            b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+            b"Content-Length: 64\r\n\r\n"
+        )
+        stop.wait(10.0)
+
+    with _raw_server(stalled) as base:
+        started = time.monotonic()
+        try:
+            with pytest.raises(EndpointUnavailable):
+                UrllibHttpTransport().request(
+                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.5
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+
+    assert elapsed < 3.0, f"the request ran {elapsed:.1f}s against a 0.5s budget"
+
+
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> None:
+    """Normalising the read must not turn a complete 4xx/5xx into a refusal.
+
+    vLLM answers a not-yet-loaded model with a real error response, and the
+    readiness parsers name their own refusal from that status.  Losing it would
+    replace a diagnosable `HTTP 503` with an unavailable-endpoint message.
+    """
+
+    class Refusing(_Handler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"not loaded"}')
+
+    with _server(Refusing) as base:
+        response = UrllibHttpTransport().request(
+            "GET", f"{base}/v1/models", body=None, timeout_seconds=5.0
+        )
+
+    assert response.status == status
+    assert response.body == b'{"error":"not loaded"}'

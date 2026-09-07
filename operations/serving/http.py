@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import errno
 import hashlib
 import http.client
@@ -122,17 +123,34 @@ class UrllibHttpTransport:
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        # One boundary over *both* body reads.  The 4xx/5xx read used to sit in a
+        # sibling `except` clause, where a failure raised inside it could not be
+        # caught by the clause that follows: the identical malformed chunked body
+        # became `EndpointUnavailable` at 200 and a bare `http.client.IncompleteRead`
+        # at 503.  The readiness poll retries the first and aborts the start on the
+        # second, so which of two equally broken responses arrived decided whether a
+        # launch got its remaining intervals.  An error status is still a complete
+        # HTTP response; reading its body is the same act, under the same contract.
         try:
-            with self._opener.open(request, timeout=timeout_seconds) as response:
-                return HttpResponse(int(response.status), _bounded_read(response, timeout_seconds))
+            try:
+                with self._opener.open(request, timeout=timeout_seconds) as response:
+                    return HttpResponse(
+                        int(response.status), _bounded_read(response, timeout_seconds)
+                    )
+            except urllib.error.HTTPError as error:
+                # `closing`, because nothing closed this one: `urlopen` returns the
+                # error response to its caller instead of the `with` above, and an
+                # unclosed socket per non-200 accumulates across a readiness poll.
+                # The status is kept whenever the body read completes — a complete
+                # 503 is an answer this transport reports, not a refusal it raises.
+                with contextlib.closing(error):
+                    return HttpResponse(int(error.code), _bounded_read(error, timeout_seconds))
         except EndpointUnavailable:
             # This module's own refusal, already carrying its classification.
             # `EndpointUnavailable` is an OSError, so without this it would fall
             # into the transport clause below and be reclassified as something
             # observed on the wire.
             raise
-        except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), _bounded_read(error, timeout_seconds))
         except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
             # An `HTTPException` — a truncated chunked body — arrives while
             # reading a response that already had a status line, so it is
@@ -546,6 +564,15 @@ def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
     ``read1`` rather than ``read``: the latter blocks until it has the whole
     amount asked for, so a trickling responder would never return control here
     and the deadline below would never be consulted.
+
+    That choice costs one guarantee back, which is why the undelivered check at
+    the end exists.  ``HTTPResponse.read()`` raises ``IncompleteRead`` when a
+    ``Content-Length`` body ends early; ``read1`` just returns ``b""`` and closes
+    the connection, so a responder that declares 64 bytes, sends 16 and hangs up
+    handed this transport a short body and an HTTP 200.  Chunked bodies still
+    raise ``IncompleteRead`` and reach the caller's transport clause; identity
+    bodies had nothing at all, so ``length`` — what ``http.client`` still expects
+    and did not get — is checked here instead.
     """
 
     deadline = time.monotonic() + timeout_seconds
@@ -565,5 +592,10 @@ def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
     if len(data) > _MAX_RESPONSE_BYTES:
         raise EndpointUnavailable(
             f"response exceeded the {_MAX_RESPONSE_BYTES}-byte bound for a loopback serving check"
+        )
+    undelivered = getattr(response, "length", None)
+    if isinstance(undelivered, int) and undelivered > 0:
+        raise EndpointUnavailable(
+            f"response body stopped {undelivered} bytes short of its declared length"
         )
     return data
