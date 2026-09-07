@@ -200,6 +200,96 @@ start succeeds only when all three immutable references return; a successful
 handle cannot silently drop the audit or its linkage. They are exposed on the
 `ServiceHandle` and copied as references beside pod smoke evidence.
 
+## `generation_config`: `"vllm"` or `"auto"`
+
+A row's `generation_config` is `"vllm"` (vLLM's own uniform defaults) or
+`"auto"`, and `"auto"` is admitted only for a witness (Attestator) row —
+`config.py` refuses it at catalogue-parse time for any other chair, with the
+reason: a witness's vendor-shipped `generation_config.json` is itself a
+pinned artifact of that chair's revision, so deferring to it is not an
+unaudited default; the Perlector and Designator carry no vendor generation
+defaults to defer to. When a proven row is `"auto"`, `manager.start` reads
+`generation_config.json` from the verified base snapshot before ever
+launching a process and records its SHA-256 as `generation_config_digest` in
+the launch audit's `profile` block (`null` for a `"vllm"` row) — so `"auto"`
+is a value pinned by the chair's own revision, not a moving target, and a
+missing or unreadable file refuses by name before any GPU-hours are spent.
+
+## Hybrid-attention prefix caching
+
+(`manager.assert_processor_geometry` already checks a row's declared
+`patch_size`/`merge_size` against the checked-out chair's own
+`processor_config.json`/`preprocessor_config.json` at launch, entirely
+offline — landed alongside the request-shape work this unit builds on.)
+
+Chandra-2 (`datalab-to/chandra-ocr-2`, serving both the `attestator_1` and
+`designator_structure` roles) and the Perlector (`Qwen/Qwen3.8-27B`) are both
+hybrid Mamba/attention (`qwen3_5`) checkpoints. `manager.start` refuses to
+launch either one with `enable_prefix_caching` on: that path is experimental
+over recurrent state, cannot hit at this catalogue's `max_num_seqs = 1`, and
+only costs recurrent-state memory (hostile review 2026-09-06 item L). The
+check is keyed on the identity's exact `repo`, never on role — role names
+(`attestator_1`, `perlector`, ...) are reused throughout this package's test
+suite as generic fixture identifiers unrelated to these two checkpoints, and
+every such fixture is pinned at an `example/...` placeholder rather than a
+real vendor repository, so the two never collide. The catalogue *schema*
+still admits `enable_prefix_caching` either way — the corrected value for the
+real rows is `config/serving_recipes_real.toml`, a later unit's data change,
+not this one's.
+
+## Prompt-token accounting and a deterministic readiness rejection
+
+Every real profile now launches with `--enable-prompt-tokens-details`, so a
+served response's `usage` object reliably carries `prompt_tokens` (hostile
+review item H): without it, some engine builds omit or under-report it, and a
+silently dropped `mm_processor_kwargs` (vllm-project/vllm#49015, #54527)
+would otherwise read a page at the wrong scale with no error anywhere.
+`preflight.reconcile_usage_against_capacity` compares that observed count
+against the laptop's own image/text token arithmetic within a caller-supplied
+per-chair tolerance and returns a `UsageReconciliation`; a mismatch is
+published through `.to_finding()` as a `usage-capacity-mismatch` finding,
+never raised, because what a mismatch *means* is a GOVERNANCE 10 question,
+not a hard-coded verdict. `localized_to` names which half moved only when the
+request carries tokens of just one kind — an image-only user turn (Churro) or
+a text-only probe — and is honestly `"unlocalized"` for a mixed request
+rather than guessed at from one scalar.
+
+`_wait_until_ready`'s readiness loop now tells apart an engine that is not
+warmed up yet from one that has fully initialized and is rejecting the exact
+probe body every poll resends: a probe HTTP status in `4xx` is named
+deterministic and breaks the loop immediately, rather than retrying to
+`startup_timeout_seconds` (real GPU-hours on the live path) to learn nothing
+new. A `5xx`/connection failure still retries as before — that is ordinary
+boot-time unavailability.
+
+## `local.env` and three static preflight assertions
+
+`preflight.assert_no_discoverable_local_env` refuses a real launch the moment
+a `local.env` file is discoverable in the process's current working
+directory — the same directory an owned vLLM subprocess inherits with no
+explicit `cwd`. Nothing in this package's config-inputs sealing or launch
+audit would ever see a value such a file silently injected into that
+subprocess's environment (a Hub token enabling a network fetch the real path
+forbids, a proxy, an engine flag), so it is refused by name before
+`manager.start` is ever called.
+
+Three further preflight primitives, generic and offline-testable, close
+hostile review item A's static-assertion gap so `proven` can never again be
+earned by a smoke string alone; each is wired by the adapter/request-shape
+units whose files actually render a request:
+
+- `assert_image_before_text_on_wire(content)` — refuses a rendered chat
+  request whose first content part is not the image, checked against the
+  exact list that serializes onto the wire (vLLM's `string` content-format
+  auto-detection hoists every image ahead of text regardless of a caller's
+  own part order, vllm-project/vllm#14047, so this must run against the
+  rendered body, never the pre-render call).
+- `assert_resized_pixels_within_trained_geometry(...)` — refuses a
+  post-resize image outside a chair's own declared trained pixel range.
+- `assert_generation_config_key_coverage(...)` — refuses a vendor
+  `generation_config.json` key that is neither sent on the wire nor named,
+  with a reason, as deliberately withheld.
+
 ## Pod seam
 
 `assemble_serving_smoke_reader()` is the narrow production assembly seam. It

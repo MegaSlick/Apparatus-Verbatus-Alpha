@@ -20,6 +20,7 @@ import base64
 import hashlib
 import importlib.metadata
 import json
+import re
 import sys
 import time
 import uuid
@@ -76,6 +77,42 @@ from .http import (
 )
 from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
+
+# The roster's two hybrid Mamba/attention checkpoints, named by the exact
+# `config/models-real.toml` repository they are pinned at (hostile review
+# 2026-09-06 item L) -- never by role.  A role name (`attestator_1`,
+# `designator_structure`, `perlector`, ...) is reused across this package's
+# whole test suite as a generic fixture identifier for chairs that have
+# nothing to do with these checkpoints, so keying this refusal on role would
+# make it fire on unrelated fixtures the moment they happened to share a real
+# role name.  The repository string does not collide: every fixture identity
+# in this suite is pinned at an `example/...`  placeholder, never at a real
+# vendor repository.  Chandra-2 (`datalab-to/chandra-ocr-2`) backs both
+# `attestator_1` and `designator_structure` -- one checkpoint, two roles --
+# and the Perlector's own weights (`Qwen/Qwen3.8-27B`) are the same qwen3_5
+# hybrid family.  vLLM's prefix-caching path over that architecture's
+# recurrent state is experimental, cannot hit at this catalogue's
+# `max_num_seqs = 1` (nothing else is ever resident to share a cached prefix
+# with), and only costs extra recurrent-state memory for the privilege -- so
+# a row serving either checkpoint must launch with it off.  This is a
+# launch-time refusal, not a catalogue-parse refusal: `enable_prefix_caching`
+# is an ordinary bool the schema already admits either way, and the corrected
+# value for the real rows is a U15 configuration decision
+# (`config/serving_recipes_real.toml`), not a U4 schema change.  Refusing
+# here, at the one door every real launch already passes through, makes a
+# still-wrong data row fail before it ever reaches a rented GPU rather than
+# only in a later review.
+_HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
+
+# `parse_openai_answer` (operations/serving/http.py) names an HTTP-level probe
+# failure "VLLM_PROBE_HTTP_ERROR: inference probe returned HTTP {status}".
+# Extracting the status back out of that string is a compromise: it is
+# `http.py`'s own wording, not this module's, and re-deriving it here rather
+# than adding a structured status field to `ReadinessError` avoids widening
+# that error's shape for one caller. If `http.py`'s wording ever changes, the
+# match simply stops firing and every probe rejection reverts to the old
+# retry-to-watchdog behaviour -- a safe direction to fail in.
+_PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
 
 
 class ReceiptPublisher(Protocol):
@@ -615,6 +652,13 @@ class ServingManager:
             # The row's declared image geometry, proved against the model's own
             # processor configuration now that a verified snapshot of it exists.
             assert_processor_geometry(base_snapshot, profile)
+            # Computed now, before any process exists, rather than while
+            # assembling the launch audit after readiness: a missing or
+            # unreadable generation_config.json is exactly as offline-knowable
+            # as the processor-geometry check just above, and deferring it
+            # would spend a real launch's boot time (GPU-hours on the live
+            # path) to discover a fact already on local disk.
+            generation_config_digest = _generation_config_digest(profile, base_snapshot)
             endpoint = profile.endpoint
             # The lock spans endpoint probing and any failed launch cleanup, not
             # merely the successful `ServiceHandle` lifetime.  Otherwise two pod
@@ -680,6 +724,7 @@ class ServingManager:
                 activation=activation,
                 runtime_packages=observed_packages,
                 started_at=started_at,
+                generation_config_digest=generation_config_digest,
             )
             sealed_audit = _immutable_json_value(audit)
             publication_audit, _ = seal_json_object(audit, label="serving launch audit")
@@ -951,6 +996,15 @@ class ServingManager:
             except EndpointUnavailable as error:
                 last = f"loopback endpoint unavailable: {error}"
             except ReadinessError as error:
+                if _is_deterministic_probe_rejection(error):
+                    # A 4xx here is the engine refusing the *shape* of the
+                    # readiness probe -- a malformed or unsupported request --
+                    # not "not warmed up yet".  Every following poll will send
+                    # the identical body and get the identical answer, so
+                    # retrying to the watchdog only spends the rest of
+                    # `startup_timeout_seconds` (real GPU-hours on the live
+                    # path) to learn nothing new (hostile review item L).
+                    raise
                 last = str(error)
             if self.monotonic() >= deadline:
                 raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
@@ -1063,6 +1117,7 @@ class ServingManager:
         activation: AdapterActivationEvidence | None,
         runtime_packages: Mapping[str, str],
         started_at: str,
+        generation_config_digest: str | None,
     ) -> Mapping[str, object]:
         """Return operational evidence deliberately kept outside receipt schema v1."""
 
@@ -1103,6 +1158,13 @@ class ServingManager:
                     "enforce_eager": profile.enforce_eager,
                     "trust_remote_code": profile.trust_remote_code,
                     "generation_config": profile.generation_config,
+                    # Only present for 'auto': the digest of the exact
+                    # generation_config.json vLLM will resolve from the
+                    # verified snapshot, so 'auto' is a value pinned by the
+                    # chair's own revision rather than an unaudited default
+                    # that could silently change underneath the row (schema
+                    # note at config.py, generation_config validation).
+                    "generation_config_digest": generation_config_digest,
                     "request_logging": False,
                     "startup_timeout_seconds": profile.startup_timeout_seconds,
                     "poll_interval_seconds": profile.poll_interval_seconds,
@@ -1415,7 +1477,46 @@ def _launchable(
             f"digests to {observed_identity_digest!r}; the checkpoint changed after this "
             "profile was proven, so it must be preflighted again before launch"
         )
+    if (
+        identity.source == "huggingface"
+        and identity.repo in _HYBRID_ATTENTION_REPOSITORIES
+        and profile.enable_prefix_caching
+    ):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
+            "(qwen3_5) checkpoint; vLLM's prefix-caching path over recurrent state is "
+            "experimental, cannot hit at this row's max_num_seqs=1, and only costs "
+            "recurrent-state memory -- enable_prefix_caching must be false for this chair "
+            "(hostile review item L)"
+        )
     return profile
+
+
+def _generation_config_digest(
+    profile: ServingProfile, base_snapshot: VerifiedSnapshot
+) -> str | None:
+    """Digest the exact generation_config.json a 'auto' row will resolve to.
+
+    ``None`` for a 'vllm' row: there is no vendor file to pin, since vLLM's
+    own uniform defaults are the whole point of that value.  For an 'auto'
+    row, ``config.py`` already refuses the value at parse time unless
+    ``generation_config.json`` exists in the chair's verified manifest (every
+    real witness ships one), so its absence here would mean the manifest and
+    the on-disk snapshot have diverged -- a real-silicon fact, not a planning
+    one, so it is refused at launch rather than at catalogue load.
+    """
+
+    if profile.generation_config != "auto":
+        return None
+    path = base_snapshot.root / "generation_config.json"
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise ServingConfigurationError(
+            f"chair {profile.chair!r} row is generation_config='auto' but its verified "
+            f"snapshot has no readable {path}: {error}"
+        ) from error
+    return hashlib.sha256(data).hexdigest()
 
 
 def render_vllm_argv(
@@ -1484,6 +1585,15 @@ def render_vllm_argv(
         # Page contents are not diagnostic data.  Keep vLLM's documented
         # request logging disabled independently of ordinary engine logging.
         "--no-enable-log-requests",
+        # Named counts only (prompt/completion/total token counts), never
+        # prompt or completion text -- distinct from the request-logging flag
+        # just above.  This is what lets a response's own `usage` object be
+        # reconciled against the laptop's own image/text token arithmetic
+        # (hostile review item H): without it, some vLLM builds omit or
+        # under-report `usage`, and a silently dropped `mm_processor_kwargs`
+        # (vllm-project/vllm#49015, #54527) would then read a page at the
+        # wrong scale with no error at all.
+        "--enable-prompt-tokens-details",
         "--enable-prefix-caching"
         if profile.enable_prefix_caching
         else "--no-enable-prefix-caching",
@@ -1572,6 +1682,23 @@ def _fatal_log_signature(tail: str) -> str | None:
     if "vllm_error" in normalized:
         return "VLLM_ERROR"
     return None
+
+
+def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:
+    """A readiness probe HTTP error that waiting cannot resolve.
+
+    ``parse_openai_answer`` raises ``VLLM_PROBE_HTTP_ERROR`` for any
+    non-200 probe response, whether the engine is still booting (502/503,
+    worth retrying) or has fully initialized and is rejecting the exact
+    request body every poll resends (4xx, retrying learns nothing).  Only
+    the latter is named deterministic here: a client-error status is the
+    engine answering, not the engine being unready.
+    """
+
+    if error.code != "VLLM_PROBE_HTTP_ERROR":
+        return False
+    match = _PROBE_HTTP_STATUS.search(error.detail)
+    return match is not None and 400 <= int(match.group(1)) < 500
 
 
 def _immutable_reference(value: Mapping[str, str], label: str) -> Mapping[str, str]:
