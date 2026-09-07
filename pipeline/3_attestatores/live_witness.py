@@ -261,6 +261,41 @@ def _data_uri(image_bytes: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
 
 
+def _user_content(text: str, image_bytes: bytes) -> list[dict[str, Any]]:
+    """One user turn's content parts: **the image first, then the text.**
+
+    Every chat template these three chairs ship emits a message's content parts
+    in the order the list gives them, so this order *is* the token sequence the
+    model sees. All three occupants were fine-tuned with the vision block
+    before the instruction, and this repository sent the reverse until now:
+
+    * DAI -- the model card's own inference snippet builds
+      ``[image, text]``, and its ~37k fine-tuning examples are one fixed
+      framing seen by a rank-8 LoRA. The old pipeline
+      (``remote/pilot_crops_dai.py``) sent image-first; the rebuild inverted
+      it, so this is a regression against upstream *and* against our own prior
+      working system.
+    * Chandra -- ``chandra/model/vllm.py`` appends the image block before the
+      text prompt, and ``model/hf.py`` does the same.
+    * Churro -- its provider builds the image part first.
+
+    (``workbench/raw/research-2026-09-06/``, all three reports; verified by the
+    host against the tree and the vendor sources.)
+
+    **No token count moves with this.** The measured prompt constants
+    (``common/request_capacity.py``) are taken over the message *texts* and
+    sealed against a digest of those texts in order; an image part carries no
+    text and is not part of that digest, and ``smart_resize``'s image cost is a
+    function of pixels alone. What moves is only which of the two blocks the
+    template emits first.
+    """
+
+    return [
+        {"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}},
+        {"type": "text", "text": text},
+    ]
+
+
 def _presented_image_bytes(context: Any, presented: Mapping[str, Any]) -> bytes:
     """Read back exactly the bytes an adapter's own presentation names.
 
@@ -380,13 +415,7 @@ def act_chair_request(
     )
     messages = (
         {"role": "system", "content": prompt["system"]},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt["user"]},
-                {"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}},
-            ],
-        },
+        {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
     )
     generation_declared = feeding.dai_generation()
     generation_sent = {
@@ -510,26 +539,12 @@ def page_chair_request(
         # Churro's two-message framing (`feeding.churro_prompt`).
         messages = (
             {"role": "system", "content": prompt["system"]},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt["user"]},
-                    {"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}},
-                ],
-            },
+            {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
         )
     elif set(prompt) == {"instruction"}:
         # Chandra's single-instruction framing (`chandra.prompt`); no vendor
         # wire schema exists to name a system/user split for (module docstring).
-        messages = (
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt["instruction"]},
-                    {"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}},
-                ],
-            },
-        )
+        messages = ({"role": "user", "content": _user_content(prompt["instruction"], image_bytes)},)
     else:
         raise SchemaRefusal(
             f"page-scoped adapter {adapter_name!r} returned an unrecognized prompt shape "

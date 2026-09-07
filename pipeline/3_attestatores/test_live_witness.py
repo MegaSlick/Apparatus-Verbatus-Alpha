@@ -209,7 +209,8 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     system, user = request.messages
     assert system == {"role": "system", "content": feeding.dai_prompt()["system"]}
     assert user["role"] == "user"
-    assert user["content"][0] == {"type": "text", "text": feeding.dai_prompt()["user"]}
+    assert user["content"][0]["type"] == "image_url"
+    assert user["content"][1] == {"type": "text", "text": feeding.dai_prompt()["user"]}
     # `presented`/`prompt` are carried forward so `live_attempt_from_response`
     # never has to run `adapter.present` a second time for this same act.
     assert act_request.presented == presentation
@@ -258,7 +259,8 @@ def test_page_chair_request_builds_churros_two_message_framing_and_declares_the_
     assert request.image_sha256s == (image_sha256,)
     system, user = request.messages
     assert system == {"role": "system", "content": feeding.churro_layout_prompt()["system"]}
-    assert user["content"][0]["text"] == feeding.churro_layout_prompt()["user"]
+    assert user["content"][0]["type"] == "image_url"
+    assert user["content"][1]["text"] == feeding.churro_layout_prompt()["user"]
     # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
     # The sealed row is shorter than the declared bound, so no bound is sent
@@ -568,9 +570,58 @@ def test_page_chair_request_builds_chandras_single_instruction_framing():
     assert len(request.messages) == 1
     (message,) = request.messages
     assert message["role"] == "user"
-    assert message["content"][0] == {"type": "text", "text": chandra_module.prompt()["instruction"]}
+    assert message["content"][0]["type"] == "image_url"
+    assert message["content"][1] == {"type": "text", "text": chandra_module.prompt()["instruction"]}
     assert request.generation_declared == {}
     assert request.generation_sent == {}
+
+
+def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
+    """The rebuild regression, pinned once for all three witness chairs.
+
+    Each occupant was fine-tuned with the vision block before the instruction
+    (DAI's model-card snippet and our own old `pilot_crops_dai.py`; Chandra's
+    `model/vllm.py`; Churro's provider), and each chat template emits a
+    message's parts in list order -- so the order here *is* the token sequence
+    the model sees. Asserted at every builder together rather than only inside
+    each chair's own shape test, because the defect was that all three agreed
+    with each other and disagreed with every upstream.
+    """
+
+    context = SimpleNamespace(tree=_FakeTree())
+    image_bytes = _png(53, 71)
+    chandra_module = sys.modules.get("chandra") or __import__("chandra")
+
+    act_presentation = _presentation(kind="region", image_bytes=image_bytes)
+    context.tree.seed(act_presentation["image_path"], image_bytes)
+    dai = live_witness.act_chair_request(
+        context,
+        SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt),
+        act_presentation,
+        profile=_dai_row(),
+    ).request
+
+    page_presentation = _presentation(kind="page", image_bytes=image_bytes)
+    context.tree.seed(page_presentation["image_path"], image_bytes)
+    row = _sealed_churro_rows()[0]
+    page_requests = [
+        live_witness.page_chair_request(
+            context,
+            SimpleNamespace(present=lambda ctx, pres: pres, prompt=prompt),
+            adapter_name,
+            page_presentation,
+            profile=row,
+        )
+        for adapter_name, prompt in (
+            ("churro.v1", feeding.churro_layout_prompt),
+            ("chandra.v1", chandra_module.prompt),
+        )
+    ]
+
+    for request in [dai, *page_requests]:
+        (user,) = [message for message in request.messages if message["role"] == "user"]
+        types = [part["type"] for part in user["content"]]
+        assert types == ["image_url", "text"]
 
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():

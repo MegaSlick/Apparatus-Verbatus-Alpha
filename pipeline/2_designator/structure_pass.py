@@ -423,9 +423,18 @@ def page_request(
         {"role": system["role"], "content": system["content"]},
         {
             "role": user["role"],
+            # The image block first, then the instruction. The chat template
+            # emits a message's parts in list order, so this order is the token
+            # sequence the chair sees, and Chandra's own inference code
+            # (`chandra/model/vllm.py`, `model/hf.py`) appends the image before
+            # the text on every request it was fine-tuned and benchmarked with.
+            # This pass sent the reverse until now. No measured token count
+            # moves with it: the sealed constant is taken over the message
+            # *texts* (`common/request_capacity.py`), and an image part carries
+            # none.
             "content": [
-                {"type": "text", "text": user["content"]},
                 {"type": "image_url", "image_url": {"url": _data_uri(page_bytes)}},
+                {"type": "text", "text": user["content"]},
             ],
         },
     )

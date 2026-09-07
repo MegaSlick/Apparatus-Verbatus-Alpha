@@ -514,8 +514,10 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     for request in endpoint.requests:
         messages = request["messages"]
         assert messages[0]["role"] == "system"
-        assert messages[1]["content"][0]["type"] == "text"
-        assert messages[1]["content"][1]["type"] == "image_url"
+        # Image block first, then the instruction -- upstream Chandra's own
+        # trained order, and the token sequence the chat template emits.
+        assert messages[1]["content"][0]["type"] == "image_url"
+        assert messages[1]["content"][1]["type"] == "text"
         assert "max_tokens" not in request
         assert request["temperature"] == 0
     tree = RunTree(root, RUN_ID)
