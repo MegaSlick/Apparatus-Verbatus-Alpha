@@ -11,12 +11,27 @@
 #
 # Every configured witness chair must have an entry, or the dossier builder
 # refuses by name rather than describing a witness with no context at all.
+#
+# The three entries below describe the real vendor systems bound to these
+# chairs (VENDOR_SYSTEMS_DESIGN_2026-09-06.md), not the local fixture identity
+# `config/models.toml` still resolves while the real roster is commented out
+# there. A chair is the role, not the occupant (GLOSSARY): the fact a chair's
+# eventual reader needs is what model reads there, and that is fixed by the
+# design regardless of which manifest a given run happens to load. Every
+# sentence is either read directly off the vendor's own published material or
+# names, in the same sentence, that the vendor publishes nothing further --
+# no domain is filled in with a plausible guess where the source is silent
+# (RESEARCH_CHANDRA_PIPELINE.md, RESEARCH_DAI_PIPELINE.md,
+# RESEARCH_CHURRO_PIPELINE.md, workbench/raw/research-2026-09-06/).
 
+# datalab-to/chandra-ocr-2, attestator_1 / designator_structure.
 [attestator_1]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "Chandra-2, a Qwen3.5-VL vision-language model fine-tuned by Datalab for general document OCR to an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
 
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR, attestator_2.
 [attestator_2]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "a Qwen2.5-VL-7B fine-tune by Teklia whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries, and whose training data is single-record IIIF region crops (about 30,000 Geneanet crops and 7,000 Gold crops); the corpus behind that framing is not otherwise published, so the framing and the crop scope are what this project knows of its training."
 
+# stanford-oval/churro-3B, attestator_3.
 [attestator_3]
-training_domain = "a synthetic fixture witness; no real training domain applies"
+training_domain = "a Qwen2.5-VL-3B-Instruct model fully fine-tuned by Stanford OVAL, whose own trained system prompt frames it as diplomatic transcription of historical documents in various languages; the paper states it was fine-tuned for 5 epochs over roughly 100,000 pages on a training target with no layout geometry, a single continuous text string per page, and its training dataset is declared research-use-only and has not been inspected here beyond that."
