@@ -101,13 +101,6 @@ PRESENT_OPERATION: Final = "chandra-scale-to-fit.v1"
 #: rather than omitted: `keep` says a conversion did not run, which an absent
 #: field on a record allowed to omit it cannot say.
 PRESENT_COLOUR_MODE: Final = "keep"
-#: The parser name the live vendor grammar is retained under, and the one the
-#: committed fixture's placeholder keeps until U16 retires it. Named here
-#: because `feeding._RUNNABLE_PARSERS`, the retention branch and this module's
-#: two readers all have to agree on them.
-LIVE_PARSER: Final = "html"
-FIXTURE_PARSER: Final = "json"
-
 # One ceiling per fact, declared beside the grammar that also enforces it and
 # re-exported here because the fixture placeholder's own reader below has to
 # apply the same finite intake to bytes crossing the same boundary.
