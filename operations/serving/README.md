@@ -567,7 +567,8 @@ bare configuration error instead.
 
 `fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
 `FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and
-the structure-chair builders `structure_box_1000`, `structure_answer_body`,
+the structure-chair builders `structure_box_1000`, `structure_layout_block`,
+`structure_answer_body`, `structure_blank_page_body`,
 `scripted_structure_answer`, `scripted_structure_refusal`,
 `scripted_structure_cut_off`) is a shared fake endpoint for stage tests built against `ChairClient` — mirrors of
 this package's own `test_manager.py` fakes, not moved from there, so that
@@ -595,18 +596,34 @@ because retain-after-parse and retain-before-parse look identical whenever
 parsing succeeds.
 
 The structure-chair builders take rectangles in the sealed page's own pixels
-and return the wire JSON whose normalized boxes convert back to exactly those
-rectangles, found by search over the 0-1000 grid and checked through
+and return **Chandra's layout HTML** — the grammar that chair is asked for
+since `verbatus-structure-prompt.v3` carried the vendor's own prompt bytes —
+whose normalized `data-bbox` values convert back to exactly those rectangles,
+found by search over the 0-1000 grid and checked through
 `common.structure_answer.to_page_bounds` itself rather than by a second
-closed-form formula — a builder that re-derived the arithmetic could agree with
-a converter that had changed underneath it. Each builder then parses the body
-it built through the contract that will parse it live, so a drifted builder
-fails in the builder rather than as an unexplained hold three stages
-downstream. `scripted_structure_refusal` is keyed by the `PARSE_OUTCOMES` code
-and verifies the body reaches that outcome and no other;
-`scripted_structure_cut_off` truncates a real answer mid-object and sets the
-`length` stop word, which is what a page whose transcription overran
-`max_model_len` actually looks like.
+closed-form formula: a builder that re-derived the arithmetic could agree with
+a converter that had changed underneath it. Each builder then reads the body it
+built back through `common/chandra_layout.py::parse_layout_html`, the grammar
+that will read it live, and checks that it resolves to the rectangles it was
+asked for — so a drifted builder fails in the builder rather than as an
+unexplained hold three stages downstream.
+
+`structure_layout_block` writes one top-level `<div>` and is the way to script
+the answers rectangles cannot express: a malformed or absent `data-bbox`, a
+label outside the vendor's own nineteen, a `Blank-Page`.
+`structure_blank_page_body` is the page a chair reports as blank, which is what
+the retired JSON contract spelled as an empty act list — there is no empty-list
+shape in this grammar, and an answer with no `<div>` in it is a refusal rather
+than an empty page. `scripted_structure_refusal` is keyed by the
+`PARSE_OUTCOMES` code and verifies the body reaches that outcome and no other;
+it scripts the two of the grammar's six that a body's *shape* can reach, the
+other four being properties of the wire bytes and measured in
+`common/test_chandra_layout.py`. `scripted_structure_cut_off` truncates a real
+answer before its first block closes and sets the `length` stop word, which is
+what a page whose transcription overran `max_model_len` actually looks like —
+and under this grammar the truncated body still reads, with an
+`unclosed-block` finding, so the fixture proves the page is held on the stop
+word alone rather than on a shape the parser could not take.
 
 `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
 `test_manager.py`'s own fake: it keeps the loopback health endpoint answering

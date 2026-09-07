@@ -655,18 +655,29 @@ def prompt_digest(*texts: str) -> str:
 # one-entry tuple and nothing else changes.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
-        # Re-measured for `verbatus-structure-prompt.v2` -- the single `user`
-        # turn Chandra's own inference code sends, replacing the system+user
-        # framing the fine-tune never saw. Not one word of the instruction
-        # moved; the system turn's sentence is now the instruction's opening
-        # paragraph, so the whole difference is the chat template's own
-        # per-turn overhead: **329 -> 325**, measured by the same harness, at
-        # the same pinned revision, that reproduces the superseded 329 exactly
-        # over the superseded two-turn prompt.
+        # Re-measured for `verbatus-structure-prompt.v3` -- the carried vendor
+        # prompt (`common/chandra_layout.py::OCR_LAYOUT_PROMPT`) replacing this
+        # repository's own v2 instruction, on tonight's ruling that each witness
+        # is asked in its developers' own bytes. **325 -> 593**, measured
+        # 2026-09-07 by the harness of `TOKEN_COST_REPORT_2026-09-05.md`
+        # section 3 at the same pinned revision, in the message shape
+        # `structure_pass.page_request` builds (one `user` turn, image part
+        # first). The same run reproduces the superseded 325 exactly over the
+        # superseded v2 text, which is what says the two numbers are comparable
+        # rather than merely both present.
+        #
+        # The prompt is 268 tokens dearer because it is a different and larger
+        # instruction: 2,161 characters against v2's 1,192, carrying the
+        # vendor's 36-tag and 14-attribute lists and its nineteen labels. That
+        # cost is not a regression to be tuned away -- trimming the carried
+        # bytes is exactly what would stop them being the vendor's -- and it is
+        # weighed where it belongs, in `request_fits` against the row's own
+        # `max_model_len` (`page_capacity`), on every page, before anything is
+        # sent.
         "designator_structure": (
             SealedPromptTokens(
-                tokens=325,
-                prompt_digest="c91e81598bf73da040f3394580669c67bf474bd7d2679ff3537f7975732b1824",
+                tokens=593,
+                prompt_digest="025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8",
                 repo="datalab-to/chandra-ocr-2",
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),
@@ -909,9 +920,21 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # fit every shipped Churro row.  Twenty-four blocks is not the convention the
 # other four chairs were measured under, and quietly moving one chair to a
 # stricter one would make this table's rows mean different things.
+#
+# `designator_structure` moved with `verbatus-structure-prompt.v3`, for exactly
+# the reason the paragraph above gives: its declared response shape is no longer
+# the `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
+# (`common/chandra_layout.py`), whose `<div data-bbox=... data-label=...>` and
+# `<p>` tags are real tokens the JSON budget never counted. Re-measured
+# 2026-09-07 by this section's own harness -- the same `FRENCH_ACT` to 800 words
+# in the same six blocks, the same tokenizer at the same pinned revision -- at
+# **1575 -> 1645**. The same run reproduces the superseded 1575 and
+# `attestator_1`'s 1520 exactly, which is what says the numbers are comparable.
+# `attestator_1` is untouched here: it is still asked for the JSON page shape on
+# this base, and it moves when its own prompt does.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "designator_structure": 1575,
+        "designator_structure": 1645,
         "attestator_1": 1520,
         "attestator_2": 1426,
         "attestator_3": 1631,

@@ -447,7 +447,10 @@ def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
 @pytest.mark.parametrize(
     "chair, expected",
     [
-        ("designator_structure", 1575),
+        # Re-measured for `verbatus-structure-prompt.v3`: this chair's declared
+        # response shape is Chandra's layout HTML now, whose tags the retired
+        # JSON budget never counted (1575 -> 1645).
+        ("designator_structure", 1645),
         ("attestator_1", 1520),
         ("attestator_2", 1426),
         ("attestator_3", 1631),
