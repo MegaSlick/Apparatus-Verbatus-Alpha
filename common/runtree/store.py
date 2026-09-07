@@ -73,6 +73,7 @@ from common.contracts.errors import (
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import DOOR, writing_directory
 from common.corpus_register import empty_register, validate_register_bytes
+from common.durability import sync_directory
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
@@ -1545,12 +1546,20 @@ def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: byte
 
 
 def _atomic_write(target: Path, data: bytes) -> None:
-    """Temp file in the same directory, flushed, then replaced.
+    """Temp file in the same directory, flushed, replaced, then the directory synced.
 
     Same directory because os.replace is only atomic within one filesystem. The
     fsync is what makes the guarantee survive power loss rather than only process
     death, which matters because a half-written artifact that a resume trusts is
     exactly the failure the sealed tree exists to prevent.
+
+    The file fsync alone did not get that. It persists the artifact's *bytes*;
+    the directory entry that names them is a separate call (`fsync(2)`), and
+    without it a power cut could leave this publication's new name — or this
+    replacement of an old one — simply gone. `operations/pod/durable.py` has
+    synced the directory for every operational record since it was written; the
+    run tree, which holds the irreplaceable work, did not. Both now use the same
+    primitive.
     """
     temporary = _write_temporary(target, data)
     try:
@@ -1558,6 +1567,7 @@ def _atomic_write(target: Path, data: bytes) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+    _sync_published_name(target)
 
 
 def _atomic_create(target: Path, data: bytes) -> None:
@@ -1593,6 +1603,35 @@ def _atomic_create(target: Path, data: bytes) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+    _sync_published_name(target)
+
+
+def _sync_published_name(target: Path) -> None:
+    """Persist the directory entry a publication just created, or refuse by name.
+
+    Strict, unlike the pod-side records' best-effort default, and that is a
+    decision rather than an inherited setting. This tree is the evidence: a
+    stage that reports an artifact published, and a resume that then trusts the
+    report, are exactly what a lost directory entry would betray. GOVERNANCE 2
+    does not allow that to disappear behind a successful return, so a filesystem
+    that cannot prove the entry durable refuses the publication instead — in the
+    same voice as the hard-link refusal above, because it is the same kind of
+    fact about where the run root was put.
+
+    The bytes are already published when this runs. The refusal says so rather
+    than implying nothing was written, because the operator's repair is to move
+    the run root, not to hunt for a partial file.
+    """
+
+    try:
+        sync_directory(target.parent, strict=True)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"the run root at {target.parent} is on a filesystem that will not persist a "
+            f"directory entry ({error.strerror}); {target.name} is published but its name "
+            "is not proved to survive a power loss, and the run root has to be on a "
+            "filesystem that supports it"
+        ) from error
 
 
 def _write_temporary(target: Path, data: bytes) -> Path:

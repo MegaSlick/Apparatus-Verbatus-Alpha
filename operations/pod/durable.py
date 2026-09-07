@@ -9,8 +9,8 @@ world-readable.
 The power-cut guarantee covers the file's own bytes, which are always fsynced.
 The directory entry that points at them is fsynced too on every filesystem that
 allows a directory to be opened and synced; where the platform refuses either
-(``sync_directory``'s two documented exceptions), that entry's durability
-degrades to best-effort rather than failing the write outright.
+(``common.durability.sync_directory``'s two documented exceptions), that entry's
+durability degrades to best-effort rather than failing the write outright.
 
 This is not `common/contracts/canonical.py`'s serialization and does not claim to
 be: these are local operational records, not pipeline artifacts.
@@ -23,6 +23,15 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Mapping
+
+# Re-exported, not re-implemented. The primitive moved down to `common` so that
+# `common/runtree/store.py` could publish artifacts durably without `common`
+# importing the operational layer; every caller that already said
+# `from operations.pod.durable import sync_directory` keeps working, and there
+# is one implementation rather than the two this package used to carry.
+from common.durability import sync_directory
+
+__all__ = ["atomic_write", "canonical_json", "exclusive_write", "sync_directory"]
 
 
 def canonical_json(value: Mapping[str, object]) -> bytes:
@@ -52,30 +61,6 @@ def atomic_write(path: Path, payload: bytes) -> None:
         except OSError:
             pass
         raise
-
-
-def sync_directory(path: Path, *, strict: bool = False) -> None:
-    """Persist a directory entry, optionally refusing when durability cannot be proved.
-
-    Pod-side callers retain the established best-effort behavior on filesystems
-    that refuse directory opens or syncs. Operator publication passes
-    ``strict=True`` because it must not print that a receipt or submitted object
-    was saved after the directory entry itself failed to become durable.
-    """
-
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
-        if strict:
-            raise
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        if strict:
-            raise
-    finally:
-        os.close(descriptor)
 
 
 def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None:
