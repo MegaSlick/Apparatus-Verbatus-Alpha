@@ -11,11 +11,12 @@ from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
     AlignmentLimits,
     align_to_anchor,
+    bracket_marker_view,
     load_alignment_limits,
     markup_text_view,
 )
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 
 
 def test_markup_view_strips_tags_with_offsets_and_explicit_loss():
@@ -391,3 +392,98 @@ def test_starter_starter_composition_yields_honest_none_offsets_never_shifted_on
 
     assert view["text"] == "\uac00"
     assert view["offset_map"] == [None]
+
+
+# --- bracket_marker_view (U6): removes exactly the RecordGold uncertainty
+# markers, offset-mapped so a span found in the stripped text still resolves
+# back to the raw ink it came from.
+
+
+def test_bracket_marker_view_removes_both_markers_and_keeps_offsets_pointing_at_raw():
+    raw = "Marie [UNCERTAIN] Dubois [CROSSED_OUT]"
+    view = bracket_marker_view(raw)
+
+    assert view["text"] == "Marie  Dubois "
+    assert view["loss"]["marker_characters"] == len("[UNCERTAIN]") + len("[CROSSED_OUT]")
+    # Every surviving character maps to its own index in raw, never a shifted
+    # one: "M" is raw[0]; the space right after the first marker is raw[18].
+    offsets = view["offset_map"]
+    assert offsets[0] == raw.index("M")
+    assert raw[offsets[6]] == " "
+    assert offsets[6] == raw.index("Dubois") - 1
+
+
+def test_bracket_marker_view_leaves_plain_text_with_no_marker_untouched():
+    raw = "plain established text, no markers here"
+    view = bracket_marker_view(raw)
+
+    assert view["text"] == raw
+    assert view["offset_map"] == list(range(len(raw)))
+    assert view["loss"]["marker_characters"] == 0
+
+
+def test_bracket_marker_view_does_not_normalize_or_collapse_neighbouring_whitespace():
+    """Deliberately narrower than `markup_text_view`: only the exact marker
+    bytes are removed, so a marker's neighbouring whitespace, and any
+    unrelated Unicode composition, survive exactly as reported."""
+    raw = "Genevie\u0300ve [UNCERTAIN]  ne\u0301e"  # NFD accents kept, double space kept
+    view = bracket_marker_view(raw)
+
+    assert view["text"] == "Genevie\u0300ve   ne\u0301e"
+    assert view["loss"]["marker_characters"] == len("[UNCERTAIN]")
+    assert "\u00e8" not in view["text"]  # no NFC composition performed here
+
+
+def test_bracket_marker_view_removes_adjacent_markers_with_no_gap():
+    raw = "[UNCERTAIN][CROSSED_OUT]tail"
+    view = bracket_marker_view(raw)
+
+    assert view["text"] == "tail"
+    assert view["offset_map"] == [raw.index("tail") + i for i in range(len("tail"))]
+    assert view["loss"]["marker_characters"] == len("[UNCERTAIN]") + len("[CROSSED_OUT]")
+
+
+def test_bracket_marker_view_does_not_match_a_partial_or_unclosed_marker():
+    raw = "[UNCERTAIN unterminated] and [CROSSED_OUT_EXTRA]"
+    view = bracket_marker_view(raw)
+
+    # Neither the unterminated left bracket text nor a token with a trailing
+    # suffix is `_UNCERTAINTY_TOKENS` verbatim, so nothing is removed: only an
+    # exact substring match counts, never a prefix or a loose bracket scan.
+    assert view["text"] == raw
+    assert view["loss"]["marker_characters"] == 0
+
+
+def test_bracket_marker_view_all_markers_normalizes_to_a_genuinely_empty_text():
+    raw = "[UNCERTAIN][CROSSED_OUT][UNCERTAIN]"
+    view = bracket_marker_view(raw)
+
+    assert view["text"] == ""
+    assert view["offset_map"] == []
+    assert view["loss"]["marker_characters"] == len(raw)
+
+
+def test_bracket_marker_view_refuses_non_text_input():
+    with pytest.raises(SchemaRefusal, match="not text"):
+        bracket_marker_view(b"[UNCERTAIN] not a str")
+
+
+def test_bracket_marker_view_agrees_with_feedings_own_uncertainty_tokens():
+    """The RecordGold markers are carried in two places -- `feeding.py`'s
+    retained-response contract and this alignment view -- because `common/`
+    cannot import from `pipeline/3_attestatores/feeding.py` without a
+    circular import (`feeding.py` already imports from `common`). `3_` makes
+    the directory an invalid dotted package name, so this loads the module by
+    file path, exactly as `pipeline/3_attestatores/test_feeding.py` already
+    does for its own sibling files. This test is the seam that keeps the two
+    tuples from drifting apart silently."""
+    import importlib.util
+
+    feeding_path = (
+        Path(__file__).resolve().parents[1] / "pipeline" / "3_attestatores" / "feeding.py"
+    )
+    spec = importlib.util.spec_from_file_location("alignment_test_feeding", feeding_path)
+    feeding_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(feeding_module)
+
+    assert alignment_module._UNCERTAINTY_TOKENS == feeding_module._UNCERTAINTY_TOKENS

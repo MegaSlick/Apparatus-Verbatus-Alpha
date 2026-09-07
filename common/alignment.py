@@ -42,6 +42,17 @@ class _TimedOut(Exception):
 # back as "stripped" text. See `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
 
+# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT) --
+# https://huggingface.co/datasets/Teklia/DAI-CReTDHI-RecordGold-ATR. Not
+# `Teklia/RecordGold`: that id names a different, gated dataset (401, no
+# public card). Kept as a private constant here rather than imported from
+# `pipeline/3_attestatores/feeding.py`
+# -- `common/` is the lower layer and `feeding.py` already imports from it, so
+# an import the other way would be circular. `test_alignment.py` asserts this
+# tuple is byte-identical to `feeding._UNCERTAINTY_TOKENS` so the two copies
+# cannot drift silently (GOVERNANCE 10).
+_UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
+
 
 def _alarm(signum: int, frame: Any) -> None:
     raise _TimedOut()
@@ -164,6 +175,56 @@ def markup_text_view(raw: str) -> dict[str, Any]:
             "whitespace_characters": len(composed) - len(normalized),
             "unicode_reencoded_characters": abs(len(stripped) - len(composed)),
         },
+    }
+
+
+def bracket_marker_view(raw: str) -> dict[str, Any]:
+    """Return `raw` with exactly the RecordGold bracket markers removed.
+
+    Act-scoped chairs that can express uncertainty (DAI) embed
+    `[UNCERTAIN]`/`[CROSSED_OUT]` inline in otherwise plain reported text --
+    not as tag-shaped markup, so `markup_text_view` does not touch them and
+    would count each marker's characters as witness disagreement if the raw
+    report were diffed against clean established text. This view removes only
+    those two exact substrings, verbatim and case-sensitively, and maps every
+    surviving character back to its index in `raw` so a span found in the
+    stripped text still resolves to the ink it came from.
+
+    Deliberately narrower than `markup_text_view`: no NFC normalization, no
+    whitespace collapsing, no entity decoding. A marker's neighbouring
+    whitespace is left exactly as reported -- e.g. `"Marie [UNCERTAIN] "`
+    loses only the eleven bracketed characters, not the space next to them --
+    because folding whitespace here would be a second, unrelated transform
+    hiding inside a function whose contract is "remove exactly these tokens."
+    Overlap is not a real hazard between these two literals (neither is a
+    prefix of the other), but the scan still checks both at every position
+    rather than assuming an order, so adding a third marker later cannot
+    silently depend on scan order.
+    """
+    if not isinstance(raw, str):
+        raise SchemaRefusal("bracket marker input is not text")
+    kept_chars: list[str] = []
+    offsets: list[int] = []
+    removed_characters = 0
+    i = 0
+    n = len(raw)
+    while i < n:
+        matched_length = 0
+        for token in _UNCERTAINTY_TOKENS:
+            if raw.startswith(token, i):
+                matched_length = len(token)
+                break
+        if matched_length:
+            removed_characters += matched_length
+            i += matched_length
+            continue
+        kept_chars.append(raw[i])
+        offsets.append(i)
+        i += 1
+    return {
+        "text": "".join(kept_chars),
+        "offset_map": offsets,
+        "loss": {"marker_characters": removed_characters},
     }
 
 
