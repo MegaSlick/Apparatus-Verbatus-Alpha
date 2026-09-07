@@ -335,23 +335,33 @@ def _matcher_limits() -> AlignmentLimits:
 
 
 @pytest.mark.parametrize(
-    "witness,anchor",
+    "witness,anchor,expects_a_match",
     [
-        ("alpha beta gamma", "alpha beta gamna"),
-        ("L'an mil sept cent quarante-trois", "L'an mil sepc cent quarante-troys"),
-        ("Geneviève née à Saint-Aubin", "Genevieve nee a Saint-Auban"),
-        ("abcabcabcabc", "cbacbacba"),
-        ("", "alpha"),
-        ("alpha", ""),
+        ("alpha beta gamma", "alpha beta gamna", True),
+        ("L'an mil sept cent quarante-trois", "L'an mil sepc cent quarante-troys", True),
+        ("Geneviève née à Saint-Aubin", "Genevieve nee a Saint-Auban", True),
+        ("abcabcabcabc", "cbacbacba", True),
+        ("", "alpha", False),
+        ("alpha", "", False),
     ],
 )
-def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor):
+def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor, expects_a_match):
     """The one assertion that makes a span a measurement rather than a guess:
     the witness slice and the anchor slice it claims must be the same
     characters. A matcher that normalized, case-folded, or truncated either
     side would still return plausible-looking offsets, and only this check
-    would notice."""
+    would notice.
+
+    `expects_a_match` is what stops the check being vacuous, and it is not
+    bookkeeping. A matcher that returned nothing at all would satisfy every
+    assertion in the loop below while turning aligned records into `unaligned`
+    ones -- and an unaligned page witness leaves the act's witness floor, so
+    the silent-empty regression costs coverage (GOALS 1) exactly where this
+    file is meant to be watching. Only the two empty-input rows may return
+    nothing.
+    """
     blocks = alignment_module._matching_blocks(witness, anchor)
+    assert bool(blocks) is expects_a_match
     for witness_start, anchor_start, size in blocks:
         assert (
             witness[witness_start : witness_start + size]
