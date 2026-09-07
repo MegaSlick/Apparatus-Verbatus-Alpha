@@ -14,13 +14,14 @@ divides by, and the 36 tags, 14 attributes and 19 labels are all there and all
 in the prompt. Each of those checks is then made to fail on purpose, because a
 seal nobody has watched refuse anything is a comment.
 
-The second half pins the reader, and above all the four departures from
+The second half pins the reader, and above all the five departures from
 `chandra/output.py::parse_layout`. Each is asserted as a *fact about the
 output*, not as a call that returned without raising: the vendor's
 `[0, 0, 1, 1]` substitute appears nowhere; the `Blank-Page` block is present
 and carries no text and no geometry; the nested `data-bbox` is still in the
-retained content; and a block the reader loses to unbalanced markup is named by
-the reconciliation rather than silently absent.
+retained content; ink the answer left outside every block is counted rather
+than dropped into a clean parse; and a block the reader loses to unbalanced
+markup is named by the reconciliation rather than silently absent.
 """
 
 from __future__ import annotations
@@ -131,7 +132,11 @@ def test_the_prompt_still_states_the_scale_the_geometry_divides_by():
 @pytest.mark.parametrize(
     ("attribute", "value", "expected"),
     [
-        ("OCR_LAYOUT_PROMPT_SHA256", "0" * 64, "renders to sha256"),
+        ("OCR_LAYOUT_PROMPT_SHA256", "0" * 64, "carried OCR_LAYOUT_PROMPT renders to sha256"),
+        # Both digests, each expecting its own name: `_seal` checks
+        # `PROMPT_ENDING` first, so a case that only matched "renders to
+        # sha256" would pass on whichever of the two happened to fire.
+        ("PROMPT_ENDING_SHA256", "0" * 64, "carried PROMPT_ENDING renders to sha256"),
         ("OCR_LAYOUT_PROMPT", OCR_LAYOUT_PROMPT.replace("0-1000", "0-100"), "0-1000"),
         ("ALLOWED_TAGS", ALLOWED_TAGS[:-1], "not the vendor's 36"),
         ("ALLOWED_ATTRIBUTES", ALLOWED_ATTRIBUTES[:-1], "not the vendor's 14"),
@@ -141,6 +146,16 @@ def test_the_prompt_still_states_the_scale_the_geometry_divides_by():
             "OCR_LAYOUT_LABELS",
             OCR_LAYOUT_LABELS[:-1] + ("Marginal-Name",),
             "is not offered by the carried prompt",
+        ),
+        # The reverse direction, which no other case reaches: every label this
+        # module names is still in the prompt, and the prompt offers a
+        # twentieth one it does not name. A caller switching on
+        # `OCR_LAYOUT_LABELS` would then have a label it never expects arriving
+        # from a model that was offered it.
+        (
+            "OCR_LAYOUT_PROMPT",
+            OCR_LAYOUT_PROMPT.replace("\n- Blank-Page\n", "\n- Blank-Page\n- Marginal-Name\n"),
+            "offers labels this module does not name",
         ),
     ],
 )
@@ -204,6 +219,12 @@ def test_a_well_formed_bbox_is_four_normalized_integers(raw, expected):
         # reading it as ten would be the substituted value this reader exists
         # not to publish.
         ("1_0 2 3 4", "not plain decimal integers"),
+        # Python's `$` matches before a final newline, so `re.match` against
+        # `^[+-]?[0-9]+$` accepted these. `int` accepts them too, so no number
+        # was ever misread -- but the refusal reason says "plain decimal
+        # integers" and this is where that stops being a claim nothing checks.
+        ("7\n 2 3 4", "not plain decimal integers"),
+        ("1 2 3 4\n", "not plain decimal integers"),
         ("-1 2 3 4", "outside [0, 1000]"),
         ("1 2 1001 4", "outside [0, 1000]"),
         ("30 2 30 4", "x1 <= x0 or y1 <= y0"),
@@ -329,7 +350,7 @@ def test_a_block_with_no_resolvable_geometry_yields_no_rectangle():
 
 
 # ---------------------------------------------------------------------------
-# The four departures from `chandra/output.py::parse_layout`
+# The five departures from `chandra/output.py::parse_layout`
 # ---------------------------------------------------------------------------
 
 _MALFORMED_PAGE = (
@@ -464,6 +485,75 @@ def test_a_block_lost_to_unbalanced_markup_is_named_by_the_reconciliation():
         "parsed_blocks": 1,
         "top_level_divs": 2,
     }
+    # And the words inside it are named as well, by their own finding: the
+    # count says a block went missing, this says its ink did.
+    assert _finding(parsed, "content-outside-blocks")["characters"] == len("swallowed")
+
+
+@pytest.mark.parametrize(
+    ("page", "characters", "dropped", "page_text"),
+    [
+        # Ink between two blocks: no block holds it, and every span lands
+        # elsewhere.
+        (
+            '<div data-bbox="0 0 100 100" data-label="Text">a</div>'
+            "Le vingt-huit octobre"
+            '<div data-bbox="0 100 100 200" data-label="Text">b</div>',
+            len("Levingt-huitoctobre"),
+            "octobre",
+            "a\nb",
+        ),
+        # A block the model answered as a top-level `<p>`, and one it answered
+        # as a top-level `<table>`. The vendor's `recursive=False` finds
+        # neither, and neither does this reader -- which is the point.
+        (
+            '<div data-bbox="0 0 100 100" data-label="Text">a</div>'
+            "<p>Pierre Roy</p><table><tr><td>Jean</td></tr></table>",
+            len("PierreRoyJean"),
+            "Pierre",
+            "a",
+        ),
+        # After the last block, where a truncated answer's tail would sit.
+        (
+            '<div data-bbox="0 0 100 100" data-label="Text">a</div>fils de Roy',
+            len("filsdeRoy"),
+            "fils",
+            "a",
+        ),
+    ],
+)
+def test_ink_outside_every_block_is_counted_rather_than_dropped_into_a_clean_parse(
+    page, characters, dropped, page_text
+):
+    """The fifth departure: what the vendor cannot see, this reader still says.
+
+    `soup.find_all("div", recursive=False)` returns divs and nothing else, so
+    text the model put outside them is gone from the vendor's reading with
+    nothing to mark it. Read here, that same page would have come back
+    `parse`d, with `findings == []` and the words simply absent from
+    `page_text` and from every span -- a missed act under a successful status,
+    which GOALS 1 rates worst and GOVERNANCE 2 forbids. The finding is a count
+    rather than the text, because the response bytes are retained whole and a
+    chair's own words are published here as a length.
+    """
+    parsed = _read(page)
+    assert _finding(parsed, "content-outside-blocks")["characters"] == characters
+    # The dropped words really are absent from the reading -- the finding is
+    # the only thing in the record that says they were ever written.
+    assert parsed["page_text"] == page_text
+    assert dropped not in parsed["page_text"]
+    assert all(dropped not in block["text"] for block in parsed["blocks"])
+    assert all(dropped not in block["content"] for block in parsed["blocks"])
+
+
+def test_whitespace_between_blocks_is_formatting_and_says_nothing():
+    """The bound on the departure above: it names ink, not indentation."""
+    parsed = _read(
+        '<div data-bbox="0 0 100 100" data-label="Text">a</div>\n\n   \t\n'
+        '<div data-bbox="0 100 100 200" data-label="Text">b</div>\n'
+    )
+    assert parsed["findings"] == []
+    assert parsed["page_text"] == "a\nb"
 
 
 def test_a_clean_page_reconciles_and_reports_nothing():
@@ -592,6 +682,8 @@ def test_every_finding_a_page_can_produce_is_a_declared_kind():
         "nested-bbox-retained",
         "block-count-mismatch",
         "unclosed-block",
+        # The swallowed div's own text, which no block carries.
+        "content-outside-blocks",
     }
     assert set(_kinds(parsed)) <= LAYOUT_FINDING_KINDS
 

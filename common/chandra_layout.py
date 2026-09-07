@@ -24,7 +24,7 @@ that line. It carries two things and nothing else:
    `html.parser`, so nothing in `pyproject.toml` grows and nothing on the live
    path imports a vendor package (the namespace guard in
    `common/test_vendor_parity.py` pins that). It is a re-expression, not a
-   copy, and it departs from the vendor in four recorded places -- see
+   copy, and it departs from the vendor in five recorded places -- see
    **Departures** below. Every departure moves in one direction: the vendor
    drops or substitutes, and we retain and name (GOVERNANCE 2).
 
@@ -71,6 +71,22 @@ condition and it is discharged here and in the commit that adds this file
   geometry the model reported; `nested_bboxes` lists them per block in document
   order and `content` keeps the answer's own bytes. Nothing derives page
   geometry from them -- they are evidence, not a second geometry channel.
+* **Character data outside every top-level block is counted and named.**
+  The vendor's `find_all("div", recursive=False)` does not see it, and neither
+  does any block here: a block the model answered as a top-level `<p>` or
+  `<table>`, or a line of ink it left between two divs, would otherwise yield
+  a page that parsed cleanly -- `findings == []`, `parse` complete -- with
+  those words absent from `page_text` and from every span. That is a missed
+  act arriving under a successful status, which GOALS 1 rates worst and
+  GOVERNANCE 2 forbids. It is a `content-outside-blocks` finding carrying the
+  number of non-whitespace characters that were outside. The count and not the
+  text, for the reason the `malformed-bbox` finding quotes under a bound: the
+  response bytes are retained whole upstream and are where the words live,
+  and a chair's own reading is published here as a length rather than as
+  prose. Character data is what is counted because character data is the
+  whole of what `LAYOUT_TEXT_VIEW` reads, so markup outside a block drops no
+  ink the text view would have read either; whitespace between blocks is
+  source formatting and produces nothing.
 * **The returned block count is reconciled against the raw HTML's own
   top-level `<div>` count.** `_count_top_level_divs` is a second, deliberately
   different scan -- a depth counter over `div` tags alone, blind to every other
@@ -83,11 +99,14 @@ Two smaller re-expressions are faithful rather than departures, and are noted
 so a reader is not left to infer them. The vendor's `if not label: label =
 "block"` default is reproduced exactly, with `label_declared` recording whether
 the answer carried a `data-label` at all. And the vendor's `int()` over each
-space-separated bbox component is narrowed to `^[+-]?[0-9]+$`, because Python's
-`int` also accepts underscore-separated literals (`int("1_0") == 10`): that is
-a convenience of the Python lexer, not a shape any model was ever asked for,
-and reading it as ten would be exactly the substituted value the first
-departure exists to prevent.
+space-separated bbox component is narrowed to a full match of
+`[+-]?[0-9]+`, because Python's `int` also accepts underscore-separated
+literals (`int("1_0") == 10`) and surrounding whitespace: the first is a
+convenience of the Python lexer, not a shape any model was ever asked for, and
+reading it as ten would be exactly the substituted value the first departure
+exists to prevent. It is a *full* match rather than an anchored one because
+`$` matches before a trailing newline too, which would have left the narrowing
+claiming more than it did.
 
 ## Geometry
 
@@ -371,6 +390,7 @@ LAYOUT_FINDING_KINDS: Final = frozenset(
         "nested-bbox-retained",
         "unclosed-block",
         "block-count-mismatch",
+        "content-outside-blocks",
     }
 )
 
@@ -436,7 +456,14 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # Geometry
 # ---------------------------------------------------------------------------
 
-_BBOX_COMPONENT: Final = re.compile(r"^[+-]?[0-9]+$")
+# Matched with `fullmatch`, and anchorless on purpose. `re.match` against
+# `r"^[+-]?[0-9]+$"` accepts `"7\n"`, because Python's `$` also matches just
+# before a final newline -- so a component carrying a line break would have
+# been read as a number by a rule whose refusal says it is not a plain decimal
+# integer. `int("7\n")` is 7, so nothing was ever misread; the claim in the
+# record was simply false, and a check that does not enforce what it states is
+# the kind of thing GOVERNANCE 10 is about.
+_BBOX_COMPONENT: Final = re.compile(r"[+-]?[0-9]+")
 
 
 def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | None]:
@@ -469,7 +496,7 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     parts = value.split(" ")
     if len(parts) != 4:
         return None, f"expected 4 space-separated components, found {len(parts)}"
-    if not all(_BBOX_COMPONENT.match(part) for part in parts):
+    if not all(_BBOX_COMPONENT.fullmatch(part) for part in parts):
         return None, "components are not plain decimal integers"
     box = [int(part) for part in parts]
     if not all(0 <= component <= BBOX_SCALE for component in box):
@@ -657,6 +684,11 @@ class _TopLevelDivReader(HTMLParser):
     Inner HTML is taken as a slice of the answer's own characters between the
     end of the opening tag and the start of the closing one, so `content` is
     the model's bytes and not a re-serialization of them.
+
+    `outside_characters` counts the ink that landed nowhere: character data
+    the answer wrote while no top-level block was open. Neither the vendor nor
+    this reader puts it in a block, so counting it is the only thing standing
+    between that text and a page that parses clean without it.
     """
 
     def __init__(self, html: str) -> None:
@@ -668,6 +700,7 @@ class _TopLevelDivReader(HTMLParser):
         self.blocks: list[dict[str, Any]] = []
         self.overflowed = False
         self.unclosed = False
+        self.outside_characters = 0
 
     def _index(self) -> int:
         line, offset = self.getpos()
@@ -733,6 +766,18 @@ class _TopLevelDivReader(HTMLParser):
                 break
         if tag == "div" and not self._stack and self._open is not None:
             self._close_block(self._html[self._open["content_start"] : self._index()])
+
+    def handle_data(self, data: str) -> None:
+        """Character data, counted when no top-level block is open to hold it.
+
+        Whitespace is not counted: the source's own line breaks and
+        indentation between blocks are markup formatting, exactly as they are
+        inside a block under `LAYOUT_TEXT_VIEW`. What is counted is text the
+        model wrote that no block will carry -- between two divs, or inside a
+        top-level `<p>` or `<table>` it answered a block as.
+        """
+        if self._open is None:
+            self.outside_characters += len(_WHITESPACE_RUN.sub("", data))
 
     def _note_nested_bbox(self, attrs: list[tuple[str, str | None]]) -> None:
         if self._open is None:
@@ -813,6 +858,12 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
     would also have found nothing in (`recursive=False`), and telling them
     apart is what lets a first real reading say which of the two happened
     without a person opening the blob.
+
+    An answer that does yield blocks can still have written ink outside all of
+    them -- between two divs, or in a top-level element it answered a block as.
+    That text is in no block and in no span, so it is counted and named
+    (`content-outside-blocks`) rather than left to a caller who would have no
+    way of knowing it existed.
     """
     if not isinstance(raw, (bytes, bytearray)):
         return _refuse("raw-response-not-bytes")
@@ -883,6 +934,17 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
     if nested_attributes:
         findings.append(
             _finding("nested-bbox-retained", blocks=nested_blocks, attributes=nested_attributes)
+        )
+    if reader.outside_characters:
+        findings.append(
+            _finding(
+                "content-outside-blocks",
+                characters=reader.outside_characters,
+                detail=(
+                    "the answer wrote character data outside every top-level block; "
+                    "no block carries it and the page text does not contain it"
+                ),
+            )
         )
     if raw_divs != len(blocks):
         findings.append(
