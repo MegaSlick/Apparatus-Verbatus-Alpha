@@ -805,7 +805,11 @@ def test_each_declared_framing_asks_its_own_prompt():
     assert set(churro.FRAMINGS) == {"registry-v0.3.0", "paper-harness-ed09bc7"}
 
 
-@pytest.mark.parametrize("bad", ["churro-layout-prompt", "", None if False else "trained", 1])
+# `None` is deliberately absent from this list: it is the *valid* request for
+# the default framing (`churro.resolve_framing`), pinned by
+# `test_the_default_framing_is_the_vendors_own_registry_answer` above, and
+# putting it here would assert a refusal the adapter is written never to make.
+@pytest.mark.parametrize("bad", ["churro-layout-prompt", "", "trained", 1])
 def test_an_undeclared_framing_is_refused_rather_than_resolved_to_a_near_match(bad):
     with pytest.raises(SchemaRefusal) as error:
         churro.prompt(bad)

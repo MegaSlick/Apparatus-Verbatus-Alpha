@@ -638,8 +638,8 @@ Attaching an aligned page witness that reports no geometry is the Perlector's
 `anchor-line` basis, which lands with the Perlector attachment unit. Even once
 it does, one scripted run over a fixture whose page text is exactly its two
 acts is not a proven pipeline (GOVERNANCE 10): a real register page carries
-material no proposal covers, and testimony content coverage will hold it. Second, two independent drivers reach
-the same
+material no proposal covers, and testimony content coverage will hold it.
+Second, two independent drivers reach the same
 fixture tree byte for byte: the orchestrator's own subprocess chain on one
 side, and — on the other — the identical driver this module uses for the live
 seam, pointed at the committed fixture catalogue, with `--placement-tier`
