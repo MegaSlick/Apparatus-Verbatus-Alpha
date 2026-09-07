@@ -206,7 +206,20 @@ def _refuse_unreadable_palette_alpha(image: Image.Image) -> None:
     counts = image.getcolors(1 << 8) or []
     for _count, index in counts:
         offset = index * stride + alpha
-        if offset < len(entries) and entries[offset] < 255:
+        if offset >= len(entries):
+            # Skipping it would be the silent loss this module refuses everywhere
+            # else: measured on Pillow 12.3.0, an index its palette does not
+            # describe reads through `convert("L")` as 0 — ink invented from a
+            # byte the page never defined. Refused rather than counted, and in
+            # its own words, because it is not a transparency question. No route
+            # was measured to produce it either: a decoded palette is as long as
+            # the file's own PLTE, and `quantize()` writes all 256 entries.
+            raise _UnsettledReadingPolicy(
+                f"a sealed page draws with palette entry {index}, which its own palette of "
+                f"{len(entries) // stride} entries does not describe, so there is no sample "
+                "to read there and no settled policy for reading one that is not there"
+            )
+        if entries[offset] < 255:
             raise _UnreadableTransparency(
                 f"a sealed page draws with palette entry {index}, which its own palette "
                 f"marks {entries[offset]} of 255 opaque, and reading it as grey would "

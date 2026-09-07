@@ -467,6 +467,20 @@ def test_a_16bit_record_outside_its_own_range_is_refused_rather_than_clamped() -
         _to_display_mode(image)
 
 
+def test_an_index_the_palette_does_not_describe_is_refused_not_counted_as_ink() -> None:
+    """`convert("L")` reads an undescribed index as 0, which readers count as ink.
+
+    Found by CodeRabbit reviewing the palette check: skipping such an entry
+    would leave the one silent path through a function whose whole purpose is
+    that nothing on the page is measured without being recorded.
+    """
+    page = _palette_page((255, 255), (0, 1))
+    page.putdata([0, 7])
+
+    with pytest.raises(ValueError, match="does not describe"):
+        _grayscale_samples(page)
+
+
 def _palette_page(alphas: tuple[int, ...], indices: tuple[int, ...]) -> Image.Image:
     image = Image.new("P", (len(indices), 1))
     palette = bytearray()
