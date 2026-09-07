@@ -1429,6 +1429,32 @@ def test_a_non_object_body_reaches_the_trained_parser_and_fails_there(body):
     assert result["reason"]
 
 
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"not xml and not json",
+        b'["a json array, not an object"]',
+        b'"a bare json string"',
+        b"<output attr='no'>x</output>",
+        b"<notoutput>x</notoutput>",
+    ),
+)
+def test_a_non_object_body_is_handed_to_the_trained_parser_by_name(body, monkeypatch):
+    """The prior test proves these bodies fail; this one proves *where*.
+
+    `validate_churro_xml` is stubbed so the assertion cannot pass on any
+    generic failure reason -- only on the trained door's own text -- which
+    is what pins the dispatch to that parser rather than to a coincidence.
+    """
+
+    def trained_parser(raw):
+        assert raw == body
+        return "trained reading"
+
+    monkeypatch.setattr("common.native_witness.validate_churro_xml", trained_parser)
+    assert parse_churro_response(body) == {"state": "parsed", "text": "trained reading"}
+
+
 @pytest.mark.parametrize("raw", ("<output>a str, not bytes</output>", None, 7, ["x"], {"a": 1}))
 def test_a_body_that_is_not_bytes_is_refused_by_the_same_name_at_both_churro_doors(raw):
     """One boundary, two return conventions, one sentence for a non-bytes body.
