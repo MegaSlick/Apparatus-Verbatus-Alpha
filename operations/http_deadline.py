@@ -182,11 +182,17 @@ def recording_opener(
 
         built.append(_RecordingHTTPSHandler())
 
-    def cancel() -> list[str]:
+    def cancel() -> list[str] | None:
         failures: list[str] = []
         broke_one = False
         with lock:
             current = list(sockets)
+        if not current:
+            # Nothing was ever recorded (the worker never reached a socket, e.g.
+            # blocked in name resolution): no shutdown happened, and the refusal
+            # must not say one did. `None` is the same answer a socket-less seam
+            # gives, and `call_within_deadline` reads it the same way.
+            return None
         for sock in current:
             try:
                 # `shutdown`, not `close`: closing only drops this reference,

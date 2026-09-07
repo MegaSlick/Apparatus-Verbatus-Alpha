@@ -936,13 +936,16 @@ class ServingManager:
             def probe_timeout() -> float:
                 return min(_READINESS_PROBE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic()))
 
+            # Liveness and the launch log get their last word before the generic
+            # watchdog refusal: a dead process or a named fatal signature is a
+            # better-named fact than "timed out" for an operator reading the record.
+            self._assert_process_live(process)
+            launch_tail = process.read_tail()
             # A budget of zero would mean issuing a request that cannot succeed.
             # The watchdog timeout is the right answer at that point, and it is
             # the same refusal the check at the bottom of this loop produces.
             if deadline - self.monotonic() <= 0:
                 raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
-            self._assert_process_live(process)
-            launch_tail = process.read_tail()
             if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
                 raise ReadinessError(
                     "VLLM_LOG_UNREADABLE",
