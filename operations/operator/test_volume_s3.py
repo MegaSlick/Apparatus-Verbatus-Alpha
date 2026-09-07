@@ -108,7 +108,9 @@ def _shape(url: SplitResult) -> tuple[str, str | None, int | None, str]:
     same endpoint, so both sides of a comparison go through here.
     """
 
-    host = url.hostname.rstrip(".").lower() if url.hostname else url.hostname
+    # One trailing dot is the DNS root spelling of the same host; two is a
+    # different, malformed name and must not normalise into the expected one.
+    host = url.hostname.removesuffix(".").lower() if url.hostname else url.hostname
     return (url.scheme.lower(), host, url.port, url.path)
 
 
@@ -121,6 +123,8 @@ def test_urls_in_sees_every_scheme_spelling_and_normalises_the_host() -> None:
     assert [u.hostname for u in found] == ["a.example", "evil.example", "f.example"]
     dotted = _urls_in(["https://s3api-eu-cz-1.runpod.io./bucket"])[0]
     assert _shape(dotted) == ("https", "s3api-eu-cz-1.runpod.io", None, "/bucket")
+    two_dots = _urls_in(["https://s3api-eu-cz-1.runpod.io../bucket"])[0]
+    assert _shape(two_dots) != ("https", "s3api-eu-cz-1.runpod.io", None, "/bucket")
 
 
 def test_the_endpoint_lowercases_the_datacenter_and_the_region_does_not() -> None:
