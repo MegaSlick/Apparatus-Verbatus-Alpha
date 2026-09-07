@@ -1065,7 +1065,7 @@ def test_a_measured_shortfall_on_the_same_page_outranks_the_unmeasured_one(monke
     assert "chair 'attestator_1'" in finding["unmeasured_reason"]
 
 
-def _mixed_page_context(monkeypatch, *, anchor_reason=None):
+def _mixed_page_context(monkeypatch, *, anchor_reason=None, anchor_end=5):
     """One page, one chair, two acts: one starting here, one continuing through.
 
     The commonest real shape at the head of a continuation. `act-1` is marked
@@ -1079,7 +1079,7 @@ def _mixed_page_context(monkeypatch, *, anchor_reason=None):
     page = _page_testimonium(outcome="read", retained="alphaXYZ \tQ")
     page["payload"]["page_role"] = "mixed"
     context = _context(page)
-    anchored = _attachment(context, end=5)
+    anchored = _attachment(context, end=anchor_end)
     if anchor_reason is not None:
         anchored["payload"]["attachments"][0]["attached"] = False
         anchored["payload"]["attachments"][0]["alignment"] = {
@@ -1155,6 +1155,25 @@ def test_a_mixed_pages_uncovered_text_is_measured_beside_a_declared_continuation
         under_witnessed=False,
     )
     assert outcome == "held-for-review"
+
+
+def test_a_zero_width_aligned_span_leaves_the_page_unmeasured(monkeypatch):
+    """The union decides, not the span list (PR #100 review).
+
+    An aligned span of zero width is a valid row that covers nothing, and
+    `_covered_intervals` drops it from the union. Reading `spans` as evidence
+    of measurement would turn this page into a measured `shortfall: True` and
+    send it for review; the empty union is the fact.
+    """
+    context = _mixed_page_context(monkeypatch, anchor_end=0)
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    measured = finding["by_chair"]["attestator_1"]
+    assert measured["attached_spans"] == [{"start": 0, "end": 0, "act_id": "act-1"}]
+    assert measured["uncovered_non_whitespace"]["count"] == 9
+    assert finding["shortfall"] is None
+    assert "act-2 declared unanchored" in finding["reason"]
 
 
 def test_the_same_page_without_an_aligned_span_is_unmeasured_again(monkeypatch):

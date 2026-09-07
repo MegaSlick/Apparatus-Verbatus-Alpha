@@ -2739,9 +2739,11 @@ def testimony_content_findings(context) -> dict[int, dict]:
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
-        if spans or not declared_unanchored:
-            # Only an *empty* span union is unmeasured. Where this chair has
-            # aligned spans on the page, the diff was taken against a real union
+        if covered_intervals or not declared_unanchored:
+            # Only an *empty* span union is unmeasured -- the union, not the span
+            # list: a zero-width aligned span is a valid row that covers nothing,
+            # so `covered_intervals` is the fact, not `spans`. Where this chair has
+            # covering spans on the page, the diff was taken against a real union
             # -- a mixed page carries one act starting here beside another
             # continuing through -- so its uncovered text is a measurement like
             # any other and raises the page's shortfall. Suppressing it because
