@@ -42,8 +42,11 @@ class _TimedOut(Exception):
 # back as "stripped" text. See `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
 
-# The RecordGold card's two uncertainty markers (MIT). Kept as a private
-# constant here rather than imported from `pipeline/3_attestatores/feeding.py`
+# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT) --
+# https://huggingface.co/datasets/Teklia/DAI-CReTDHI-RecordGold-ATR. Not
+# `Teklia/RecordGold`: that id names a different, gated dataset (401, no
+# public card). Kept as a private constant here rather than imported from
+# `pipeline/3_attestatores/feeding.py`
 # -- `common/` is the lower layer and `feeding.py` already imports from it, so
 # an import the other way would be circular. `test_alignment.py` asserts this
 # tuple is byte-identical to `feeding._UNCERTAINTY_TOKENS` so the two copies
