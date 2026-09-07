@@ -251,6 +251,11 @@ def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
             "anchor_chair": "attestator_1" if anchor_basis == "act-anchor" else None,
             "anchor_span": {"start": 0, "end": 1},
             "witness_span": {"start": 0, "end": 1},
+            "anchor_line_match": {
+                "anchor_characters": 1,
+                "matched_characters": 1,
+                "longest_matched_run": 1,
+            },
             "line_geometry": [],
             "loss": {},
             "offset_maps": {},

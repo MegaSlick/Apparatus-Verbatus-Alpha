@@ -41,6 +41,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.outcomes import page_attachment_basis  # noqa: E402
 from common.contracts.serving import (  # noqa: E402
     RAW_RESPONSE_KINDS,
     RAW_RESPONSE_MODEL_OUTPUT,
@@ -3334,11 +3335,23 @@ def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> 
     the same characters to two acts' dissent rows as though the witness had said
     them twice.
 
-    So neither wins.  Both stay geometrically attached -- the chair really did
-    report ink there -- while their text correspondence becomes explicitly
-    unaligned with a named reason, and neither can count toward the witness
-    floor.  A zero-width span (the trivial attach a genuinely-empty page reading
-    gets) touches nothing and is deliberately not an overlap.
+    So neither wins.  Their text correspondence becomes explicitly unaligned
+    with a named reason, and neither can count toward the witness floor.  A
+    zero-width span (the trivial attach a genuinely-empty page reading gets)
+    touches nothing and is deliberately not an overlap.
+
+    **What survives the unalignment depends on what attached it**, and this is
+    not cosmetic bookkeeping: a chair attached by `geometric-overlap` stays
+    attached, because the chair really did report ink there and the alignment
+    was never its evidence.  A chair attached by `anchor-line` has just lost the
+    only evidence it had, so it becomes unattached and says so.  Leaving it
+    `attached: true` beside an unaligned record published a row neither reader
+    can accept -- both re-derive attachment through
+    `common/contracts/outcomes.py::page_attachment_basis`, which answers
+    `unattached` for a witness with no geometry and no located anchor line, and
+    refuse a record whose stored boolean disagrees.  Unreachable while nothing
+    attached on text alone; reachable from Unit 12, which is why it is fixed
+    here rather than recorded.
 
     Extracted from the attachment pass so it can be exercised directly: the
     combination needs one chair's page reading to match one act's anchor range in
@@ -3367,12 +3380,16 @@ def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> 
                 ):
                     ambiguous.update({index, other_index})
         for index in ambiguous:
-            entries[index]["alignment"] = {
+            entry = entries[index]
+            entry["alignment"] = {
                 "status": "unaligned",
                 "reason": "ambiguous-overlapping-act-alignment",
             }
-            entries[index]["span"] = None
-            entries[index]["comparable"] = False
+            entry["span"] = None
+            entry["comparable"] = False
+            if entry["attachment_basis"] == "anchor-line":
+                entry["attached"] = False
+                entry["attachment_basis"] = "unattached"
 
 
 def act_scoped_attachment_entry(
@@ -4151,6 +4168,20 @@ def publish_page_testimonia_and_attachments(
                             else {"start": 0, "end": 0}
                         ),
                         "witness_span": {"start": 0, "end": 0},
+                        # Nothing was matched, because there was no witness text
+                        # to match. The measurement is recorded all the same:
+                        # every aligned record carries it, so a reader never has
+                        # to tell "no match" from "not measured" by the absence
+                        # of a field (GOVERNANCE 2).
+                        "anchor_line_match": {
+                            "anchor_characters": (
+                                act_anchor["end"] - act_anchor["start"]
+                                if act_anchor is not None
+                                else 0
+                            ),
+                            "matched_characters": 0,
+                            "longest_matched_run": 0,
+                        },
                         "line_geometry": (
                             _line_geometry(act_anchor) if act_anchor is not None else []
                         ),
@@ -4195,12 +4226,27 @@ def publish_page_testimonia_and_attachments(
                         # verdict: clip in normalized space first, translate at
                         # this one storage point, spans stay RAW everywhere.
                         clipped = []
+                        # How much of THIS act's anchor line the clipped
+                        # fragments actually matched, measured here because this
+                        # is the only place that holds the fragments: the record
+                        # keeps a hull, and a hull cannot be un-hulled later.
+                        # `anchor_line_located` reads the longest run to decide
+                        # whether anything was located at all -- without it a
+                        # scatter of single coincidental characters produced a
+                        # positive hull and put a chair on the witness floor
+                        # (hostile review of Unit 12, must-fix 1). The matching
+                        # blocks are disjoint and increasing in both sequences,
+                        # so the total is a sum and never double-counts.
+                        matched_characters = 0
+                        longest_matched_run = 0
                         for span in result["spans"]:
                             start = max(span["anchor"]["start"], act_anchor["start"])
                             end = min(span["anchor"]["end"], act_anchor["end"])
                             if start < end:
                                 shift = span["witness"]["start"] - span["anchor"]["start"]
                                 clipped.append((start + shift, end + shift))
+                                matched_characters += end - start
+                                longest_matched_run = max(longest_matched_run, end - start)
                         if clipped:
                             # Still a hull ACROSS the clipped fragments: when the
                             # act's anchor range matches the witness in two
@@ -4232,6 +4278,13 @@ def publish_page_testimonia_and_attachments(
                                         key: act_anchor[key] for key in ("start", "end")
                                     },
                                     "witness_span": {"start": witness_start, "end": witness_end},
+                                    "anchor_line_match": {
+                                        "anchor_characters": (
+                                            act_anchor["end"] - act_anchor["start"]
+                                        ),
+                                        "matched_characters": matched_characters,
+                                        "longest_matched_run": longest_matched_run,
+                                    },
                                     "line_geometry": _line_geometry(act_anchor),
                                     "loss": {
                                         "witness": result["witness"]["loss"],
@@ -4266,20 +4319,32 @@ def publish_page_testimonia_and_attachments(
                         if region["payload"]["transform"]["source_page_ordinal"]
                         == contributing_page
                     ]
-                    # Alignment only supplies a span inside this witness's own
-                    # text.  The attachment itself is the page geometry this
-                    # chair reported against the sealed proposal; no anchor
-                    # selects a witness/proposal correspondence.
+                    # Two bases, derived by the one shared rule
+                    # (`common/contracts/outcomes.py::page_attachment_basis`)
+                    # both readers re-derive: this chair's own reported ink over
+                    # the act's sealed proposal, or -- only where it reported no
+                    # such ink -- an alignment that located this act's anchor
+                    # line inside its page text. The second exists because a
+                    # grammar can carry no geometry at all (Churro's, by vendor
+                    # design), and geometry-only attachment left every such
+                    # chair permanently unattached and every act one witness
+                    # under the floor. Nothing here selects among witnesses: the
+                    # anchor decides whether this chair's text was PLACED in
+                    # this act, never whose reading is right (GOVERNANCE 3).
                     contributing_outcome = page_outcomes.get(
                         (contributing_page, chair), act_attempt.outcome
                     )
-                    page_attached = contributing_outcome in WITNESS_READING_OUTCOMES and any(
-                        reported_geometry_overlaps(
-                            page_observations[(contributing_page, chair)], bounds
-                        )
-                        for bounds in page_bounds
+                    attachment_basis = page_attachment_basis(
+                        reading=contributing_outcome in WITNESS_READING_OUTCOMES,
+                        geometry_overlaps=any(
+                            reported_geometry_overlaps(
+                                page_observations[(contributing_page, chair)], bounds
+                            )
+                            for bounds in page_bounds
+                        ),
+                        alignment=page_alignment,
                     )
-                    attachment_basis = "geometric-overlap" if page_attached else "unattached"
+                    page_attached = attachment_basis != "unattached"
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {

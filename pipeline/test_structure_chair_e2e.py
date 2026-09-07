@@ -34,15 +34,15 @@ fixture rows: there the live seam is read against declared acts, here against
 proposed ones, and the fixture path's declared-act machinery is not consulted
 anywhere in between.
 
-**The export is held for review, and the reason is not the structure chair.**
+**The export is delivered, and the witness floor is met by three chairs.**
 Every act is minted, witnessed and read; the Churro chair here answers in the
-retired `<output>` envelope, which carries no geometry, so it never attaches to
-an act and two witnesses of a floor of three count. Since U10 that is a property
-of THE CHAIR and not only of the scripted body: `HistoricalDocument` has no
-coordinate vocabulary anywhere, so this chair reports no geometry in any framing
-it can be asked in, and `pipeline/test_live_reading_seam_e2e.py` reaches the
-same held export over declared acts. What closes it is U12, admitting the
-Perlector's existing `anchor-line` basis — not a body scripted with boxes. The
+retired `<output>` envelope, which carries no geometry. Since U10 that is a
+property of THE CHAIR and not only of the scripted body: `HistoricalDocument`
+has no coordinate vocabulary anywhere, so this chair reports no geometry in any
+framing it can be asked in. While attachment came from geometry alone it reached
+no act, and two witnesses of a floor of three counted. What closed that is U12,
+admitting the Perlector's existing `anchor-line` basis — its page text is
+aligned to the act's own anchor line — and not a body scripted with boxes. The
 envelope is kept here on purpose: the vendor's own reader still reads it, as
 retained history under a `retired-output-envelope` finding, and this module is
 about which acts exist rather than about how many witnesses reach them, so
@@ -739,35 +739,41 @@ def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(wh
 def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     """Every stage after the Designator reads a tree whose acts a model drew.
 
-    The export is **held for review, not delivered**, and nothing about the
-    shortfall is a fact about the structure chair — every act it proposed was
-    read — which is the point of asserting it here as well: replacing declared
-    acts with proposed ones moved the denominator, not the coverage.
+    The export is **delivered**, and nothing in that is a fact about the
+    structure chair: every act it proposed was marked out, read by all three
+    witness chairs, and established. Replacing declared acts with proposed ones
+    moved the denominator, not the coverage.
 
-    The shortfall is the Churro chair, and this module's scripted body is not
-    what makes it one. The body here is the retired `<output>` envelope, which
-    carries no geometry, so it never attaches and two witnesses of a floor of
-    three count — and since U10 no framing this chair can be asked in carries
-    geometry either, `HistoricalDocument` having no coordinate vocabulary, so
-    the live-seam suite over declared acts reaches the same held export. U12
-    closes it at the Perlector, on the `anchor-line` basis. Keeping the envelope
-    here is deliberate: this suite is about which acts exist, and a witness
-    floor pinned to a shape it does not vary keeps that question separate from
-    how many witnesses reach them.
+    The shortfall the assertions here once described is gone, and this module's
+    scripted body is not what closed it. The body here is the retired
+    `<output>` envelope, which carries no geometry, and since U10 no framing
+    this chair can be asked in carries geometry either -- `HistoricalDocument`
+    has no coordinate vocabulary. While attachment came from geometry alone that
+    chair reached no act, so each act stood at two witnesses of a floor of three
+    and the run held on a shortfall that had not happened. U12 gave exactly that
+    chair the `anchor-line` basis, and this test was left describing the run the
+    change replaced -- red on its own branch, and found while fixing that unit's
+    hostile review rather than by the suite that should have caught it. Keeping
+    the envelope here is still deliberate: this suite is about which acts exist,
+    and a witness floor pinned to a shape it does not vary keeps that question
+    separate from how many witnesses reach them.
+
+    What the third witness costs is stated where the floor is counted
+    (`pipeline/test_live_reading_seam_e2e.py`), not here: it counts because the
+    first chair's response located its text, so "three witnesses" is two
+    independent readings and one dependent placement.
     """
     assert whole_run.tail == {
-        "pipeline/5_recensor/run.py": EXIT_HELD,
+        "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
-        "pipeline/7_armarium/run.py": EXIT_HELD,
+        "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(whole_run.run_root, RUN_ID))
-    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
+    assert export["outcome"] == ArmariumCategory.DELIVERED.value
     aggregate = export["payload"]["aggregate"]
-    assert aggregate["status"] == "partial"
-    assert sorted(aggregate["reasons"]) == sorted(
-        [f"act {key} is held-for-review" for key in ACT_KEYS]
-        + [f"act {key} is under-witnessed (2 of a floor of 3)" for key in ACT_KEYS]
-    )
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+    assert aggregate["by_category"] == {ArmariumCategory.DELIVERED.value: len(ACT_KEYS)}
     readings = published_readings(whole_run.run_root)
     assert len(readings) == len(ACT_KEYS)
     assert {record["outcome"] for record in readings} == {"read"}
