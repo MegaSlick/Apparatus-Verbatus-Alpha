@@ -1049,6 +1049,12 @@ _CHURRO_STOP_REASONS: Final = (
 #: re-derives under the name the record was written with, so each posture
 #: re-derives through the branch it was recorded under.
 CHURRO_PARSERS: Final = frozenset({"xml", "churro"})
+#: The one sentence both Churro doors name a non-bytes body by. Spelled once
+#: because `validate_churro_xml` and `parse_churro_response` are the same
+#: boundary wearing two return conventions, and a body that is not bytes is the
+#: same fact at either -- not an `AttributeError` at one and a named refusal at
+#: the other.
+CHURRO_RESPONSE_NOT_BYTES: Final = "Churro response is not raw bytes"
 
 
 def parse_churro_response(raw: bytes) -> dict[str, Any]:
@@ -1081,7 +1087,16 @@ def parse_churro_response(raw: bytes) -> dict[str, Any]:
     `unverified-response-schema` rather than falling through to the XML door
     wearing a last-wins value. `chandra.parse` splits the same way for the same
     reason.
+
+    A body that is not bytes at all is named the way `validate_churro_xml` names
+    it, returned as this function's own `failed` state. The dispatch decode below
+    would otherwise raise `AttributeError` off the caller's object before either
+    contract was consulted -- an unnamed interpreter error at one door where the
+    same boundary one branch away already answers with a refusal sentence the
+    capture can record (GOVERNANCE 2).
     """
+    if not isinstance(raw, (bytes, bytearray)):
+        return {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
@@ -1128,7 +1143,7 @@ def native_parse_refusal(parse: dict[str, Any]) -> str:
 def validate_churro_xml(raw: bytes) -> str:
     """Validate one bounded native Churro response as a plain output element."""
     if not isinstance(raw, (bytes, bytearray)):
-        raise SchemaRefusal("Churro response is not raw bytes")
+        raise SchemaRefusal(CHURRO_RESPONSE_NOT_BYTES)
     if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
         raise SchemaRefusal(
             "Churro response exceeds the retained parsing limit of "

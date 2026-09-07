@@ -1069,8 +1069,13 @@ def test_every_page_an_act_spans_but_is_not_primary_on_is_restated():
     review at all before this. The row is present and empty for an act that
     spans one page, so "spans no continuation" is not silence.
     """
+    measured = {"attached_spans": [], "uncovered_non_whitespace": {"count": 34}}
     findings = {
-        2: {"by_chair": {}, "shortfall": None, "reason": "unmeasured, and here is why"},
+        2: {
+            "by_chair": {"attestator_1": measured},
+            "shortfall": None,
+            "reason": "unmeasured, and here is why",
+        },
     }
     regions = [
         {"payload": {"transform": {"source_page_ordinal": ordinal}}} for ordinal in (1, 2, 2)
@@ -1081,15 +1086,22 @@ def test_every_page_an_act_spans_but_is_not_primary_on_is_restated():
     assert rows == [
         {
             "page_ordinal": 2,
-            "by_chair": {},
+            "by_chair": {"attestator_1": measured},
             "shortfall": None,
             "reason": "unmeasured, and here is why",
         }
     ]
     assert RUN.testimony_content_for_continuation_pages(findings, regions[:1], 1) == []
-    # A private copy per consumer, exactly as `testimony_content_for_page` gives.
+    # A private copy per consumer, exactly as `testimony_content_for_page` gives
+    # -- and private all the way down, not only at the top level. The row's
+    # evidence is the nested `by_chair` object; a shallow copy would leave every
+    # act's review sharing one page's counts, so an edit made while preparing a1
+    # would reach a2's still-to-be-published record. Both depths are pinned,
+    # because only the deeper one fails if `copy.deepcopy` becomes `dict(...)`.
     rows[0]["shortfall"] = True
+    rows[0]["by_chair"]["attestator_1"]["uncovered_non_whitespace"]["count"] = 0
     assert findings[2]["shortfall"] is None
+    assert findings[2]["by_chair"]["attestator_1"]["uncovered_non_whitespace"]["count"] == 34
 
 
 def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable():

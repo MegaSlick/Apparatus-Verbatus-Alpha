@@ -122,7 +122,9 @@ CHURRO_WIRE_PAGE_ONE = (
     '{"box_1000": [110, 470, 890, 835], "text": "SYNTHETIC ACT TWO delta epsiIon zeta eta"}]}'
 )
 # The continuation page: a2's tail alone, at (20,20 160x60) sealed, and
-# {22,22 156x60} derived from [110, 85, 890, 300] on a 200x260 page.
+# {22,22 156x56} derived from [110, 85, 890, 300] on a 200x260 page. The height
+# is 56, not the sealed row's 60: `to_page_bounds` floors the near edge
+# (85/1000 x 260 = 22.1 -> 22) and ceils the far one (300/1000 x 260 = 78 -> 78).
 CHURRO_WIRE_PAGE_TWO = (
     '{"schema": "verbatus-churro-page-response.v1", "blocks": ['
     '{"box_1000": [110, 85, 890, 300], "text": "SYNTHETIC ACT TWO delta epsiIon zeta eta"}]}'
@@ -2040,6 +2042,65 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     attempt = attestatores._attempt_from_retained_testimonium(context.tree, record)
 
     assert attempt.observation_payload is None
+
+
+def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_blob(
+    live_run, tmp_path
+):
+    """The other half of the sibling above: withheld as geometry, still verified.
+
+    The two tests before this one prove the no-geometry rule and would both keep
+    passing if the implementation returned `observation_payload=None` the moment
+    it saw `served_by_a_chair and not parsed_into_a_payload` -- before opening
+    the blob at all. That regression looks harmless and is not: a resumed pass
+    would then stand a retained response in for a chair answer without ever
+    establishing that the response is still on disk and still itself, which is
+    the whole reason the record may be reused instead of re-asked
+    (GOVERNANCE 4 -- the evidence is what makes the resume legitimate).
+
+    So the record's own reference stays exactly as the interrupted pass wrote
+    it -- a well-formed, content-addressed Attestatores blob reference -- and the
+    stored blob behind it is damaged instead, which is the case a digest check
+    exists for at all. If the read moves behind the branch, no refusal comes and
+    this fails.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    context = open_live_context(live_run, run_root)
+    raw_response_ref = attestatores.retained_blob_ref(
+        context, CHURRO_UNRECOGNIZED_BODY.encode("utf-8")
+    )
+    stored = context.tree.resolve(raw_response_ref["relative_path"])
+    stored.chmod(0o600)
+    stored.write_bytes(b"different bytes at the address the record names")
+    record = {
+        "outcome": "failed",
+        "payload": {
+            "payload": None,
+            "witness_reported": None,
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "content_health": {
+                "native_type": "unrecordable",
+                "encoding": "invalid-or-unrecordable",
+                "recordable": False,
+                "empty": None,
+                "blank": None,
+                "truncated": None,
+                "characters": None,
+                "truncation_basis": "unverified-response-schema",
+            },
+            "reason": "unverified-response-schema",
+            "raw_response_ref": raw_response_ref,
+            "serving_call_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/call",
+                "sha256": "c" * 64,
+            },
+            "native_capture": None,
+            "provenance": {"receipt_ref": None},
+        },
+    }
+
+    with pytest.raises(SchemaRefusal, match="retained raw response digest differs"):
+        attestatores._attempt_from_retained_testimonium(context.tree, record)
 
 
 # ==================== the operator-facing unread-declarations line ============

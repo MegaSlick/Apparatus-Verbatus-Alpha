@@ -11,6 +11,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from PIL import Image
 
+from common import native_witness
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -348,6 +349,28 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     churro_spec = adapters.resolve_runnable_adapter("churro.v1")
     assert churro_spec.observe(presented, "retained text") == echo
     assert churro_spec.observe(presented, b"<output>retained text</output>") == echo
+    # And the third body shape, which is neither of those two and had no direct
+    # test: a body that DECLARES this repository's wire contract and is malformed
+    # inside it. `observe` must not read geometry out of a response its own
+    # parser refused -- that would be block rectangles derived from a body no
+    # parser placed (GOVERNANCE 10) -- so it derives the same presented echo,
+    # named as restated, which routing and coverage exclude. It takes that branch
+    # before `page_size` is consulted, so no page size is needed here either.
+    malformed_wire = (
+        b'{"schema": "verbatus-churro-page-response.v1", "blocks": '
+        b'[{"box_1000": [110, 85, 890], "text": "a block with three coordinates"}]}'
+    )
+    assert churro_spec.observe(presented, malformed_wire) == echo
+    assert churro_spec.observe(presented, malformed_wire, page_size=(200, 260)) == echo
+    # Nothing is lost by that echo: the capture written from the same bytes says
+    # what the parser could not place, by name and beside the retained response.
+    capture = native_witness.derive_churro_capture(malformed_wire, "eos", parser="churro")
+    assert capture["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "churro",
+        "outcome": "malformed-block-geometry",
+    }
+    assert capture["stop_reason"] == "partial-parse-unrecognized-shape"
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):

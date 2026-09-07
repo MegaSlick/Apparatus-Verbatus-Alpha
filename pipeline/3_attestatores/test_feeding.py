@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import time
 from pathlib import Path
@@ -260,6 +261,48 @@ def test_the_live_layout_prompt_is_the_trained_carry_with_only_its_format_replac
     lowered = (live["system"] + live["user"]).lower()
     for banned in ("confiden", "at least", "severity", "prefer", "if in doubt", "be sure"):
         assert banned not in lowered
+
+
+def test_the_example_object_in_the_live_prompt_parses_as_the_contract_it_declares():
+    """The instruction and the parser are held to each other, not asserted apart.
+
+    Clause 6 shows the chair a JSON object and says "respond with exactly this".
+    Every other test of this prompt checks that the schema name, `blocks` and
+    `box_1000` appear *somewhere* in the bytes -- substring checks, which a
+    misspelled key, a stray trailing comma, a renamed member or a fourth key
+    would all survive. Then the chair would answer in the shape it was shown and
+    `churro_response.parse` would refuse its own request as
+    `unverified-response-schema`, with the bytes retained and the reading lost
+    for a defect on our side of the wire. GOVERNANCE 7 is that the pipeline's
+    obligation to the model is to feed it completely; asking for a shape this
+    repository refuses is not feeding it completely.
+
+    So the example is lifted out of the sent bytes, its four coordinate
+    placeholders replaced with integers -- the only thing in it that is not
+    literal JSON -- and put through the real parser.
+    """
+    user = churro_layout_prompt()["user"]
+    example = re.search(r'\{"schema".*?\]\}', user, re.S)
+    assert example, "clause 6 no longer shows a JSON object beginning with a schema name"
+    literal = example.group(0)
+    # Only the coordinates are placeholders. `"..."` is already legal JSON, and
+    # is left exactly as the chair is shown it.
+    coordinates = {"x0": "110", "y0": "85", "x1": "890", "y1": "375"}
+    concrete = re.sub(r"\b[xy][01]\b", lambda found: coordinates[found.group(0)], literal)
+    assert not re.search(r"\b[xy][01]\b", concrete)
+
+    decoded = json.loads(concrete)
+    assert set(decoded) == {"schema", "blocks"}
+    assert decoded["schema"] == churro_response.PAGE_RESPONSE_SCHEMA
+    assert [set(block) for block in decoded["blocks"]] == [{"box_1000", "text"}]
+
+    # And the parser this repository will actually read the answer with accepts
+    # it -- the assertion the key checks above cannot make.
+    parsed = churro_response.parse(concrete.encode("utf-8"))
+    assert not churro_response.is_refusal(parsed), parsed
+    assert parsed["schema"] == churro_response.PAGE_RESPONSE_SCHEMA
+    assert [block["box_1000"] for block in parsed["blocks"]] == [[110, 85, 890, 375]]
+    assert parsed["page_text"] == "..."
 
 
 def test_the_live_prompt_keeps_the_two_message_framing_the_serving_seam_dispatches_on():

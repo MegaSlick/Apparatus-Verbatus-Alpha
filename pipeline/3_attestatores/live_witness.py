@@ -468,9 +468,10 @@ def churro_generation_sent(
 
 
 #: The adapters this seam knows how to build a page request for and capture a
-#: page response from. Named once rather than spelled as a chain of `==` in each
-#: of the three places that ask: two hard-coded names in one branch is how the
-#: third page adapter gets silently excluded from a rule it belongs to.
+#: page response from. It is named in `captured_page_attempt`'s refusal, which
+#: is the one place the set is *asked* a question: every branch after that
+#: refusal already knows it holds a page adapter, so a membership test there
+#: would be a second, quieter copy of this list rather than a check.
 _PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1"})
 
 
@@ -962,9 +963,14 @@ def captured_page_attempt(
             # carry them forward. Withholding them from Churro would hand its
             # `observe` the joined page text and derive no geometry at all --
             # the unattached page witness this unit exists to close.
-            observation_payload=(
-                response.content.encode("utf-8") if adapter_name in _PAGE_SCOPED_ADAPTERS else None
-            ),
+            # Unconditional, and that is the point: the dispatch above has
+            # already refused every adapter but the two page-scoped ones, so a
+            # membership test here could only ever be true. Written as a test it
+            # would be a second, quieter list of the page adapters -- and a third
+            # page chair added to the dispatch and forgotten here would then land
+            # with `observation_payload=None`, deriving no geometry, silently
+            # (GOVERNANCE 2). One list, at the refusal, where a miss is loud.
+            observation_payload=response.content.encode("utf-8"),
         )
     if parsed["state"] == "parsed":
         # An interrupted or unconfirmed empty response is not evidence of a

@@ -191,7 +191,10 @@ def test_one_malformed_block_refuses_the_whole_response_by_name(block, outcome):
 
 
 def test_a_non_finite_coordinate_is_malformed_geometry_not_an_interpreter_error():
-    body = b'{"schema": "verbatus-churro-page-response.v1", "blocks": [{"box_1000": [0, 0, NaN, 10], "text": "x"}]}'
+    body = (
+        b'{"schema": "verbatus-churro-page-response.v1", '
+        b'"blocks": [{"box_1000": [0, 0, NaN, 10], "text": "x"}]}'
+    )
     assert churro_response.parse(body) == {"parse_outcome": "malformed-block-geometry"}
 
 

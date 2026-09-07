@@ -361,13 +361,22 @@ def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
         clearances.append(
             (row.get("scenario"), row["chair"], row["page_ordinal"], spare_x, spare_y)
         )
-        # The counterfactual, one pixel past this row's own far x edge: the box
-        # is split out of the act view rather than refused, which is the failure
-        # this pin exists to make visible instead of silent.
-        wider = [{**observed[0], "bounds": {**observed[0]["bounds"], "w": row["w"] + spare_x + 1}}]
-        kept, rejected = native_witness.split_page_edge_overshoots(wider, page_size=page_size)
-        assert kept == []
-        assert [item["bounds"] for item in rejected] == [wider[0]["bounds"]]
+        # The counterfactual, one pixel past this row's own far edge: the box is
+        # split out of the act view rather than refused, which is the failure
+        # this pin exists to make visible instead of silent. Both edges, because
+        # a page has two of them: an implementation that measured only the far x
+        # edge would pass the first case and let a box hanging off the bottom of
+        # the page into the act view, which is the same silent loss on the other
+        # axis. Neither edge is the one this fixture's rows are near -- the flush
+        # row has `spare_x == 0` -- so the pair is what says the check is about
+        # the page, not about this corpus.
+        for axis, spare in (("w", spare_x), ("h", spare_y)):
+            over = [
+                {**observed[0], "bounds": {**observed[0]["bounds"], axis: row[axis] + spare + 1}}
+            ]
+            kept, rejected = native_witness.split_page_edge_overshoots(over, page_size=page_size)
+            assert kept == [], axis
+            assert [item["bounds"] for item in rejected] == [over[0]["bounds"]], axis
     # Every such row's exact distance to its page's far edges, written out. A
     # one-pixel edit to any of them -- including the one that made Churro's row
     # overshoot -- fails here, naming the row, rather than only as a moved

@@ -1405,6 +1405,28 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # (GOVERNANCE 2). Indexed, not `.get`: every review shape this stage
             # can read writes the field, and a review without it is a stale or
             # foreign record this stage should refuse over rather than paper.
+            #
+            # **How far this restatement reaches, named rather than assumed.**
+            # It reaches the `manifest-entry` and the `export` artifact -- the run
+            # tree -- and stops there. It is NOT inside the ZIP the run delivers:
+            # `projected_acts` below is what `build_armarium_bundle` receives, and
+            # every place the field could ride into a package member is a closed
+            # field set with a schema version on it (`armarium-act.v2` and its
+            # `_ACT_RECORD_FIELDS`, `armarium-acts-sqlite.v2`,
+            # `armarium-sources.v3`'s own key list, `_act_outcome_sources`'s
+            # record closure, and `_aggregate_from_basis`'s four-name accounting
+            # basis, which is closed precisely so an extended basis is refused).
+            # Carrying it there is an export-contract change across those
+            # versions, not an addition, and it needs the basis copy to be
+            # cross-checkable against the act rows the way `act_text_status` is
+            # -- an unverifiable field inside the verified basis would be an
+            # assertion sitting in the evidence block. So the package still says
+            # `complete` over an act whose continuation page carries transcribed
+            # characters nothing measured, and a reader who has only the ZIP
+            # cannot see that. Raised by CodeRabbit and left standing here
+            # deliberately: it is a real gap, its fix is a contract decision, and
+            # it is written at the line where the reach was actually chosen so it
+            # cannot be lost (GOVERNANCE 2's second paragraph).
             "testimony_content_coverage_continuation": review["payload"][
                 "testimony_content_coverage_continuation"
             ],

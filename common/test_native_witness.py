@@ -12,10 +12,12 @@ from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.imaging import crop_png
 from common.native_witness import (
     CHURRO_PARSERS,
+    CHURRO_RESPONSE_NOT_BYTES,
     derive_churro_capture,
     parse_churro_response,
     partition_disagreement,
     unpresented_region_ids,
+    validate_churro_xml,
     validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
@@ -1424,6 +1426,41 @@ def test_a_non_object_body_reaches_the_trained_parser_and_fails_there(body):
     result = parse_churro_response(body)
     assert result["state"] == "failed"
     assert result["reason"]
+
+
+@pytest.mark.parametrize("raw", ("<output>a str, not bytes</output>", None, 7, ["x"], {"a": 1}))
+def test_a_body_that_is_not_bytes_is_refused_by_the_same_name_at_both_churro_doors(raw):
+    """One boundary, two return conventions, one sentence for a non-bytes body.
+
+    `validate_churro_xml` has always named this; the dispatcher in front of it
+    reached `raw.decode` first and raised `AttributeError` off the caller's
+    object instead -- an unnamed interpreter error where the door one branch
+    away answers with a sentence a capture can record. Both now say the same
+    thing, and it is spelled once (`CHURRO_RESPONSE_NOT_BYTES`).
+    """
+    assert parse_churro_response(raw) == {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
+    with pytest.raises(SchemaRefusal, match=CHURRO_RESPONSE_NOT_BYTES):
+        validate_churro_xml(raw)
+
+
+def test_the_guard_admits_exactly_what_the_trained_door_behind_it_admits():
+    """`bytearray` is what `validate_churro_xml` has always taken, so it passes.
+
+    A guard in front of that door that admitted less would refuse a body the
+    door itself would have read -- which is the failure mode this fix exists to
+    remove, not one to introduce a branch earlier. What each contract behind the
+    dispatch then does with a `bytearray` is that contract's own answer:
+    `churro_response.parse` takes `bytes` alone and names its refusal
+    (`raw-response-not-bytes`), which is a placed shape, not an unnamed crash.
+    """
+    assert parse_churro_response(bytearray(b"<output>plain reading</output>")) == {
+        "state": "parsed",
+        "text": "plain reading",
+    }
+    assert parse_churro_response(bytearray(_WIRE)) == {
+        "state": "unrecognized-shape",
+        "outcome": "raw-response-not-bytes",
+    }
 
 
 def test_the_fixture_parser_name_cannot_reach_the_json_branch_at_all():
