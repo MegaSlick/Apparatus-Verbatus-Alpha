@@ -934,14 +934,20 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
     assert validate_dai_text(response.encode("utf-8")) == response
 
 
-def test_dai_declares_its_own_format_capabilities_pending_u12():
-    """DAI's grammar can carry a doubt; the flag stays false until U12 wires it."""
+def test_dai_declares_its_own_format_capabilities():
+    """DAI's grammar carries a doubt and no geometry, and says exactly that.
+
+    The uncertainty flag is true only because the Perlector can now derive a
+    bracket-marker comparison view for an act-scoped chair that declares it
+    (`pipeline/4_perlector/run.py::dissent_testimonia`, U12). Declared before
+    that wiring it would have put this chair at `compared: "unknown"` for good.
+    """
     assert dict(DAI_FORMAT_CAPABILITIES) == {
-        "can_express_uncertainty": False,
+        "can_express_uncertainty": True,
         "can_express_layout": False,
     }
     with pytest.raises(TypeError):
-        DAI_FORMAT_CAPABILITIES["can_express_uncertainty"] = True
+        DAI_FORMAT_CAPABILITIES["can_express_uncertainty"] = False
 
 
 def test_every_dai_ceiling_seals_where_it_came_from():

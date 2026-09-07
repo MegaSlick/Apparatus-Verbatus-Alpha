@@ -336,17 +336,18 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     # What each adapter's own grammar can carry, read off the registry entry the
     # same way. All three now declare their own (`chandra.FORMAT_CAPABILITIES`,
     # `churro.FORMAT_CAPABILITIES`, `feeding.DAI_FORMAT_CAPABILITIES`); none of
-    # them fall back to the shared blanket default any more. The three values
-    # happen to coincide with that blanket default today, and each binding is
-    # asserted by identity so that a later flip of Churro's or DAI's own
-    # uncertainty flag (U12, after the Perlector can compare a bracket-marker
-    # view) moves the registry with the adapter rather than only the adapter.
+    # them fall back to the shared blanket default any more, and none of the
+    # three still coincides with it: Chandra carries layout and no uncertainty
+    # notation, and Churro and DAI carry a notation for doubt and no geometry.
+    # Each binding is asserted by identity as well as by value, so that a flip
+    # of an adapter's own flag moves the registry with the adapter rather than
+    # only the adapter.
     assert {
         name: dict(entry.format_capabilities) for name, entry in adapters.RUNNABLE_ADAPTERS.items()
     } == {
         "chandra.v1": {"can_express_uncertainty": False, "can_express_layout": True},
-        "churro.v1": {"can_express_uncertainty": False, "can_express_layout": False},
-        "dai.v1": {"can_express_uncertainty": False, "can_express_layout": False},
+        "churro.v1": {"can_express_uncertainty": True, "can_express_layout": False},
+        "dai.v1": {"can_express_uncertainty": True, "can_express_layout": False},
     }
     assert (
         adapters.RUNNABLE_ADAPTERS["churro.v1"].format_capabilities

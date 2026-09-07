@@ -108,17 +108,24 @@ PRESENT_COLOUR_MODE: Final = "rgb"
 #: `Page`, `Header`, `Body`, `Footer` and `Line`, and not one coordinate
 #: anywhere in the XSD. Reading order is structure, not geometry.
 #:
-#: `can_express_uncertainty` is **false here and is U12's to flip**, and the
-#: order is the whole point. The grammar *can* carry a doubt -- `Illegible`,
-#: `Gap`, `Deletion` and `Addition` are in the XSD and `churro_document`
-#: records each one's span -- but a chair that declares uncertainty before the
-#: Perlector can compare one is permanently `compared: unknown` under
-#: `dissent.is_comparable`. U6 landed the comparison view
-#: (`common/alignment.py::bracket_marker_view`) and U12 wires it and then flips
-#: this constant, in that order, so a declared capability is never a capability
-#: nothing can act on (the judges' second fatal flaw).
+#: `can_express_uncertainty` is **true, and the order is the whole point**. The
+#: grammar carries a doubt -- `Illegible`, `Gap`, `Deletion` and `Addition` are
+#: in the XSD and `churro_document` records each one's span -- but a chair that
+#: declares uncertainty before the Perlector can compare one is permanently
+#: `compared: unknown` under `dissent.is_comparable`. U6 landed the comparison
+#: views, U12 wired them, and the flip is this integration's, after both, so a
+#: declared capability is never a capability nothing can act on (the judges'
+#: second fatal flaw).
+#:
+#: The view this chair is compared through is the page witness's, not the
+#: bracket one: `dissent_testimonia` gives a page witness the act's anchored,
+#: markup-stripped slice of its own page reading. That is available here because
+#: this chair attaches at all -- on the `anchor-line` basis, since the grammar
+#: reports no geometry -- so declaring the capability costs it no dissent row at
+#: any act it reaches. An act it does not reach was already `compared:
+#: "unknown"` with its reason recorded, and stays so.
 FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
-    {"can_express_uncertainty": False, "can_express_layout": False}
+    {"can_express_uncertainty": True, "can_express_layout": False}
 )
 
 

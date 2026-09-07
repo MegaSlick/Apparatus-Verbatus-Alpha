@@ -138,21 +138,23 @@ _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 #: What DAI's grammar can carry, declared from the grammar rather than assumed
 #: from a blanket default (vendor systems design, Contract boundary: "DAI
-#: true/false" is the target once U12 flips the first field). Its answer is
-#: plain UTF-8 text carrying the RecordGold card's own `[UNCERTAIN]`/
-#: `[CROSSED_OUT]` convention (`_UNCERTAINTY_TOKENS` above), so the grammar
-#: *can* carry a doubt; it has no coordinate vocabulary anywhere, so
-#: `can_express_layout` is false and stays false.
+#: true/false"). Its answer is plain UTF-8 text carrying the RecordGold card's
+#: own `[UNCERTAIN]`/`[CROSSED_OUT]` convention (`_UNCERTAINTY_TOKENS` above),
+#: so the grammar *can* carry a doubt; it has no coordinate vocabulary
+#: anywhere, so `can_express_layout` is false and stays false.
 #:
-#: `can_express_uncertainty` is **false here and is U12's to flip**, for the
-#: same reason Churro's is (`churro.FORMAT_CAPABILITIES`): a chair that
-#: declares uncertainty before the Perlector can compare one against a
-#: bracket-marker view is permanently `compared: unknown` under
-#: `dissent.is_comparable` -- the judges' second fatal flaw. U6 landed the
-#: comparison view (`common/alignment.py::bracket_marker_view`) and U12 wires
-#: it before flipping this constant, in that order.
+#: `can_express_uncertainty` is **true, and only because the comparison view it
+#: needs is already wired**. A chair that declares uncertainty before the
+#: Perlector can compare one against a bracket-marker view is permanently
+#: `compared: unknown` under `dissent.is_comparable` -- the judges' second fatal
+#: flaw. U6 landed the view (`common/alignment.py::bracket_marker_view`), U12
+#: wired it at `pipeline/4_perlector/run.py::dissent_testimonia` for exactly the
+#: act-scoped capability-declaring chairs, and the flip is this integration's,
+#: after both. The order is the whole of the safety here: flipped earlier, this
+#: chair would have gone dark on the one axis ARCHITECTURE names for catching a
+#: reader that learned to agree with witnesses.
 DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
-    {"can_express_uncertainty": False, "can_express_layout": False}
+    {"can_express_uncertainty": True, "can_express_layout": False}
 )
 
 
