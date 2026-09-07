@@ -83,11 +83,32 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+def _build_opener() -> urllib.request.OpenerDirector:
+    """One opener that reaches the loopback address it was given, and nowhere else.
+
+    ``ProxyHandler({})`` — an *explicit empty* proxy map — is what disables
+    urllib's environment proxy discovery; omitting the handler does not, it
+    installs the discovering one.  Every URL this module builds is provably
+    ``127.0.0.1``, but with discovery left on, a process started under
+    ``http_proxy`` and no matching ``no_proxy`` sends the request to that proxy
+    instead: the prompt and its embedded page image leave the machine before
+    any response validation runs, and a proxy that answers 200 can stand in for
+    a model that was never reached.  An operator's correct ``NO_PROXY`` is not
+    a control this boundary may depend on.
+
+    Built per transport rather than once at import, so the guarantee is a
+    property of the opener this transport actually uses rather than of the
+    environment that happened to exist when the module was first imported.
+    """
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
 
 
 class UrllibHttpTransport:
     """Stdlib production transport; it contains no provider/model-host behavior."""
+
+    def __init__(self) -> None:
+        self._opener = _build_opener()
 
     def request(
         self,
@@ -102,7 +123,7 @@ class UrllibHttpTransport:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
+            with self._opener.open(request, timeout=timeout_seconds) as response:
                 return HttpResponse(int(response.status), _bounded_read(response, timeout_seconds))
         except EndpointUnavailable:
             # This module's own refusal, already carrying its classification.

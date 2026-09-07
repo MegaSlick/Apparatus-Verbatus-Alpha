@@ -209,3 +209,52 @@ def test_transport_classifies_a_refused_connection_as_definitively_absent() -> N
     with pytest.raises(EndpointUnavailable) as caught:
         transport.request("GET", f"{base}/health", body=None, timeout_seconds=2.0)
     assert caught.value.definitively_absent is True
+
+
+@pytest.mark.parametrize("proxy_variable", ["http_proxy", "HTTP_PROXY"])
+def test_transport_ignores_an_ambient_proxy_and_reaches_the_loopback_model(
+    proxy_variable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured proxy must never stand between this transport and 127.0.0.1.
+
+    The prompt and its embedded page image are in the request body, so a proxy
+    that answered here would take them off the machine before any response
+    validation ran — and could answer 200 for a model that was never reached.
+    Both spellings are set with no ``no_proxy`` bypass, because an operator's
+    correct ``NO_PROXY`` is not a control this boundary may depend on.
+    """
+
+    reached_proxy = threading.Event()
+
+    class Proxy(_Handler):
+        def do_POST(self) -> None:  # noqa: N802 - pragma: no cover - must never run
+            reached_proxy.set()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"proxied":true}')
+
+    class Model(_Handler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"model":"real"}')
+
+    with _server(Proxy) as proxy_base, _server(Model) as model_base:
+        for name in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(proxy_variable, proxy_base)
+        # Constructed under the proxy environment, which is what a process
+        # started that way does: the opener must refuse discovery at build time.
+        transport = UrllibHttpTransport()
+        response = transport.request(
+            "POST",
+            f"{model_base}/v1/chat/completions",
+            body=b'{"messages":[]}',
+            timeout_seconds=5.0,
+        )
+
+    assert response.body == b'{"model":"real"}'
+    assert not reached_proxy.is_set(), "the loopback request reached the proxy"

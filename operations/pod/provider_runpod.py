@@ -212,6 +212,19 @@ class UrllibRunPodTransport:
         # GraphQL's documented `?api_key=` (module docstring). The query form
         # is used only where the documentation offers nothing else.
         self.credential_placement = credential_placement
+        # Environment proxy discovery is left ON here, deliberately, and this is
+        # the opposite decision from `operations/serving/http.py`, which disables
+        # it with an explicit `ProxyHandler({})`. The two are different
+        # boundaries. That one addresses 127.0.0.1 and a proxy there means the
+        # request left the machine, which is the defect. This one addresses
+        # `rest.runpod.io`/`api.runpod.io` — an external service by design — and
+        # an operator on a network whose only route out is a proxy has to be
+        # able to reach it or no pod can ever be closed. The capability is not
+        # exposed to that proxy: both roots are HTTPS, so urllib issues
+        # `CONNECT` and the bearer header (or the query-placed key) travels
+        # inside TLS the proxy cannot read. A proxy that answers for the API
+        # anyway is a machine-in-the-middle the certificate check already
+        # refuses.
         self.opener = urllib.request.build_opener(_RefuseRedirects)
 
     def sibling(self, *, root: str, credential_placement: str) -> "UrllibRunPodTransport":
