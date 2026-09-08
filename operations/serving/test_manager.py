@@ -4740,6 +4740,39 @@ def test_an_unreadable_processor_configuration_is_refused_rather_than_skipped(
         assert_processor_geometry(SimpleNamespace(root=root), _geometry_row())
 
 
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], {"patch_size": 16}),
+        (PROCESSOR_CONFIG_FILENAMES[1], {"image_processor": {"merge_size": 2}}),
+    ],
+)
+def test_a_present_file_with_neither_pair_complete_is_refused_not_skipped(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    """A present file that names only one of the two values used to fall
+    through silently: nothing had checked the row's declaration, and the
+    receipt still recorded it as confirmed. `common/request_capacity.py` uses
+    both row values on every image, so an unconfirmed pair must refuse."""
+
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+    assert "attestator_2" in str(error.value)
+    assert filename in str(error.value)
+
+
+def test_a_split_declaration_across_top_level_and_nested_is_read_and_confirmed(
+    tmp_path: Path,
+) -> None:
+    """A processor file naming one field at the top level and the other under
+    `image_processor` still supplies a complete, confirmable pair."""
+
+    document = {"patch_size": 16, "image_processor": {"merge_size": 2}}
+    assert_processor_geometry(
+        _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[1], document), _geometry_row()
+    )
+
+
 # --------------------------------------------------------------------------
 # U4: generation_config = "auto"; hybrid-attention prefix caching;
 # --enable-prompt-tokens-details and usage reconciliation; a deterministic

@@ -510,9 +510,10 @@ say.
    adapter's own account of its bytes beside the bytes themselves instead of
    dropping the view for want of a state name.
 
-**Every chair sends a generation bound, derived from the sealed row, and the
-image part goes before the text part.** Two corrections to what this seam feeds,
-landed together (`workbench/active/CORRECTION_PLAN_2026-09-06.md`, group (i)).
+**Every chair derives a generation-bound decision from the sealed row, sending
+`max_tokens` only where the declared bound requires it, and the image part
+goes before the text part.** Two corrections to what this seam feeds, landed
+together (`workbench/active/CORRECTION_PLAN_2026-09-06.md`, group (i)).
 
 *Part order.* All three occupants were fine-tuned with the vision block before
 the instruction — DAI's model-card snippet and this project's own old

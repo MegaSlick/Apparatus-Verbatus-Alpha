@@ -751,6 +751,30 @@ def test_an_alpha_channel_is_dropped_exactly_where_the_vendors_drop_it(mode):
     assert carries_only_image_chunks(converted)
 
 
+def test_an_l_images_one_sample_transparency_survives_conversion_to_rgb():
+    """A grayscale page's named transparent sample must reach the RGB record.
+
+    A valid `L` PNG can carry `info["transparency"]` as one integer, and this
+    encoder's `_transparency_chunk` accepts only three samples for `RGB` --
+    without the value becoming a matching `(v, v, v)` triple on the way
+    through `convert("RGB")`, `encode_image_deterministic` would raise and
+    `_replay_colour_mode` (`common/native_witness.py`) would turn that into a
+    `SchemaRefusal`, refusing both Chandra and Churro readings for the page.
+    """
+    source = Image.new("L", (4, 2), color=128)
+    source.info["transparency"] = 200
+    buffer = BytesIO()
+    source.save(buffer, format="PNG")
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.info.get("transparency") == (200, 200, 200)
+        assert reread.getpixel((0, 0)) == (128, 128, 128)
+    assert carries_only_image_chunks(converted)
+
+
 def test_a_palette_carrying_transparency_converts_through_its_palette_too():
     """The vendor asks the palette, not the tRNS chunk; so does the replay."""
     source = Image.new("RGBA", (4, 2), (10, 20, 30, 0))

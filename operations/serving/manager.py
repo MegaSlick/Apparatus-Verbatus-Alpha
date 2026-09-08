@@ -1491,12 +1491,26 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
             ) from error
         if not isinstance(document, dict):
             continue
-        section = document.get("image_processor") if "image_processor" in document else document
-        if not isinstance(section, dict):
-            continue
-        observed = {field: section.get(field) for field in declared}
+        nested = document.get("image_processor")
+        sections = [document] + ([nested] if isinstance(nested, dict) else [])
+        observed = {
+            field: next(
+                (
+                    section[field]
+                    for section in sections
+                    if section.get(field) is not None
+                ),
+                None,
+            )
+            for field in declared
+        }
         if any(value is None for value in observed.values()):
-            continue
+            raise ServingConfigurationError(
+                f"chair {profile.chair!r} declares {declared} on its serving row, and "
+                f"{filename} in its verified snapshot does not provide both values at the "
+                "top level or under 'image_processor'; every image's prompt-token cost is "
+                "computed from the row's numbers, so nothing here could confirm them"
+            )
         if observed != declared:
             raise ServingConfigurationError(
                 f"chair {profile.chair!r} serving row (recipe={profile.recipe!r}, "

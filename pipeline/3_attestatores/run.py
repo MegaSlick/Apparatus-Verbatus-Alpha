@@ -2441,10 +2441,10 @@ def captured_churro_page_attempt(
     )
     # The adapter's own declared expressiveness, read off its registry entry,
     # exactly as the live boundary reads it (`_declared_format_capabilities`).
-    # It is the blanket default's own two values today, so no committed byte
-    # moves; what it buys is that Churro's grammar and this posture cannot
-    # come to disagree about what that grammar can carry the day one of them
-    # is flipped (U12).
+    # Churro declares `can_express_uncertainty=True, can_express_layout=False`
+    # (`churro.py::FORMAT_CAPABILITIES`); what reading it here buys is that
+    # Churro's grammar and this posture cannot come to disagree about what
+    # that grammar can carry the day either one changes (U12).
     capabilities = _declared_format_capabilities(adapter)
     parsed = capture["parse"]
     # Post-hoc findings cannot decide whether the transport cut off the response.
@@ -4659,6 +4659,8 @@ def _page_capture_from_record(
             "would replace immutable evidence with different bytes"
         )
     capture = payload.get("native_capture")
+    if capture is not None:
+        capture = validate_native_capture(capture)
     observation_payload = None
     if (
         capture is not None

@@ -983,14 +983,16 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
 ):
     """The captured attempt's declared value must reach the sealed page record.
 
-    No shipped adapter names its own `format_capabilities` yet (Wave 2's
-    U9/U10/U11/U12), so this stands in for one: `attempt_from_live` is wrapped
-    to hand back the same `Attempt` with a distinctive, non-default
-    `format_capabilities`, exactly as if `captured_page_attempt` had read it
-    off a declaring adapter (`live_witness._format_capabilities_for`). Before
-    the fix this page write hardcoded `DEFAULT_FORMAT_CAPABILITIES` regardless
-    of what the captured attempt carried (hostile review, U5 round 2); this
-    proves the sealed page Testimonium now carries the captured value instead.
+    The registry now declares `format_capabilities` for Chandra, Churro, and
+    DAI, but this test still wants a value distinctive enough to prove the
+    write is not hardcoded: `True`/`True` differs from `run.py`'s
+    `DEFAULT_FORMAT_CAPABILITIES` (`False`/`False`), so `attempt_from_live` is
+    wrapped to hand back the same `Attempt` with that non-default value,
+    exactly as if `captured_page_attempt` had read it off a declaring adapter
+    (`live_witness._format_capabilities_for`). Before the fix this page write
+    hardcoded `DEFAULT_FORMAT_CAPABILITIES` regardless of what the captured
+    attempt carried (hostile review, U5 round 2); this proves the sealed page
+    Testimonium now carries the captured value instead.
     """
 
     run_root = fresh_tree(live_run, tmp_path)
@@ -1634,15 +1636,20 @@ def test_a_resumed_parsed_but_unconfirmed_blank_chandra_page_carries_no_observat
             "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
             "reason": "not a confirmed blank page: the response was cut off before any stop word",
             "raw_response_ref": {
-                "relative_path": "3_attestatores/blobs/sha256/x",
-                "sha256": "x" * 64,
+                "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                "sha256": "a" * 64,
             },
             "native_capture": {
+                "schema": "attestatores-model-view.v1",
                 "adapter": "chandra.v1",
-                "parse": {"state": "parsed", "parser": "json"},
+                "view": {},
+                "transport_stop_reason": "stop",
+                "stop_reason": "stop",
+                "findings": [],
+                "parse": {"state": "parsed", "parser": "json", "text": ""},
                 "raw_response_ref": {
-                    "relative_path": "3_attestatores/blobs/sha256/x",
-                    "sha256": "x" * 64,
+                    "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                    "sha256": "a" * 64,
                 },
             },
             "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
@@ -1666,6 +1673,49 @@ def test_a_resumed_parsed_but_unconfirmed_blank_chandra_page_carries_no_observat
 
     assert attempt.observation_payload is None
     assert capture == record["payload"]["native_capture"]
+
+
+def test_a_damaged_native_capture_is_a_named_refusal_not_a_keyerror():
+    """`read_artifact` validates only the envelope, so a page-testimonium record
+    with a malformed `native_capture` -- missing `adapter`, `parse.state`, or
+    `raw_response_ref` -- reaches `_page_capture_from_record` unvalidated. Before
+    `validate_native_capture` ran here, indexing that capture raised `KeyError`
+    during resume instead of the named `SchemaRefusal` a damaged page record
+    should produce (the same defect fixed for resume on PR #100 at another
+    site: `validate_shared_page_testimonium_payload`, line ~1364)."""
+    record = {
+        "outcome": "read",
+        "payload": {
+            "payload": "declared text",
+            "witness_reported": None,
+            "content_health": {},
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "raw_response_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                "sha256": "a" * 64,
+            },
+            # Missing schema/view/transport_stop_reason/stop_reason/findings --
+            # not a page Testimonium's retained model-view schema at all.
+            "native_capture": {
+                "adapter": "chandra.v1",
+                "parse": {"state": "parsed", "parser": "json", "text": "declared text"},
+                "raw_response_ref": {
+                    "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                    "sha256": "a" * 64,
+                },
+            },
+            "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
+        },
+    }
+    context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_run_receipt=lambda reference: {"endpoint": "https://live.example/chair"},
+        )
+    )
+    with pytest.raises(SchemaRefusal, match="retained model-view schema"):
+        attestatores._page_capture_from_record(
+            context, record, "the page Testimonium sealed for page 1, chair 'attestator_1'"
+        )
 
 
 def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):

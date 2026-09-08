@@ -6501,7 +6501,11 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
     assert by_chair["attestator_2"]["compared"] is True
     assert "reason" not in by_chair["attestator_2"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 0
+    assert {chair: row["compared"] for chair, row in by_chair.items()} == {
+        "attestator_1": True,
+        "attestator_2": True,
+        "attestator_3": True,
+    }
 
     testimonium = next(
         record
