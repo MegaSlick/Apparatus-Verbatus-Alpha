@@ -280,27 +280,26 @@ def test_the_record_is_closed_and_names_every_image_it_counted():
 
 
 def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context():
-    """The measured finding, as a record: 7,134 prompt against 8,192, 1,058 left
-    for a 1,631-token dense-page answer.  Over by 573.
+    """The measured finding, as a record: 6,720 prompt against 8,192, 1,472 left
+    for a 1,905-token dense-page answer (U14: the `HistoricalDocument` grammar,
+    not the retired 1,631 JSON contract). Over by 433.
 
-    Both halves are the layout instruction's, and it made the finding worse
-    rather than closing it: the prompt this chair is now sent is 441 tokens
-    against the trained framing's 281, and the JSON object it asks for costs
-    1,631 tokens on a dense page against the `<output>` envelope's 1,433.  At
-    the numbers this row used to state the request is refused by a wider
-    margin, which is the same finding measured over the request the seam
-    actually builds.
+    The image is what dominates it, and the vendor's own framing narrows the
+    margin without closing it: the prompt this chair is sent is one system
+    sentence at 27 tokens, where this repository's retired layout instruction
+    cost 441.  The finding survives that by 433 tokens, because a 300-dpi A4
+    page costs 6,693 image tokens on its own.
     """
 
     record = request_fits(
         _row(),
         [A4_300DPI],
-        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        _live_framing_tokens("attestator_3"),
         dense_page_answer_budget("attestator_3"),
     )
-    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 7134
-    assert record["need"] == 8765
-    assert record["headroom"] == -573
+    assert record["image_prompt_tokens"] + record["prompt_tokens"] == 6720
+    assert record["need"] == 8625
+    assert record["headroom"] == -433
     assert record["fits"] is False
 
 
@@ -308,11 +307,11 @@ def test_the_same_request_fits_once_the_row_states_a_larger_context():
     record = request_fits(
         _row(max_model_len=16384),
         [A4_300DPI],
-        MEASURED_PROMPT_TOKENS["attestator_3"].tokens,
+        _live_framing_tokens("attestator_3"),
         dense_page_answer_budget("attestator_3"),
     )
     assert record["fits"] is True
-    assert record["headroom"] == 16384 - 8765
+    assert record["headroom"] == 16384 - 8625
     assert record["reason"] is None
 
 
@@ -404,12 +403,19 @@ def test_a_negative_count_is_refused_rather_than_defaulted(field):
 # import a stage across the boundary `common/README.md` draws.
 
 
+def _live_framing_tokens(chair: str) -> int:
+    """The first measured framing's cost -- the one a run sends by default."""
+
+    return MEASURED_PROMPT_TOKENS[chair][0].tokens
+
+
 def test_an_edited_prompt_invalidates_its_measured_token_count():
     with pytest.raises(RequestCapacityRefusal) as refusal:
         sealed_prompt_tokens("attestator_3", "a system prompt nobody measured", "and its user turn")
     message = str(refusal.value)
-    assert "changed after it was measured" in message
-    assert MEASURED_PROMPT_TOKENS["attestator_3"].prompt_digest in message
+    assert "changed after it was measured, or it is a framing nobody has measured" in message
+    for entry in MEASURED_PROMPT_TOKENS["attestator_3"]:
+        assert entry.prompt_digest in message
 
 
 def test_a_chair_with_no_measurement_is_refused_rather_than_estimated():
@@ -440,10 +446,21 @@ def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
 @pytest.mark.parametrize(
     "chair, expected",
     [
-        ("designator_structure", 1575),
-        ("attestator_1", 1520),
+        # Re-measured for `verbatus-structure-prompt.v3`: this chair's declared
+        # response shape is Chandra's layout HTML now (1575 -> 1645). The rise
+        # is the measured fixture's entity-escaped apostrophes, not the tags --
+        # the same blocks written literally measure 1506, below the JSON they
+        # replace -- and the dearer spelling is the one sealed because
+        # `parse_layout_html` accepts it. `common/request_capacity.py` carries
+        # both numbers and the reason.
+        ("designator_structure", 1645),
+        # U14: shares `designator_structure`'s prompt and grammar, so the same
+        # fixture costs it the same (1520 -> 1645).
+        ("attestator_1", 1645),
         ("attestator_2", 1426),
-        ("attestator_3", 1631),
+        # U14: re-measured over the vendor's `HistoricalDocument` grammar at
+        # the same 800-word `FRENCH_ACT` body, 67 `Line` elements (1631 -> 1905).
+        ("attestator_3", 1905),
         ("perlector", 1318),
     ],
 )
@@ -604,20 +621,26 @@ def test_every_measured_prompt_names_the_tokenizer_the_real_roster_pins():
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    # A chair with more than one measured framing carries one entry per framing
+    # (`MEASURED_PROMPT_TOKENS`), and every one of them is reconciled: an index
+    # suffix keys them apart here and is stripped before the roster lookup.
     measured = {
-        chair: (entry.repo, entry.revision) for chair, entry in MEASURED_PROMPT_TOKENS.items()
+        f"{chair}[{index}]": (entry.repo, entry.revision)
+        for chair, entries in MEASURED_PROMPT_TOKENS.items()
+        for index, entry in enumerate(entries)
     }
-    measured["perlector"] = PERLECTOR_MEASURED_TOKENIZER
+    measured["perlector[0]"] = PERLECTOR_MEASURED_TOKENIZER
 
     disagreements = []
-    for chair, (repo, revision) in sorted(measured.items()):
+    for key, (repo, revision) in sorted(measured.items()):
+        chair = key.split("[", 1)[0]
         identity = roster.get(chair)
         if not isinstance(identity, ChairIdentity):
-            disagreements.append(f"{chair}: measured against {repo}@{revision}, roster has none")
+            disagreements.append(f"{key}: measured against {repo}@{revision}, roster has none")
             continue
         if (identity.repo, identity.revision) != (repo, revision):
             disagreements.append(
-                f"{chair}: measured against {repo}@{revision}, "
+                f"{key}: measured against {repo}@{revision}, "
                 f"roster says {identity.repo}@{identity.revision}"
             )
     assert disagreements == []
@@ -635,6 +658,10 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
+    # Chair names only, in this direction: a chair with several measured
+    # framings still contributes one name to `MEASURED_PROMPT_TOKENS`, because
+    # what is reconciled here is which chairs are measured at all, not which
+    # framing. The per-framing tokenizer check is the test above.
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }

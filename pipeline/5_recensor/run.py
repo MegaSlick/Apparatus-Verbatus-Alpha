@@ -38,6 +38,7 @@ from common.contracts.outcomes import (  # noqa: E402
     ATTACHMENT_BASES,
     OutcomeClass,
     classify,
+    page_attachment_basis,
     terminal_category,
     witness_coverage,
 )
@@ -751,14 +752,31 @@ def act_attachment_facts(
             attachment_outcome = (
                 page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
             )
-            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
-                reported_geometry_overlaps(page_payload.get("observed", []), bounds)
-                for bounds in proposal_page["bounds"]
+            # The same shared rule the producer and the Perlector use
+            # (`common/contracts/outcomes.py::page_attachment_basis`), read here
+            # independently from this stage's own copy of the evidence: a page
+            # witness attaches on its reported ink over the sealed proposal, or
+            # -- only where it reported none -- on an alignment that located
+            # this act's anchor line in its page text. The second basis is what
+            # a grammar carrying no geometry (Churro's, by vendor design) can
+            # reach at all; the floor is counted from this, so it is derived,
+            # never read off the record's own boolean. A malformed alignment
+            # cannot buy an attachment: the helper answers "not located" for
+            # every shape it does not recognise, and the closed-shape refusals
+            # below still name it.
+            derived_basis = page_attachment_basis(
+                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+                geometry_overlaps=any(
+                    reported_geometry_overlaps(page_payload.get("observed", []), bounds)
+                    for bounds in proposal_page["bounds"]
+                ),
+                alignment=entry.get("alignment"),
             )
-            if entry["attached"] != geometrically_attached:
+            if entry["attached"] != (derived_basis != "unattached"):
                 raise FatalAccounting(
                     f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry against the sealed proposal"
+                    "that witness's reported geometry, or from an anchor line located in its "
+                    "page text, against the sealed proposal"
                 )
             if entry["comparable"] and not entry["attached"]:
                 raise FatalAccounting(
@@ -777,9 +795,17 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no computed alignment fact"
                 )
-            if entry["attached"] and attachment_basis != "geometric-overlap":
+            # The exact derived label. Admitting either of the two attaching
+            # bases by membership would let a chair attached on its own
+            # geometry be filed as `anchor-line` and the reverse -- and the two
+            # differ in exactly the fact a floor reader needs: `anchor-line`
+            # says this chair counts here only because another chair's anchor
+            # located its text.
+            if entry["attached"] and attachment_basis != derived_basis:
                 raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} is attached without geometric evidence"
+                    f"act {act_id} page witness {chair!r} names attachment basis "
+                    f"{attachment_basis!r}, but its own retained evidence attached it by "
+                    f"{derived_basis!r}"
                 )
             if not entry["attached"] and attachment_basis != "unattached":
                 raise FatalAccounting(
@@ -800,6 +826,7 @@ def act_attachment_facts(
                         "anchor_chair",
                         "anchor_span",
                         "witness_span",
+                        "anchor_line_match",
                         "line_geometry",
                         "loss",
                         "offset_maps",
@@ -832,8 +859,12 @@ def act_attachment_facts(
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-            # `attached` proves geometry, not text. The floor also requires an
-            # aligned slice from the referenced page record.
+            # `attached` proves that SOME evidence placed this chair's reading
+            # in this act -- its own reported ink over the sealed proposal, or
+            # an alignment that located this act's anchor line in its page text
+            # (the derivation above). It does not prove there is a slice of
+            # retained text to compare, and the floor requires that as well:
+            # an aligned record AND a string on the referenced page record.
             if entry["comparable"] != (
                 entry["attached"]
                 and alignment["status"] == "aligned"
@@ -2471,7 +2502,7 @@ def continuation_unmeasured_reason(
     page text was diffed against, by declaration rather than by measurement
     (GOVERNANCE 10).
 
-    Two situations, and the sentence names which one it is describing.  Where the
+    Two situations, and the sentence names which one it is describing. Where the
     chair has no aligned spans on the page at all, the whole page is unmeasured
     and this is the page's own `reason` — the wording Tyrel's ruling produced,
     unchanged. Where it does have some, only the declared acts' share is
@@ -2740,18 +2771,19 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
         if covered_intervals or not declared_unanchored:
-            # Only an *empty* span union is unmeasured -- the union, not the span
-            # list: a zero-width aligned span is a valid row that covers nothing,
-            # so `covered_intervals` is the fact, not `spans`. Where this chair has
-            # covering spans on the page, the diff was taken against a real union
-            # -- a mixed page carries one act starting here beside another
-            # continuing through -- so its uncovered text is a measurement like
-            # any other and raises the page's shortfall. Suppressing it because
-            # some other act on the page declared itself unanchorable would hide
-            # a real coverage loss behind a neighbour's declaration, which is
-            # the missed act GOALS 1 puts above every other cost. Tyrel's ruling
-            # (Unit 12 F2) withholds the verdict where the measurement cannot be
-            # made; here it can be.
+            # Only an *empty* span union is unmeasured -- the union, not the
+            # span list: a zero-width aligned span is a valid row that covers
+            # nothing, so `covered_intervals` is the fact, not `spans` or
+            # `declared_unanchored` alone. Where this chair has covering spans
+            # on the page, the diff was taken against a real union -- a mixed
+            # page carries one act starting here beside another continuing
+            # through -- so its uncovered text is a measurement like any other
+            # and raises the page's shortfall. Suppressing it because some
+            # other act on the page declared itself unanchorable would hide a
+            # real coverage loss behind a neighbour's declaration, which is
+            # the missed act GOALS 1 puts above every other cost. Tyrel's
+            # ruling (Unit 12 F2) withholds the verdict where the measurement
+            # cannot be made; here it can be.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:

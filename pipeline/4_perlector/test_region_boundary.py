@@ -1118,3 +1118,113 @@ def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region,
         perlector.act_attachment_view(
             context, act, testimonia, [*bases, recovery], proposal_ids | {recovery["region_id"]}
         )
+
+
+def _act_with_a_page_witness(context):
+    """One act of this tree, with the pieces `act_attachment_view` needs."""
+    proposal_seal = context.tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+    )
+    act = proposal_seal["payload"]["expected_acts"][0]
+    regions, proposals = perlector.act_regions(context, act["act_id"])
+    testimonia = perlector.testimonia_of(context, act["act_id"], proposals)
+    bases = [perlector.verify_region(context, row) for row in regions]
+    proposal_ids = {row["payload"]["region_id"] for row in proposals}
+    return act, testimonia, bases, proposal_ids
+
+
+def test_a_geometry_free_page_witness_attaches_without_entering_the_proposal_denominator(
+    real_region, monkeypatch
+):
+    """The boundary claim the `anchor-line` basis has to satisfy on a real tree.
+
+    A chair whose grammar carries no coordinates reports one `presented` echo,
+    which every geometric derivation here excludes by name. It reaches the act
+    through its located anchor line instead -- and the point of proving that at
+    THIS seam is what must NOT follow from it: the sealed-proposal denominator
+    is not consulted for such a chair, so it contributes no
+    `sealed_proposal_edge_deltas` correspondence row and cannot put a
+    presentation-shaped rectangle into evidence about where the ink is.
+
+    Forged on both sides at once, because a coherent record is the only thing
+    this reader will accept: the page record loses its reported boxes, and the
+    attachment row loses the basis they justified. Either half alone is the
+    disagreement the seam already refuses, and the second block below is that
+    counterfactual.
+    """
+    context, _ = real_region
+    act, testimonia, bases, proposal_ids = _act_with_a_page_witness(context)
+    before = perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+    assert "attestator_3" in before["comparison_views"]
+    assert before["edge_deltas"].get("attestator_3"), "the fixture chair must report geometry first"
+
+    original_artifact = context.tree.read_artifact
+    original_reference = context.tree.read_artifact_reference
+
+    def geometry_free_page(reference, *, stage, kind, subject_id):
+        record = original_reference(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
+            record = copy.deepcopy(record)
+            record["payload"]["observed"] = [
+                {
+                    "ordinal": 0,
+                    "bounds": dict(record["payload"]["presented"]["transform"]["bounds"]),
+                    "bounds_source": "presented",
+                    "span": None,
+                }
+            ]
+            # The partition receipt restates the reported boxes and is checked
+            # against them, so it is rebuilt from the same proposal list rather
+            # than left describing geometry this record no longer carries.
+            proposal_boxes = record["payload"]["partition_disagreement"]["proposal_boxes"]
+            record["payload"]["partition_disagreement"] = partition_disagreement(
+                record,
+                [
+                    {
+                        "payload": {
+                            "origin": "proposal",
+                            "transform": {
+                                "source_page_id": record["payload"]["presented"]["source_page_id"],
+                                "bounds": box,
+                            },
+                        }
+                    }
+                    for box in proposal_boxes
+                ],
+            )
+        return record
+
+    def relabelled(basis):
+        def read(stage, kind, artifact_id_):
+            record = original_artifact(stage, kind, artifact_id_)
+            if (
+                stage == ATTESTATORES
+                and kind == "act-attachment"
+                and record["subject_id"] == act["act_id"]
+            ):
+                record = copy.deepcopy(record)
+                for entry in record["payload"]["attachments"]:
+                    if entry["chair"] == "attestator_3" and entry["attached"]:
+                        entry["attachment_basis"] = basis
+            return record
+
+        return read
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", geometry_free_page)
+    monkeypatch.setattr(context.tree, "read_artifact", relabelled("anchor-line"))
+
+    view = perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+    # Still act-addressable: the comparison view the witness floor counts is
+    # unchanged, because it was always a slice of the retained page TEXT.
+    assert view["comparison_views"]["attestator_3"] == before["comparison_views"]["attestator_3"]
+    # And it brought no geometry into evidence with it: the chair is still read,
+    # so its key survives; what must be gone is every correspondence row.
+    assert view["edge_deltas"]["attestator_3"] == []
+
+    # The counterfactual: the same geometry-free record still filed as
+    # `geometric-overlap` claims an observation this tree does not contain.
+    monkeypatch.setattr(context.tree, "read_artifact", relabelled("geometric-overlap"))
+    with pytest.raises(SchemaRefusal, match="attached it by 'anchor-line'"):
+        perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)

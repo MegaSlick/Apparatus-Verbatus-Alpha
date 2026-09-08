@@ -25,9 +25,10 @@
 # UNITS, because two of these are easy to read wrong and one already was.
 # `context_cap` is tokens.  `batch_size` is concurrent sequences.
 # `engine_memory_fraction` is a fraction of the card.  **`pixel_cap` is a
-# LONGEST-EDGE cap in pixels**, not a pixel count — 1344, 1792 and 2304 are
-# side lengths; as total counts they would describe roughly 37x37, 42x42 and
-# exactly 48x48 images, respectively.  A serving profile's `max_pixels` in
+# LONGEST-EDGE cap in pixels**, not a pixel count — 2,560 (U15, every tier: the
+# per-tier ladder is retired) is a side length; as a total count it would
+# describe roughly 51x51 images, where it actually admits 2,560² = 6,553,600
+# pixels, comfortably above Chandra's 6,291,456. A serving profile's `max_pixels` in
 # `config/serving_recipes.toml` is the other thing:
 # a total pixel count, passed straight to vLLM's `--mm-processor-kwargs`,
 # where the old pipeline's proven values were 3136 (56x56) and 2359296
@@ -35,18 +36,33 @@
 # that a longest edge of L admits at most L*L pixels.
 #
 # `context_cap` is the ceiling `operations/serving/preflight.py` holds every
-# serving row at that tier to, and all three moved with the rows.  They were
-# 2,048 / 4,096 / 8,192, and at those caps no row that could actually serve a
-# whole page was admissible: a 300-dpi A4 page costs a Qwen-VL chair between
-# 1,715 and 6,693 prompt tokens depending on the tier's `max_pixels`, before a
-# word of prompt is counted.  `config/serving_recipes_real.toml` carries that
-# arithmetic and the reasoning; the caps here are 16,384 at every tier, which
-# is the largest `max_model_len` any row at that tier now declares -- the
-# Perlector needs it everywhere, because its act request carries a region crop
-# and a page render per capture view, and an ordinary two-view act costs 14,014
-# tokens even at the smallest tier's `max_pixels`.  A cap is a ceiling, not a
-# plan: what a card can hold at these contexts is unmeasured, and stays
-# unmeasured until a pod runs.
+# serving row at that tier to -- an upper bound each row's own `max_model_len`
+# must not exceed, never a per-request token budget in itself: what a request
+# actually spends is bounded by its own row, not by this tier-wide cap. They
+# were 2,048 / 4,096 / 8,192, then raised to 16,384 everywhere; U15 (Tyrel's
+# ruling, 2026-09-06 -- `CORRECTION_PLAN_2026-09-06.md` Q1/Q2/Q5) raises them
+# again, to admit each witness chair's own trained geometry rather than a
+# generic per-tier budget: `config/serving_recipes_real.toml` carries the
+# per-chair arithmetic and the reasoning. `context_cap = 20,480` at
+# `generic-24gb` and `generic-48gb` comfortably admits the largest
+# `max_model_len` any row at that tier actually declares -- Chandra's two
+# rows (`designator_structure`, `attestator_1`) at 18,000 -- with headroom
+# to spare; it is not sized against Churro, whose own row caps `max_model_len`
+# at 8,192 at every tier (memory, not context), well under this ceiling, so a
+# 300-dpi A4 page's ~5,100 image tokens leave room for its measured answer
+# (1,905) but nothing near its 20,000-token *declared* ceiling, which
+# `sendable_max_tokens` never sends for exactly that reason (the row's own
+# headroom binds first). `generic-80gb-plus` is raised further, to 32,768,
+# because the Perlector's act request carries a region crop *and* a page
+# render per capture view, and its two-capture-view page-fallback act costs
+# 20,400 image tokens alone at that tier's `max_pixels` -- no smaller cap
+# admits it.  `pixel_cap = 2,560` at every tier
+# (2,560² = 6,553,600 >= Chandra's 6,291,456, the largest `max_pixels` any row
+# now asks for) retires the per-tier pixel ladder along with it: a chair's
+# geometry no longer changes with the card class it happens to be planned for,
+# which was its own reproducibility hazard (a CER measured on one tier did not
+# transfer to another).  A cap is a ceiling, not a plan: what a card can hold
+# at these contexts is unmeasured, and stays unmeasured until a pod runs.
 schema = "pod-placement.v1"
 
 [dtype_floor]
@@ -65,9 +81,16 @@ residency = "single"
 detector_device = "cpu"
 
 [tiers.recipe]
-engine_memory_fraction = "0.58"
-context_cap = 16384
-pixel_cap = 1344
+# U15 (Tyrel, 2026-09-06, hostile-review Q1): 0.58 has no derivation anywhere
+# in this tree or the old pipeline, which never served below 0.85 on a
+# comparable card; under `residency = "single"` it was a co-residency
+# leftover that only ever subtracted pixels.  0.90 is what DAI needs to be
+# servable on this card class at all (VRAM arithmetic in
+# `CORRECTION_PLAN_2026-09-06.md`: 18.7 GiB of 24, 0.78 minimum, 0.90 matches
+# the old `serve_dai.sh`).
+engine_memory_fraction = "0.90"
+context_cap = 20480
+pixel_cap = 2560
 batch_size = 1
 
 [[tiers]]
@@ -79,8 +102,8 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.78"
-context_cap = 16384
-pixel_cap = 1792
+context_cap = 20480
+pixel_cap = 2560
 batch_size = 2
 
 # The id names the card class this tier is planned for, not its literal
@@ -98,8 +121,8 @@ detector_device = "cpu"
 
 [tiers.recipe]
 engine_memory_fraction = "0.88"
-context_cap = 16384
-pixel_cap = 2304
+context_cap = 32768
+pixel_cap = 2560
 batch_size = 4
 
 # The cards spec 04 names by name.  `tier` must be one of the ids above; a

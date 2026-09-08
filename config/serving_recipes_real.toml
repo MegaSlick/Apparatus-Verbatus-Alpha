@@ -15,20 +15,41 @@
 # Qwen3-VL chairs and 2,280 on the Qwen2.5-VL chairs at the 24 GB tier's
 # `max_pixels`, before a word of prompt is counted; against 2,048 the request
 # is refused by the engine with HTTP 400 and no reading at all, and it was
-# refused for every chair at that tier.  At the 48 GB tier Churro's page prompt
-# alone was 4,469 against 4,096, and the Perlector's 5,296.  Those are
-# arithmetic, not predictions: `common/request_capacity.py` computes them from
-# the fields below, and `common/test_request_capacity.py` pins them against the
+# refused for every chair at that tier.  Those are arithmetic, not
+# predictions: `common/request_capacity.py` computes them from the fields
+# below, and `common/test_request_capacity.py` pins them against the
 # per-chair processor measurement they were taken from.
 #
-# So the numbers moved rather than the wording.  Every row now states a
-# `max_model_len` that holds a whole A4 page at its own `max_pixels`, plus that
-# chair's measured prompt, plus that chair's measured answer over a dense
-# 800-word page: 8,192 everywhere, and 16,384 for Churro at 80 GB+ (whose page
-# prompt alone is 7,134) and for the Perlector at EVERY tier.  The Perlector's
-# act request carries a region crop *and* a page render per capture view, so an
-# ordinary two-view act costs 14,014 tokens even at the 24 GB tier's
-# `max_pixels` and no 8,192 row could serve one.
+# U15 (Tyrel's ruling, 2026-09-06 -- CORRECTION_PLAN_2026-09-06.md Q1/Q2/Q5)
+# RETIRES THE PER-TIER PIXEL LADDER.  Each witness chair now sees its own
+# *trained* geometry at every tier, not a generic per-tier budget that matched
+# no chair: Chandra (`designator_structure` and `attestator_1`) 3,136 /
+# 6,291,456 px (`chandra/model/util.py::scale_to_fit`'s own `max_size`) at
+# `max_model_len = 18,000` (the vendor's own `--max-model-len`); Churro
+# (`attestator_3`) 401,408 / 4,014,080 px (its `preprocessor_config.json` and
+# the paper's own 5,120-patch fine-tuning ceiling, CHURRO paper §B.2) at
+# `max_model_len = 8,192` (5,100 image + 27 prompt + 1,905 answer -- U14 --
+# clears it with room to spare); DAI (`attestator_2`) 3,136 / 2,359,296 px,
+# equal to `DAI_MAX_TOTAL_PIXELS` in `pipeline/3_attestatores/feeding.py` so
+# the client-side crop alone binds, at the `max_model_len = 8,192` it already
+# carried.  `max_num_batched_tokens = 8,192` on the two page chairs (Chandra,
+# Churro) so one whole image group schedules without a second engine step
+# (POD QUESTION P4); DAI's stays 2,048, unmoved by this ruling.
+# `gpu_memory_utilization` moves only where the arithmetic said 0.58 could not
+# hold the row: Chandra's `generic-24gb` row to `"0.85"` (the old pipeline's
+# own 4090 profile; 14.0 GiB needed of 24, VRAM arithmetic in the plan above).
+# Every other row's fraction is unmoved -- 0.78 / 0.88 at the larger tiers
+# were already ample for every chair.
+#
+# `config/pod_placement.toml`'s tier ceilings move with them: `pixel_cap =
+# 2,560` at every tier (2,560² = 6,553,600 >= Chandra's 6,291,456, the largest
+# any row now asks for), `context_cap = 20,480` (admits Churro's declared
+# 20,000-token generation bound) except `generic-80gb-plus`, raised to
+# `32,768` for the Perlector's two-view page-fallback act (20,400 image tokens
+# alone); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
+# no derivation anywhere in this tree or the old pipeline, which never served
+# below 0.85 on a comparable card, and under `residency = "single"` it was a
+# co-residency leftover that only ever subtracted pixels).
 # `operations/serving/test_serving_catalogue_capacity.py` reads this file and
 # asserts that every row it ships passes -- at one and at two capture views for
 # the Perlector -- and that none exceeds its tier's `context_cap`.
@@ -37,37 +58,65 @@
 # over: a two-capture-view *page-fallback* act -- an act whose bounds are the
 # whole page, seen from two captures -- sends four page-sized images, which at
 # the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
-# prompt.  It fits at 24 GB and 48 GB and cannot fit 16,384 at 80 GB+; the
-# pinned case in the capacity test says so by name.  The Perlector refuses that
-# request on the laptop, with the arithmetic, rather than discovering it
-# against a billing card.
+# prompt.  It fits at 24 GB and 48 GB and, since U15 raised the 80 GB+ context
+# to 32,768, now fits there too; the pinned case in the capacity test says so
+# by name.
 #
-# `max_num_batched_tokens` is a quarter of each row's own `max_model_len`,
-# which is the ratio every row carried before the contexts were raised
-# (2,048/512, 4,096/1,024, 8,192/2,048).  It was left behind when they moved,
-# which would have held a raised row to its old per-batch budget.  Whether vLLM
-# 0.27.1 will schedule a single multimodal item larger than that budget --
-# these rows send one image group of up to 6,693 tokens against a 2,048-token
-# batch budget -- is a POD QUESTION.  Nothing here has run an engine, the
-# ratio is restored because it is the one the rows were written with, and the
-# first authorized boot is what settles it.
+# CHURRO'S ANSWER BUDGET IS NOW THE VENDOR GRAMMAR'S OWN COST.  The live chair
+# is asked in the system string the vendor's own registry resolves for
+# `stanford-oval/churro-3B` (`common/churro_document.py`), which is one
+# sentence: its measured prompt is 27 tokens.  U14 re-measured the dense-page
+# answer over the `HistoricalDocument` grammar it is actually read under --
+# 1,631 (the retired JSON contract) -> 1,905 -- and the sealed
+# `MEASURED_DENSE_PAGE_ANSWER_TOKENS["attestator_3"]` now carries that cost
+# directly rather than a separately-tracked shortfall. Every row still holds
+# the request: 5,100 image + 27 prompt + 1,905 answer = 7,032, against
+# `max_model_len = 8,192` at every tier.
 #
-# CHURRO'S NUMBERS ARE THE LAYOUT INSTRUCTION'S, not the trained carry's.  The
-# live chair is asked for block geometry (`feeding.churro_layout_prompt`) and
-# answers with the JSON object `common/churro_response.py` declares, so its
-# measured prompt is 441 tokens rather than 281 and its dense-page answer 1,631
-# rather than 1,433 -- 358 tokens more per request than the rows above were
-# first weighed with.  Every row still holds it: 4,352 / 6,100 / 8,765 against
-# 8,192 / 8,192 / 16,384.  The old contexts refuse it by a wider margin than
-# they refused the trained framing, which is the same finding, measured over
-# the request this pipeline actually builds.
+# `max_pixels` is deliberately NOT reduced to fit a smaller context.  Cutting
+# pixels to fit a context trades a measurable refusal for an unmeasurable
+# misreading, which GOALS 2 does not permit; the lever that works is the
+# context, and each chair's is now sized to what its own trained geometry
+# needs.
 #
-# `max_pixels` is deliberately NOT reduced to fit.  To make the 24 GB Churro
-# row fit 2,048 tokens it would have to fall to roughly 262,000 -- a 470x700
-# page -- and 18th-century French handwriting at 470 px wide is not a
-# transcription task.  Cutting pixels to fit a context trades a measurable
-# refusal for an unmeasurable misreading, which GOALS 2 does not permit; the
-# lever that works is the context.
+# `enable_prefix_caching = false` ON THE TWO HYBRID-ATTENTION CHAIRS.
+# Chandra-2 (`designator_structure`, `attestator_1`) has only 8 full-attention
+# layers of 32, and the Perlector's Qwen3.8-27B only 16 of 64; the rest are
+# linear/recurrent layers whose per-sequence state is not a cache of tokens
+# the way a full-attention layer's KV is, so a prefix hit that reuses another
+# sequence's recurrent state would not be reusing that sequence's *prompt* --
+# it would be reusing state computed for a different one (measured in
+# `CORRECTION_PLAN_2026-09-06.md`'s VRAM arithmetic: "Chandra-2 is a hybrid
+# stack with only 8 full-attention layers... Qwen3.8 are hybrid -- 8 of 32 and
+# 16 of 64 layers are full attention").  DAI and Churro are ordinary
+# Qwen2.5-VL (full attention throughout) and keep prefix caching on.
+#
+# THE PERLECTOR'S `generic-24gb` AND `generic-48gb` ROWS PROMISE A SHAPE NO
+# CARD OF THAT CLASS CAN SERVE (hostile review Q5).  Its Qwen3.8-27B weights
+# measure 51.7 GiB of bf16 from the repository's own safetensors sizes -- more
+# than either card class holds before a token of KV, vision peak or engine
+# overhead is counted, so only `generic-80gb-plus` (a 64 GiB+ floor) can ever
+# serve it.  The two smaller rows are kept for catalogue coverage, not as a
+# claim that a 24 or 48 GiB card could run them; `preflight_state =
+# "unproven"` already says so per-row, and this comment records the measured
+# reason rather than leaving a reader to assume the rows were merely untested.
+#
+# `generation_config = "auto"` ON EVERY ATTESTATOR (WITNESS) ROW (U4 admitted
+# the value; `operations/serving/config.py` accepts it for Attestator rows
+# only -- `designator_structure` is a Designator, not a witness, and the
+# Perlector is neither, so both stay `"vllm"`).  `"vllm"` silently starts from
+# an empty sampling-parameter dict and discards every model-shipped default --
+# Churro's `repetition_penalty: 1.05`, DAI's second EOS id, Chandra's own
+# `generation_config.json` -- which `CORRECTION_PLAN_2026-09-06.md` finding
+# (b) confirms against `vllm/config/model.py::get_diff_sampling_param`.
+# `"auto"` makes the manager receipt record the digest of the chair's own
+# `generation_config.json`, so the pinned profile is auditable by revision
+# rather than merely assumed unchanged.  `designator_structure` serves the
+# same Chandra-2 checkpoint (whose generation_config.json is pinned through
+# attestator_1's row) but is a Designator, not a witness, so the schema keeps
+# it at `"vllm"`; the Perlector's own weights ship no generation_config.json
+# worth pinning.  Both stay `"vllm"`, and the manager forces temperature 0 on
+# every reading regardless.
 #
 # WHAT IS STILL UNPROVEN, AND IT IS THE WHOLE OF IT: whether a card at each
 # tier has the VRAM for these contexts.  Raising `max_model_len` moves KV-cache
@@ -83,7 +132,15 @@
 # catalogue.
 #
 # `patch_size`/`merge_size` are the chair's vision-encoder geometry, read from
-# the pinned revision's own `preprocessor_config.json`.  They are not vLLM
+# the pinned revision's own processor configuration: `preprocessor_config.json`
+# where the repository ships one, `processor_config.json` (under its
+# `image_processor` object) where it does not.  Which file exists differs by
+# chair -- chandra-ocr-2 ships both, churro-3B and Qwen3.8-27B only the first,
+# and `attestator_2`'s DAI revision only the second, so naming one file for all
+# four named a file that 404s for DAI.  `ServingManager.start` proves these two
+# numbers against whichever file the verified snapshot carries, so a wrong
+# declaration here is a named refusal on the machine that has the weights
+# rather than a silently mis-counted image.  They are not vLLM
 # flags -- vLLM reads them from the model repository -- and they are recorded
 # here because they are what decides how many prompt tokens one image costs
 # (`common/request_capacity.py`), which no other field in this row can say.
@@ -112,15 +169,15 @@ served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 1
-max_num_batched_tokens = 2048
-gpu_memory_utilization = "0.58"
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.85"
 min_pixels = 3136
-max_pixels = 1806336
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
@@ -143,15 +200,15 @@ served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 2
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
-max_pixels = 3211264
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
@@ -174,15 +231,15 @@ served_model_id = "designator-structure"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 4
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
-max_pixels = 5299200
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
@@ -205,20 +262,20 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 1
-max_num_batched_tokens = 2048
-gpu_memory_utilization = "0.58"
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.85"
 min_pixels = 3136
-max_pixels = 1806336
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -236,20 +293,20 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 2
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
-max_pixels = 3211264
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -267,20 +324,20 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 18000
 max_num_seqs = 4
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
-max_pixels = 5299200
+max_pixels = 6291456
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -305,7 +362,7 @@ max_num_seqs = 1
 max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.58"
 min_pixels = 3136
-max_pixels = 1806336
+max_pixels = 2359296
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -313,7 +370,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -336,7 +393,7 @@ max_num_seqs = 2
 max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.78"
 min_pixels = 3136
-max_pixels = 3211264
+max_pixels = 2359296
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -344,7 +401,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -367,7 +424,7 @@ max_num_seqs = 4
 max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
-max_pixels = 5299200
+max_pixels = 2359296
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -375,7 +432,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -395,10 +452,10 @@ seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 1
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.58"
-min_pixels = 3136
-max_pixels = 1806336
+min_pixels = 401408
+max_pixels = 4014080
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -406,7 +463,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -426,10 +483,10 @@ seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
 max_num_seqs = 2
-max_num_batched_tokens = 2048
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.78"
-min_pixels = 3136
-max_pixels = 3211264
+min_pixels = 401408
+max_pixels = 4014080
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -437,7 +494,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -455,12 +512,12 @@ served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 16384
+max_model_len = 8192
 max_num_seqs = 4
-max_num_batched_tokens = 4096
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
-min_pixels = 3136
-max_pixels = 5299200
+min_pixels = 401408
+max_pixels = 4014080
 patch_size = 14
 merge_size = 2
 enable_prefix_caching = true
@@ -468,7 +525,7 @@ enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "vllm"
+generation_config = "auto"
 preflight_state = "unproven"
 startup_timeout_seconds = 300
 poll_interval_seconds = 2
@@ -485,6 +542,12 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
+# UNSERVABLE ON THIS CLASS (hostile review Q5): the weights alone measure 51.7
+# GiB of bf16 (Qwen3.8-27B's own safetensors sizes), above the 24 GiB this
+# tier names before a token of KV, vision peak or engine overhead is counted.
+# 64 GiB is the measured floor; only `generic-80gb-plus` can serve this chair.
+# Kept for catalogue coverage, not as a claim that this card class runs it --
+# see the header note.
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 16384
 max_num_seqs = 1
@@ -494,7 +557,7 @@ min_pixels = 3136
 max_pixels = 1806336
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
@@ -516,6 +579,9 @@ port = 8106
 served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
+# UNSERVABLE ON THIS CLASS (hostile review Q5): 51.7 GiB of measured bf16
+# weights above the 48 GiB this tier names, before KV/vision/engine overhead.
+# 64 GiB is the measured floor; kept for catalogue coverage -- see the header.
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 16384
 max_num_seqs = 2
@@ -525,7 +591,7 @@ min_pixels = 3136
 max_pixels = 3211264
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false
@@ -548,7 +614,7 @@ served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 16384
+max_model_len = 32768
 max_num_seqs = 4
 max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.88"
@@ -556,7 +622,7 @@ min_pixels = 3136
 max_pixels = 5299200
 patch_size = 16
 merge_size = 2
-enable_prefix_caching = true
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
 enforce_eager = false
 trust_remote_code = true
 enable_tower_connector_lora = false

@@ -8,19 +8,26 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
-import json
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any, Final
 
-from common import churro_response
+from common import churro_document
+from common.chairs.models import is_hf_revision
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
-from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
+from common.imaging import (
+    MAX_PIXELS,
+    convert_png_to_rgb,
+    crop_png,
+    dimensions,
+    resize_png_lanczos,
+)
+from common.imaging_ports import CHURRO_MAX_INLINE_IMAGE_DIM, resize_to_fit_churro
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 # `native` and `derived` are reported-ink evidence. `presented` only associates
@@ -64,31 +71,197 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
-# Churro's *declared* output bound: its carried HuggingFace-generate
-# `max_new_tokens`, retained on every request's `generation_declared` and in
-# every retained Churro model view as the record of what Churro would have been
-# asked for.  It is no longer, by itself, what goes on the wire.  Every sealed
-# Churro serving row caps `max_model_len` well below it (8,192 at 24 GB and
-# 48 GB and 16,384 at 80 GB+ in `config/serving_recipes_real.toml`, since the
-# request-capacity unit raised them from 2,048/4,096/8,192; every one of the
-# six numbers is far under 24,000, which is what this comment turns on), and
-# vLLM refuses a request whose prompt
-# plus `max_tokens` exceeds the row's context, so
-# `pipeline/3_attestatores/live_witness.py::churro_generation_sent` sends this
-# value only where the sealed row is strictly longer than it and otherwise
-# sends no bound at all, leaving the row's own `max_model_len` to bound
-# generation.  Four MiB still allows more than 174 UTF-8 response bytes per
-# declared token -- far beyond an OCR transcription -- while giving the XML
-# parser and the post-hoc repetition scan a hard ceiling whatever bound the
-# request carried.
-CHURRO_OUTPUT_TOKENS: Final = 24_000
-# One name, so the chair's two legal shapes cannot acquire two intake bounds.
-# The number is declared beside the wire contract that also has to enforce it
-# (`common/churro_response.py`), and re-exported here because this module is
-# where `validate_churro_xml` and `derive_churro_capture` read it.
-CHURRO_MAX_RESPONSE_BYTES: Final = churro_response.MAX_RESPONSE_BYTES
-_CHURRO_REPETITION_WINDOW: Final = 24
-_CHURRO_REPETITION_MIN_REPEATS: Final = 3
+# The rounding rule each resizing operation's own publisher applies -- and so,
+# read as a key set, which operations resize at all. Ours and Churro's truncate
+# (`int()`); Chandra's snaps to its 28-pixel patch grid, and calling that
+# `floor` would be a record that reads false (GOVERNANCE 10).
+_DIMENSION_ROUNDING: Final = {
+    "crop-resize-preserve-aspect": "floor",
+    "chandra-scale-to-fit.v1": "grid-28",
+    "churro-prepare-ocr-image.v1": "floor",
+}
+# The executable transforms an `adapter-crop` presentation may name.
+#
+# Every one of them is replayed from sealed page bytes by
+# `validate_presented_page_binding` before its blob digest is believed, so the
+# list is not documentation: an operation absent here has no re-derivation and
+# is refused rather than trusted (ARCHITECTURE invariant 3). The resizing
+# subset is derived from `_DIMENSION_ROUNDING` rather than restated, because
+# the two lists disagreeing is a schema that requires a recipe it then cannot
+# name a rounding rule for.
+#
+# `crop` and `crop-resize-preserve-aspect` are this repository's own recipes.
+# The two `.v1` operations are ports of a vendor's own preprocessing, adopted
+# under the ruling that admitted them and named after the vendor function each
+# reproduces, so a record says which vendor pipeline sized the pixels rather
+# than only that something resized them:
+#
+# * `chandra-scale-to-fit.v1` -- `chandra/model/util.py::scale_to_fit` at
+#   `datalab-to/chandra @ d4f7467435aa4137d9539f000ddf0b7ced3eb43f`: LANCZOS
+#   onto a 28-pixel grid inside a 6,291,456-pixel area, with the vendor's own
+#   greedy aspect trim. Its target therefore does *not* preserve the source
+#   aspect exactly, which is why the aspect identity in `_validate_resize_recipe`
+#   is not applied to it -- and does not have to be: Chandra's own geometry is
+#   `data-bbox` normalized 0-1000, mapped by `to_page_bounds` against the
+#   *sealed page* size, never through this resized view. The RGB step recorded
+#   as `colour_mode` is the vendor's too, one function earlier:
+#   `chandra/input.py::load_image` converts at open, so `scale_to_fit` is only
+#   ever handed RGB -- which is why this operation converts *before* it resizes
+#   (`_COLOUR_BEFORE_RESIZE`) where Churro's converts after.
+# * `churro-prepare-ocr-image.v1` -- `src/churro_ocr/_internal/image.py::
+#   prepare_ocr_image` at `stanford-oval/Churro @
+#   4abb17386d9656199c2776195926545fc527a691`: `ensure_rgb(resize_image_to_fit(
+#   img, 2500, 2500))`, LANCZOS, downscale-only, and the RGB step recorded as
+#   `colour_mode` because the vendor performs it before the model sees a pixel.
+#
+# **One departure, named here rather than discovered later.** Both ports resize
+# through `common/imaging.resize_png_lanczos`, which promotes a bilevel (mode
+# `"1"`) image to `"L"` before resampling, because Pillow 12.3.0 silently
+# substitutes NEAREST for LANCZOS on modes `"1"` and `"P"` -- a recipe that
+# said `pillow-lanczos` and delivered nearest-neighbour would be a record that
+# reads false. Churro's `resize_image_to_fit` resizes whatever it loaded
+# directly, so on a *bitonal* sealed page (triage's `bitonal` mode writes one,
+# and `_PNG_IDENTITY_MODES` seals it as `"1"`) the vendor gets Pillow's NEAREST
+# and this replay gets a true LANCZOS. The pixels differ, and the departure is
+# reproduced deliberately in the direction of the honest resampler rather than
+# corrected in the direction of the vendor's accident. `test_a_bitonal_crop_
+# replays_through_our_lanczos_not_the_vendors_nearest` pins it, and **U8's
+# vendor parity table needs a mode-`"1"` row that expects inequality here**;
+# a parity test that asserted byte equality on a bitonal source would be
+# asserting something neither port claims. Chandra is unaffected, and for a
+# stronger reason than it used to be: its own loader converts to RGB before
+# anything resizes (`chandra/input.py::load_image`), and its adapter now runs
+# that conversion in the same place (`_COLOUR_BEFORE_RESIZE`), so a bitonal
+# Chandra crop is already `"RGB"` when it reaches `resize_png_lanczos` and the
+# promotion never applies to it.
+RESIZING_ADAPTER_CROP_OPERATIONS: Final = frozenset(_DIMENSION_ROUNDING)
+ADAPTER_CROP_OPERATIONS: Final = frozenset({"crop"}) | RESIZING_ADAPTER_CROP_OPERATIONS
+#: The colour conversions an adapter may perform between the resize and the
+#: wire, spelled from the words `pipeline/0_triage/manifest.py::COLOUR_MODES`
+#: already uses for the same concept (GLOSSARY: one concept, one word). Only
+#: `rgb` is executable here, and `keep` says explicitly that no conversion ran
+#: -- a distinction a missing field cannot make on a record that is allowed to
+#: omit it. A further mode arrives with the vendor that performs it, never
+#: ahead of one.
+ADAPTER_COLOUR_MODES: Final = frozenset({"keep", "rgb"})
+#: Which operations may name a `colour_mode`, and which must. `ensure_rgb` is
+#: half of `prepare_ocr_image`, so a Churro presentation that does not say what
+#: it did to the colour samples has not recorded the vendor operation it names.
+_COLOUR_MODE_REQUIRED_OPERATIONS: Final = frozenset({"churro-prepare-ocr-image.v1"})
+_COLOUR_MODE_OPTIONAL_OPERATIONS: Final = frozenset({"chandra-scale-to-fit.v1"})
+#: And which may name only one value. `prepare_ocr_image` is
+#: `ensure_rgb(resize_image_to_fit(...))` with no branch in it, so a Churro
+#: record saying `keep` says the RGB half of the operation it names did not
+#: run. Requiring the key and then admitting either answer would let a record
+#: name the vendor operation over a grayscale blob the vendor never sends --
+#: the same silence the required-field rule above was written to close, one
+#: level in. Chandra's operation is not fixed the same way and stays optional:
+#: `scale_to_fit` performs no conversion itself, so the name does not imply
+#: one. Its adapter records `rgb` all the same, because the conversion the
+#: vendor *does* perform is one function earlier
+#: (`chandra/input.py::load_image`), which is a fact about the adapter's own
+#: recipe rather than about the operation name -- and `keep` therefore stays
+#: available to a record whose vendor converts nothing at all.
+_COLOUR_MODE_FIXED_VALUES: Final = {"churro-prepare-ocr-image.v1": "rgb"}
+#: And where each operation's conversion sits relative to its resize, because
+#: the two orders are not the same pixels and a replay has to pick the vendor's.
+#: Churro's `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`, so
+#: its colour step is last; Chandra's is one function earlier than the operation
+#: it is recorded on -- `chandra/input.py::load_image` converts at open and
+#: `scale_to_fit` resizes whatever it was handed -- so its colour step is first.
+#: On an `L`, `1` or `RGB` crop the choice is invisible: expanding grey into
+#: three channels commutes with a per-band resample. On an `LA` or `RGBA` crop
+#: it is not -- Pillow's resampler treats an alpha band differently from a
+#: colour one, and the two orders were measured to disagree by a sample level
+#: across most of the image (`test_chandra_adapter.py::
+#: test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page`). The
+#: Exemplar seals `LA` and `RGBA` pages, so that crop is a page the door admits.
+_COLOUR_BEFORE_RESIZE: Final = frozenset({"chandra-scale-to-fit.v1"})
+# `chandra/model/util.py::scale_to_fit` at the pinned sha: LANCZOS onto a
+# 28-pixel grid, under a 3072x2048 = 6,291,456-pixel maximum area.
+#
+# **The vendor's 1792x28 = 50,176-pixel minimum is not a bound on its output
+# and is deliberately not checked here.** It is the *input* area below which
+# `scale_to_fit` scales up; the grid snap that follows rounds each side to the
+# nearest 28 and can land back under it. A 100x80 crop scales to 250.4x200.4,
+# snaps to 252x196, and 49,392 px is below the minimum the vendor was aiming
+# at -- a record its own function produced. Refusing that would refuse a legal
+# Chandra presentation, which is the one thing this vocabulary must never do.
+# The maximum is a real post-condition: the refinement loop trims blocks until
+# the area is under it, and its 1x1 escape is 784 px.
+CHANDRA_SCALE_GRID_PX: Final = 28
+CHANDRA_SCALE_MAX_PIXELS: Final = 3072 * 2048
+# `resize_image_to_fit(img, 2500, 2500)` at the pinned tag; the same 2,500 is
+# `_MAX_IMAGE_DIM` in the paper-era harness and `MAX_IMAGE_DIM` in the
+# standalone `churro_transformers_infer.py`. Re-exported from the port that
+# also performs the arithmetic rather than restated: this module holds a record
+# to the vendor's rule, and a second literal of the vendor's own bound is a
+# second thing to keep in step with the vendor.
+CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
+
+# Churro's *declared* output bound, retained on every request's
+# `generation_declared` and in every retained Churro model view as the record
+# of what Churro's own pipeline asks for.  It is not, by itself, what goes on
+# the wire: `common/request_capacity.py::sendable_max_tokens` sends
+# `min(this, max_model_len - image - prompt)` against the request's own
+# capacity record, because vLLM's admission rule is
+# `prompt_tokens + max_tokens <= max_model_len` and every sealed Churro row
+# caps `max_model_len` far below this number (8,192 at 24 GB and 48 GB, 16,384
+# at 80 GB+).
+#
+# **The number is not a carried configuration value, and it has three sources.**
+# It was 24,000 here, described as Churro's "carried HuggingFace-generate
+# `max_new_tokens`"; the model's `generation_config.json` at the pinned
+# revision carries no such field, so that description named a source that does
+# not exist and the number belonged to nobody. 20,000 is what three separate
+# vendor artifacts say, and they are listed with what each one *is*, because
+# two of them are generation bounds and the third is not:
+#
+# 1. **The CHURRO paper, section B.2** (arXiv:2509.19768): a maximum of 20,000
+#    generated tokens, "chosen to allow generation of all gold outputs". A
+#    generation bound, stated by the authors as such.
+# 2. **The standalone reference implementation**,
+#    `churro_transformers_infer.py:41-46` at
+#    `stanford-oval/churro @ 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`: the
+#    `--max-new-tokens` default is 20,000. Also a generation bound, and the one
+#    vendor artifact that runs this model without a server.
+# 3. **`utils/llm/models.py::COMPLETION_TOKENS_FOR_STANDARD_MODELS = 20_000`**
+#    at the paper-era release, wired into the `MODEL_MAP` row for churro and
+#    passed to the container as `--max-model-len`. **This one is a context
+#    length, not a cap** -- the harness sends no `max_tokens` at all -- and it
+#    is recorded here as corroboration of the number with that difference
+#    named, never as a third statement of the same quantity. Reading it as a
+#    generation bound is the specific misreading the research refuted, and the
+#    sealed Churro row's `max_model_len = 20000` is where it actually lands.
+#
+# The value is declared once for the whole repository in
+# `request_capacity.DECLARED_ANSWER_BOUND_TOKENS` beside the other three
+# chairs' bounds, so one chair's bound cannot drift from the table the wire
+# value is computed from; this module re-exports that entry rather than
+# restating the integer.
+#
+# Four MiB still allows more than 209 UTF-8 response bytes per declared token
+# -- far beyond an OCR transcription -- while giving the XML parser and the
+# post-hoc repetition scan a hard ceiling whatever bound the request carried.
+CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
+# One name, so the chair's three legal answer shapes cannot acquire three
+# intake bounds. It was declared beside the retired JSON wire contract
+# (`common/churro_response.py`) and re-exported here; that module is gone with
+# the coordinate channel it closed, so the number is declared here, which is
+# where `derive_churro_capture` applies it -- before either parser or the
+# repetition detector is handed a byte. `common/churro_document.py` deliberately
+# declares no ceiling of its own and takes this one as an argument, so the
+# grammar reader and the seam that bounds it cannot drift apart.
+CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+# The tail-cycle scan's own two numbers, chair-neutral like the scan itself:
+# the shortest repeating unit it will call a cycle, and how many times that
+# unit must recur at the very end of the response before it is one. Both are
+# declared, not measured -- the design defers calibrating them against
+# Chandra's own `detect_repeat_token` thresholds to Stage 2, and a threshold
+# nobody has measured says so rather than wearing a measurement's authority
+# (GOVERNANCE 10).
+_REPETITION_WINDOW: Final = 24
+_REPETITION_MIN_REPEATS: Final = 3
 
 
 def _integer(value: object) -> bool:
@@ -120,6 +293,126 @@ def _bounds(value: Any, what: str, *, page_size: tuple[int, int] | None) -> dict
     ):
         raise SchemaRefusal(f"{what} falls outside the sealed source page")
     return value
+
+
+def churro_fit_target(source_width: int, source_height: int) -> tuple[int, int]:
+    """The exact size `resize_image_to_fit(img, 2500, 2500)` returns for a crop.
+
+    `common/imaging_ports.py::resize_to_fit_churro` is the port of
+    `src/churro_ocr/_internal/image.py::resize_image_to_fit` at the pinned sha,
+    and it is called rather than restated. It was restated here while this
+    module was the only reader of the rule; the adapter that *writes* the
+    record now sizes its image through the port, and a contract validator
+    holding a record to a second copy of the arithmetic would be pinned to that
+    copy rather than to the vendor -- the two would agree for exactly as long
+    as both were wrong. The byte equality of the port itself against the
+    fetched vendor source is proved in `common/test_vendor_parity.py`.
+
+    Checking only that a target fits the square and does not enlarge would
+    admit a stretch the vendor cannot produce: a 4000x3000 crop presented as
+    2500x100 passes both of those and re-derives, because re-derivation replays
+    whatever target the record asks for. It would then carry the vendor's name
+    over an image the vendor's own code would never have made.
+    """
+    return resize_to_fit_churro(source_width, source_height)
+
+
+def _validate_resize_recipe(transform: dict[str, Any]) -> None:
+    """Close the executable resize recipe, then the rules its operation names.
+
+    Everything above the per-operation block is shared: a closed six-field
+    recipe, a resampler this repository can actually run, positive integer
+    dimensions typed before any arithmetic reads them, a target inside the
+    executable pixel bound, and source dimensions equal to the crop the
+    recipe sits on. That last one is what makes the recipe replayable at all;
+    the digest check in `validate_presented_page_binding` replays whatever
+    target the record asked for, so a target nothing constrains re-derives
+    happily and is still the wrong image.
+
+    What each operation adds is what its own publisher's rule makes checkable
+    from the recorded numbers, and the two publishers do not offer the same
+    thing. Churro's `resize_image_to_fit` is a closed formula, so the target is
+    held to it exactly (`churro_fit_target`). Chandra's `scale_to_fit` is a
+    scale, a grid snap and a greedy trim loop, and a second hand-written copy
+    of *that* in a contract validator would be pinned to itself rather than to
+    the vendor -- it would agree with a drifted port for exactly as long as
+    both were wrong -- so its target is held only to the grid and the maximum
+    area, the two facts its output always satisfies. The byte equality of
+    either port against the fetched vendor source is proved offline in
+    `common/test_vendor_parity.py`; these are the rules a record can be held to
+    here, with no network and no vendor package installed.
+    """
+    operation = transform["operation"]
+    resize = transform["resize"]
+    if not isinstance(resize, dict) or set(resize) != {
+        "resampler",
+        "dimension_rounding",
+        "source_width_px",
+        "source_height_px",
+        "target_width_px",
+        "target_height_px",
+    }:
+        raise SchemaRefusal("a resized adapter-crop has no closed resize recipe")
+    if (
+        resize["resampler"] != "pillow-lanczos"
+        or resize["dimension_rounding"] != _DIMENSION_ROUNDING[operation]
+    ):
+        raise SchemaRefusal("a resized adapter-crop has an unknown executable resize recipe")
+    # Malformed schema values must become a named refusal before any of the
+    # identities below perform arithmetic on them.
+    if not all(
+        _integer(resize[field]) and resize[field] > 0
+        for field in (
+            "source_width_px",
+            "source_height_px",
+            "target_width_px",
+            "target_height_px",
+        )
+    ):
+        raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+    if resize["target_width_px"] * resize["target_height_px"] > MAX_PIXELS:
+        raise SchemaRefusal(
+            "a resized adapter-crop target exceeds the executable image pixel bound"
+        )
+    bounds = transform["bounds"]
+    if resize["source_width_px"] != bounds["w"] or resize["source_height_px"] != bounds["h"]:
+        raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+    source_width, source_height = resize["source_width_px"], resize["source_height_px"]
+    target_width, target_height = resize["target_width_px"], resize["target_height_px"]
+    if operation == "crop-resize-preserve-aspect":
+        # `preserve-aspect` and `floor` are the operation's own words, so they are
+        # required to be true of the numbers beside them rather than left as
+        # description. Without this a record could name this operation over a
+        # target that stretches the crop, and still pass every other check here:
+        # the digest re-derives, because re-derivation replays whatever target
+        # the record asked for. What it would cost is the identification
+        # `_dai_observe` makes when it reports the crop's own page bounds as the
+        # box for the whole shown image; downstream view-to-page mapping is only
+        # sound over a uniform scale.
+        if target_height != max(1, source_height * target_width // source_width):
+            raise SchemaRefusal(
+                "a resized adapter-crop does not preserve the aspect its operation names"
+            )
+    elif operation == "chandra-scale-to-fit.v1":
+        if target_width % CHANDRA_SCALE_GRID_PX or target_height % CHANDRA_SCALE_GRID_PX:
+            raise SchemaRefusal(
+                f"a {operation} target is not on the vendor's {CHANDRA_SCALE_GRID_PX}-pixel "
+                "patch grid, so it is not a size that port can have produced"
+            )
+        if target_width * target_height > CHANDRA_SCALE_MAX_PIXELS:
+            raise SchemaRefusal(
+                f"a {operation} target of {target_width}x{target_height} px exceeds the "
+                f"vendor's own maximum area of {CHANDRA_SCALE_MAX_PIXELS} px"
+            )
+    elif operation == "churro-prepare-ocr-image.v1":
+        expected = churro_fit_target(source_width, source_height)
+        if (target_width, target_height) != expected:
+            raise SchemaRefusal(
+                f"a {operation} target of {target_width}x{target_height} px is not the size the "
+                f"vendor's fit rule produces from {source_width}x{source_height} px "
+                f"({expected[0]}x{expected[1]}): the {CHURRO_MAX_IMAGE_DIM_PX}x"
+                f"{CHURRO_MAX_IMAGE_DIM_PX} square, downscale-only, one isotropic scale"
+            )
 
 
 def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) -> dict[str, Any]:
@@ -157,15 +450,33 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     transform = value["transform"]
     if not isinstance(transform, dict):
         raise SchemaRefusal("a Testimonium presented block has no complete page transform")
+    # Every branch below hashes this value against a frozenset, so a non-string
+    # operation is normalized away first. Left as it arrives, an unhashable one
+    # -- a list, a dict -- would raise `TypeError` out of a contract check
+    # instead of the named refusal two checks further down, which is the exact
+    # failure `test_unhashable_enum_values_are_named_refusals_not_python_
+    # tracebacks` pins for the other enums in this schema.
+    operation = transform.get("operation")
+    if not isinstance(operation, str):
+        operation = None
     required_transform_fields = {
         "operation",
         "source_page_ordinal",
         "source_page_id",
         "bounds",
     }
-    if transform.get("operation") == "crop-resize-preserve-aspect":
+    optional_transform_fields: set[str] = set()
+    if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
         required_transform_fields.add("resize")
-    if set(transform) != required_transform_fields:
+    if operation in _COLOUR_MODE_REQUIRED_OPERATIONS:
+        required_transform_fields.add("colour_mode")
+    elif operation in _COLOUR_MODE_OPTIONAL_OPERATIONS:
+        optional_transform_fields.add("colour_mode")
+    transform_fields = set(transform)
+    if not (
+        required_transform_fields <= transform_fields
+        and transform_fields <= required_transform_fields | optional_transform_fields
+    ):
         raise SchemaRefusal("a Testimonium presented block has no complete page transform")
     if (
         not isinstance(transform["operation"], str)
@@ -174,53 +485,38 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     ):
         raise SchemaRefusal("a Testimonium presented transform disagrees with its source page")
     _bounds(transform["bounds"], "a Testimonium presented transform", page_size=page_size)
-    if transform["operation"] == "crop-resize-preserve-aspect":
-        resize = transform["resize"]
-        if not isinstance(resize, dict) or set(resize) != {
-            "resampler",
-            "dimension_rounding",
-            "source_width_px",
-            "source_height_px",
-            "target_width_px",
-            "target_height_px",
-        }:
-            raise SchemaRefusal("a resized adapter-crop has no closed resize recipe")
-        if resize["resampler"] != "pillow-lanczos" or resize["dimension_rounding"] != "floor":
-            raise SchemaRefusal("a resized adapter-crop has an unknown executable resize recipe")
-        # Malformed schema values must become a named refusal before the aspect
-        # identity performs arithmetic on them.
-        if not all(
-            _integer(resize[field]) and resize[field] > 0
-            for field in (
-                "source_width_px",
-                "source_height_px",
-                "target_width_px",
-                "target_height_px",
-            )
-        ):
-            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
-        if resize["target_width_px"] * resize["target_height_px"] > MAX_PIXELS:
+    if "colour_mode" in transform and (
+        not isinstance(transform["colour_mode"], str)
+        or transform["colour_mode"] not in ADAPTER_COLOUR_MODES
+    ):
+        raise SchemaRefusal(
+            "a Testimonium presented transform names an unknown colour conversion; the exact "
+            f"image the chair saw cannot be replayed from it (known modes "
+            f"{sorted(ADAPTER_COLOUR_MODES)})"
+        )
+    fixed_colour_mode = _COLOUR_MODE_FIXED_VALUES.get(operation)
+    if fixed_colour_mode is not None and transform.get("colour_mode") != fixed_colour_mode:
+        raise SchemaRefusal(
+            f"a {operation} presentation records colour_mode "
+            f"{transform.get('colour_mode')!r}; the vendor's own operation performs "
+            f"{fixed_colour_mode!r} unconditionally, so any other answer records a half of it "
+            "that did not run"
+        )
+    if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
+        # Only an `adapter-crop` is ever replayed against sealed page bytes
+        # (`validate_presented_page_binding`). A resize recipe on a `page` or a
+        # `region` presentation is therefore a transform nothing re-derives --
+        # the record would describe a resampling and never be held to it, which
+        # is precisely what ARCHITECTURE invariant 3 exists to prevent. Every
+        # producer in the tree already publishes these as `adapter-crop`
+        # (`witness_adapters.py::_dai_present`); this says so.
+        if kind != "adapter-crop":
             raise SchemaRefusal(
-                "a resized adapter-crop target exceeds the executable image pixel bound"
+                f"a {kind!r} presentation names the resizing operation {operation!r}; only an "
+                "adapter-crop is re-derived from its sealed page, so the resize would never be "
+                "checked against the image it claims to describe"
             )
-        bounds = transform["bounds"]
-        if resize["source_width_px"] != bounds["w"] or resize["source_height_px"] != bounds["h"]:
-            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
-        # `preserve-aspect` and `floor` are the operation's own words, so they are
-        # required to be true of the numbers beside them rather than left as
-        # description. Without this a record could name this operation over a
-        # target that stretches the crop, and still pass every other check here:
-        # the digest re-derives, because re-derivation replays whatever target
-        # the record asked for. What it would cost is the identification
-        # `_dai_observe` makes when it reports the crop's own page bounds as the
-        # box for the whole shown image; downstream view-to-page mapping is only
-        # sound over a uniform scale.
-        if resize["target_height_px"] != max(
-            1, resize["source_height_px"] * resize["target_width_px"] // resize["source_width_px"]
-        ):
-            raise SchemaRefusal(
-                "a resized adapter-crop does not preserve the aspect its operation names"
-            )
+        _validate_resize_recipe(transform)
     if kind == "region":
         ref = value["region_ref"]
         if (
@@ -361,6 +657,19 @@ def validate_native_witness_geometry(
     return payload
 
 
+def _replay_colour_mode(presented: dict[str, Any], derived: bytes) -> bytes:
+    """Run the recorded colour step, or nothing at all where none was recorded."""
+    if presented["transform"].get("colour_mode") != "rgb":
+        return derived
+    try:
+        return convert_png_to_rgb(derived)
+    except ValueError as error:
+        raise SchemaRefusal(
+            f"an adapter-crop presentation's colour conversion cannot be replayed from "
+            f"its sealed page ({error})"
+        ) from error
+
+
 def validate_presented_page_binding(
     presented: dict[str, Any],
     *,
@@ -410,7 +719,7 @@ def validate_presented_page_binding(
                 "sub-page transform"
             )
         operation = presented["transform"]["operation"]
-        if operation not in {"crop", "crop-resize-preserve-aspect"}:
+        if operation not in ADAPTER_CROP_OPERATIONS:
             raise SchemaRefusal(
                 "an adapter-crop presentation has no executable sealed-page crop transform"
             )
@@ -419,15 +728,26 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
         derived = crop_png(page_bytes, bounds)
-        if operation == "crop-resize-preserve-aspect":
+        # Each vendor's own order, because the two orders are not the same
+        # pixels. `_COLOUR_BEFORE_RESIZE` says which operation converts first;
+        # `keep` is recorded and executes nothing either way, which is the whole
+        # of its meaning.
+        colour_first = operation in _COLOUR_BEFORE_RESIZE
+        if colour_first:
+            derived = _replay_colour_mode(presented, derived)
+        if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
             resize = presented["transform"]["resize"]
             # The closed recipe repeats crop dimensions so any re-deriver drift
-            # becomes a named schema refusal before resizing.
+            # becomes a named schema refusal before resizing. Read off the
+            # derived bytes after any colour step, which cannot change them:
+            # `convert("RGB")` re-samples no pixel position.
             if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
                 raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
             derived = resize_png_lanczos(
                 derived, resize["target_width_px"], resize["target_height_px"]
             )
+        if not colour_first:
+            derived = _replay_colour_mode(presented, derived)
         expected_sha256 = digest_bytes(derived)
         if presented["image_sha256"] != expected_sha256:
             raise SchemaRefusal(
@@ -1009,6 +1329,40 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
+# `vendor_identity` is admitted and optional, for the reason `framing` is:
+# every record written before this field existed is exactly what it was and
+# stays valid, and no fixture digest moves the day the field is admitted. It
+# becomes a fact each adapter *writes* when that adapter lands its vendor
+# grammar (Chandra U9, Churro U10, DAI U11), and each adapter's own tests pin
+# its presence for that chair -- which is where a per-chair requirement can be
+# stated truthfully, since the three chairs do not have the same vendor
+# artifacts: DAI publishes no inference code at all, so its identity names the
+# weights repository and revision the carried files came from, where Chandra's
+# and Churro's name a source repository and commit.
+_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity"})
+_VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
+#: The parser names a retained model view may record, one per vendor grammar.
+#:
+#: `html` is Chandra's `data-bbox` layout, `xml` Churro's HistoricalDocument,
+#: `text` DAI's plain UTF-8. The vocabulary is enumerated rather than left as
+#: "any non-empty string" because `verify_native_capture_bytes` re-derives a
+#: capture *under the name the record carries*: a name no dispatcher answers to
+#: is a record that can never be re-derived, and it would be discovered as a
+#: `KeyError` at re-derivation rather than as a refusal at the seam that wrote
+#: it (GOVERNANCE 2).
+NATIVE_CAPTURE_PARSERS: Final = frozenset({"html", "xml", "text"})
+#: The one name still written in this tree at this commit, admitted so this
+#: contract can land ahead of the unit that retires it, and separate so that
+#: retirement is a one-line deletion rather than an edit to the vocabulary
+#: above. `json` is the committed fixture's Chandra placeholder
+#: (`fixture-chandra-response.v1`), kept until U16 re-declares `proof/`'s rows
+#: in the vendor grammars. It is not a vendor grammar and does not survive this
+#: wave. Unit 12's `churro` live-posture dispatcher is gone: the Churro adapter
+#: reads the vendor's own `HistoricalDocument` grammar under `xml`
+#: (`common/churro_document.py`), in both postures, so there is one Churro
+#: parser rather than a live one and a fixture one.
+_TRANSITIONAL_CAPTURE_PARSERS: Final = frozenset({"json"})
+_ADMITTED_CAPTURE_PARSERS: Final = NATIVE_CAPTURE_PARSERS | _TRANSITIONAL_CAPTURE_PARSERS
 # `unrecognized-shape` is the state a parser reaches when it ran, read the
 # whole response, and could name no shape it knows — distinct from `failed`,
 # where the parser refused the bytes, and from `parsed`, where it produced
@@ -1023,8 +1377,24 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
 _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset(
     {"not-requested", "pending", "parsed", "failed", "unrecognized-shape"}
 )
-_CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
+#: The post-hoc scan's own two findings. Separate from the grammar's, because
+#: only one of them may appear more than never: a capture carries at most one
+#: repetition finding, while a grammar answer can legitimately report several
+#: facts about itself at once (an echo trimmed *and* a page whose ink lies
+#: outside its sections).
+_CHURRO_REPETITION_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
+)
+#: Everything a Churro capture's `findings` may name. The grammar's own half is
+#: `common/churro_document.py`'s closed set, taken from it rather than restated
+#: so a finding that module learns to report is not a finding this contract
+#: silently refuses. Their internal shapes are closed where they are produced
+#: (`validate_churro_document_parse`) and held exactly by
+#: `verify_native_capture_bytes`, which re-derives the whole findings list from
+#: the retained bytes and compares it; what this module closes here is the
+#: vocabulary and the repetition findings' own fields.
+_CHURRO_CAPTURE_FINDING_KINDS: Final = (
+    _CHURRO_REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
 # `eos`/`stop`/`max_new_tokens` are the fixture transport's own vocabulary;
@@ -1039,87 +1409,45 @@ _CHURRO_STOP_REASONS: Final = (
 )
 
 
-#: The two parser names `derive_churro_capture` can actually run for this
-#: chair, and what each reaches. `"xml"` is the fixture posture's parser and
-#: reaches `validate_churro_xml` alone -- byte for byte the branch it always
-#: was, so a committed fixture body could not take the JSON branch even if
-#: someone wrote one. `"churro"` is the live posture's and reaches both legal
-#: shapes through `parse_churro_response`. The name is not a label on one
-#: dispatcher: it selects the parser, and `verify_native_capture_bytes`
-#: re-derives under the name the record was written with, so each posture
-#: re-derives through the branch it was recorded under.
-CHURRO_PARSERS: Final = frozenset({"xml", "churro"})
-#: The one sentence both Churro doors name a non-bytes body by. Spelled once
-#: because `validate_churro_xml` and `parse_churro_response` are the same
-#: boundary wearing two return conventions, and a body that is not bytes is the
-#: same fact at either -- not an `AttributeError` at one and a named refusal at
-#: the other.
-CHURRO_RESPONSE_NOT_BYTES: Final = "Churro response is not raw bytes"
+#: The parser name `derive_churro_capture` can run for this chair -- one name,
+#: for one grammar, in both postures. Unit 12 carried two, `"xml"` for the
+#: committed fixture's `<output>` bodies and `"churro"` for a live dispatcher
+#: that also read this repository's own JSON coordinate contract. That contract
+#: is retired (`pipeline/3_attestatores/churro.py` says why), so what is left is
+#: the vendor's own grammar, and both postures read it through
+#: `common/churro_document.py`. `verify_native_capture_bytes` re-derives under
+#: the name the record was written with, and there is now exactly one branch for
+#: it to reach.
+CHURRO_PARSERS: Final = frozenset({churro_document.CHURRO_PARSER})
 
 
-def parse_churro_response(raw: bytes) -> dict[str, Any]:
-    """One live Churro body, read under whichever of its two legal shapes it wears.
+def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> dict[str, Any]:
+    """One Churro body, read under the vendor's own grammar and its two fallbacks.
 
-    Returns the `parse` record's own three fields minus `parser`: a
-    ``{"state": "parsed", "text": ...}``, a
-    ``{"state": "unrecognized-shape", "outcome": ...}``, or a
-    ``{"state": "failed", "reason": ...}``.
+    Returns `common/churro_document.py`'s own parse record -- state, parser,
+    response byte count, findings, and for a parse the shape, text view, text,
+    sections, marked spans and page count. This module adds exactly one thing to
+    that call: the intake ceiling, `CHURRO_MAX_RESPONSE_BYTES`, which the
+    grammar module deliberately declares none of so that one chair cannot end up
+    with two of them.
 
-    The dispatch, and why it is a shape question rather than a try-and-fall-back:
+    `system_prompt` is the exact string the request sent. Only that string is
+    ever trimmed from the head of a response
+    (`churro_document.trim_leading_prompt`, the vendor's own
+    `run_churro_ocr.py` rule), and it is passed rather than guessed because
+    trimming against a framing that was not sent could remove real
+    transcription that happens to begin the same way.
 
-    * a JSON object declaring `churro_response.PAGE_RESPONSE_SCHEMA` is this
-      repository's own wire contract and is read under it, refusals included --
-      so a malformed block inside a body that *did* answer the question asked is
-      named as a shape this parser could not place, not as unparseable bytes;
-    * any other JSON object answered a question nobody put to this chair. It is
-      `unverified-response-schema`, and it reaches the capture as
-      `unrecognized-shape`: the parser ran, read the whole response and could
-      name no shape it knows, which is a different fact from a parse failure and
-      the state Chandra has had since it was written;
-    * everything else -- including a JSON array or scalar -- goes to
-      `validate_churro_xml` unchanged, because the trained `<output>` envelope
-      is Churro's own answer and stays fully legal.
-
-    The dispatch decode is deliberately the stdlib's permissive one: it decides
-    only which contract owns the body. `churro_response.parse` then re-decodes
-    under its own duplicate-member guard, so a body with two `blocks` members
-    declaring this schema is refused by that contract as
-    `unverified-response-schema` rather than falling through to the XML door
-    wearing a last-wins value. `chandra.parse` splits the same way for the same
-    reason.
-
-    A body that is not bytes at all is named the way `validate_churro_xml` names
-    it, returned as this function's own `failed` state. The dispatch decode below
-    would otherwise raise `AttributeError` off the caller's object before either
-    contract was consulted -- an unnamed interpreter error at one door where the
-    same boundary one branch away already answers with a refusal sentence the
-    capture can record (GOVERNANCE 2).
+    A body that is not bytes raises the grammar module's own named refusal
+    rather than returning a record: both callers here have already bound bytes
+    (`feeding.retain_model_view` and `verify_native_capture_bytes` each check
+    the type before they reach this), so a non-bytes body at this seam is a
+    programming error rather than one more thing a witness said.
     """
-    if not isinstance(raw, (bytes, bytearray)):
-        return {"state": "failed", "reason": CHURRO_RESPONSE_NOT_BYTES}
-    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
-        return {
-            "state": "failed",
-            "reason": (
-                "Churro response exceeds the retained parsing limit of "
-                f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
-            ),
-        }
-    try:
-        decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-        decoded = None
-    if churro_response.declares_wire_contract(decoded):
-        parsed = churro_response.parse(raw)
-        if churro_response.is_refusal(parsed):
-            return {"state": "unrecognized-shape", "outcome": parsed["parse_outcome"]}
-        return {"state": "parsed", "text": parsed["page_text"]}
-    if isinstance(decoded, dict):
-        return {"state": "unrecognized-shape", "outcome": "unverified-response-schema"}
-    try:
-        return {"state": "parsed", "text": validate_churro_xml(raw)}
-    except SchemaRefusal as error:
-        return {"state": "failed", "reason": str(error)}
+
+    return churro_document.parse_churro_document(
+        raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+    )
 
 
 def native_parse_refusal(parse: dict[str, Any]) -> str:
@@ -1148,41 +1476,46 @@ def native_parse_refusal(parse: dict[str, Any]) -> str:
     )
 
 
-def validate_churro_xml(raw: bytes) -> str:
-    """Validate one bounded native Churro response as a plain output element."""
-    if not isinstance(raw, (bytes, bytearray)):
-        raise SchemaRefusal(CHURRO_RESPONSE_NOT_BYTES)
-    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
-        raise SchemaRefusal(
-            "Churro response exceeds the retained parsing limit of "
-            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
-        )
-    if b"<!DOCTYPE" in bytes(raw).upper():
-        raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
-    try:
-        root = ET.fromstring(raw)
-    except (ET.ParseError, UnicodeDecodeError) as error:
-        raise SchemaRefusal(f"Churro response is not parseable XML: {error}") from error
-    if root.tag != "output" or set(root.attrib) or list(root):
-        raise SchemaRefusal("Churro response must be a plain <output> XML element")
-    return root.text or ""
+def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
+    """Report a repeated tail after capture; this function has no generation input.
 
+    Chair-neutral, and deliberately so. The scan was written for Churro because
+    Churro was the first page-scoped chair in the tree, but nothing in it is
+    Churro's: a degeneration loop is the dominant failure mode of every
+    VLM-OCR reader, and the same tail-cycle fact has to be recordable for
+    Chandra's HTML, DAI's plain text and the Perlector's own reading. The name
+    said otherwise, so the next caller's choice was to import a function whose
+    name asserts a chair it is not, or to write a second copy that would drift.
+    `detect_churro_repetition` remains bound to this function, so every
+    existing caller and every retained default keeps working unchanged.
 
-def detect_churro_repetition(raw: bytes) -> dict[str, Any] | None:
-    """Report a repeated tail after capture; this function has no generation input."""
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return {
-            "kind": "post-hoc-repetition-uninspected",
-            "reason": "response is not UTF-8 text",
-        }
+    It never re-rolls, never scores, and never gates: it returns a finding the
+    caller records beside the bytes (GOVERNANCE 11 -- recovery recovers
+    coverage, not quality).
+
+    Text is accepted directly as well as bytes. A caller that already holds the
+    decoded reading -- the Perlector does -- should not have to re-encode it to
+    ask this question, and a round trip through UTF-8 could only turn a string
+    that cannot fail the decode into one that cannot fail it differently. Bytes
+    behave exactly as they did: a body that is not UTF-8 is not scanned, and
+    says so as a finding rather than as an exception.
+    """
+    if isinstance(raw, str):
+        text = raw
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "kind": "post-hoc-repetition-uninspected",
+                "reason": "response is not UTF-8 text",
+            }
     normalized = re.sub(r"\s+", " ", text).strip()
-    if len(normalized) < _CHURRO_REPETITION_WINDOW * _CHURRO_REPETITION_MIN_REPEATS:
+    if len(normalized) < _REPETITION_WINDOW * _REPETITION_MIN_REPEATS:
         return None
     for width in range(
-        _CHURRO_REPETITION_WINDOW,
-        min(256, len(normalized) // _CHURRO_REPETITION_MIN_REPEATS) + 1,
+        _REPETITION_WINDOW,
+        min(256, len(normalized) // _REPETITION_MIN_REPEATS) + 1,
     ):
         unit = normalized[-width:]
         repeats = 1
@@ -1190,9 +1523,16 @@ def detect_churro_repetition(raw: bytes) -> dict[str, Any] | None:
             normalized[-(repeats + 1) * width : -repeats * width] == unit
         ):
             repeats += 1
-        if repeats >= _CHURRO_REPETITION_MIN_REPEATS:
+        if repeats >= _REPETITION_MIN_REPEATS:
             return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
     return None
+
+
+#: The name this scan was published under while it belonged to one chair. Kept
+#: as an alias rather than a wrapper so the two cannot diverge, and because
+#: `derive_churro_capture`'s default argument and `feeding.py`'s import both
+#: bind it by name.
+detect_churro_repetition = detect_repetition
 
 
 def derive_churro_capture(
@@ -1200,25 +1540,40 @@ def derive_churro_capture(
     transport_stop_reason: str,
     *,
     parser: str | None,
-    xml_parser=validate_churro_xml,
-    churro_parser=parse_churro_response,
-    repetition_detector=detect_churro_repetition,
+    system_prompt: str | None = None,
+    document_parser=parse_churro_response,
+    repetition_detector=detect_repetition,
 ) -> dict[str, Any]:
     """Derive the exact mutable-free facts a Churro capture may publish.
 
     Oversized bytes have already crossed the response boundary, so they remain
-    evidence in the caller's blob store.  They are not handed to either parser
-    or detector; both unperformed operations are named in the retained facts.
+    evidence in the caller's blob store.  They are not handed to the parser or
+    the detector; both unperformed operations are named in the retained facts.
 
-    `parser` selects the branch (`CHURRO_PARSERS`). `"xml"` is the committed
-    fixture's posture and reaches `validate_churro_xml` alone; `"churro"` is the
-    live posture and reaches both legal shapes. The repetition detector then
-    inspects `parse["text"]` where a parse produced one and the raw bytes
-    otherwise, naming which in the finding's `inspected` field -- unchanged, and
-    under the wire contract that text is the joined page text, which is the
-    right input: repetition is a fact about what the model transcribed, not
-    about the punctuation of the envelope it arrived in.
+    `parser` asks for the one grammar this chair has (`CHURRO_PARSERS`), or is
+    `None` for a retention that asks for no parse at all. Any other name is
+    refused rather than answered `not-requested`: a record naming a parser this
+    seam did not run would be a finished attempt wearing the look of one nobody
+    started (GOVERNANCE 2).
+
+    The grammar's own findings travel with the reading, ahead of the post-hoc
+    scan's. They are facts about this response that the page text alone cannot
+    show -- a prompt echo trimmed off its head, a stray `&` escaped to make it
+    parse, a page whose ink lies outside every section the vendor's walk
+    reaches, a body that arrived in the retired `<output>` envelope nobody asked
+    for.
+
+    The repetition detector then inspects `parse["text"]` where a parse produced
+    one and the raw bytes otherwise, naming which in the finding's `inspected`
+    field -- unchanged, and the parsed text is the right input: repetition is a
+    fact about what the model transcribed, not about the punctuation of the
+    envelope or the indentation of the XML it arrived in.
     """
+    if parser is not None and parser not in CHURRO_PARSERS:
+        raise SchemaRefusal(
+            f"a Churro capture cannot be derived under parser {parser!r}; this chair reads one "
+            f"grammar and the parser names for it are {sorted(CHURRO_PARSERS)}"
+        )
     if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
         reason = (
             "Churro response exceeds the retained parsing limit of "
@@ -1244,18 +1599,29 @@ def derive_churro_capture(
         }
 
     parse: dict[str, Any] = {"state": "not-requested", "parser": None}
+    findings: list[dict[str, Any]] = []
     stop_reason = transport_stop_reason
-    if parser == "xml":
-        try:
-            parse = {"state": "parsed", "parser": "xml", "text": xml_parser(raw)}
-        except SchemaRefusal as error:
-            parse = {"state": "failed", "parser": "xml", "reason": str(error)}
+    if parser is not None:
+        document = document_parser(raw, system_prompt=system_prompt)
+        # Copied, not aliased: this function promises mutable-free facts, and a
+        # caller's own `document_parser` is free to hand back records it keeps.
+        findings.extend(dict(finding) for finding in document["findings"])
+        if document["state"] == "parsed":
+            parse = {"state": "parsed", "parser": parser, "text": document["text"]}
+        elif document["state"] == "failed":
+            parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
             stop_reason = "partial-parse-failed"
-    elif parser == "churro":
-        parse = {"parser": "churro", **churro_parser(raw)}
-        if parse["state"] == "failed":
-            stop_reason = "partial-parse-failed"
-        elif parse["state"] == "unrecognized-shape":
+        else:
+            # The grammar names an unplaceable shape in `reason`, and the whole
+            # sentence becomes the capture's `outcome` rather than a short token
+            # derived from it. It is the only thing that says *which* root
+            # element arrived, and a record that dropped it would name the
+            # surprise without naming what the surprise was (GOVERNANCE 2).
+            parse = {
+                "state": "unrecognized-shape",
+                "parser": parser,
+                "outcome": document["reason"],
+            }
             stop_reason = "partial-parse-unrecognized-shape"
     parsed_text = parse.get("text")
     inspected, basis = (
@@ -1263,7 +1629,6 @@ def derive_churro_capture(
         if isinstance(parsed_text, str)
         else (raw, "raw-response")
     )
-    findings: list[dict[str, Any]] = []
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
         # The parse outcome wins over a repeated tail, as `failed` already did:
@@ -1276,6 +1641,26 @@ def derive_churro_capture(
         }:
             stop_reason = "partial-post-hoc-repetition-detected"
     return {"parse": parse, "findings": findings, "stop_reason": stop_reason}
+
+
+def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
+    """The exact system string a retained Churro capture says its request sent.
+
+    Read off the capture's own retained `view.prompt` rather than passed in, so
+    a re-derivation trims the head of the response against the framing that
+    reading was actually taken under. Every other route would be a guess: this
+    chair has two attested framings, and a re-derivation that tried the wrong
+    one could either leave an echo in the text or cut transcription out of it,
+    and would then disagree with the record it is checking.
+
+    ``None`` where no capture wrote one. `_validate_churro_capture` requires the
+    key for a `churro.v1` capture, so that is a record this seam did not write.
+    """
+
+    view = capture.get("view")
+    prompt = view.get("prompt") if isinstance(view, dict) else None
+    system = prompt.get("system") if isinstance(prompt, dict) else None
+    return system if isinstance(system, str) else None
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
@@ -1296,6 +1681,7 @@ def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
         raw,
         capture["transport_stop_reason"],
         parser=capture["parse"]["parser"],
+        system_prompt=churro_capture_system_prompt(capture),
     )
     for field in ("parse", "findings", "stop_reason"):
         if capture[field] != derived[field]:
@@ -1336,17 +1722,34 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             f"{value['transport_stop_reason']!r}"
         )
     view = value["view"]
-    if set(view) != {"prompt", "generation"}:
+    # `framing` is admitted and optional, and both halves of that are
+    # deliberate. Optional, because every record written before this chair had
+    # more than one framing is still exactly what it was and stays valid.
+    # Admitted, because a live reading is now taken under one of several
+    # declared framings (`pipeline/3_attestatores/churro.py::FRAMINGS`) and the
+    # record has to be able to say which -- the prompt bytes beside it identify
+    # the wording, but only a reader who already knows both wordings can tell
+    # them apart, and a run's own name for the question it asked is the fact an
+    # A/B compares on.
+    if set(view) - {"framing"} != {"prompt", "generation"}:
         raise SchemaRefusal(
             "a Churro page capture does not retain exactly its prompt and generation view"
         )
+    if "framing" in view and (not isinstance(view["framing"], str) or not view["framing"]):
+        raise SchemaRefusal("a Churro page capture names a framing that is not a nonblank string")
     prompt, generation = view["prompt"], view["generation"]
+    # `{system}` and nothing else. Both vendor-attested profiles set the user
+    # prompt to `None` (`common/churro_document.py`), so the user turn carries
+    # the image alone, and a retained view with a `user` member would be a
+    # record of text this chair is never sent -- the retired two-message framing
+    # this repository asked in until the vendor systems ruling.
     if (
         not isinstance(prompt, dict)
-        or set(prompt) != {"system", "user"}
-        or any(not isinstance(prompt[field], str) or not prompt[field] for field in prompt)
+        or set(prompt) != {"system"}
+        or not isinstance(prompt["system"], str)
+        or not prompt["system"]
     ):
-        raise SchemaRefusal("a Churro page capture has no closed nonblank prompt view")
+        raise SchemaRefusal("a Churro page capture has no closed nonblank system-only prompt view")
     if (
         not isinstance(generation, dict)
         or set(generation) != {"max_new_tokens"}
@@ -1357,25 +1760,30 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         raise SchemaRefusal(
             f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
         )
-    # Widened by Unit 12 for the live posture, and additive: every record valid
-    # before it is valid now. `unrecognized-shape` is coupled to the `churro`
-    # parser, and the fixture posture's admissible set is unchanged by
-    # construction rather than by promise -- the `xml` branch reaches
-    # `validate_churro_xml`, which returns text or raises, so it can produce
-    # only `parsed` or `failed` and can never write the new state.
+    # All three states the one grammar can reach. The `parser != "churro"` gate
+    # Unit 12 put on `unrecognized-shape` is gone with the second parser name:
+    # `xml` now reaches `common/churro_document.py`, which can conclude any of
+    # the three, and a gate saying otherwise would refuse the vendor's own
+    # well-formed answer under an unexpected root element.
     if state not in {"parsed", "failed", "unrecognized-shape"} or parser not in CHURRO_PARSERS:
         raise SchemaRefusal("a retained Churro page capture has no terminal parse record")
-    if state == "unrecognized-shape" and parser != "churro":
-        raise SchemaRefusal(
-            "a retained Churro page capture names an unrecognized shape under a parser that "
-            "cannot reach one; only the live 'churro' parser reads a shape it can refuse"
-        )
-    if len(findings) > 1:
+    repetitions = [
+        finding for finding in findings if finding["kind"] in _CHURRO_REPETITION_FINDING_KINDS
+    ]
+    if len(repetitions) > 1:
         raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
     for finding in findings:
         kind = finding["kind"]
         if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
             raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
+        if kind not in _CHURRO_REPETITION_FINDING_KINDS:
+            # A grammar finding. Its own closed shape belongs to the module that
+            # produces it (`churro_document.validate_churro_document_parse`) and
+            # is held exactly by `verify_native_capture_bytes`, which re-derives
+            # the whole list from the retained bytes and compares. Restating the
+            # per-kind field sets here would be a second copy free to drift from
+            # the grammar that writes them.
+            continue
         if kind == "post-hoc-repetition":
             if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
                 not isinstance(finding[field], int)
@@ -1413,12 +1821,78 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         )
 
 
+def validate_vendor_identity(value: Any) -> dict[str, Any]:
+    """Close which vendor pin the bytes beside this capture were taken from.
+
+    GOVERNANCE 6 requires every stored reading to carry the resolved identity
+    and revision of the *model* that produced it, and it already does. This is
+    the other half of the same obligation once a chair runs its vendor's own
+    system: the prompt bytes, the message shape and the output grammar are the
+    vendor's, taken at one commit, and a re-parse under a different pin
+    produces a different reading of the same retained response. Without the pin
+    on the record that difference is invisible -- two Testimonia disagree and
+    nothing says the second one read the bytes through another vendor's rules.
+
+    Three fields, and each is load-bearing:
+
+    * ``repository`` -- where the material came from. For Chandra and Churro
+      that is the vendor's source repository; for DAI, which publishes no
+      inference code, it is the weights repository its carried files ship in.
+    * ``sha`` -- the exact 40-hex commit or revision, never a tag or a branch.
+      A movable name would make the record's own claim unfalsifiable.
+    * ``carried_strings`` -- the sha256 of each string this repository carries
+      from that pin, by the name it is carried under, so a byte that changed in
+      our tree is visible against the vendor commit that is supposed to have
+      supplied it. This is the digest half of the offline byte-equality check
+      in ``common/test_vendor_parity.py``; here it travels *with* the reading.
+
+    ``carried_strings`` may not be empty. A vendor identity naming a repository
+    and a commit and then no bytes at all records a provenance for nothing.
+    """
+    if not isinstance(value, dict) or set(value) != _VENDOR_IDENTITY_FIELDS:
+        raise SchemaRefusal(
+            "a page Testimonium native capture vendor identity is not its closed "
+            f"{sorted(_VENDOR_IDENTITY_FIELDS)} schema"
+        )
+    if not isinstance(value["repository"], str) or not value["repository"].strip():
+        raise SchemaRefusal("a page Testimonium native capture vendor identity names no repository")
+    if not is_hf_revision(value["sha"]):
+        raise SchemaRefusal(
+            "a page Testimonium native capture vendor identity is not pinned to an exact 40-hex "
+            "commit; a tag or branch can move under the record that cites it"
+        )
+    carried = value["carried_strings"]
+    if not isinstance(carried, dict) or not carried:
+        raise SchemaRefusal(
+            "a page Testimonium native capture vendor identity carries no string digests, so it "
+            "records a vendor pin for no bytes"
+        )
+    for name, digest in carried.items():
+        if not isinstance(name, str) or not name.strip():
+            raise SchemaRefusal(
+                "a page Testimonium native capture vendor identity names a carried string with "
+                "no name"
+            )
+        if not is_sha256(digest):
+            raise SchemaRefusal(
+                f"a page Testimonium native capture vendor identity records {name!r} without a "
+                "sha256 of the bytes actually carried"
+            )
+    return value
+
+
 def validate_native_capture(value: Any) -> dict[str, Any]:
     """Close the derived model view; raw response bytes remain in its referenced blob."""
-    if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
+    if not isinstance(value, dict) or not (
+        _NATIVE_CAPTURE_FIELDS
+        <= set(value)
+        <= _NATIVE_CAPTURE_FIELDS | _NATIVE_CAPTURE_OPTIONAL_FIELDS
+    ):
         raise SchemaRefusal(
             "a page Testimonium native capture is not its retained model-view schema"
         )
+    if "vendor_identity" in value:
+        validate_vendor_identity(value["vendor_identity"])
     for field in ("schema", "adapter", "transport_stop_reason", "stop_reason"):
         if not isinstance(value[field], str) or not value[field]:
             raise SchemaRefusal(f"a page Testimonium native capture has a blank {field}")
@@ -1462,10 +1936,8 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     if not isinstance(parse, dict) or state not in _NATIVE_CAPTURE_PARSE_STATES:
         raise SchemaRefusal("a page Testimonium native capture has a malformed parse record")
     parser = parse.get("parser")
-    if state == "not-requested":
-        expected, parser_valid = {"state", "parser"}, parser is None
-    elif state == "pending":
-        expected, parser_valid = {"state", "parser"}, isinstance(parser, str) and bool(parser)
+    if state in {"not-requested", "pending"}:
+        expected = {"state", "parser"}
     else:
         # `unrecognized-shape` names the shape it could not place in `outcome`,
         # where `failed` names the refusal in `reason` and `parsed` carries
@@ -1473,9 +1945,25 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         # wear one state's clothing while carrying another's evidence.
         third = {"parsed": "text", "failed": "reason"}.get(state, "outcome")
         expected = {"state", "parser", third}
-        parser_valid = isinstance(parser, str) and bool(parser)
-    if set(parse) != expected or not parser_valid:
+    if set(parse) != expected:
         raise SchemaRefusal("a page Testimonium native capture parse record has the wrong shape")
+    # Three separate faults, three separate sentences. A parse nobody asked for
+    # naming a parser, and a parse naming a parser no grammar answers to, have
+    # different fixes -- and the second is the one that would otherwise surface
+    # as a `KeyError` from inside `verify_native_capture_bytes` rather than as
+    # a refusal at the seam that wrote it (GOVERNANCE 2).
+    if state == "not-requested":
+        if parser is not None:
+            raise SchemaRefusal(
+                "a page Testimonium native capture states that no parse was requested and then "
+                f"names {parser!r} as the parser that ran it"
+            )
+    elif not isinstance(parser, str) or parser not in _ADMITTED_CAPTURE_PARSERS:
+        raise SchemaRefusal(
+            f"a page Testimonium native capture names parser {parser!r}, which no vendor grammar "
+            f"in this pipeline answers to, so the capture could never be re-derived from its "
+            f"retained bytes (the grammars are {sorted(NATIVE_CAPTURE_PARSERS)})"
+        )
     if state == "parsed" and not isinstance(parse["text"], str):
         raise SchemaRefusal("a page Testimonium native capture claims parsed with no text")
     if state == "failed" and not (isinstance(parse["reason"], str) and parse["reason"]):

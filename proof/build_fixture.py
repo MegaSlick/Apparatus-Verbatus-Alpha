@@ -193,6 +193,28 @@ NATIVE_OBSERVATIONS = (
     # would double-count. attestator_3's box stays large enough to contain both
     # proposal regions, exercising geometric attachment and containment without
     # using an anchor as authority.
+    #
+    # **AND NO LIVE CHAIR COULD PRODUCE IT.** U10 put the Churro chair back on
+    # its vendor's own system, where `HistoricalDocument` carries no coordinate
+    # vocabulary anywhere: `churro.FORMAT_CAPABILITIES` says
+    # `can_express_layout = False`, the adapter declares no quantization rule
+    # and no page size, and `churro.observe` returns a `bounds_source
+    # "presented"` echo that routing and coverage expressly exclude. This row
+    # bypasses all of that -- `run.py::_fixture_native_observations` publishes a
+    # declared box as `bounds_source "native"` without consulting the adapter --
+    # so the offline posture attaches this chair, counts three witnesses of a
+    # floor of three, and reaches a *delivered* export via that declared box.
+    #
+    # U12 has since landed: the live seam over the same chair now also reaches
+    # *delivered* with three of three (`pipeline/test_live_reading_seam_e2e.py`),
+    # but through a different basis -- the Perlector's own `anchor-line`
+    # derivation, never a reported page-geometry box, since this chair's
+    # grammar carries none. The two postures now agree on the outcome and
+    # disagree on the mechanism, which is exactly what this row still exists to
+    # keep visible: it is the one declared row whose chair's adapter reports it
+    # cannot express layout, so a fixture that quietly started asking a live
+    # capability of it would be asking for something no live Churro response
+    # can supply. Pinned mechanically in `proof/test_fixture_declaration_contract.py`.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
     # The disagreement fixture stays deliberately uncalibrated and belongs to
     # the recovery scenario: it is reported ink outside every proposal, which
@@ -475,8 +497,18 @@ CHURRO_PAGE_RESPONSES = tuple(
         "scenario": "churro-native",
         "page_ordinal": 2,
         "chair": "attestator_3",
-        # The missing closing tag is retained fixture evidence for parse failure.
-        "raw_xml": f"<output>{_churro_native_page_text(2, 'attestator_3')}",
+        # Retained fixture evidence for parse failure, and it has to be cut in
+        # the *grammar* to be one. Under the vendor's own reader
+        # (`common/churro_document.py`) a body that offers no grammar at all is
+        # not malformed: it is the plain reading-order text the paper-era
+        # harness itself expected, and throwing a page of ink away over an
+        # unclosed tag is the loss GOALS 1 refuses. So a declared cut says
+        # `HistoricalDocument` and stops mid-element. The `<output>` rows around
+        # it stay as they are -- retained history, which the grammar still reads
+        # and names on the capture -- until U16 re-declares them.
+        "raw_xml": (
+            f"<HistoricalDocument><Page><Body><Line>{_churro_native_page_text(2, 'attestator_3')}"
+        ),
         "transport_stop_reason": "length",
     },
     {

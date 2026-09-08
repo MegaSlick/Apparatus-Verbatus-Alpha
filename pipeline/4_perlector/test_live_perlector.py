@@ -27,6 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import dissent
 import pytest
 from live_reader import EngineSignalRefusal
 
@@ -1255,3 +1256,465 @@ def test_a_continuation_page_entry_claiming_an_act_anchor_is_refused(monkeypatch
     )
     with pytest.raises(SchemaRefusal, match="carries no act-specific anchor"):
         perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
+
+
+# --- the anchor-line basis: a witness whose grammar carries no geometry ---------
+
+PAGE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
+ALIGNED_ON_THE_ACT_ANCHOR = {
+    "status": "aligned",
+    "anchor_basis": "act-anchor",
+    "anchor_chair": "attestator_1",
+    "anchor_span": {"start": 0, "end": len(PAGE_TEXT)},
+    "witness_span": {"start": 0, "end": len(PAGE_TEXT)},
+    "anchor_line_match": {
+        "anchor_characters": len(PAGE_TEXT),
+        "matched_characters": len(PAGE_TEXT),
+        "longest_matched_run": len(PAGE_TEXT),
+    },
+    "line_geometry": [],
+    "loss": {"witness": {"markup_characters": 0}, "anchor": {"markup_characters": 0}},
+    "offset_maps": {"witness": [], "anchor": []},
+}
+NATIVE_OVER_THE_ACT = [
+    {
+        "ordinal": 0,
+        "bounds": {"x": 22, "y": 22, "w": 150, "h": 70},
+        "bounds_source": "native",
+        "span": None,
+    }
+]
+PRESENTED_ECHO_ONLY = [
+    {
+        "ordinal": 0,
+        "bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        "bounds_source": "presented",
+        "span": None,
+    }
+]
+
+
+def _primary_attachment(
+    *, attached: bool, basis: str, alignment: dict[str, Any], comparable: bool | None = None
+) -> dict[str, Any]:
+    aligned = alignment.get("status") == "aligned"
+    return {
+        "chair": "attestator_3",
+        "page_witness": True,
+        "page_ordinal": 1,
+        "testimonium_ref": {"relative_path": "3_attestatores/artifacts/p.json", "sha256": "c" * 64},
+        "attached": attached,
+        "comparable": (attached and aligned) if comparable is None else comparable,
+        "attachment_basis": basis,
+        "content_health": {"characters": len(PAGE_TEXT)},
+        "alignment": alignment,
+        "span": dict(alignment["witness_span"]) if attached and aligned else None,
+    }
+
+
+def _primary_context(monkeypatch, attachment: dict[str, Any], *, observed: list[dict[str, Any]]):
+    """The act's own primary page, read by a page witness with the given geometry.
+
+    The sibling of `_continuation_context`, stubbed the same way and for the
+    same reason: the page record's own validity has its own suites, while what
+    is under test here is which evidence `act_attachment_view` will let attach a
+    page witness to an act. Everything those rules read is real -- the geometric
+    derivation runs over `observed` against the act's sealed basis, and the
+    comparison view is sliced out of the retained page text.
+
+    `observed` is the knob. A `native` box over the act's rectangle is a chair
+    that reported where it looked; a lone `presented` echo is a chair whose
+    grammar carries no coordinates at all (Churro's, by vendor design). The echo
+    is exactly what `reported_geometry_overlaps` excludes, so the second shape
+    is a witness geometry can never attach.
+    """
+    identity = ChairIdentity(
+        role="attestator_3",
+        source="local-repository",
+        repo=None,
+        path="attestator_3",
+        revision=None,
+        digest_manifest="c" * 64,
+        manifest="manifests/attestator_3.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="churro.v1",
+        witness_scope="page",
+    )
+    page_payload = {
+        "chair": "attestator_3",
+        "scope": "page",
+        "page_ordinal": 1,
+        "page_role": "primary",
+        "unjoined_act_attempts": [],
+        "payload": PAGE_TEXT,
+        "observed": observed,
+    }
+    testimonium = {"outcome": "read", "payload": page_payload, "artifact_id": "page-1-attestator-3"}
+    attachment_record = {
+        "artifact_id": "attachment-1",
+        "payload": {"act_key": "a1", "attempt_ordinal": 1, "attachments": [attachment]},
+    }
+    tree = SimpleNamespace(
+        build_manifest=lambda stage: {
+            "artifacts": [
+                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
+            ]
+        },
+        read_artifact=lambda stage, kind, artifact_id: attachment_record,
+        read_artifact_reference=lambda reference, *, stage, kind, subject_id: testimonium,
+    )
+    context = SimpleNamespace(
+        tree=tree,
+        witness_chairs=["attestator_3"],
+        registry=SimpleNamespace(
+            config=SimpleNamespace(chairs={"attestator_3": identity}),
+            resolve=lambda chair: identity,
+        ),
+        artifact_ref=lambda stage, kind, artifact_id: {"artifact_id": artifact_id},
+    )
+    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
+    monkeypatch.setattr(
+        perlector, "validate_page_testimonium_record", lambda context, record, regions: None
+    )
+    act = {"act_id": "act_0123456789abcdef", "act_key": "a1", "page_ordinal": 1}
+    bases = [
+        {
+            "source_page_ordinal": 1,
+            "source_page_id": "page_one",
+            "region_id": "r1",
+            "transform": {"bounds": {"x": 20, "y": 20, "w": 160, "h": 80}},
+        }
+    ]
+    chair_testimonium = {
+        "outcome": "read",
+        "payload": {
+            "chair": "attestator_3",
+            "content_health": {"characters": len(PAGE_TEXT)},
+            "page_witness": True,
+        },
+    }
+    return context, act, [chair_testimonium], bases
+
+
+def test_a_page_witness_with_no_geometry_attaches_on_its_located_anchor_line(monkeypatch):
+    """The state a geometry-free grammar reaches, and the only one it can.
+
+    Churro's published grammar carries no coordinates, so its whole page record
+    is one `presented` echo -- which `reported_geometry_overlaps` excludes by
+    name. Derived from geometry alone this chair was unattached at every act,
+    which put every act one witness under a floor of three on a shortfall that
+    had not happened. What it does have is an alignment that located THIS act's
+    anchor line inside its page text, and that is the `anchor-line` basis.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True, basis="anchor-line", alignment=ALIGNED_ON_THE_ACT_ANCHOR
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+    assert view["page_witness_count"] == 1
+    # Attached, and carrying the act-anchored comparison view the witness floor
+    # needs: that view is the whole point of admitting the basis.
+    assert view["comparison_views"] == {"attestator_3": PAGE_TEXT}
+    # And no edge-delta evidence: a `presented` echo is not reported geometry
+    # and never becomes correspondence evidence against a proposal. The chair's
+    # key exists (it was read); what it must not carry is a single row.
+    assert view["edge_deltas"] == {"attestator_3": []}
+
+
+def test_the_same_record_without_a_located_anchor_line_is_refused_as_unattached(monkeypatch):
+    """The counterfactual for the branch above: the basis is not free.
+
+    Identical in every respect except that the alignment located nothing --
+    `no-page-anchor` is an aligned record that says so in the producer's own
+    vocabulary, carried by the trivial attach a genuinely empty reading gets.
+    A chair with neither geometry nor a located line attached to nothing, and
+    claiming otherwise would put it on the witness floor for free.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True,
+            basis="anchor-line",
+            alignment={
+                **ALIGNED_ON_THE_ACT_ANCHOR,
+                "anchor_basis": "no-page-anchor",
+                "anchor_chair": None,
+                "anchor_span": {"start": 0, "end": 0},
+                "witness_span": {"start": 0, "end": 0},
+            },
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+def test_a_zero_length_anchored_span_does_not_attach_a_page_witness(monkeypatch):
+    """A located anchor with nothing under it is not a placed reading.
+
+    The trivial attach a genuinely empty page reading gets carries
+    `anchor_basis: "act-anchor"` with a zero-length `witness_span`. Reading the
+    anchor basis alone would attach it and count a chair toward the floor for a
+    slice with no characters in it (GOVERNANCE 10); the span's length is what
+    separates the two.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True,
+            basis="anchor-line",
+            alignment={
+                **ALIGNED_ON_THE_ACT_ANCHOR,
+                "anchor_span": {"start": 0, "end": 0},
+                "witness_span": {"start": 0, "end": 0},
+                "anchor_line_match": {
+                    "anchor_characters": 0,
+                    "matched_characters": 0,
+                    "longest_matched_run": 0,
+                },
+            },
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+def test_a_coincidental_anchor_line_match_does_not_attach_a_page_witness(monkeypatch):
+    """The reader re-derives the MEASUREMENT, not just the aligned status.
+
+    A witness whose text has nothing to do with the page still aligns: the
+    matcher keeps every matching block of one character, the producer clips
+    whatever falls inside this act's anchor range, and the hull across two
+    coincidental characters is a positive span. That was enough to attach on
+    `anchor-line` and to put the chair on the witness floor (hostile review of
+    Unit 12, must-fix 1). The record now carries how much of the act's own
+    anchor line was matched, and a producer that claims an attachment on a
+    coincidence is refused here exactly as one that claims it on geometry it
+    never reported.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True,
+            basis="anchor-line",
+            alignment={
+                **ALIGNED_ON_THE_ACT_ANCHOR,
+                "witness_span": {"start": 3, "end": 5},
+                "anchor_line_match": {
+                    "anchor_characters": len(PAGE_TEXT),
+                    "matched_characters": 2,
+                    "longest_matched_run": 1,
+                },
+            },
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+def test_an_anchor_line_attachment_may_not_be_silently_discounted(monkeypatch):
+    """The derivation is an equality in both directions, as it always was.
+
+    Understating attachment is the same producer/reader disagreement as
+    overstating it, and it costs an act a witness it really had.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=False,
+            basis="unattached",
+            alignment=ALIGNED_ON_THE_ACT_ANCHOR,
+            comparable=False,
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="does not derive from"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+def test_geometry_wins_the_basis_label_when_a_chair_reported_both(monkeypatch):
+    """The label is evidence about independence, so precedence is checked.
+
+    A chair that reported ink over this act's sealed proposal attached on its
+    own evidence. Filing that as `anchor-line` would understate what the record
+    proves -- `anchor-line` says the chair counts here only because ANOTHER
+    chair's anchor located its text -- so the exact derived label is required,
+    never membership in the two admissible ones.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True, basis="anchor-line", alignment=ALIGNED_ON_THE_ACT_ANCHOR
+        ),
+        observed=NATIVE_OVER_THE_ACT,
+    )
+    with pytest.raises(SchemaRefusal, match="attached it by 'geometric-overlap'"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+    # And the honest spelling of that same record passes.
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True, basis="geometric-overlap", alignment=ALIGNED_ON_THE_ACT_ANCHOR
+        ),
+        observed=NATIVE_OVER_THE_ACT,
+    )
+    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+    assert view["comparison_views"] == {"attestator_3": PAGE_TEXT}
+
+
+def test_a_geometry_free_witness_may_not_be_filed_as_geometrically_attached(monkeypatch):
+    """The mirror of the precedence rule, and the more dangerous direction.
+
+    A chair with no reported geometry filed as `geometric-overlap` claims an
+    independent observation it never made. Nothing downstream re-reads the boxes
+    to notice; the label is the record of what happened.
+    """
+    context, act, testimonia, bases = _primary_context(
+        monkeypatch,
+        _primary_attachment(
+            attached=True, basis="geometric-overlap", alignment=ALIGNED_ON_THE_ACT_ANCHOR
+        ),
+        observed=PRESENTED_ECHO_ONLY,
+    )
+    with pytest.raises(SchemaRefusal, match="attached it by 'anchor-line'"):
+        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
+
+
+# --- the comparison view an act-scoped chair that declares uncertainty gets -----
+
+
+def _act_scoped_record(payload: dict[str, Any]) -> dict[str, Any]:
+    return {"outcome": "read", "payload": {"chair": "attestator_2", **payload}}
+
+
+def test_an_uncertainty_declaring_act_chair_is_given_a_bracket_stripped_view():
+    """DAI rejoins the dissent instrument through its own bytes, not by fiat.
+
+    `dissent.is_comparable` refuses to diff a format that may embed
+    alternative-reading markup inline, and `markup_text_view` -- which removes
+    TAG markup -- does not touch `[UNCERTAIN]`. Without a view built for the
+    notation this chair actually uses, declaring the capability truthfully would
+    make it `compared: "unknown"` forever: the instrument ARCHITECTURE names for
+    catching a reader that learned to agree with witnesses, dark on the one
+    chair whose grammar says most about uncertain ink.
+    """
+    testimonia = [
+        _act_scoped_record(
+            {
+                "payload": "Marie [UNCERTAIN] Dupont",
+                "format_capabilities": {
+                    "can_express_uncertainty": True,
+                    "can_express_layout": False,
+                },
+            }
+        )
+    ]
+    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
+    assert rows[0]["payload"]["comparison_reported"] == "Marie  Dupont"
+    # The retained record is untouched: the copy exists so the verbatim bytes
+    # stay verbatim (GOVERNANCE 4).
+    assert testimonia[0]["payload"] == {
+        "chair": "attestator_2",
+        "payload": "Marie [UNCERTAIN] Dupont",
+        "format_capabilities": {"can_express_uncertainty": True, "can_express_layout": False},
+    }
+    assert dissent.is_comparable(rows[0]) is True
+
+
+def test_an_act_chair_that_declares_no_uncertainty_is_given_no_view():
+    """The gate is the declaration, and nothing is stripped from a plain format.
+
+    A chair whose format cannot express uncertainty is already comparable on its
+    raw report; handing it a stripped view would remove characters from a
+    reading that meant them literally.
+    """
+    testimonia = [
+        _act_scoped_record(
+            {
+                "payload": "a [UNCERTAIN] literal",
+                "format_capabilities": {
+                    "can_express_uncertainty": False,
+                    "can_express_layout": False,
+                },
+            }
+        )
+    ]
+    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
+    assert "comparison_reported" not in rows[0]["payload"]
+
+
+def test_a_non_boolean_capability_claim_buys_no_comparison_view():
+    """Read from a retained record, so a truthy non-boolean decides nothing.
+
+    The producer's own seam refuses anything but a two-key boolean mapping
+    (`live_witness._format_capabilities_for`), so a value that is not exactly
+    `True` here is a record no producer wrote -- and a comparison view granted
+    on `"yes"` would strip characters out of a report on the strength of a field
+    nothing validated.
+    """
+    for capabilities in ({"can_express_uncertainty": "yes"}, {"can_express_uncertainty": 1}, []):
+        testimonia = [
+            _act_scoped_record(
+                {"payload": "Marie [UNCERTAIN] Dupont", "format_capabilities": capabilities}
+            )
+        ]
+        rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
+        assert "comparison_reported" not in rows[0]["payload"], capabilities
+
+
+def test_a_structured_act_report_is_given_no_view_to_strip():
+    """Structured testimony stays retained and uncountable, exactly as before.
+
+    The point of the guard is that a structured report must not become a
+    comparison view by being coerced into one, which would invent text the
+    witness never wrote.
+    """
+    testimonia = [
+        _act_scoped_record(
+            {
+                "payload": {"lines": ["Marie [UNCERTAIN] Dupont"]},
+                "format_capabilities": {
+                    "can_express_uncertainty": True,
+                    "can_express_layout": False,
+                },
+            }
+        )
+    ]
+    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
+    assert "comparison_reported" not in rows[0]["payload"]
+
+
+def test_a_page_witness_still_takes_its_anchored_slice_not_a_bracket_strip():
+    """One view per scope, and the page witness's is the anchored one.
+
+    A page witness declaring the capability must not be handed a bracket-strip
+    of its whole page reading: that would hand dissent the entire page as this
+    act's report, which is exactly the inversion the act-anchored clip exists to
+    prevent.
+    """
+    testimonia = [
+        {
+            "outcome": "read",
+            "payload": {
+                "chair": "attestator_3",
+                "page_witness": True,
+                "payload": "ACT ONE [UNCERTAIN] text\nACT TWO other text",
+                "format_capabilities": {
+                    "can_express_uncertainty": True,
+                    "can_express_layout": False,
+                },
+            },
+        }
+    ]
+    rows = perlector.dissent_testimonia(
+        testimonia, {"comparison_views": {"attestator_3": "ACT ONE text"}}
+    )
+    assert rows[0]["payload"]["comparison_reported"] == "ACT ONE text"

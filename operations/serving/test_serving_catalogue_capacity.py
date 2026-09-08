@@ -10,12 +10,14 @@ and `common/` imports nothing from `operations/`.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from common.churro_document import CHURRO_PROMPT_VARIANTS
 from common.request_capacity import (
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
@@ -25,6 +27,12 @@ from common.request_capacity import (
     row_image_geometry,
 )
 from operations.serving.config import ServingProfile, load_serving_recipes
+
+_ATTESTATORES_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "3_attestatores"
+if str(_ATTESTATORES_DIR) not in sys.path:
+    sys.path.insert(0, str(_ATTESTATORES_DIR))
+
+import churro  # noqa: E402
 
 MIN_PIXELS = 3136
 TIER_MAX_PIXELS = {
@@ -61,9 +69,23 @@ ACT_REGION_CROP = (2480, 584)
 # would ask whether they can serve a request smaller than any the reader lets
 # through.
 PROMPT_TOKENS = {
-    **{chair: entry.tokens for chair, entry in MEASURED_PROMPT_TOKENS.items()},
+    # The default framing's cost per chair: `MEASURED_PROMPT_TOKENS` carries
+    # one entry per framing a chair can be asked in, and the first is the one a
+    # run sends unless it names another (`churro.DEFAULT_FRAMING`).
+    **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
     "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
 }
+# The comment above is true only because entry 0 happens to be Churro's
+# default framing's own measurement today; nothing enforces the order, so a
+# tuple reordered on a later edit would silently swap in the wrong framing's
+# cost here. Checked once, by digest, against the framing `churro.py` itself
+# currently names as the default -- not asserted structurally on every
+# access, and not against a name hard-coded here, so a repointed
+# `DEFAULT_FRAMING` fails this rather than going unnoticed.
+assert (
+    MEASURED_PROMPT_TOKENS["attestator_3"][0].prompt_digest
+    == CHURRO_PROMPT_VARIANTS[churro.DEFAULT_FRAMING]["system_sha256"]
+), "MEASURED_PROMPT_TOKENS['attestator_3'][0] is no longer churro.DEFAULT_FRAMING's measurement"
 
 
 def _shipped_rows():
@@ -121,15 +143,18 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
 
     Every row must hold the images its chair really sends at its own
     `max_pixels`, plus that chair's measured prompt, plus the answer that
-    request reserves.  Before this branch none of the 24 GB rows could, two
-    of the 48 GB rows could not fit the prompt alone, and Churro at 80 GB+ left
-    1,058 tokens for a 1,631-token answer.  A row that provably cannot answer
-    is not unproven; it is wrong, and the catalogue is not allowed to ship one.
+    request reserves.  Before U15 no row held every witness chair at its own
+    trained geometry; a per-tier generic pixel/context ladder either refused
+    the chair outright or left an answer no dense page could fit in.  A row
+    that provably cannot answer is not unproven; it is wrong, and the
+    catalogue is not allowed to ship one.
 
-    Churro is weighed here as the live chair is really asked -- the 441-token
-    layout instruction and the JSON object it asks back -- not as the trained
-    `<output>` carry the fixture posture declares.  Both of its numbers rose
-    with that instruction and all three of its rows still hold the request.
+    Churro is weighed here as the live chair is really asked -- the vendor's
+    own registry-resolved system string, 27 tokens, and U14's re-measured
+    dense-page answer over the `HistoricalDocument` grammar it is actually
+    read under (1,905, not the retired 1,631 JSON-contract figure).  All three
+    of its rows hold the request with the margin the catalogue's own header
+    comment states.
     """
 
     _label, images, answer_budget = case
@@ -138,19 +163,24 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     assert record["headroom"] >= 0
 
 
-def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_third():
-    """The one measured Perlector shape a shipped row cannot serve.
+def test_the_two_view_page_fallback_act_fits_every_tiers_context():
+    """The one measured Perlector shape that used to overrun a shipped row.
+
+    This is a context-arithmetic claim only, not a claim that the Perlector
+    can be served at every tier: `config/serving_recipes_real.toml` marks its
+    24 GB and 48 GB rows unservable against 51.7 GiB of measured bf16 weights
+    (hostile review Q5, a 64 GiB floor), independent of what fits below.
 
     An act whose bounds are the whole page, seen from two captures, sends four
-    page-sized images.  At 24 GB and 48 GB the raised 16,384 holds them; at
-    80 GB+ the same four images cost 20,400 tokens on their own, and no context
-    this catalogue ships can hold the request.  The prompt charged here is the
-    1,100 the seam admits on over the representative dossier, not the 790 floor
-    it used to be weighed against; the verdicts are unchanged by the difference
-    and the three needs move by 310 each.  Pinned rather than passed over:
-    the pipeline refuses it on this laptop with the arithmetic
-    (`pipeline/4_perlector/live_reader.py`), and a later edit that quietly
-    changes which tiers can serve it changes this test.
+    page-sized images.  At 24 GB and 48 GB the context holds them; at 80 GB+
+    the same four images cost 20,400 tokens on their own -- against the old
+    16,384 context this catalogue could not hold the request, which is why
+    this test was once named for the tier it could not serve.  U15 (Tyrel's
+    ruling, 2026-09-06) raises `generic-80gb-plus`'s `context_cap` to 32,768
+    for exactly this shape, and the request now fits at every tier.  Pinned
+    rather than passed over: the arithmetic no longer refuses it on this
+    laptop, and a later edit that quietly lowers the context again changes
+    this test.
     """
 
     needs = {}
@@ -170,8 +200,8 @@ def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_
         "generic-24gb": (9278, True),
         # 4x3,102 + 1,100 + 1,318
         "generic-48gb": (14826, True),
-        # 4x5,100 + 1,100 + 1,318, against 16,384
-        "generic-80gb-plus": (22818, False),
+        # 4x5,100 + 1,100 + 1,318, against 32,768 (U15; was 16,384)
+        "generic-80gb-plus": (22818, True),
     }
 
 

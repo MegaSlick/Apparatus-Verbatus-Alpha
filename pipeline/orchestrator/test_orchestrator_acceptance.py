@@ -93,6 +93,22 @@ RECENSOR_RUN = _load_recensor()
 NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
 NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
+
+def _perlector_dissent():
+    """The Perlector's own `dissent` module, loaded the way `_load_recensor` is.
+
+    Imported by path rather than by name: `pipeline/4_perlector` is a
+    numeric-prefixed directory its own stage program adds to `sys.path`, and
+    this suite must not acquire that path as a side effect of a comparison it
+    makes in one test.
+    """
+    path = ROOT / "pipeline/4_perlector/dissent.py"
+    spec = importlib.util.spec_from_file_location("perlector_dissent_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
 # what a run writes, and never loosened: "nothing changed" must not be satisfiable
@@ -1497,8 +1513,277 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios.
-HAPPY_SNAPSHOT_FILES = 96
-REVIEW_SNAPSHOT_FILES = 107
+# **Re-pin, correction unit (group (i) of `CORRECTION_PLAN_2026-09-06.md`).**
+# `HAPPY_RUN_TREE_DIGEST` moves; `REVIEW_RUN_TREE_DIGEST` does not, and both
+# halves of that are measured rather than argued.
+#
+#   The one cause: Churro's declared answer bound, `CHURRO_OUTPUT_TOKENS`, is
+#   the CHURRO paper section B.2's 20,000 and was 24,000 -- a number this
+#   repository had described as the model's carried HuggingFace-generate
+#   `max_new_tokens`, which its `generation_config.json` at the pinned revision
+#   does not contain. Every retained Churro model view carries the declared
+#   bound (`common/native_witness.py::_validate_churro_capture` requires it),
+#   so the fixture's own Churro captures move with it.
+#
+#   Attributed by measurement: with that one constant put back to 24,000 and
+#   every other line of the unit in place, this scenario reproduces
+#   5b225fa3... exactly. Nothing else in the unit reaches a fixture run --
+#   the part order, the generation bound, the sent decoding values and the
+#   framing selector are all live-path only, and the real serving catalogue
+#   and roster are never sealed into either scenario.
+#
+#   The review scenario was measured under the new constant and is unmoved at
+#   1936f76c..., so it is left exactly as it was. Counts and exits are unmoved
+#   on both sides.
+#
+# Measured in independent temporary roots at canonical run id "r", through this
+# module's own `orchestrate` and `semantic_snapshot_digest`, which agreed
+# exactly.
+#
+# **Merge re-pin, Wave 1 of the vendor-systems units (U1-U8 of
+# `VENDOR_SYSTEMS_DESIGN_2026-09-06.md`) onto the correction unit's tree,
+# f937a35f4b.** Both pins move. Eight units each measured "no pin moved" alone
+# and the merge moved them anyway, so the cause was re-measured here rather
+# than carried over from any unit's own report.
+#
+#   The one cause, and the whole of it: U7 replaced the three fixture
+#   placeholder `training_domain` sentences in `config/witness_context.toml`
+#   with the real vendor systems' published facts -- Chandra-2's HTML layout
+#   grammar, DAI's two published Hub corpora, Churro's own trained XML
+#   instruction. That file reaches a fixture run twice over. Its bytes are
+#   sealed into `config_digest` as `witness_context_declaration_sha256`
+#   (`common/stage.py::run_config_bindings`), and its sentences are rendered
+#   into every Perlector dossier, so the run authority, every envelope's
+#   `config_digest` and `self_hash`, and every digest and content-addressed
+#   blob name downstream of a dossier move with it.
+#
+#   Attributed by measurement, not by argument: with `config/
+#   witness_context.toml` alone reverted to f937a35f4b's bytes and every other
+#   line of all eight units in place, both scenarios reproduce the superseded
+#   literals exactly -- 4d7de674... and 1936f76c... So no other Wave 1 change
+#   reaches a fixture run: U3's vendor identity on captures, U4's serving
+#   schema fields, U5's Perlector image order and the rest are live-path,
+#   catalogue or serving-side only, and neither the real catalogue nor the real
+#   roster is ever sealed into either scenario.
+#
+#   Leaf by leaf against f937a35f4b -- every JSON file in the tree flattened to
+#   its scalar leaves -- the leaf count is unmoved at 14,453 (happy) and 14,979
+#   (review); no leaf is added and none is lost. 405 leaves change value in
+#   happy and 475 in review, and 36 keys per scenario per side differ only
+#   because a blob's content-addressed name is part of its path. Every one of
+#   those falls in exactly three buckets: a 64-hex digest or `self_hash` (378
+#   and 440), a `<stage>/blobs/sha256/...` path whose name is its own content
+#   digest (21 and 26 changed values, plus the 72 renamed keys), or the
+#   `training_domain` sentence itself in the Perlector's dossier (6 and 9).
+#   There is no fourth bucket, so nothing here is unattributed. Counts and
+#   exits are unmoved at happy 96 / exit 0 and review 107 / exit 3.
+#
+# **Re-pin, U9 of the vendor-systems units: the Chandra adapter on the vendor
+# grammar, onto Wave 1's tree, 375c3ecedf.** Both pins move, and the file counts
+# move with them for the first time in this sequence.
+#
+#   The one cause, and the whole of it: `pipeline/3_attestatores/chandra.py::
+#   present` now sizes a whole page the way Chandra's own pipeline sizes it --
+#   `chandra/model/util.py::scale_to_fit`, ported in `common/imaging_ports.py`
+#   -- and records it as an `adapter-crop` under the vendor's operation name.
+#   This fixture's pages are 200x260, which that rule snaps to 196x252, so each
+#   Chandra page Testimonium now presents its own published, resized blob
+#   instead of the sealed Exemplar page itself.
+#
+#   Attributed by measurement, not by argument: with that one function reverted
+#   to returning its presentation unchanged (and the matching re-derivation
+#   branch in `witness_adapters.validate_adapter_presentation` with it) and
+#   every other line of the unit in place, both scenarios reproduce the
+#   superseded literals exactly -- eba7cbda... and adfc009c... So nothing else
+#   in the unit reaches a fixture run: the carried vendor prompt bytes, the
+#   `html` parser name, the declared generation view, the vendor identity on a
+#   capture and the declared format capabilities are all live-path only, and the
+#   committed fixture keeps its own `fixture-chandra-response.v1` placeholder,
+#   its own `FIXTURE_PROMPT` and its own `json` parser until U16.
+#
+#   Leaf by leaf against 375c3ecedf -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy goes
+#   13,864 -> 13,882 and review 14,384 -> 14,402, both +19 added and -1 removed.
+#   Every one of those falls in exactly these buckets, and there is no other:
+#
+#     * 4 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/kind` "page" -> "adapter-crop" and
+#       `payload/presented/transform/operation` "whole" ->
+#       "chandra-scale-to-fit.v1", on each of the two Chandra page Testimonia.
+#     * 14 added leaves per scenario: the seven-field resize recipe plus
+#       `colour_mode = "keep"` on those same two records.
+#     * 2 added leaves per scenario: the two new blob digests in the
+#       Attestatores manifest.
+#     * 3 added and 1 removed blob file per scenario: the two published resized
+#       Chandra page images (hence 96 -> 98 and 107 -> 109 files), and the
+#       Armarium export bundle, whose content-addressed name is its own content
+#       and so is renamed rather than added.
+#     * 6 changed values per scenario that are content-addressed blob paths --
+#       the two page Testimonia's `presented/image_path` and `inputs[0]`, and
+#       the export's two references to the renamed bundle.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 133 in
+#       happy and 153 in review.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3.
+#
+# **Re-pin, U10 of the vendor-systems units: the Churro adapter on the vendor
+# grammar, onto U9's tree, 38af5b730d.** Both pins move and both file counts
+# move with them, for the same reason U9's did.
+#
+#   Three causes reach a fixture run, and the leaf inventory below accounts for
+#   every changed, added and removed leaf between them, so there is no fourth:
+#
+#     1. `pipeline/3_attestatores/churro.py::present` now prepares a whole page
+#        the way `prepare_ocr_image` does -- `resize_image_to_fit(img, 2500,
+#        2500)` through `common/imaging_ports.py`, then `ensure_rgb` -- and
+#        records it as an `adapter-crop` under the vendor's operation name with
+#        its `colour_mode`. This fixture's pages are 200x260, inside the
+#        vendor's square, so the resize is identity and the published blob is
+#        the RGB conversion of the sealed page. Both scenarios.
+#     2. The retained prompt view is the vendor's registry-resolved system
+#        string alone, where it was this repository's retired two-message carry.
+#        Happy only: the `review` scenario declares no `[[churro_page_response]]`
+#        row, so its Churro page Testimonia carry no `native_capture` at all.
+#     3. The vendor pin and the grammar's own finding now travel on the capture:
+#        `vendor_identity` (repository, commit, and the digest of the carried
+#        string) and `retired-output-envelope`, which says that the fixture's
+#        declared `<output>` bodies arrived in a framing this chair no longer
+#        asks for. Happy only, for the same reason.
+#
+#   **The reading itself is unmoved.** Not one `parse/text` or `payload/payload`
+#   leaf changes in either scenario: `common/churro_document.py` reads the
+#   fixture's `<output>` bodies to exactly the text the retired
+#   `validate_churro_xml` read out of them.
+#
+#   Leaf by leaf against 38af5b730d -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy goes
+#   13,882 -> 13,906 (+28 added, -4 removed) and review 14,402 -> 14,420 (+20,
+#   -2). Every one of those falls in exactly these buckets, and there is no
+#   other:
+#
+#     * 4 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/kind` "page" -> "adapter-crop" and
+#       `payload/presented/transform/operation` "whole" ->
+#       "churro-prepare-ocr-image.v1", on each of the two Churro page Testimonia.
+#     * 2 further changed leaves in happy alone: those two records'
+#       `native_capture/view/prompt/system`.
+#     * 14 added leaves per scenario: the six-field resize recipe plus
+#       `colour_mode = "rgb"` on those same two records.
+#     * 8 added leaves in happy alone: `vendor_identity`'s three fields and the
+#       one `findings[0]/kind`, on each of the two captures.
+#     * 2 removed leaves in happy alone: those two captures'
+#       `native_capture/view/prompt/user`, which the system-only vendor framing
+#       does not send.
+#     * 2 added leaves per scenario: the two new blob digests in the
+#       Attestatores manifest.
+#     * 4 added and 2 removed blob files per scenario: the two published
+#       RGB Churro page images (hence 98 -> 100 and 109 -> 111 files), plus the
+#       Perlector's cross-capture partition blob and the Armarium export bundle,
+#       whose content-addressed names are their own content and so are renamed
+#       rather than added.
+#     * 19 changed values in happy and 21 in review that are content-addressed
+#       blob paths -- the two page Testimonia's `presented/image_path` and
+#       `inputs[0]`, and the Perlector's and Armarium's references to the two
+#       renamed blobs.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 381 in
+#       happy and 437 in review.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3. The
+#   `churro-native` fixture row this unit re-declared in the vendor grammar
+#   (`proof/build_fixture.py`, the cut-mid-element body) belongs to a scenario
+#   neither pin covers, and neither pin moved for it.
+#
+# **Re-pin, the U9 hostile-review round: Chandra's presented page carries the
+# vendor's own colour step, onto U10's tree, 9162c9586a.** Both pins move; both
+# file counts and both leaf totals do not.
+#
+#   One cause, and the whole of it: `chandra.present` now performs
+#   `chandra/input.py::load_image`'s `convert("RGB")` as well as `scale_to_fit`,
+#   and records it as `colour_mode = "rgb"` instead of `"keep"`. The vendor's
+#   loader converts every image at open, so RGB is what its own `scale_to_fit`
+#   is ever handed; leaving the conversion to the engine's `do_convert_rgb`
+#   performed it server-side on a grayscale blob, unrecorded, which is the one
+#   step ARCHITECTURE invariant 3 cannot have happening off the record. The
+#   conversion runs *before* the resize, where the vendor runs it, and the
+#   replay follows (`common/native_witness.py::_COLOUR_BEFORE_RESIZE`).
+#
+#   Nothing else in the round reaches a fixture run. The post-hoc repetition
+#   scan the same round added to the Chandra retention branch runs on every
+#   fixture body and finds nothing in any of them -- every declared
+#   `fixture-chandra-response.v1` reading is one short line ("SYNTHETIC ACT ONE
+#   alpha beta gamma", 34 characters) or empty, against the scan's own 72-
+#   character floor -- so it adds no finding leaf and moves no stop reason
+#   here; it is pinned directly in `test_chandra_adapter.py` instead.
+#
+#   Leaf by leaf against 9162c9586a -- every JSON file in the tree flattened to
+#   its scalar leaves, each non-JSON blob counted as one leaf -- happy stays at
+#   13,906 leaves and review at 14,420, with 3 added and 3 removed blob files
+#   per scenario, all three renames. 145 leaves change in happy and 166 in
+#   review, and every one falls in exactly these buckets:
+#
+#     * 2 changed leaves per scenario that are neither a digest nor a blob path:
+#       `payload/presented/transform/colour_mode` "keep" -> "rgb", on each of
+#       the two Chandra page Testimonia.
+#     * 8 changed values per scenario that are content-addressed blob paths --
+#       the two page Testimonia's `presented/image_path`, the `inputs` entries
+#       naming the two republished Chandra images (the second record's three
+#       are one rename plus the reorder that digest-sorted list takes from it),
+#       and the export's two references to the renamed bundle.
+#     * 3 added and 3 removed blob files per scenario, no net change and hence
+#       100 and 111 files unmoved: the two republished RGB Chandra page images
+#       and the Armarium export bundle, whose content-addressed names are their
+#       own content and so are renamed rather than added.
+#     * every remaining changed value is a 64-hex digest or `self_hash`: 135 in
+#       happy and 156 in review.
+#
+#   The reading itself is unmoved: no `parse/text`, `payload/payload` or
+#   geometry leaf changes in either scenario. The engine would have produced
+#   these same pixels from the grayscale blob; what changed is that the record
+#   now says who produced them.
+#
+#   Counts and exits are otherwise unmoved: happy exit 0 and review exit 3.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios, and the same harness reproduces
+# 9162c9586a's own literals -- c512f039... and 64f94606..., 100 and 111 files --
+# exactly, which is what says it measures the same thing.
+#
+# **Re-pin, Unit 12 hostile-review response.** Both digests move; both counts
+# and both exit codes hold. Two causes, and the attribution below is leaf by
+# leaf against 6005108d7b -- every JSON file in both trees flattened to its
+# scalar leaves -- rather than argued from the diff.
+#
+#   1. Every ALIGNED page-witness alignment gains `anchor_line_match`, the
+#      measurement `anchor_line_located` now reads: three integers on four
+#      records in happy (12 leaves) and three in review (9). A positive span
+#      was never evidence that a witness had been placed in an act -- a scatter
+#      of coincidental single characters produced one -- so the producer now
+#      records how much of the act's own anchor line it actually matched. In
+#      both canonical trees the answer is 27 to 40 contiguous characters
+#      against anchor lines of 34 and 40, so no fixture attachment changes
+#      hands and no act's coverage, category or exit code moves with it.
+#   2. `NATIVE_GRANULARITY_BASIS` is renamed to
+#      `native-per-chair-attachment-basis`: 8 coverage receipts in happy and 10
+#      in review carry the new string. The old one, `native-observation-overlap`,
+#      claimed an observation overlap for chairs that attached with no
+#      observation at all (GOVERNANCE 10).
+#
+#   Everything else that moved is a consequence: 115 digest-or-`self_hash`
+#   leaves in happy and 137 in review, plus the one Armarium bundle blob per
+#   scenario whose filename IS its content digest (one key renamed, its two
+#   references updated). There is no third bucket, and no leaf is lost.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The
+# two roots agreed exactly on both scenarios; counts and exits held at 96/0
+# (happy) and 107/3 (review).
+#
+# The four values below are the vendor-systems integration's, whose own entry is
+# the last in this ledger, above the digests: the counts moved there and nowhere
+# since, for the four published adapter-crop page images that entry attributes.
+HAPPY_SNAPSHOT_FILES = 100
+REVIEW_SNAPSHOT_FILES = 111
 # Merge re-pin (`origin/main` c9890bab8e -- Unit 12's churro-native layout --
 # into `work/alignment-matcher`). Both parents moved these pins for different
 # causes, so neither parent's literals describe this tree; one entry replaces
@@ -1536,9 +1821,109 @@ REVIEW_SNAPSHOT_FILES = 107
 # canonical run id "r", through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers; the two roots agreed exactly on both
 # scenarios.
-HAPPY_RUN_TREE_DIGEST = "08c97c8e235329c62800e20f8b54358c2c505f4eb504d7522772d5458b329dae"
-# Re-pinned by the same alignment-deadline byte named above the happy digest.
-REVIEW_RUN_TREE_DIGEST = "5476a8f038eb3a98fff295a7c43110cfb22959d7b2cc6be28b3b2fa299b5737d"
+#
+# **Re-pin, the vendor-systems integration: Wave 1 and Wave 2 together, measured
+# against `origin/main` 8100d5b3e4.** All four values move. The two scenarios
+# gain four blob files each and no artifact: happy 96 -> 100, review 107 -> 111,
+# exits unmoved at 0 and 3.
+#
+#   The ledger above records each unit's own re-pin against its own parent, and
+#   those entries are kept because they are how each cause was isolated. They no
+#   longer describe a tree: this branch carries all of them at once, and
+#   `origin/main` has since taken Unit 12 as a squash plus the imaging, alignment
+#   and CodeQL work. So the measurement below is against `origin/main` itself
+#   rather than against any one parent, and the attribution names which unit each
+#   surviving leaf belongs to.
+#
+#   Control first. A tree was built here from `origin/main` 8100d5b3e4 and
+#   reproduced that commit's own literals exactly -- 08c97c8e... and 5476a8f0...,
+#   96 and 107 files -- so the comparison is against a tree that is what it
+#   claims to be.
+#
+#   Leaf by leaf against it -- every JSON file in both trees flattened to its
+#   scalar leaves, each non-JSON blob counted as one leaf -- happy goes 13,864 ->
+#   13,918 leaves and review 14,384 -> 14,429. **Every changed, added or removed
+#   leaf that is not a digest and not a content-addressed path falls in one of
+#   six buckets, and the residue is zero** (asserted by the measuring script, not
+#   read off a diff):
+#
+#     * 36 per scenario, U9 and U10: `presented/kind` "page" -> "adapter-crop",
+#       `transform/operation` "whole" -> the vendor's own resize function name,
+#       and the seven-field resize recipe plus `colour_mode` on each of the four
+#       page Testimonia (two Chandra, two Churro).
+#     * 12 in happy and 9 in review, U12: `anchor_line_match`'s three integers on
+#       every aligned page-witness alignment.
+#     * 12 in happy, U10: the Churro capture's `vendor_identity`, its one
+#       `findings[0]/kind`, the registry system string replacing the retired
+#       instruction, `max_new_tokens` 24000 -> 20000, and the removed
+#       `view/prompt/user` the system-only vendor framing does not send.
+#     * 8 in happy and 10 in review, U12: `granularity_basis`
+#       "native-observation-overlap" -> "native-per-chair-attachment-basis".
+#     * 6 in happy and 9 in review, U7: each Testimonium's `training_domain`,
+#       now the chair's factual domain from `config/witness_context.toml`
+#       instead of the fixture placeholder.
+#     * 2 in happy, this integration's own flag flip: the two Churro page
+#       captures' `format_capabilities/can_express_uncertainty` False -> True.
+#       Review carries no live Churro view, so it has no such leaf to move.
+#
+#   Everything else is a consequence: 397 digest-or-`self_hash` leaves in happy
+#   and 463 in review, and 36 and 47 content-addressed blob paths. The file
+#   counts move for one reason -- six blobs added and two removed per scenario:
+#   the four published adapter-crop page images under `3_attestatores` are new
+#   (one per witnessed page for each of the two page chairs), and the
+#   `4_perlector` partition blob and the `7_armarium` export bundle are renames,
+#   their filenames being their own content digests. No JSON artifact is added or
+#   removed in either scenario.
+#
+#   No reading moved: no `parse/text`, `payload/payload` or geometry leaf differs
+#   in either tree, and the `anchor-line` attachment U12 admits changes no
+#   fixture attachment -- the fixture roster declares native page geometry, which
+#   keeps precedence.
+#
+# **Re-pin, U14/U15 (Tyrel's ruling, 2026-09-06 §10 -- request-capacity
+# re-measurement and the serving rows/tier).** Both values move again; file
+# counts and exit codes do not (happy stays 100 / exit 0, review 111 / exit 3
+# -- no artifact gained or lost).
+#
+#   Single cause, isolated by measurement rather than argued. `common/stage.py`
+#   seals `config/pod_placement.toml`'s bytes into every run's composite
+#   `config_digest` regardless of `--placement-tier` (U15 raises
+#   `engine_memory_fraction`, `context_cap` and `pixel_cap` there); `config/
+#   serving_recipes_real.toml` is the real catalogue, never loaded by the
+#   fixture-driven acceptance scenarios (`config/serving_recipes.toml` is),
+#   and `common/request_capacity.py`'s re-measured constants are read only on
+#   the live capacity-check path, which this acceptance run never exercises.
+#   A third root was built with every U14/U15 source and test edit in place
+#   but `pod_placement.toml` reverted to the tree above's own bytes, and it
+#   reproduced that tree's stored pins exactly (`eedcb13f...` / `67699161...`,
+#   100 / 111 files) -- proving `pod_placement.toml` is the whole of the
+#   cause and the other file is not one.
+#
+#   Leaf by leaf against the tree above: 381 leaves move in happy, 33 in
+#   review, and every one is `config_digest`, `self_hash`, another digest- or
+#   hash-shaped field the composite digest cascades into, or a
+#   content-addressed blob path renamed to its own new content digest (the
+#   `4_perlector` partition blob and the `7_armarium` export bundle, whose
+#   filenames are their own digests) -- the residue is zero, and not one
+#   `sealed_config_digests` entry, `parse/text`, `payload/payload` or geometry
+#   leaf differs. No file is added or removed in either scenario.
+#
+# Both values below measured twice, in two independent temporary roots (separate
+# `TMPDIR`s), at canonical run id "r", through this module's own `orchestrate`
+# and `semantic_snapshot_digest`; the two roots agreed exactly on both scenarios.
+#
+# Re-pinned again by the CodeRabbit loop's config/pod_placement.toml comment
+# fix (pass 2): `common/stage.py` seals that file's bytes into every run's
+# `config_digest` regardless of `--placement-tier`, so a comment-only edit
+# there moves both pins even though no arithmetic changed. Isolated by a
+# control root with only `config/pod_placement.toml` reverted, which
+# reproduces the prior pins (`a8b4aed8…` / `bd93ac65…`) exactly; two other
+# independent roots carrying the fix agreed on the new values. File counts
+# and exit codes unmoved (100/0, 111/3); every moved leaf is a `relative_path`
+# or digest field in the cascade from `config_digest`, residue zero.
+HAPPY_RUN_TREE_DIGEST = "7b8b009f4c1df7d399232b03a24559f5303ffa4be85bbbe8d0f9f03e5e2cdddd"
+# Re-pinned by the same single cause, in the same measurement, as the happy digest.
+REVIEW_RUN_TREE_DIGEST = "6c22cf90e89478cb5b8d358051591866cabd32105a3c45616db2c8b1ad0c7ba4"
 
 
 def orchestrate(
@@ -5561,7 +5946,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # The count includes two retained Chandra-response blobs, Unit 12's two
     # content-addressed raw Churro responses, Unit 13's retained DAI act
-    # responses, and Unit 9's ink-map artifacts.
+    # responses, Unit 9's ink-map artifacts, and -- since the Chandra adapter
+    # runs the vendor's own `scale_to_fit` -- the two published page images it
+    # presents, one per witnessed page.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -6075,7 +6462,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
-def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
     tmp_path, happy_run
 ):
     """Capability handling stays live without blinding the reference instrument.
@@ -6084,16 +6471,22 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed
-    after the fact — so it is not a picker. What it is, is a hole in the
-    instrument ARCHITECTURE names for catching a reader that "learned to agree
-    with witnesses rather than to read ink."
+    after the fact — so it is not a picker. What it was, until U12, is a hole in
+    the instrument ARCHITECTURE names for catching a reader that "learned to
+    agree with witnesses rather than to read ink": the declaration alone put a
+    chair permanently outside the comparison.
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
-    unknown until R4 provided act-anchored comparison views; now that R4's
-    alignment lands a comparison view for both, only the capability-declared
-    chair stays unknown, and the reference happy run — where no chair declares
-    the capability — compares all three.
+    dedicated `witness-capabilities` scenario, and chair 2 is act-scoped. It is
+    now compared — not because the exemption was deleted, but because
+    `pipeline/4_perlector/run.py::dissent_testimonia` derives it a
+    `comparison_reported` from its own retained bytes
+    (`common/alignment.py::bracket_marker_view`), and the exemption lifts for a
+    chair that has a safe view. The counterfactual below is what says those are
+    different things: the RETAINED record, which carries no derived view, is
+    still refused by `is_comparable`. Every chair in this scenario is now
+    compared, exactly as in the reference happy run where none declares the
+    capability.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -6106,9 +6499,13 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     )
     by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_2"]["compared"] == "unknown"
-    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert by_chair["attestator_2"]["compared"] is True
+    assert "reason" not in by_chair["attestator_2"]
+    assert {chair: row["compared"] for chair, row in by_chair.items()} == {
+        "attestator_1": True,
+        "attestator_2": True,
+        "attestator_3": True,
+    }
 
     testimonium = next(
         record
@@ -6116,8 +6513,15 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     )
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    # The capability blinds the comparison and nothing else: the outcome, the
-    # class, and the coverage count are what they would be without it.
+    # The counterfactual, on this run's own retained evidence: the exemption is
+    # still there and still bites. The retained Testimonium carries the verbatim
+    # report and no derived view (GOVERNANCE 4), and on that record
+    # `is_comparable` is False — so what lifted it above is the view
+    # `dissent_testimonia` builds, not a relaxed rule.
+    assert "comparison_reported" not in testimonium["payload"]
+    assert _perlector_dissent().is_comparable(testimonium) is False
+    # The capability decides the comparison route and nothing else: the outcome,
+    # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"
     entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
     assert entry["witness_coverage"]["by_class"] == {

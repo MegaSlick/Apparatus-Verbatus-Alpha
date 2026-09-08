@@ -251,6 +251,11 @@ def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
             "anchor_chair": "attestator_1" if anchor_basis == "act-anchor" else None,
             "anchor_span": {"start": 0, "end": 1},
             "witness_span": {"start": 0, "end": 1},
+            "anchor_line_match": {
+                "anchor_characters": 1,
+                "matched_characters": 1,
+                "longest_matched_run": 1,
+            },
             "line_geometry": [],
             "loss": {},
             "offset_maps": {},
@@ -1251,12 +1256,9 @@ def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable()
     regions = [{"payload": {"transform": {"source_page_ordinal": 2}}}]
 
     rows = RUN.testimony_content_for_continuation_pages({}, regions, 1)
-
-    # The two facts this restatement exists to carry, asserted against literals
-    # rather than against the constant the production code builds the row from:
-    # spreading `NO_PAGE_CONTENT_COVERAGE` into the expectation would make the
-    # row agree with whatever that constant became, including a `shortfall` of
-    # False -- the one value GOVERNANCE 10 forbids here.
+    # The property this test is named for, stated independently of the
+    # constant it is spread from below: an unmeasured page is never a
+    # measured clean one.
     assert len(rows) == 1
     assert rows[0]["shortfall"] is None
     assert rows[0]["by_chair"] is None

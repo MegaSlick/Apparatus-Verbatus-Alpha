@@ -11,22 +11,24 @@ remain stage-local and obey these constraints:
 * ``present(context, presentation)`` validates the closed ``presented`` block
   with run-tree access for an adapter-owned crop, while
   ``observe(presentation, native_payload)`` derives the closed ``observed``
-  entries from that exact image/response pair. Both page-scoped adapters'
-  ``observe`` also take a keyword ``page_size``: their wire contracts report
-  normalized boxes, and a page witness's act view presents one crop while
+  entries from that exact image/response pair. Chandra's ``observe`` also takes
+  a keyword ``page_size``: its grammar reports boxes normalized 0-1000 against
+  the sealed page, and a page witness's act view presents one crop while
   restating page-level geometry, so the sealed page's own size is the
   denominator, not the presentation's. That keyword is read off this registry
   entry (``takes_page_size``) rather than off the adapter's name: two hard-coded
   names in one branch is the third adapter's bug. Presentation kinds remain
   ``page``, ``region``, and ``adapter-crop``: an adapter crop is an
-  adapter-owned derivative and not a third witness scope; DAI is act-scoped and
-  publishes one from its assigned proposal crop;
-* a page-scoped adapter whose response carries no layout preserves its input
-  presentation and returns only a ``bounds_source='presented'`` echo. That
-  source is explicitly excluded from routing and coverage; no geometry is
-  fabricated from the presentation itself. It is Churro's answer to a trained
-  ``<output>`` body and Chandra's to the contract's page-text form -- the honest
-  no-layout fallback, not either chair's whole story;
+  adapter-owned derivative and not a third witness scope. DAI is act-scoped and
+  publishes one from its assigned proposal crop; both page-scoped adapters
+  publish one from a whole page, sized by their own vendor's preprocessing --
+  Chandra's ``scale_to_fit``, Churro's ``prepare_ocr_image``;
+* an adapter whose grammar reports no geometry returns only a
+  ``bounds_source='presented'`` echo of the image it was shown. That source is
+  explicitly excluded from routing and coverage; no geometry is fabricated from
+  the presentation itself. It is Churro's whole answer -- ``HistoricalDocument``
+  has no coordinate vocabulary at all -- and Chandra's is the empty list
+  `run.py` gives the same echo for when a body reports no usable box;
 * a new adapter must move the shared declared-name set, this local mapping, and
   any native parser/retention dispatch in :mod:`feeding` together. A failure
   while importing any callable binding propagates before ``main`` opens a run;
@@ -34,28 +36,77 @@ remain stage-local and obey these constraints:
 
 A native float-to-pixel rule is declared beside each adapter as
 ``quantization``; ``None`` prevents a no-layout adapter from acquiring another
-adapter's rule by omission. Churro declares its own from Unit 12 -- the same
-arithmetic Chandra's rule spells, under Churro's own name, because a rule
-acquired by omission is a rule nobody declared for that chair.
+adapter's rule by omission, and Churro's is ``None`` because its grammar
+publishes no coordinates for a rule to convert.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Final
+from types import MappingProxyType
+from typing import Any, Callable, Final, Mapping
 
 import chandra
 import churro
 import feeding
 
-from common.chairs.models import AbsentChair, ModelsConfig
-from common.contracts.canonical import digest_bytes
+from common import imaging_ports
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from common.contracts.errors import SchemaRefusal
-from common.contracts.identities import artifact_id
-from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.contracts.stages import ATTESTATORES
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
+
+#: What an adapter that has not declared its own grammar's expressiveness
+#: records: the blanket value every live attempt carried before adapters could
+#: declare one (`live_witness.DEFAULT_FORMAT_CAPABILITIES`,
+#: `run.py::DEFAULT_FORMAT_CAPABILITIES`). Read-only, because it is a shared
+#: default and a caller that mutated it would move every undeclared adapter at
+#: once; each seam copies it into the record it writes.
+FALLBACK_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
+    {"can_express_uncertainty": False, "can_express_layout": False}
+)
+
+_FORMAT_CAPABILITY_FIELDS: Final = frozenset({"can_express_uncertainty", "can_express_layout"})
+
+
+def declared_format_capabilities(adapter: Any) -> dict[str, bool]:
+    """What this adapter's own grammar can carry, validated, as a plain dict.
+
+    Shared by `live_witness._format_capabilities_for` (a pre-publication read,
+    live) and `run.py::_declared_format_capabilities` (a pre-send read, before
+    a refused request reaches the wire) -- both need the identical fact about
+    the identical adapter, read the identical way, and a caller-local copy of
+    this validation had drifted into two docstrings saying so rather than one
+    function doing so. Living here rather than in `common/contracts/outcomes.py`
+    on purpose: this is a fact about one adapter's declared grammar, not a term
+    of the outcomes algebra `check_algebra_is_total` closes over, and moving it
+    into that contract would bind something the design never asked bound.
+
+    Read with ``getattr`` rather than an ``isinstance`` check on a known
+    adapter type: an ``adapter`` argument here is a duck-typed bundle of
+    callables (:class:`RunnableAdapter`, or a test's stand-in), never a shared
+    base class. Falls back to :data:`FALLBACK_FORMAT_CAPABILITIES` -- the old
+    blanket value every live attempt used to record -- for an adapter that
+    declares none. Raises :class:`SchemaRefusal` for a declaration that is not
+    the two-key boolean mapping this seam knows; returns a fresh ``dict``,
+    never the adapter's own (possibly read-only) mapping, so a Testimonium
+    never carries a value that could still be mutated out from under it.
+    """
+    capabilities = getattr(adapter, "format_capabilities", FALLBACK_FORMAT_CAPABILITIES)
+    if not isinstance(capabilities, Mapping) or set(capabilities) != _FORMAT_CAPABILITY_FIELDS:
+        raise SchemaRefusal(
+            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
+            f"object this seam knows: {capabilities!r}"
+        )
+    for field in _FORMAT_CAPABILITY_FIELDS:
+        if not isinstance(capabilities[field], bool):
+            raise SchemaRefusal(
+                f"adapter {adapter!r} declares format_capabilities.{field} as "
+                f"{capabilities[field]!r}, not a boolean"
+            )
+    return dict(capabilities)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +136,47 @@ class RunnableAdapter:
     observe: Callable[..., Any]
     quantization: str | None = None
     takes_page_size: bool = False
+    #: How this adapter resolves a declared framing name to the one it will be
+    #: asked in, or ``None`` where it has exactly one framing and a run has
+    #: nothing to choose. Declared here, like ``takes_page_size``, so a caller
+    #: asks the registry rather than comparing adapter names -- and so a second
+    #: multi-framing adapter cannot be forgotten at a call site that names only
+    #: the first.
+    resolve_framing: Callable[..., str] | None = None
+    #: What this adapter's own output grammar can carry, read by the live seam
+    #: (`live_witness._format_capabilities_for`) instead of the one blanket
+    #: default every live attempt used to record. It is a fact about the
+    #: *grammar*, never about a reply: no response reports it, and nothing here
+    #: reads a response to decide it.
+    #:
+    #: The default is exactly that old blanket value, so an adapter that has not
+    #: yet declared its own records precisely what it recorded before. Chandra
+    #: and Churro declare their own here (`chandra.FORMAT_CAPABILITIES`,
+    #: `churro.FORMAT_CAPABILITIES`); DAI's is `feeding.DAI_FORMAT_CAPABILITIES`.
+    #: Churro's and DAI's grammars both declare `can_express_uncertainty` true.
+    #: The flag was flipped only after the Perlector could derive a safe
+    #: comparison view for such a chair (`pipeline/4_perlector/run.py::
+    #: dissent_testimonia`, applying `common/alignment.py::bracket_marker_view`)
+    #: -- so declaring the capability truthfully never costs a chair its
+    #: dissent row.
+    format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
+    #: How this adapter reads the committed fixture's own declared bytes, where
+    #: those are not in the vendor grammar a served chair answers in. ``None``
+    #: for an adapter whose fixture rows and live answers are the same shape.
+    #:
+    #: Chandra alone has one at this commit: `proof/skeleton_fixture.toml`'s
+    #: rows declare `fixture-chandra-response.v1`, a JSON placeholder this
+    #: repository invented for a fixture that asks nothing of anybody, and their
+    #: bytes are pinned into the fixture's own digests until U16 re-declares
+    #: them in the vendor grammar. Declared on the registry entry rather than
+    #: found by adapter name, for the reason `takes_page_size` is: a caller asks
+    #: the registry which reader a posture uses, and a second adapter acquiring
+    #: one cannot be forgotten at a call site that names only the first.
+    #:
+    #: It is retained history, never a second live grammar: the retention seam
+    #: refuses this reader's parser name for a served chair outright
+    #: (`feeding.retain_model_view`).
+    fixture_parse: Callable[..., Any] | None = None
 
 
 def _retain_dai_model_view(
@@ -123,23 +215,12 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
     # The same three steps the stage's own `_verified_page_bytes` performs, and
     # they must fail the same way: a sealed record with no image path is a held
     # attempt with a reason, not a bare KeyError out of the adapter boundary.
-    payload = page.get("payload")
-    image_path = payload.get("image_path") if isinstance(payload, dict) else None
-    if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal("DAI's sealed source page has no image path to crop")
-    try:
-        page_bytes = context.tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"DAI sealed page bytes could not be read: {error}") from error
-    actual_page_digest = digest_bytes(page_bytes)
-    if actual_page_digest != payload.get("source_sha256"):
-        raise SchemaRefusal(
-            "DAI sealed page bytes changed between artifact verification and crop use"
-        )
+    # Shared with Chandra's own crop-and-resize step, which reads a sealed page
+    # for the same purpose (`feeding.sealed_page_bytes`).
+    page_bytes = feeding.sealed_page_bytes(context, page_id, what="DAI")
     # Bounds failures must stay SchemaRefusals so callers can hold the attempt;
     # ``crop_png`` alone would expose a bare ValueError at this boundary.
     validate_presented(presentation, page_size=dimensions(page_bytes))
@@ -217,14 +298,69 @@ def validate_adapter_presentation(
     resolved = resolve_witness_adapter_name(name)
     validate_presented(source)
     validate_presented(presented)
-    if resolved in {"churro.v1", "chandra.v1"}:
-        # Both adapters present the exact image they were given: Churro has no
-        # crop of its own, and Chandra's scope controls invocation rather than
-        # presentation kind (act views keep their Designator crop, the page
-        # witness view keeps the whole page).
-        if presented != source:
+    if resolved == "churro.v1":
+        # Churro prepares a whole page the way `prepare_ocr_image` does -- fit
+        # inside the vendor's 2,500-pixel square, then `ensure_rgb` -- and
+        # presents the result as an `adapter-crop`; an act compatibility view
+        # keeps its Designator crop unchanged, because no chair was shown those
+        # pixels and a vendor recipe over them would record a step that never
+        # ran (`churro.present`). Re-derived here from the *source* presentation
+        # alone, through the same writer the adapter uses, so this seam cannot
+        # come to disagree with it about a recipe.
+        if source["kind"] != "page":
+            if presented != source:
+                raise SchemaRefusal(
+                    f"{resolved} presentation differs from the exact image it was given"
+                )
+            return
+        bounds = source["transform"]["bounds"]
+        expected = churro.presented_transform(
+            source["source_page_id"],
+            source["source_page_ordinal"],
+            bounds,
+            imaging_ports.resize_to_fit_churro(bounds["w"], bounds["h"]),
+        )
+        if (
+            presented["kind"] != "adapter-crop"
+            or presented["source_page_id"] != source["source_page_id"]
+            or presented["source_page_ordinal"] != source["source_page_ordinal"]
+            or presented["transform"] != expected
+        ):
             raise SchemaRefusal(
-                f"{resolved} presentation differs from the exact image it was given"
+                "churro.v1 adapter-crop is not the sealed page prepared by the vendor's own "
+                "prepare_ocr_image rule"
+            )
+        return
+    if resolved == "chandra.v1":
+        # Chandra sizes a whole page by the vendor's own `scale_to_fit` and
+        # presents the result as an `adapter-crop`; an act compatibility view
+        # keeps its Designator crop unchanged, because no chair was shown those
+        # pixels and a vendor resize recipe over them would record a step that
+        # never ran (`chandra.present`). Re-derived here from the *source*
+        # presentation alone, through the same writer the adapter uses, so this
+        # seam cannot come to disagree with it about a recipe.
+        if source["kind"] != "page":
+            if presented != source:
+                raise SchemaRefusal(
+                    f"{resolved} presentation differs from the exact image it was given"
+                )
+            return
+        bounds = source["transform"]["bounds"]
+        expected = chandra.presented_transform(
+            source["source_page_id"],
+            source["source_page_ordinal"],
+            bounds,
+            imaging_ports.scale_to_fit_chandra(bounds["w"], bounds["h"]),
+        )
+        if (
+            presented["kind"] != "adapter-crop"
+            or presented["source_page_id"] != source["source_page_id"]
+            or presented["source_page_ordinal"] != source["source_page_ordinal"]
+            or presented["transform"] != expected
+        ):
+            raise SchemaRefusal(
+                "chandra.v1 adapter-crop is not the sealed page sized by the vendor's own "
+                "scale_to_fit rule"
             )
         return
     if resolved != "dai.v1":
@@ -281,15 +417,26 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         observe=chandra.observe,
         quantization=chandra.QUANTIZATION_RULE,
         takes_page_size=True,
+        format_capabilities=chandra.FORMAT_CAPABILITIES,
+        fixture_parse=chandra.parse_fixture_placeholder,
     ),
     "churro.v1": RunnableAdapter(
         prompt=churro.prompt,
+        resolve_framing=churro.resolve_framing,
         parse=churro.parse,
         retain=churro.retain,
         present=churro.present,
         observe=churro.observe,
-        quantization=churro.QUANTIZATION_RULE,
-        takes_page_size=True,
+        # No `quantization` and no `takes_page_size`, and both are the same
+        # fact: `HistoricalDocument` carries no coordinates anywhere, so this
+        # chair reports no normalized geometry, there is nothing for a
+        # float-to-pixel rule to convert, and its `observe` has no use for the
+        # sealed page's own size. Unit 12 declared both for the JSON coordinate
+        # channel this repository invented; the channel is retired with the
+        # prompt that asked for it, and a rule kept past the geometry it
+        # converted would be a rule nobody declared for what this chair now
+        # does.
+        format_capabilities=churro.FORMAT_CAPABILITIES,
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,
@@ -297,6 +444,7 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         retain=_retain_dai_model_view,
         present=_dai_present,
         observe=_dai_observe,
+        format_capabilities=feeding.DAI_FORMAT_CAPABILITIES,
     ),
 }
 
@@ -326,9 +474,47 @@ def declared_quantization_rules() -> frozenset[str]:
 
 
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
-    """Refuse shared declarations that have no stage-local callable route."""
+    """Refuse shared declarations that have no stage-local callable route.
+
+    Also the roster's declared framings (`ModelsConfig.witness_framings`):
+    `common/chairs/config.py` checks that each names a configured witness
+    chair, and this is where the *name* is checked, because only the stage
+    knows which framings an adapter declares. Refused here, before a run
+    opens, rather than at the first request on a billing card.
+    """
 
     for chair in models.witness_chairs:
         identity = models.chairs[chair]
-        if not isinstance(identity, AbsentChair):
-            resolve_runnable_adapter(identity.witness_adapter)
+        if isinstance(identity, AbsentChair):
+            continue
+        adapter = resolve_runnable_adapter(identity.witness_adapter)
+        declared = models.witness_framings.get(chair)
+        if declared is None:
+            continue
+        if adapter.resolve_framing is None:
+            raise SchemaRefusal(
+                f"the roster asks chair {chair!r} in framing {declared!r}, but its adapter "
+                f"{identity.witness_adapter!r} declares only one framing and can be asked in "
+                "no other"
+            )
+        adapter.resolve_framing(declared)
+
+
+def framing_for(models: ModelsConfig, chair: str) -> str | None:
+    """The framing this run asks one chair in, resolved once, or ``None``.
+
+    ``None`` where the adapter has a single framing: there is then no name to
+    record beyond the prompt bytes the capture already retains. Where the
+    adapter has several, the resolved name is returned even when the roster
+    declared none, because the default is as much a fact about a reading as an
+    override is -- and a Testimonium that recorded a framing only when someone
+    happened to name one would be a record you could not compare across runs.
+    """
+
+    identity = models.chairs.get(chair)
+    if not isinstance(identity, ChairIdentity):
+        return None
+    adapter = resolve_runnable_adapter(identity.witness_adapter)
+    if adapter.resolve_framing is None:
+        return None
+    return adapter.resolve_framing(models.witness_framings.get(chair))
