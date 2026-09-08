@@ -4613,3 +4613,104 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
         issue.code == "smoke-output-invalid" and issue.chair == "reader" for issue in report.issues
     )
     assert launcher.processes[0].terminate_calls == 1
+
+
+def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path: Path) -> None:
+    """A normalised transport refusal must cost an interval, never the launch.
+
+    This is the half of the R4 defect the manager owns.  While a broken 4xx/5xx
+    body escaped `operations/serving/http.py` as a bare `http.client` exception,
+    it missed this loop's `except EndpointUnavailable` entirely and fell through
+    to the unexpected-start handler, which refuses and tears the child down.
+    Classification is pinned against a real socket in `test_http.py`; what is
+    pinned here is that the classification the transport now produces is spent
+    on a retry.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    class RefusesTwiceOnceLaunched:
+        """Refuse the first two post-launch health checks, then defer to the fake.
+
+        Only post-launch: `_assert_endpoint_unoccupied` runs the same health URL
+        before the child exists and reads an ambiguous refusal there as an
+        occupied port, which is a different — and correct — behaviour.
+        """
+
+        def __init__(self) -> None:
+            self.refusals = 0
+
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes and url.endswith("/health") and self.refusals < 2:
+                self.refusals += 1
+                raise EndpointUnavailable(
+                    "GET /health: IncompleteRead: IncompleteRead(0 bytes read)",
+                    definitively_absent=False,
+                )
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    flaky = RefusesTwiceOnceLaunched()
+    manager.http = flaky
+
+    handle = manager.start(chair, TIER)
+
+    assert flaky.refusals == 2
+    assert handle.receipt.details.endpoint == "http://127.0.0.1:8000/v1"
+    assert launcher.processes[0].terminate_calls == 0
+
+
+def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path: Path) -> None:
+    """Each probe gets the smaller of its own budget and the watchdog's remainder.
+
+    The watchdog's deadline used to be consulted only *between* requests, so a
+    probe issued one millisecond inside it could still add its whole budget to a
+    start that had already run out of time. With `startup_timeout_seconds` of 3
+    and a 1-second poll, the third round has one second left and the probe must
+    be told so.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    class RecordingHealthBudgets:
+        def __init__(self) -> None:
+            self.health_budgets: list[float] = []
+            self.rounds = 0
+
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes and url.endswith("/health"):
+                self.health_budgets.append(timeout_seconds)
+                self.rounds += 1
+                if self.rounds <= 2:
+                    raise EndpointUnavailable("not up yet", definitively_absent=False)
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    recorder = RecordingHealthBudgets()
+    manager.http = recorder
+
+    manager.start(chair, TIER)
+
+    assert recorder.health_budgets == [2.0, 2.0, 1.0]

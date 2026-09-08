@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from common.checkout import NotACheckoutRefusal, require_checkout
+
 from .errors import ErrorCode, OperatorError
 
 
@@ -19,7 +21,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run Verbatus without letting an import failure become a traceback."""
 
     try:
+        # Before the application, and before any verb: this code reads its
+        # configuration, stage programs and proof material from the checkout it
+        # sits in (`common/checkout.py`), and a wheel carries none of them. An
+        # operator who has somehow started outside one is told so in one screen
+        # here, rather than meeting an absent `config/…json` part way through a
+        # run that had already begun.
+        require_checkout()
         return _load_application()(argv)
+    except NotACheckoutRefusal as error:
+        print(OperatorError(ErrorCode.NOT_A_CHECKOUT, detail=str(error)).render())
+        return 2
     except OperatorError as error:
         print(error.render())
         return 2

@@ -209,3 +209,229 @@ def test_transport_classifies_a_refused_connection_as_definitively_absent() -> N
     with pytest.raises(EndpointUnavailable) as caught:
         transport.request("GET", f"{base}/health", body=None, timeout_seconds=2.0)
     assert caught.value.definitively_absent is True
+
+
+@pytest.mark.parametrize("proxy_variable", ["http_proxy", "HTTP_PROXY"])
+def test_transport_ignores_an_ambient_proxy_and_reaches_the_loopback_model(
+    proxy_variable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured proxy must never stand between this transport and 127.0.0.1.
+
+    The prompt and its embedded page image are in the request body, so a proxy
+    that answered here would take them off the machine before any response
+    validation ran — and could answer 200 for a model that was never reached.
+    Both spellings are set with no ``no_proxy`` bypass, because an operator's
+    correct ``NO_PROXY`` is not a control this boundary may depend on.
+    """
+
+    reached_proxy = threading.Event()
+
+    class Proxy(_Handler):
+        def do_POST(self) -> None:  # noqa: N802 - pragma: no cover - must never run
+            reached_proxy.set()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"proxied":true}')
+
+    class Model(_Handler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"model":"real"}')
+
+    with _server(Proxy) as proxy_base, _server(Model) as model_base:
+        for name in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(proxy_variable, proxy_base)
+        # Both the construction and the request happen under the proxy
+        # environment, which is what a process started that way looks like: the
+        # opener has to refuse discovery whenever it is built.
+        transport = UrllibHttpTransport()
+        response = transport.request(
+            "POST",
+            f"{model_base}/v1/chat/completions",
+            body=b'{"messages":[]}',
+            timeout_seconds=5.0,
+        )
+
+    assert response.body == b'{"model":"real"}'
+    assert not reached_proxy.is_set(), "the loopback request reached the proxy"
+
+
+_BROKEN_BODIES = {
+    # A chunk header promising 0x40 bytes, then three, then a close.
+    "malformed-chunk": (
+        b"Transfer-Encoding: chunked\r\n\r\n",
+        b"40\r\nabc",
+    ),
+    # A complete Content-Length that the responder never finishes delivering.
+    "interrupted-body": (
+        b"Content-Length: 64\r\n\r\n",
+        b'{"partial":true}',
+    ),
+}
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"404 Not Found", b"503 Service Unavailable"])
+@pytest.mark.parametrize("shape", sorted(_BROKEN_BODIES))
+def test_a_broken_body_is_one_transport_refusal_whatever_the_status_was(
+    status: bytes, shape: str
+) -> None:
+    """The status line must not decide which exception class a broken body becomes.
+
+    The 4xx/5xx body used to be read inside a sibling `except urllib.error.HTTPError`
+    clause, where nothing that failed *inside* it could reach the transport clause
+    beside it.  The same truncated body therefore left here as `EndpointUnavailable`
+    at 200 and as a bare `http.client.IncompleteRead` at 503 — and the readiness
+    poll retries the first while the second aborts a start that was one interval
+    from succeeding.
+    """
+
+    tail, partial = _BROKEN_BODIES[shape]
+
+    def broken(connection: socket.socket) -> None:
+        connection.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n" + tail)
+        connection.sendall(partial)
+
+    with _raw_server(broken) as base:
+        with pytest.raises(EndpointUnavailable) as caught:
+            UrllibHttpTransport().request(
+                "GET", f"{base}/v1/models", body=None, timeout_seconds=3.0
+            )
+
+    # A body that stopped short says nothing about whether a listener owns the port.
+    assert caught.value.definitively_absent is False
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"404 Not Found", b"503 Service Unavailable"])
+def test_a_body_that_never_arrives_is_one_transport_refusal_whatever_the_status_was(
+    status: bytes,
+) -> None:
+    """A read that times out mid-body classifies the same way at every status."""
+
+    stop = threading.Event()
+
+    def stalled(connection: socket.socket) -> None:
+        connection.sendall(
+            b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+            b"Content-Length: 64\r\n\r\n"
+        )
+        stop.wait(10.0)
+
+    with _raw_server(stalled) as base:
+        started = time.monotonic()
+        try:
+            with pytest.raises(EndpointUnavailable):
+                UrllibHttpTransport().request(
+                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.5
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+
+    assert elapsed < 3.0, f"the request ran {elapsed:.1f}s against a 0.5s budget"
+
+
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> None:
+    """Normalising the read must not turn a complete 4xx/5xx into a refusal.
+
+    vLLM answers a not-yet-loaded model with a real error response, and the
+    readiness parsers name their own refusal from that status.  Losing it would
+    replace a diagnosable `HTTP 503` with an unavailable-endpoint message.
+    """
+
+    class Refusing(_Handler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"not loaded"}')
+
+    with _server(Refusing) as base:
+        response = UrllibHttpTransport().request(
+            "GET", f"{base}/v1/models", body=None, timeout_seconds=5.0
+        )
+
+    assert response.status == status
+    assert response.body == b'{"error":"not loaded"}'
+
+
+def _dribble(status: bytes, *, headers_slowly: bool):
+    """A responder that stays inside the socket timeout and never finishes."""
+
+    stop = threading.Event()
+
+    def respond(connection: socket.socket) -> None:
+        if headers_slowly:
+            connection.sendall(b"HTTP/1.1 " + status + b"\r\n")
+            while not stop.wait(0.05):
+                connection.sendall(b"X-Pad: pad\r\n")
+        else:
+            connection.sendall(
+                b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 4096\r\n\r\n"
+            )
+            while not stop.wait(0.05):
+                connection.sendall(b"x")
+
+    return respond, stop
+
+
+@pytest.mark.parametrize("status", [b"200 OK", b"503 Service Unavailable"])
+@pytest.mark.parametrize("headers_slowly", [False, True], ids=["slow-body", "slow-headers"])
+def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
+    status: bytes, headers_slowly: bool
+) -> None:
+    """Connect, headers and body come out of one monotonic deadline.
+
+    Measured at 36acde636f against a declared 0.15s: a response whose *headers*
+    dribbled in returned HTTP 200 after 1.280s, because the body deadline was
+    created only once the opener had already returned them.  Both loops that
+    drive this transport consult their own deadline between requests only, so
+    one such call defeats the readiness watchdog and the shutdown absence poll
+    alike, on a card that bills by the hour.
+    """
+
+    respond, stop = _dribble(status, headers_slowly=headers_slowly)
+    with _raw_server(respond) as base:
+        started = time.monotonic()
+        try:
+            with pytest.raises(EndpointUnavailable) as caught:
+                UrllibHttpTransport().request(
+                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.4
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+
+    assert elapsed < 3.0, f"the call ran {elapsed:.2f}s against a 0.4s budget"
+    # An overrun proves nothing about whether a listener owns the port, so it
+    # may never release the sequential residency lease.
+    assert caught.value.definitively_absent is False
+
+
+def test_a_slow_but_finite_response_still_succeeds_inside_its_budget() -> None:
+    """The counterfactual: the deadline must not refuse a merely slow answer."""
+
+    body = b'{"data":[{"id":"reader-api"}]}'
+
+    def slow_but_finite(connection: socket.socket) -> None:
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+        )
+        for start in range(0, len(body), 8):
+            time.sleep(0.02)
+            connection.sendall(body[start : start + 8])
+
+    with _raw_server(slow_but_finite) as base:
+        response = UrllibHttpTransport().request(
+            "GET", f"{base}/v1/models", body=None, timeout_seconds=5.0
+        )
+
+    assert response.status == 200
+    assert response.body == body
