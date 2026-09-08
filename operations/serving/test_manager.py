@@ -4773,6 +4773,19 @@ def test_a_split_declaration_across_top_level_and_nested_is_read_and_confirmed(
     )
 
 
+def test_a_split_declaration_that_disagrees_with_the_row_is_refused(tmp_path: Path) -> None:
+    """The counterfactual for the split layout: if the check ever skipped an
+    incomplete nested section again, the positive test above would still pass;
+    this one cannot, because the split pair must be READ to be refused."""
+
+    document = {"patch_size": 14, "image_processor": {"merge_size": 2}}
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(
+            _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[1], document), _geometry_row()
+        )
+    assert "attestator_2" in str(error.value)
+
+
 # --------------------------------------------------------------------------
 # U4: generation_config = "auto"; hybrid-attention prefix caching;
 # --enable-prompt-tokens-details and usage reconciliation; a deterministic
