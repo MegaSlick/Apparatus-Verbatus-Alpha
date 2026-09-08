@@ -275,13 +275,15 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # repository's retired instruction, re-measured at 593 against 256, so
         # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer, shared
         # with `designator_structure`) where the row left 2,048. The shipped
-        # catalogue states 8,192 for it at every tier too. DAI keeps
-        # 2,048: its act crop needs 1 + 84 + 230 and fits with room to spare,
-        # and raising a row nothing refuses would remove the one chair this
-        # stand-in still proves the arithmetic against.
+        # catalogue states 18,000 for it (U15) at every tier -- not 8,192, the
+        # value Churro's row shares with it before U15's per-chair geometry
+        # split them apart. DAI keeps 2,048: its act crop needs 1 + 84 + 230
+        # and fits with room to spare, and raising a row nothing refuses would
+        # remove the one chair this stand-in still proves the arithmetic
+        # against.
         "max_model_len": {
             "perlector": 16384,
-            "attestator_1": 8192,
+            "attestator_1": 18000,
             "attestator_3": 8192,
         }.get(chair, 2048),
         "max_num_seqs": 1,

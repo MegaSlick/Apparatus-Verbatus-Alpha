@@ -867,10 +867,15 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
 
 
 _SCRIPTABLE_STRUCTURE_REFUSALS = scriptable_structure_refusals()
-# A parametrize decorator over an empty sequence collects zero cases and
-# passes silently rather than failing loudly, so the coverage this suite
-# documents is asserted here rather than only implied by the decorator.
-assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
+
+
+def test_the_scripted_refusal_set_is_the_two_shapes_this_suite_documents():
+    """A parametrize decorator over an empty sequence collects zero cases and
+    passes silently rather than failing loudly, so the coverage this suite
+    documents is asserted here, as an ordinary test, rather than a module-level
+    assert that would surface as a collection error instead of a test failure.
+    """
+    assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
 
 
 @pytest.mark.parametrize("outcome", _SCRIPTABLE_STRUCTURE_REFUSALS)

@@ -668,8 +668,13 @@ def test_page_chair_request_builds_chandras_single_user_turn():
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=chandra_module.prompt)
 
+    # Reused for its shape only: `sendable_max_tokens` now refuses a capacity
+    # record admitted for a different chair than the one it is asked to bound,
+    # so a row borrowed across chairs must be relabelled to the chair this
+    # request is actually for.
+    chandra_row = dataclasses.replace(_sealed_churro_rows()[0], chair="attestator_1")
     request = live_witness.page_chair_request(
-        context, adapter, "chandra.v1", presentation, profile=_sealed_churro_rows()[0]
+        context, adapter, "chandra.v1", presentation, profile=chandra_row
     )
 
     assert len(request.messages) == 1
@@ -775,13 +780,15 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
     page_presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(page_presentation["image_path"], image_bytes)
     row = _sealed_churro_rows()[0]
+    # Reused for its shape only, relabelled per adapter for the same reason as
+    # `test_page_chair_request_builds_chandras_single_user_turn` above.
     page_requests = [
         live_witness.page_chair_request(
             context,
             SimpleNamespace(present=lambda ctx, pres: pres, prompt=prompt),
             adapter_name,
             page_presentation,
-            profile=row,
+            profile=dataclasses.replace(row, chair="attestator_1"),
         )
         for adapter_name, prompt in (("chandra.v1", chandra_module.prompt),)
     ]

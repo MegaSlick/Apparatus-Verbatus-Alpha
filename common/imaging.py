@@ -952,7 +952,7 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
                     f"vendor's own RGB conversion of it cannot be replayed here (crop modes "
                     f"{sorted(PNG_CROP_MODES)})"
                 )
-            return encode_image_deterministic(image.convert("RGB"))
+            return encode_image_deterministic(_without_colour_profile(image.convert("RGB")))
     except _DECODE_FAILURES as error:
         raise ValueError(
             f"image bytes are not decodable for colour conversion ({error})"

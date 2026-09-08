@@ -1151,6 +1151,14 @@ def sendable_max_tokens(chair: str, capacity: Mapping[str, Any]) -> dict[str, in
             f"this module's own {SCHEMA} record, so the row and the prompt cost it would be "
             "derived from are not the ones this request was admitted on"
         )
+    recorded_chair = capacity["chair"]
+    if isinstance(recorded_chair, str) and recorded_chair != chair:
+        raise RequestCapacityRefusal(
+            f"a generation bound for chair {chair!r} was asked for against a capacity "
+            f"record admitted for chair {recorded_chair!r}; the row and the prompt cost "
+            "it would be derived from are another chair's",
+            capacity=dict(capacity),
+        )
     max_model_len = _positive(capacity["max_model_len"], "max_model_len")
     prompt_cost = _nonnegative(
         capacity["image_prompt_tokens"], "image_prompt_tokens"

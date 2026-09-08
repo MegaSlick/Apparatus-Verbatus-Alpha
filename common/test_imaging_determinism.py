@@ -676,6 +676,31 @@ def test_a_grayscale_page_expands_to_three_channels_without_moving_a_sample():
         assert reread.convert("L").tobytes() == original.tobytes()
 
 
+def test_a_source_icc_profile_does_not_survive_the_colour_class_change():
+    """Pillow's `convert()` copies `.info` across, `icc_profile` included.
+
+    A grayscale page's colour profile describes a grayscale tone response; once
+    `convert_png_to_rgb` has changed the samples' colour class, that profile
+    describes an image that no longer exists (`_without_colour_profile`'s own
+    docstring). Carrying it into the output's iCCP chunk would be a *worse*
+    record than none: anything honouring it would reinterpret the new RGB
+    samples through a transform for the old grayscale ones.
+    """
+    page = Image.new("L", (4, 2), 128)
+    page.info["icc_profile"] = b"not a real ICC profile, only a marker"
+    buffer = BytesIO()
+    page.save(buffer, format="PNG", icc_profile=page.info["icc_profile"])
+    with Image.open(BytesIO(buffer.getvalue())) as reread:
+        assert reread.info.get("icc_profile") == page.info["icc_profile"]
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+
+    assert carries_only_image_chunks(converted)
+    with Image.open(BytesIO(converted)) as reread:
+        assert reread.mode == "RGB"
+        assert "icc_profile" not in reread.info
+
+
 def test_expanding_an_image_that_is_already_rgb_changes_nothing_it_re_frames():
     """Idempotent, so a record naming the step twice cannot mean two images."""
     buffer = BytesIO()

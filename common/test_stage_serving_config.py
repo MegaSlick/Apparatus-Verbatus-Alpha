@@ -11,6 +11,7 @@ from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
 from common.stage import load_fixture, run_config_bindings, stage_parser
 from operations.serving.config import (
+    SCHEMA,
     ServingConfigurationError,
     load_serving_recipes,
     parse_serving_recipes,
@@ -133,4 +134,4 @@ def test_generation_config_auto_is_refused_for_a_non_witness_chair():
         assert not is_witness_role(chair), chair
         row = _minimal_vllm_profile(chair=chair, generation_config="auto")
         with pytest.raises(ServingConfigurationError, match="generation_config='auto'"):
-            parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+            parse_serving_recipes({"schema": SCHEMA, "profiles": [row]})

@@ -375,8 +375,11 @@ def reconcile_usage_against_capacity(
     if observed is None:
         raise ServingConfigurationError(
             f"chair {chair!r} response usage has no non-negative integer prompt_tokens to "
-            "reconcile; launch with --enable-prompt-tokens-details and confirm the response "
-            "carries usage"
+            "reconcile; the response carried no usage object, or its prompt_tokens was not "
+            "a non-negative integer. A real vLLM response carries prompt_tokens regardless "
+            "of launch flags (--enable-prompt-tokens-details gates a different field, "
+            "usage.prompt_tokens_details.multimodal_tokens), so this names a response that "
+            "did not come from one"
         )
     return UsageReconciliation(
         chair=chair,
