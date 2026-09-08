@@ -202,21 +202,19 @@ NATIVE_OBSERVATIONS = (
     # "presented"` echo that routing and coverage expressly exclude. This row
     # bypasses all of that -- `run.py::_fixture_native_observations` publishes a
     # declared box as `bounds_source "native"` without consulting the adapter --
-    # so the offline posture still attaches this chair, still counts three
-    # witnesses of a floor of three, and still reaches a *delivered* export,
-    # while the live seam over the same chair is held at two of three
-    # (`pipeline/test_live_reading_seam_e2e.py`).
+    # so the offline posture attaches this chair, counts three witnesses of a
+    # floor of three, and reaches a *delivered* export via that declared box.
     #
-    # It is kept rather than deleted, and the reason is scope, not comfort:
-    # deleting it moves the whole offline proof to the held posture (measured:
-    # 109 failures in `pipeline/orchestrator/test_orchestrator_acceptance.py`
-    # alone, the happy scenario at exit 3 with both acts under-witnessed), which
-    # is U12's change -- it restores attachment through the Perlector's
-    # `anchor-line` basis -- and not U10's to make on the way past. The
-    # divergence is stated here, in `pipeline/3_attestatores/HANDOFF.md`, and
-    # mechanically in `proof/test_fixture_declaration_contract.py`, which pins
-    # this as the one declared row whose chair's adapter reports it cannot
-    # express layout, so the row cannot outlive the channel in silence.
+    # U12 has since landed: the live seam over the same chair now also reaches
+    # *delivered* with three of three (`pipeline/test_live_reading_seam_e2e.py`),
+    # but through a different basis -- the Perlector's own `anchor-line`
+    # derivation, never a reported page-geometry box, since this chair's
+    # grammar carries none. The two postures now agree on the outcome and
+    # disagree on the mechanism, which is exactly what this row still exists to
+    # keep visible: it is the one declared row whose chair's adapter reports it
+    # cannot express layout, so a fixture that quietly started asking a live
+    # capability of it would be asking for something no live Churro response
+    # can supply. Pinned mechanically in `proof/test_fixture_declaration_contract.py`.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
     # The disagreement fixture stays deliberately uncalibrated and belongs to
     # the recovery scenario: it is reported ink outside every proposal, which

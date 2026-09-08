@@ -675,17 +675,18 @@ status. Nothing is repaired, reordered, or re-asked.
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
 
-The capacity row is the only one decided before a request exists. A whole
-300-dpi page costs this chair 1,715 prompt tokens at the smallest tier's
-`max_pixels`, 3,102 at the 48 GB tier's and 5,100 at the largest, before a word
-of prompt is counted (`common/request_capacity.py`); with the measured
-593-token prompt and a measured dense-page answer budget of 1,645 that is
-3,953, 5,340 and 7,338 against the 8,192 every shipped `designator_structure`
-row states (`config/serving_recipes_real.toml`), so **every shipped row holds a
-dense page** — the largest tier by 854 tokens, which is the narrowest of the
-three margins, and `operations/serving/test_serving_catalogue_capacity.py`
-asserts it row by row rather than leaving it to this paragraph. **Both numbers
-moved with v3 and both were re-measured** by the harness of
+The capacity row is the only one decided before a request exists. U15 retired
+the per-tier pixel ladder for this chair: a whole 300-dpi page costs 6,045
+image tokens at every tier now, not a value that grows with the tier's own
+`max_pixels` (`common/request_capacity.py`); with the measured 593-token
+prompt and a measured dense-page answer budget of 1,645 that is 8,283 against
+the 18,000 every shipped `designator_structure` row states
+(`config/serving_recipes_real.toml`), so **every shipped row holds a dense
+page**, by the same 9,717-token margin at every tier — no longer a narrowest
+tier to name, since the geometry no longer varies by tier — and
+`operations/serving/test_serving_catalogue_capacity.py` asserts it row by row
+rather than leaving it to this paragraph. **Both the prompt and the answer
+numbers moved with v3 and both were re-measured** by the harness of
 `TOKEN_COST_REPORT_2026-09-05.md` §3 and §8, at the same pinned tokenizer, in
 the message shape `page_request` builds: 325 → 593 for the prompt, because the
 carried instruction is 2,161 characters against v2's 1,192 and carries the
@@ -902,15 +903,15 @@ every row, since what the engine leaves generation is `max_model_len` less the
 image and the prompt (`sendable_max_tokens`). The 70 extra reserved for the
 answer does not come off the reading as well — the reserve is an admission
 term at the capacity check, not a bound sent on the wire, and this chair still
-sends none. The shipped rows state 8,192, and that holds a whole A4 page at
-every tier's pixel cap — 5,100 + 593 + 1,645 = 7,338 at the largest, 3,953 at
-the smallest — so no shipped row refuses the request (the arithmetic is
-`page_capacity`'s, per page, before anything is sent). What 8,192 does not
-promise is that a real page's transcription fits the 1,645 reserved for it:
-that reserve is a measurement over one 800-word, six-block page, and a denser
-page is where `structure-answer-cut-off` would appear. The serving rows the
-vendor-systems design proposes for this chair are a separate, unmerged unit and
-are Tyrel's decision (hard rule 1); nothing here changes a shipped row.
+sends none. U15 (Tyrel's ruling, hard rule 1; merged into this branch) moved
+the shipped rows off the per-tier pixel ladder this paragraph used to describe:
+`max_model_len` now states 18,000 at every tier, and a whole A4 page now costs
+the same 6,045 + 593 + 1,645 = 8,283 at every tier rather than a figure that
+grows with the tier's own pixel cap, so no shipped row refuses the request
+(the arithmetic is `page_capacity`'s, per page, before anything is sent). What
+18,000 does not promise is that a real page's transcription fits the 1,645
+reserved for it: that reserve is a measurement over one 800-word, six-block
+page, and a denser page is where `structure-answer-cut-off` would appear.
 
 **`generation_declared` on this chair's request is still `{}`, and no longer
 because there is nothing to declare.** Chandra's `chandra/settings.py` sets

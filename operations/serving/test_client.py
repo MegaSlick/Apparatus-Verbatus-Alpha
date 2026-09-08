@@ -304,11 +304,16 @@ def test_a_top_k_of_one_never_reaches_the_wire_without_temperature_zero(tmp_path
         client.read(
             _request(generation_sent={"top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05})
         )
+        # Not a coincidence of this call site: no caller can say otherwise --
+        # the client itself refuses a caller that names a manager-owned field,
+        # proven here rather than only asserted of the forbidden-set
+        # membership.
+        assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
+        with pytest.raises(ChairRequestRefusal):
+            client.read(_request(generation_sent={"top_k": 1, "temperature": 0.7}))
     posted = endpoint.requests[0]
     assert posted["top_k"] == 1
     assert posted["temperature"] == 0
-    # Not a coincidence of this call site: no caller can say otherwise.
-    assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
 
 
 def test_image_digest_drift_refused_before_any_request_is_sent(tmp_path: Path) -> None:

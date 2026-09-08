@@ -96,11 +96,12 @@ from .residency import ResidencyHandle, ResidencyLease
 # its own default off `not model_config.is_hybrid`, with the comment "Hybrid
 # models support prefix caching but keep it opt-in for now" -- so "vendor
 # marks this experimental" overstates what the pinned source actually says.
-# The caution this refusal encodes is this project's own: it cannot hit at
-# this catalogue's `max_num_seqs = 1` (nothing else is ever resident to share
-# a cached prefix with) and only costs extra recurrent-state memory for the
-# privilege, so a row serving either checkpoint launches with it off until
-# there is a reason to spend that memory on a feature with nothing to hit.
+# The caution this refusal encodes is this project's own: it only costs
+# extra recurrent-state memory for the privilege (this catalogue's own rows
+# for these chairs range `max_num_seqs` 1-4 across tiers, so a blanket
+# "nothing else is ever resident" claim would not hold at every tier), so a
+# row serving either checkpoint launches with it off until there is a
+# measured reason to spend that memory.
 # This is a launch-time refusal, not a catalogue-parse refusal:
 # `enable_prefix_caching` is an ordinary bool the schema already admits
 # either way, and the corrected value for the real rows is a row-data
@@ -109,17 +110,12 @@ from .residency import ResidencyHandle, ResidencyLease
 # makes a still-wrong data row fail before it ever reaches a rented GPU
 # rather than only in a later review.
 #
-# As committed today, `config/serving_recipes_real.toml` sets
-# `enable_prefix_caching = true` for exactly the rows this refusal targets
-# (attestator_1, designator_structure, perlector), and
-# `workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`'s "Serving rows"
-# section -- marked Tyrel's decision under hard rule 1 -- lists
-# `enable_prefix_caching` under "Unchanged fields" without naming this flip.
-# So a real launch of any of those three chairs refuses today, and no
-# chartered unit currently flips the data row. That reconciliation --
-# amend the row values, or drop this refusal -- is a row-data decision this
-# schema/preflight unit does not make; it is recorded here so it is not lost
-# silently (hard rule 7) rather than discovered again at the next real launch.
+# Reconciled by U15: `config/serving_recipes_real.toml` now sets
+# `enable_prefix_caching = false` for exactly the rows this refusal targets
+# (attestator_1, designator_structure, perlector), so a real launch of any of
+# them no longer hits this refusal. Left in place as protection against a
+# future row edit that turns it back on without a reason to spend the memory
+# (`operations/serving/README.md` carries the same reconciliation).
 _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
 
 # `parse_openai_answer` (operations/serving/http.py) names an HTTP-level probe
@@ -1563,9 +1559,8 @@ def _launchable(
         raise ServingConfigurationError(
             f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
             "(qwen3_5) checkpoint; vLLM keeps prefix caching over recurrent state opt-in "
-            "for hybrid models, it cannot hit at this row's max_num_seqs=1, and it only "
-            "costs recurrent-state memory here -- enable_prefix_caching must be false for "
-            "this chair (hostile review item L)"
+            f"for hybrid models, and it only costs recurrent-state memory here -- "
+            f"enable_prefix_caching must be false for this chair (hostile review item L)"
         )
     return profile
 

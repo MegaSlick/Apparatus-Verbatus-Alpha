@@ -866,7 +866,14 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     assert not any(key.startswith("proposal:2:") for key in rows)
 
 
-@pytest.mark.parametrize("outcome", scriptable_structure_refusals())
+_SCRIPTABLE_STRUCTURE_REFUSALS = scriptable_structure_refusals()
+# A parametrize decorator over an empty sequence collects zero cases and
+# passes silently rather than failing loudly, so the coverage this suite
+# documents is asserted here rather than only implied by the decorator.
+assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
+
+
+@pytest.mark.parametrize("outcome", _SCRIPTABLE_STRUCTURE_REFUSALS)
 def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
     """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
 

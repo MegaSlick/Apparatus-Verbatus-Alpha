@@ -1129,7 +1129,13 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
     # the geometry-free chair contributes no reported box at all, so there is
     # nothing of Chandra's for it to be wearing.
     assert [box["bounds_source"] for box in observations_by_chair["attestator_3"]] == ["presented"]
-    assert observations_by_chair["attestator_1"] != observations_by_chair["attestator_3"]
+    # The bounds_source lists already differ in length and content above, which
+    # would make a bare `!=` on the full observation lists pass regardless of
+    # whether a box's actual rectangle got attributed to the wrong chair.
+    # Compare the geometry itself.
+    chandra_boxes = [box["bounds"] for box in observations_by_chair["attestator_1"]]
+    churro_boxes = [box["bounds"] for box in observations_by_chair["attestator_3"]]
+    assert chandra_boxes != churro_boxes
 
     attachments = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:

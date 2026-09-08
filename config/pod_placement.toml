@@ -36,17 +36,27 @@
 # that a longest edge of L admits at most L*L pixels.
 #
 # `context_cap` is the ceiling `operations/serving/preflight.py` holds every
-# serving row at that tier to.  They were 2,048 / 4,096 / 8,192, then raised to
-# 16,384 everywhere; U15 (Tyrel's ruling, 2026-09-06 --
-# `CORRECTION_PLAN_2026-09-06.md` Q1/Q2/Q5) raises them again, to admit each
-# witness chair's own trained geometry rather than a generic per-tier budget:
-# `config/serving_recipes_real.toml` carries the per-chair arithmetic and the
-# reasoning.  `context_cap = 20,480` at `generic-24gb` and `generic-48gb`
-# admits Churro's declared 20,000-token generation bound; `generic-80gb-plus`
-# is raised further, to 32,768, because the Perlector's act request carries a
-# region crop *and* a page render per capture view, and its two-capture-view
-# page-fallback act costs 20,400 image tokens alone at that tier's
-# `max_pixels` -- no smaller cap admits it.  `pixel_cap = 2,560` at every tier
+# serving row at that tier to -- an upper bound each row's own `max_model_len`
+# must not exceed, never a per-request token budget in itself: what a request
+# actually spends is bounded by its own row, not by this tier-wide cap. They
+# were 2,048 / 4,096 / 8,192, then raised to 16,384 everywhere; U15 (Tyrel's
+# ruling, 2026-09-06 -- `CORRECTION_PLAN_2026-09-06.md` Q1/Q2/Q5) raises them
+# again, to admit each witness chair's own trained geometry rather than a
+# generic per-tier budget: `config/serving_recipes_real.toml` carries the
+# per-chair arithmetic and the reasoning. `context_cap = 20,480` at
+# `generic-24gb` and `generic-48gb` comfortably admits the largest
+# `max_model_len` any row at that tier actually declares -- Chandra's two
+# rows (`designator_structure`, `attestator_1`) at 18,000 -- with headroom
+# to spare; it is not sized against Churro, whose own row caps `max_model_len`
+# at 8,192 at every tier (memory, not context), well under this ceiling, so a
+# 300-dpi A4 page's ~5,100 image tokens leave room for its measured answer
+# (1,905) but nothing near its 20,000-token *declared* ceiling, which
+# `sendable_max_tokens` never sends for exactly that reason (the row's own
+# headroom binds first). `generic-80gb-plus` is raised further, to 32,768,
+# because the Perlector's act request carries a region crop *and* a page
+# render per capture view, and its two-capture-view page-fallback act costs
+# 20,400 image tokens alone at that tier's `max_pixels` -- no smaller cap
+# admits it.  `pixel_cap = 2,560` at every tier
 # (2,560² = 6,553,600 >= Chandra's 6,291,456, the largest `max_pixels` any row
 # now asks for) retires the per-tier pixel ladder along with it: a chair's
 # geometry no longer changes with the card class it happens to be planned for,

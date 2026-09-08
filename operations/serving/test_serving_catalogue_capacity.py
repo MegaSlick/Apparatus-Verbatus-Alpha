@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.churro_document import CHURRO_PROMPT_VARIANTS
 from common.request_capacity import (
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
@@ -67,6 +68,16 @@ PROMPT_TOKENS = {
     **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
     "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
 }
+# The comment above is true only because entry 0 happens to be Churro's
+# default framing's own measurement today; nothing enforces the order, so a
+# tuple reordered on a later edit would silently swap in the wrong framing's
+# cost here. Checked once, by digest, against the framing
+# `pipeline/3_attestatores/churro.py::DEFAULT_FRAMING` actually names --
+# "registry-v0.3.0" there -- not asserted structurally on every access.
+assert (
+    MEASURED_PROMPT_TOKENS["attestator_3"][0].prompt_digest
+    == CHURRO_PROMPT_VARIANTS["registry-v0.3.0"]["system_sha256"]
+), "MEASURED_PROMPT_TOKENS['attestator_3'][0] is no longer churro.DEFAULT_FRAMING's measurement"
 
 
 def _shipped_rows():
@@ -144,8 +155,13 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     assert record["headroom"] >= 0
 
 
-def test_the_two_view_page_fallback_act_is_served_at_every_tier():
+def test_the_two_view_page_fallback_act_fits_every_tiers_context():
     """The one measured Perlector shape that used to overrun a shipped row.
+
+    This is a context-arithmetic claim only, not a claim that the Perlector
+    can be served at every tier: `config/serving_recipes_real.toml` marks its
+    24 GB and 48 GB rows unservable against 51.7 GiB of measured bf16 weights
+    (hostile review Q5, a 64 GiB floor), independent of what fits below.
 
     An act whose bounds are the whole page, seen from two captures, sends four
     page-sized images.  At 24 GB and 48 GB the context holds them; at 80 GB+
@@ -153,9 +169,10 @@ def test_the_two_view_page_fallback_act_is_served_at_every_tier():
     16,384 context this catalogue could not hold the request, which is why
     this test was once named for the tier it could not serve.  U15 (Tyrel's
     ruling, 2026-09-06) raises `generic-80gb-plus`'s `context_cap` to 32,768
-    for exactly this shape, and it now fits at every tier.  Pinned rather than
-    passed over: the pipeline no longer refuses it on this laptop, and a later
-    edit that quietly lowers the context again changes this test.
+    for exactly this shape, and the request now fits at every tier.  Pinned
+    rather than passed over: the arithmetic no longer refuses it on this
+    laptop, and a later edit that quietly lowers the context again changes
+    this test.
     """
 
     needs = {}

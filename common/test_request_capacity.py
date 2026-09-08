@@ -658,9 +658,10 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
-    # A chair with more than one measured framing carries one entry per framing
-    # (`MEASURED_PROMPT_TOKENS`), and every one of them is reconciled: an index
-    # suffix keys them apart here and is stripped before the roster lookup.
+    # Chair names only, in this direction: a chair with several measured
+    # framings still contributes one name to `MEASURED_PROMPT_TOKENS`, because
+    # what is reconciled here is which chairs are measured at all, not which
+    # framing. The per-framing tokenizer check is the test above.
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }

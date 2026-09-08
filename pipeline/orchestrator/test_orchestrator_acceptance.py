@@ -1911,9 +1911,19 @@ REVIEW_SNAPSHOT_FILES = 111
 # Both values below measured twice, in two independent temporary roots (separate
 # `TMPDIR`s), at canonical run id "r", through this module's own `orchestrate`
 # and `semantic_snapshot_digest`; the two roots agreed exactly on both scenarios.
-HAPPY_RUN_TREE_DIGEST = "a8b4aed81156cf918273c81ac03b64888debdc98a5e6b27133aab2c360a6eaba"
+#
+# Re-pinned again by the CodeRabbit loop's config/pod_placement.toml comment
+# fix (pass 2): `common/stage.py` seals that file's bytes into every run's
+# `config_digest` regardless of `--placement-tier`, so a comment-only edit
+# there moves both pins even though no arithmetic changed. Isolated by a
+# control root with only `config/pod_placement.toml` reverted, which
+# reproduces the prior pins (`a8b4aed8…` / `bd93ac65…`) exactly; two other
+# independent roots carrying the fix agreed on the new values. File counts
+# and exit codes unmoved (100/0, 111/3); every moved leaf is a `relative_path`
+# or digest field in the cascade from `config_digest`, residue zero.
+HAPPY_RUN_TREE_DIGEST = "7b8b009f4c1df7d399232b03a24559f5303ffa4be85bbbe8d0f9f03e5e2cdddd"
 # Re-pinned by the same single cause, in the same measurement, as the happy digest.
-REVIEW_RUN_TREE_DIGEST = "bd93ac650433ed1abc65edb4802ded04dd33e495fa7016dd569689df06be9542"
+REVIEW_RUN_TREE_DIGEST = "6c22cf90e89478cb5b8d358051591866cabd32105a3c45616db2c8b1ad0c7ba4"
 
 
 def orchestrate(

@@ -336,17 +336,18 @@ def test_the_declared_rows_no_live_chair_could_produce_are_named_here(skeleton, 
     no `takes_page_size`, and an `observe` that returns a `bounds_source
     "presented"` echo routing and coverage exclude). That declared box is what
     attaches this chair offline, so the fixture happy scenario counts three
-    witnesses of a floor of three and reaches a delivered export, while the live
-    seam over the same chair is held at two of three
-    (`pipeline/test_live_reading_seam_e2e.py`).
+    witnesses of a floor of three and reaches a delivered export.
 
-    The row is kept because deleting it is U12's change -- U12 restores
-    attachment through the Perlector's `anchor-line` basis -- and not a step
-    U10 takes on the way past; `proof/build_fixture.py` carries the measurement
-    that decided it. What this test refuses is the silence: the moment U12
-    lands, or a second chair is given a declared box its adapter says it cannot
-    express, this list is wrong and says so by name rather than leaving one
-    posture proving a capability the other retired.
+    U12 has since landed: the live seam over the same chair now also reaches
+    a delivered export with three of three
+    (`pipeline/test_live_reading_seam_e2e.py`), but through the Perlector's
+    own `anchor-line` derivation rather than a reported page-geometry box --
+    this chair's grammar carries none live, so no live response could ever
+    produce the declared row this test names. `proof/build_fixture.py` carries
+    the fuller account. What this test refuses is the silence: the moment a
+    second chair is given a declared box its adapter says it cannot express,
+    this list is wrong and says so by name, rather than a fixture quietly
+    asking a live capability of a chair that has none.
     """
     incapable = sorted(
         {

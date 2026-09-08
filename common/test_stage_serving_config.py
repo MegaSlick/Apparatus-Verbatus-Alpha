@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from common.chairs.models import is_witness_role
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
 from common.stage import load_fixture, run_config_bindings, stage_parser
-from operations.serving.config import load_serving_recipes
+from operations.serving.config import (
+    ServingConfigurationError,
+    load_serving_recipes,
+    parse_serving_recipes,
+)
 
 
 def test_serving_recipes_flag_defaults_to_fixture_catalogue_and_selects_real_bytes_explicitly():
@@ -80,3 +86,51 @@ def test_the_real_catalogues_generation_config_values_are_admitted_and_witness_s
     # nothing about the rule it names. At least one row must actually carry
     # the field for the loop above to have inspected anything.
     assert inspected > 0, "no profile in either catalogue carries generation_config"
+
+
+def _minimal_vllm_profile(*, chair: str, generation_config: str) -> dict[str, object]:
+    """The smallest well-formed vLLM profile row, for one schema rule at a time."""
+    return {
+        "kind": "vllm",
+        "recipe": "test-recipe",
+        "chair": chair,
+        "tier": "generic-24gb",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "served_model_id": "test-model",
+        "dtype": "bfloat16",
+        "seed": 0,
+        "required_packages": {"vllm": "0.test"},
+        "max_model_len": 2048,
+        "max_num_seqs": 1,
+        "max_num_batched_tokens": 256,
+        "gpu_memory_utilization": "0.85",
+        "min_pixels": 1,
+        "max_pixels": 1024,
+        "enable_prefix_caching": False,
+        "enforce_eager": False,
+        "trust_remote_code": False,
+        "enable_tower_connector_lora": False,
+        "max_lora_rank": 16,
+        "generation_config": generation_config,
+        "preflight_state": "unproven",
+        "startup_timeout_seconds": 3,
+        "poll_interval_seconds": 1,
+        "request_timeout_seconds": 30,
+        "readiness_probe": {
+            "kind": "chat-completions",
+            "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',
+        },
+    }
+
+
+def test_generation_config_auto_is_refused_for_a_non_witness_chair():
+    """The rule `test_the_real_catalogues_...` only checks the shipped rows never
+    violate: a non-witness chair naming `generation_config = "auto"` must be
+    refused by the schema itself, not merely absent from every catalogue.
+    """
+    for chair in ("perlector", "designator_structure"):
+        assert not is_witness_role(chair), chair
+        row = _minimal_vllm_profile(chair=chair, generation_config="auto")
+        with pytest.raises(ServingConfigurationError, match="generation_config='auto'"):
+            parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
