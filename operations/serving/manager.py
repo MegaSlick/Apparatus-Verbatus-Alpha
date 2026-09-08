@@ -1495,11 +1495,7 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
         sections = [document] + ([nested] if isinstance(nested, dict) else [])
         observed = {
             field: next(
-                (
-                    section[field]
-                    for section in sections
-                    if section.get(field) is not None
-                ),
+                (section[field] for section in sections if section.get(field) is not None),
                 None,
             )
             for field in declared
