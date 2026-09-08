@@ -1880,12 +1880,40 @@ REVIEW_SNAPSHOT_FILES = 111
 #   fixture attachment -- the fixture roster declares native page geometry, which
 #   keeps precedence.
 #
+# **Re-pin, U14/U15 (Tyrel's ruling, 2026-09-06 §10 -- request-capacity
+# re-measurement and the serving rows/tier).** Both values move again; file
+# counts and exit codes do not (happy stays 100 / exit 0, review 111 / exit 3
+# -- no artifact gained or lost).
+#
+#   Single cause, isolated by measurement rather than argued. `common/stage.py`
+#   seals `config/pod_placement.toml`'s bytes into every run's composite
+#   `config_digest` regardless of `--placement-tier` (U15 raises
+#   `engine_memory_fraction`, `context_cap` and `pixel_cap` there); `config/
+#   serving_recipes_real.toml` is the real catalogue, never loaded by the
+#   fixture-driven acceptance scenarios (`config/serving_recipes.toml` is),
+#   and `common/request_capacity.py`'s re-measured constants are read only on
+#   the live capacity-check path, which this acceptance run never exercises.
+#   A third root was built with every U14/U15 source and test edit in place
+#   but `pod_placement.toml` reverted to the tree above's own bytes, and it
+#   reproduced that tree's stored pins exactly (`eedcb13f...` / `67699161...`,
+#   100 / 111 files) -- proving `pod_placement.toml` is the whole of the
+#   cause and the other file is not one.
+#
+#   Leaf by leaf against the tree above: 381 leaves move in happy, 33 in
+#   review, and every one is `config_digest`, `self_hash`, another digest- or
+#   hash-shaped field the composite digest cascades into, or a
+#   content-addressed blob path renamed to its own new content digest (the
+#   `4_perlector` partition blob and the `7_armarium` export bundle, whose
+#   filenames are their own digests) -- the residue is zero, and not one
+#   `sealed_config_digests` entry, `parse/text`, `payload/payload` or geometry
+#   leaf differs. No file is added or removed in either scenario.
+#
 # Both values below measured twice, in two independent temporary roots (separate
 # `TMPDIR`s), at canonical run id "r", through this module's own `orchestrate`
 # and `semantic_snapshot_digest`; the two roots agreed exactly on both scenarios.
-HAPPY_RUN_TREE_DIGEST = "eedcb13f21e1bf68b14341c1bde1d38eee7350423ac66667005c0339757ca130"
-# Re-pinned by the same six causes, in the same measurement, as the happy digest.
-REVIEW_RUN_TREE_DIGEST = "67699161bc26dadc4f578624ae796f44cab0c5da0c01e58c2cd2292cba712984"
+HAPPY_RUN_TREE_DIGEST = "a8b4aed81156cf918273c81ac03b64888debdc98a5e6b27133aab2c360a6eaba"
+# Re-pinned by the same single cause, in the same measurement, as the happy digest.
+REVIEW_RUN_TREE_DIGEST = "bd93ac650433ed1abc65edb4802ded04dd33e495fa7016dd569689df06be9542"
 
 
 def orchestrate(
