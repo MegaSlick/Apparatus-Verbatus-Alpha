@@ -264,9 +264,11 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # at 27, and reserves U14's re-measured dense-page answer over the
         # vendor's own `HistoricalDocument` grammar, 1,905 (not the retired
         # 1,631 JSON contract), which is 1,933 with this fixture's one image
-        # token and does not fit 2,048. The shipped catalogue states 8,192 for
-        # this chair at every tier, so the stand-in states it too -- the row
-        # moves, never the arithmetic and never the pixels.
+        # token -- still under 2,048, with 115 tokens to spare. The shipped
+        # catalogue states 8,192 for this chair at every tier regardless, so
+        # the stand-in states it too -- the row moves, never the arithmetic
+        # and never the pixels, to mirror the real catalogue rather than to
+        # escape an overrun that never happened here.
         #
         # Chandra's row moved next, for the same reason once more: the chair is
         # asked in its vendor's own `OCR_LAYOUT_PROMPT` rather than this
@@ -1129,13 +1131,16 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
     # the geometry-free chair contributes no reported box at all, so there is
     # nothing of Chandra's for it to be wearing.
     assert [box["bounds_source"] for box in observations_by_chair["attestator_3"]] == ["presented"]
-    # The bounds_source lists already differ in length and content above, which
-    # would make a bare `!=` on the full observation lists pass regardless of
-    # whether a box's actual rectangle got attributed to the wrong chair.
-    # Compare the geometry itself.
+    # A `!=` on the two full observation lists would pass on the length and
+    # bounds_source difference alone, whatever geometry either side carried --
+    # proving nothing about which chair a rectangle got attributed to. Compare
+    # the geometry itself, one rectangle at a time.
     chandra_boxes = [box["bounds"] for box in observations_by_chair["attestator_1"]]
     churro_boxes = [box["bounds"] for box in observations_by_chair["attestator_3"]]
-    assert chandra_boxes != churro_boxes
+    assert not [box for box in churro_boxes if box in chandra_boxes], (
+        f"a Chandra rectangle appears among Churro's observations: "
+        f"{churro_boxes!r} against {chandra_boxes!r}"
+    )
 
     attachments = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:

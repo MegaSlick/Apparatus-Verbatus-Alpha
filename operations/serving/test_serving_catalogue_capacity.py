@@ -10,6 +10,7 @@ and `common/` imports nothing from `operations/`.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,12 @@ from common.request_capacity import (
     row_image_geometry,
 )
 from operations.serving.config import ServingProfile, load_serving_recipes
+
+_ATTESTATORES_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "3_attestatores"
+if str(_ATTESTATORES_DIR) not in sys.path:
+    sys.path.insert(0, str(_ATTESTATORES_DIR))
+
+import churro  # noqa: E402
 
 MIN_PIXELS = 3136
 TIER_MAX_PIXELS = {
@@ -71,12 +78,13 @@ PROMPT_TOKENS = {
 # The comment above is true only because entry 0 happens to be Churro's
 # default framing's own measurement today; nothing enforces the order, so a
 # tuple reordered on a later edit would silently swap in the wrong framing's
-# cost here. Checked once, by digest, against the framing
-# `pipeline/3_attestatores/churro.py::DEFAULT_FRAMING` actually names --
-# "registry-v0.3.0" there -- not asserted structurally on every access.
+# cost here. Checked once, by digest, against the framing `churro.py` itself
+# currently names as the default -- not asserted structurally on every
+# access, and not against a name hard-coded here, so a repointed
+# `DEFAULT_FRAMING` fails this rather than going unnoticed.
 assert (
     MEASURED_PROMPT_TOKENS["attestator_3"][0].prompt_digest
-    == CHURRO_PROMPT_VARIANTS["registry-v0.3.0"]["system_sha256"]
+    == CHURRO_PROMPT_VARIANTS[churro.DEFAULT_FRAMING]["system_sha256"]
 ), "MEASURED_PROMPT_TOKENS['attestator_3'][0] is no longer churro.DEFAULT_FRAMING's measurement"
 
 

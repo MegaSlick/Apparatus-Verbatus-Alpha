@@ -165,13 +165,16 @@ attestatores = _load_attestatores()
 # the fixture page's single image token, which fitted.  The chair is now asked
 # in the vendor's own registry system string, measured at 27, and reserves
 # U14's re-measured dense-page answer over the vendor's own `HistoricalDocument`
-# grammar, 1,905 (not the retired 1,631 JSON contract): 1,933 against 2,048,
-# which does not fit either.
+# grammar, 1,905 (not the retired 1,631 JSON contract): 1 + 27 + 1,905 = 1,933,
+# which still fits 2,048 with 115 tokens to spare -- the row does not move
+# because the arithmetic overran it.
 # **The row moves, never the arithmetic and never the pixels**
 # -- the disposition `TOKEN_COST_REPORT.md` section 10 already took, and the
 # one the Perlector's own row took here when the reader stopped admitting on a
-# floor.  The shipped catalogue states 8,192 for this chair at every tier, so
-# that is what the stand-in states.
+# floor.  The shipped catalogue states 8,192 for this chair at every tier
+# regardless of whether the smaller stand-in would still have fitted, so that
+# is what the stand-in states too: this fixture mirrors the real catalogue's
+# own row rather than deriving one from local arithmetic.
 # Chandra's row moves for the same reason and by the same disposition. Its
 # sealed prompt was this repository's own 256-token instruction; the chair is
 # now asked in the vendor's own `OCR_LAYOUT_PROMPT`, re-measured at 593, and

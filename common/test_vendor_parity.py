@@ -1266,15 +1266,18 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
     strings the design names as carried cross, with their digests recorded
     beside them.
 
-    **The marker alone does not gate it.**  Neither gate deselects by marker in
-    any way that would leave this test out: ``.githooks/check-all.sh`` runs
+    **The marker alone does not select it.**  ``vendor_network`` is registered
+    (``pyproject.toml``) so pytest does not warn on an unknown marker, but
+    registration is metadata, not a selector: neither gate deselects by marker
+    in any way that would leave this test out.  ``.githooks/check-all.sh`` runs
     pytest with no ``-m`` expression at all, and ``.githooks/check-fast.sh``
     runs ``-m "not full or scanner"``, which a test carrying only
     ``vendor_network`` satisfies through its ``not full`` half.  Both therefore
-    collect it, and registering the marker would have put GitHub and Hugging
-    Face on the critical path of a green laptop gate.  The run is asked what it
-    selected instead, and this test runs only when that expression names this
-    marker deliberately.
+    collect it, and it is this test's own runtime check below -- not the
+    registered marker -- that keeps GitHub and Hugging Face off the critical
+    path of a green laptop gate: the run is asked what selection expression it
+    was actually given, and this test does anything only when that expression
+    names ``vendor_network`` deliberately.
     """
     selection = str(request.config.getoption("-m", default="") or "")
     if "vendor_network" not in selection:

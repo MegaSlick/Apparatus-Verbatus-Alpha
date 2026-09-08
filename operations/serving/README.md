@@ -229,9 +229,10 @@ launch either one with `enable_prefix_caching` on. vLLM v0.27.1 itself keeps
 prefix caching over recurrent state opt-in for hybrid models rather than
 unsupported (`arg_utils.py`'s own default is `not model_config.is_hybrid`,
 commented "keep it opt-in for now") — the caution here is this project's:
-it cannot hit at this catalogue's `max_num_seqs = 1` (nothing else is ever
-resident to share a cached prefix with) and only costs recurrent-state
-memory for the privilege (hostile review 2026-09-06 item L). The check is
+it only costs recurrent-state memory for the privilege (hostile review
+2026-09-06 item L; this catalogue's own rows for these chairs range
+`max_num_seqs` 1-4 across tiers, so a blanket "nothing else is ever
+resident" claim would not hold at every tier). The check is
 keyed on the identity's exact `repo`, never on role — role names
 (`attestator_1`, `perlector`, ...) are reused throughout this package's test
 suite as generic fixture identifiers unrelated to these two checkpoints, and
