@@ -7601,14 +7601,24 @@ def test_a_hung_verb_abandons_one_worker_and_then_ends_the_close() -> None:
         billing_cutoff_margin_seconds=3600,
     )
 
-    before = threading.active_count()
+    def status_workers() -> set[str]:
+        # Only this close's own `status` worker, by its exact name: a preceding
+        # test's terminate worker may still be unwinding, and a process-wide
+        # count would let its exit cancel out the worker this close abandons.
+        return {
+            thread.name
+            for thread in threading.enumerate()
+            if thread.name == "http-deadline-provider status"
+        }
+
+    before = status_workers()
     try:
         report = closer.close(record, reason="hung observation drill")
         # Read *before* `release` is set: every abandoned worker is still
         # blocked here, so this counts what the loop left behind rather than
         # what has already unwound. Reading it afterwards would pass whatever
         # the loop did, which is no assertion at all.
-        still_running = threading.active_count() - before
+        still_running = len(status_workers() - before)
     finally:
         release.set()
         time.sleep(0.2)

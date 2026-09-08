@@ -941,11 +941,6 @@ class ServingManager:
             # better-named fact than "timed out" for an operator reading the record.
             self._assert_process_live(process)
             launch_tail = process.read_tail()
-            # A budget of zero would mean issuing a request that cannot succeed.
-            # The watchdog timeout is the right answer at that point, and it is
-            # the same refusal the check at the bottom of this loop produces.
-            if deadline - self.monotonic() <= 0:
-                raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
             if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
                 raise ReadinessError(
                     "VLLM_LOG_UNREADABLE",
@@ -954,6 +949,12 @@ class ServingManager:
             signature = _fatal_log_signature(launch_tail)
             if signature is not None:
                 raise ReadinessError(signature, "fatal vLLM signature appeared in this launch log")
+            # A budget of zero would mean issuing a request that cannot succeed.
+            # The watchdog timeout is the right answer at that point, and it is
+            # the same refusal the check at the bottom of this loop produces --
+            # after the tail this round already read has had its say above.
+            if deadline - self.monotonic() <= 0:
+                raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
             try:
                 health = self.http.request(
                     "GET",

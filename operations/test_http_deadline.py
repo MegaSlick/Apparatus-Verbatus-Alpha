@@ -294,11 +294,11 @@ def test_a_socket_is_cancellable_from_the_moment_it_exists() -> None:
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     port = listener.getsockname()[1]
+    sock = None
     try:
         connection = connection_class(f"127.0.0.1:{port}", timeout=5.0)
         # The socket exists; `connect()` has never returned, which is where a
         # tunnelling connection would be blocked.
-        sock = None
         sock = connection._create_connection(("127.0.0.1", port), 5.0)
         assert cancel() == []
         # Proof it was really shut down: a read on a shut-down socket returns
