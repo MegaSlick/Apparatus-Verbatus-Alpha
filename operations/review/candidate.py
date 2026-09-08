@@ -14,6 +14,8 @@ import sys
 import uuid
 from pathlib import Path
 
+from common.durability import sync_directory
+
 GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
 
 
@@ -102,11 +104,14 @@ def report_names(data: bytes, label: str, identity: str) -> bool:
 
 
 def fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    """Strict directory sync: a receipt may not claim a name that is not durable.
+
+    Delegates to the one implementation rather than being the third copy of it
+    (`common/durability.py`). The behaviour is unchanged — this function always
+    raised on a filesystem that refused, which is `strict=True`.
+    """
+
+    sync_directory(directory, strict=True)
 
 
 def publish_immutable(path: Path, data: bytes, noun: str) -> None:

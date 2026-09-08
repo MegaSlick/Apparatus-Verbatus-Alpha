@@ -127,6 +127,16 @@ _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qw
 # match simply stops firing and every probe rejection reverts to the old
 # retry-to-watchdog behaviour -- a safe direction to fail in.
 _PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
+_READINESS_PROBE_TIMEOUT_SECONDS = 2.0
+"""Per-request budget for one /health or /v1/models poll.
+
+Named rather than repeated at three call sites, because the readiness loop now
+takes the *smaller* of this and what is left of the watchdog deadline, and a
+literal that drifted between the two would silently widen the overrun this
+exists to close."""
+
+_INFERENCE_TIMEOUT_SECONDS = 10.0
+"""Per-request budget for one chat/completions call: a real answer, not a poll."""
 
 
 class ReceiptPublisher(Protocol):
@@ -958,7 +968,10 @@ class ServingManager:
     def _assert_endpoint_unoccupied(self, endpoint: str) -> None:
         try:
             response = self.http.request(
-                "GET", health_url(endpoint), body=None, timeout_seconds=2.0
+                "GET",
+                health_url(endpoint),
+                body=None,
+                timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
             )
         except EndpointUnavailable as error:
             if error.definitively_absent:
@@ -976,6 +989,22 @@ class ServingManager:
         deadline = self.monotonic() + profile.startup_timeout_seconds
         last = "service did not become ready"
         while True:
+            # Each probe below is bounded by whichever is smaller, its own
+            # per-request budget or what is left of the watchdog's. Without the
+            # second half, the watchdog's deadline was consulted only *between*
+            # requests, so a probe issued one millisecond inside it could still
+            # add its whole budget to a start that had already run out of time.
+            #
+            # Recomputed at every call rather than once per round: the health
+            # check, the model list and the inference probe run in sequence, and
+            # a value taken before the first would let the third spend time the
+            # first two had already spent.
+            def probe_timeout() -> float:
+                return min(_READINESS_PROBE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic()))
+
+            # Liveness and the launch log get their last word before the generic
+            # watchdog refusal: a dead process or a named fatal signature is a
+            # better-named fact than "timed out" for an operator reading the record.
             self._assert_process_live(process)
             launch_tail = process.read_tail()
             if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
@@ -986,16 +1015,28 @@ class ServingManager:
             signature = _fatal_log_signature(launch_tail)
             if signature is not None:
                 raise ReadinessError(signature, "fatal vLLM signature appeared in this launch log")
+            # A budget of zero would mean issuing a request that cannot succeed.
+            # The watchdog timeout is the right answer at that point, and it is
+            # the same refusal the check at the bottom of this loop produces --
+            # after the tail this round already read has had its say above.
+            if deadline - self.monotonic() <= 0:
+                raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
             try:
                 health = self.http.request(
-                    "GET", health_url(profile.endpoint), body=None, timeout_seconds=2.0
+                    "GET",
+                    health_url(profile.endpoint),
+                    body=None,
+                    timeout_seconds=probe_timeout(),
                 )
                 if health.status != 200:
                     raise ReadinessError(
                         "VLLM_HEALTH_UNAVAILABLE", f"/health returned HTTP {health.status}"
                     )
                 models = self.http.request(
-                    "GET", models_url(profile.endpoint), body=None, timeout_seconds=2.0
+                    "GET",
+                    models_url(profile.endpoint),
+                    body=None,
+                    timeout_seconds=probe_timeout(),
                 )
                 model_ids = require_exact_model_id(models, profile.served_model_id)
                 probe = self._post_probe(
@@ -1005,6 +1046,9 @@ class ServingManager:
                     model_id=profile.served_model_id,
                     seed=profile.seed,
                     deterministic=True,
+                    timeout_seconds=min(
+                        _INFERENCE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic())
+                    ),
                 )
                 return ReadinessEvidence(
                     health_status=health.status,
@@ -1051,12 +1095,13 @@ class ServingManager:
         model_id: str,
         seed: int,
         deterministic: bool,
+        timeout_seconds: float = _INFERENCE_TIMEOUT_SECONDS,
     ) -> OpenAIResult:
         response = self.http.request(
             "POST",
             endpoint_for_probe(endpoint, kind),
             body=request_body(payload, model_id=model_id, seed=seed, deterministic=deterministic),
-            timeout_seconds=10.0,
+            timeout_seconds=timeout_seconds,
         )
         return parse_openai_answer(response, kind=kind, expected_model_id=model_id)
 
@@ -1083,7 +1128,10 @@ class ServingManager:
             )
         calibration_payload = calibration.request_payload()
         response = self.http.request(
-            "GET", models_url(profile.endpoint), body=None, timeout_seconds=2.0
+            "GET",
+            models_url(profile.endpoint),
+            body=None,
+            timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
         )
         ids = require_exact_model_id(response, profile.served_model_id)
         if base_profile.served_model_id not in ids:
@@ -1317,9 +1365,20 @@ class ServingManager:
         deadline = self.monotonic() + self.shutdown_timeout_seconds
         last = "endpoint absence has not been observed"
         while True:
+            # The same bound `_wait_until_ready` gets, for the same reason: this
+            # loop also consulted its deadline only after a request returned, so
+            # a probe issued one millisecond inside it could add its whole budget
+            # to a stop that had already run out of time — and this one runs
+            # while an owned GPU process may still be resident.
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                raise ServiceStopError(last)
             try:
                 response = self.http.request(
-                    "GET", health_url(endpoint), body=None, timeout_seconds=2.0
+                    "GET",
+                    health_url(endpoint),
+                    body=None,
+                    timeout_seconds=min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining),
                 )
             except EndpointUnavailable as error:
                 if error.definitively_absent:

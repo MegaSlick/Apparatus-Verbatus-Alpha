@@ -82,6 +82,14 @@ pod = [
     "qwen-vl-utils==0.0.14; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
+# Deliberately narrow, and deliberately not repaired by widening. A wheel built
+# from this carries no `pipeline/`, `config/`, `proof/` or `gold/`, and runtime code
+# resolves those as siblings of the checkout rather than as package data -- so a
+# non-editable install cannot run this system, and packaging the private material to
+# make it appear to would be the wrong repair. Verbatus runs from a source checkout:
+# the pod bootstrap clones at a pinned commit and runs `uv sync --locked`, and
+# `common/checkout.py` refuses before any verb starts anywhere else.
+# `operations/README.md` carries the contract in full.
 [tool.setuptools.packages.find]
 include = ["common", "common.*", "operations", "operations.*"]
 namespaces = false
