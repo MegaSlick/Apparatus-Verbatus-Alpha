@@ -945,6 +945,9 @@ def _continuation_page_context(monkeypatch, *, reason):
     page["payload"]["page_role"] = "continuation"
     context = _context(page)
     attachment = _attachment(context, end=0)
+    # A real continuation-page-no-act-anchor row is unattached as well as
+    # unaligned; the fixture says both so the unattached case is the one read.
+    attachment["payload"]["attachments"][0]["attached"] = False
     attachment["payload"]["attachments"][0]["alignment"] = {
         "status": "unaligned",
         "reason": reason,
@@ -1253,12 +1256,16 @@ def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable()
     regions = [{"payload": {"transform": {"source_page_ordinal": 2}}}]
 
     rows = RUN.testimony_content_for_continuation_pages({}, regions, 1)
-    assert rows == [{"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}]
     # The property this test is named for, stated independently of the
-    # constant it is spread from above: an unmeasured page is never a
+    # constant it is spread from below: an unmeasured page is never a
     # measured clean one.
+    assert len(rows) == 1
     assert rows[0]["shortfall"] is None
     assert rows[0]["by_chair"] is None
+    assert "was not measured" in rows[0]["reason"]
+    # Then the whole shape, which is what pins the row to no extra key and no
+    # missing one.
+    assert rows == [{"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}]
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):

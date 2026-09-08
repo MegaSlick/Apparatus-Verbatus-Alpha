@@ -1600,6 +1600,49 @@ def test_a_page_record_the_fixture_posture_wrote_is_not_resumed_into_a_live_pass
         attestatores._page_capture_from_record(context, record, "the page Testimonium")
 
 
+def test_a_resumed_page_with_a_malformed_native_capture_is_refused_not_keyerror():
+    """A malformed `native_capture` is refused by name, never by `KeyError`.
+
+    `_page_capture_from_record` used to read `capture["adapter"]` to resolve
+    the runnable binding before anything had checked that `native_capture`
+    held its own closed schema. A sealed record whose `native_capture` is
+    missing `adapter` -- corruption, or a schema this build no longer
+    writes -- raised a raw `KeyError` out of that read instead of the named
+    `SchemaRefusal` every other malformed-record path in this function uses.
+    Validating the capture against its own schema before resolving the
+    adapter closes the gap.
+    """
+    record = {
+        "outcome": "read",
+        "payload": {
+            "payload": "declared text",
+            "content_health": {},
+            "format_capabilities": {},
+            "native_capture": {
+                "schema": "attestatores-model-view.v1",
+                "view": {},
+                "raw_response_ref": {
+                    "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                    "sha256": "a" * 64,
+                },
+                "transport_stop_reason": "stop",
+                "stop_reason": "stop",
+                "findings": [],
+                "parse": {"state": "parsed", "parser": "xml", "text": "read"},
+                # `adapter` is deliberately absent.
+            },
+            "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
+        },
+    }
+    context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_run_receipt=lambda reference: {"endpoint": "https://live.example/chair"}
+        )
+    )
+    with pytest.raises(SchemaRefusal, match="not its retained model-view schema"):
+        attestatores._page_capture_from_record(context, record, "the page Testimonium")
+
+
 def test_a_resumed_parsed_but_unconfirmed_blank_chandra_page_carries_no_observation_payload():
     """A resume must not rederive a *different* partition than the pass sealed.
 

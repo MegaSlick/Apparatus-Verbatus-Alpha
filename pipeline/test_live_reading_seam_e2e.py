@@ -978,18 +978,17 @@ def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, 
     kept, on the act that spans the page. The counterfactual below drops the row
     again and requires this to fail.
     """
-    rows: dict[tuple[str, int], dict[str, Any]] = {}
-    for review in reviews:
-        for row in review["payload"]["testimony_content_coverage_continuation"]:
-            key = (review["payload"]["act_key"], row["page_ordinal"])
-            assert key not in rows, (
-                f"two continuation coverage rows for {key}: {rows[key]!r} vs {row!r} -- "
-                "one review publishes one row per continuation page, so a second here is "
-                "a duplicate publication and a dict must not pick between them"
-            )
-            rows[key] = row
-    assert set(rows) == {("a2", 2)}, sorted(rows)
-    row = rows[("a2", 2)]
+    # A list, not a lookup keyed by act and page: a second row for one act's
+    # page is an accounting failure, and a dict comprehension would collapse it
+    # into the row this helper then reads. The counterfactual below removes a
+    # row; nothing here may quietly absorb an added one.
+    rows = [
+        ((review["payload"]["act_key"], row["page_ordinal"]), row)
+        for review in reviews
+        for row in review["payload"]["testimony_content_coverage_continuation"]
+    ]
+    assert [key for key, _row in rows] == [("a2", 2)], sorted(key for key, _row in rows)
+    row = rows[0][1]
     assert row["shortfall"] is None, row
     assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"], row
     for chair, measured in sorted(row["by_chair"].items()):
@@ -1053,7 +1052,9 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     # The third named half, since Tyrel's F2 ruling: the page neither act is
     # primary on. Delivered, and visibly unmeasured rather than silently clean.
     _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
+    assert len(export["payload"]["delivered"]) == 2, export["payload"]["delivered"]
     delivered = {item["act_key"]: item for item in export["payload"]["delivered"]}
+    assert len(delivered) == 2
     assert sorted(delivered) == ["a1", "a2"]
     assert delivered["a1"]["testimony_content_coverage_continuation"] == []
     assert [
@@ -1066,14 +1067,28 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
 
 
-def test_silently_dropping_the_continuation_row_again_would_fail_that_assertion(live_seam):
-    """The counterfactual, run against this same live tree.
+def test_the_continuation_row_is_present_on_the_unmodified_live_tree(live_seam):
+    """The regression itself, run against this same live tree, unmodified.
 
-    Restoring the old behaviour is exactly deleting the restatement: before the
-    F2 ruling every review read its primary `page_ordinal` alone, so page 2's
-    finding existed in the Recensor and reached no record. The assertion above
-    must not be satisfiable by that run, or it would be pinning the export's
-    politeness rather than its honesty.
+    Before the F2 ruling every review read its primary `page_ordinal` alone, so
+    page 2's finding existed in the Recensor and reached no record -- dropped
+    in silence under a DELIVERED export. This asserts the restatement directly
+    against what the live run actually produced: the row is there, named on
+    `a2` page 2, `shortfall` is `None` (unmeasured, not silently clean), and
+    both page witnesses are the ones counted. If production ever again omits
+    the row, this test -- not a synthetic drop of it -- is what fails.
+    """
+    _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
+
+
+def test_the_unmeasured_assertion_itself_catches_a_dropped_continuation_row(live_seam):
+    """Helper-drill: proves the assertion above is not vacuously true.
+
+    Takes this same live tree's reviews, deletes the continuation row the way
+    the pre-F2 code silently did, and requires
+    `_assert_the_continuation_page_is_unmeasured_by_name` to reject that tree.
+    This does not stand in for the regression test above -- it only shows that
+    test's own assertion has teeth.
     """
     dropped = copy.deepcopy(_reviews(live_seam))
     for review in dropped:
