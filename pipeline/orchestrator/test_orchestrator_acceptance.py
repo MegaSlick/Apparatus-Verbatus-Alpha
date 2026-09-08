@@ -1778,8 +1778,12 @@ def _perlector_dissent():
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The
 # two roots agreed exactly on both scenarios; counts and exits held at 96/0
 # (happy) and 107/3 (review).
-HAPPY_SNAPSHOT_FILES = 96
-REVIEW_SNAPSHOT_FILES = 107
+#
+# The four values below are the vendor-systems integration's, whose own entry is
+# the last in this ledger, above the digests: the counts moved there and nowhere
+# since, for the four published adapter-crop page images that entry attributes.
+HAPPY_SNAPSHOT_FILES = 100
+REVIEW_SNAPSHOT_FILES = 111
 # Merge re-pin (`origin/main` c9890bab8e -- Unit 12's churro-native layout --
 # into `work/alignment-matcher`). Both parents moved these pins for different
 # causes, so neither parent's literals describe this tree; one entry replaces
@@ -1817,9 +1821,71 @@ REVIEW_SNAPSHOT_FILES = 107
 # canonical run id "r", through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers; the two roots agreed exactly on both
 # scenarios.
-HAPPY_RUN_TREE_DIGEST = "08c97c8e235329c62800e20f8b54358c2c505f4eb504d7522772d5458b329dae"
-# Re-pinned by the same alignment-deadline byte named above the happy digest.
-REVIEW_RUN_TREE_DIGEST = "5476a8f038eb3a98fff295a7c43110cfb22959d7b2cc6be28b3b2fa299b5737d"
+#
+# **Re-pin, the vendor-systems integration: Wave 1 and Wave 2 together, measured
+# against `origin/main` 8100d5b3e4.** All four values move. The two scenarios
+# gain four blob files each and no artifact: happy 96 -> 100, review 107 -> 111,
+# exits unmoved at 0 and 3.
+#
+#   The ledger above records each unit's own re-pin against its own parent, and
+#   those entries are kept because they are how each cause was isolated. They no
+#   longer describe a tree: this branch carries all of them at once, and
+#   `origin/main` has since taken Unit 12 as a squash plus the imaging, alignment
+#   and CodeQL work. So the measurement below is against `origin/main` itself
+#   rather than against any one parent, and the attribution names which unit each
+#   surviving leaf belongs to.
+#
+#   Control first. A tree was built here from `origin/main` 8100d5b3e4 and
+#   reproduced that commit's own literals exactly -- 08c97c8e... and 5476a8f0...,
+#   96 and 107 files -- so the comparison is against a tree that is what it
+#   claims to be.
+#
+#   Leaf by leaf against it -- every JSON file in both trees flattened to its
+#   scalar leaves, each non-JSON blob counted as one leaf -- happy goes 13,864 ->
+#   13,918 leaves and review 14,384 -> 14,429. **Every changed, added or removed
+#   leaf that is not a digest and not a content-addressed path falls in one of
+#   six buckets, and the residue is zero** (asserted by the measuring script, not
+#   read off a diff):
+#
+#     * 36 per scenario, U9 and U10: `presented/kind` "page" -> "adapter-crop",
+#       `transform/operation` "whole" -> the vendor's own resize function name,
+#       and the seven-field resize recipe plus `colour_mode` on each of the four
+#       page Testimonia (two Chandra, two Churro).
+#     * 12 in happy and 9 in review, U12: `anchor_line_match`'s three integers on
+#       every aligned page-witness alignment.
+#     * 12 in happy, U10: the Churro capture's `vendor_identity`, its one
+#       `findings[0]/kind`, the registry system string replacing the retired
+#       instruction, `max_new_tokens` 24000 -> 20000, and the removed
+#       `view/prompt/user` the system-only vendor framing does not send.
+#     * 8 in happy and 10 in review, U12: `granularity_basis`
+#       "native-observation-overlap" -> "native-per-chair-attachment-basis".
+#     * 6 in happy and 9 in review, U7: each Testimonium's `training_domain`,
+#       now the chair's factual domain from `config/witness_context.toml`
+#       instead of the fixture placeholder.
+#     * 2 in happy, this integration's own flag flip: the two Churro page
+#       captures' `format_capabilities/can_express_uncertainty` False -> True.
+#       Review carries no live Churro view, so it has no such leaf to move.
+#
+#   Everything else is a consequence: 397 digest-or-`self_hash` leaves in happy
+#   and 463 in review, and 36 and 47 content-addressed blob paths. The file
+#   counts move for one reason -- six blobs added and two removed per scenario:
+#   the four published adapter-crop page images under `3_attestatores` are new
+#   (one per witnessed page for each of the two page chairs), and the
+#   `4_perlector` partition blob and the `7_armarium` export bundle are renames,
+#   their filenames being their own content digests. No JSON artifact is added or
+#   removed in either scenario.
+#
+#   No reading moved: no `parse/text`, `payload/payload` or geometry leaf differs
+#   in either tree, and the `anchor-line` attachment U12 admits changes no
+#   fixture attachment -- the fixture roster declares native page geometry, which
+#   keeps precedence.
+#
+# Both values below measured twice, in two independent temporary roots (separate
+# `TMPDIR`s), at canonical run id "r", through this module's own `orchestrate`
+# and `semantic_snapshot_digest`; the two roots agreed exactly on both scenarios.
+HAPPY_RUN_TREE_DIGEST = "eedcb13f21e1bf68b14341c1bde1d38eee7350423ac66667005c0339757ca130"
+# Re-pinned by the same six causes, in the same measurement, as the happy digest.
+REVIEW_RUN_TREE_DIGEST = "67699161bc26dadc4f578624ae796f44cab0c5da0c01e58c2cd2292cba712984"
 
 
 def orchestrate(

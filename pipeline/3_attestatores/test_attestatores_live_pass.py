@@ -2248,8 +2248,9 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     So the reading is the grammar's flattened text and the only observation is
     the `bounds_source="presented"` echo, which routing and coverage exclude --
     an honest no-layout record rather than rectangles nobody reported.
-    Attachment for this chair is the Perlector's `anchor-line` basis (U12), not
-    geometry it does not have.
+    Attachment for this chair is the `anchor-line` basis (U12), not geometry it
+    does not have: its page text aligns to the act's own anchor line, and that
+    alignment is what locates the act's slice inside the reading.
     """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -2273,10 +2274,17 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     # And the vendor pin travels with the reading (GOVERNANCE 6).
     assert capture["vendor_identity"]["repository"] == "github.com/stanford-oval/Churro"
 
+    # No geometry, and it reaches the act anyway: the `anchor-line` basis, on
+    # this chair's own page text located against the act's anchor line. Asserted
+    # by the exact basis rather than by `attached` alone, because the two are
+    # not interchangeable -- `geometric-overlap` here would mean some other
+    # chair's rectangles had been attributed to this one.
     [churro_a1] = attachment_entries(tree)["a1"]["attestator_3"]
-    assert churro_a1["attached"] is False
-    assert churro_a1["attachment_basis"] == "unattached"
+    assert churro_a1["attached"] is True
+    assert churro_a1["attachment_basis"] == "anchor-line"
     assert churro_a1["alignment"]["status"] == "aligned"
+    assert churro_a1["alignment"]["anchor_basis"] == "act-anchor"
+    assert churro_a1["span"]["end"] > churro_a1["span"]["start"]
 
 
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
