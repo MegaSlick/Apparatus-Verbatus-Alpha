@@ -1152,7 +1152,9 @@ def sendable_max_tokens(chair: str, capacity: Mapping[str, Any]) -> dict[str, in
             "derived from are not the ones this request was admitted on"
         )
     recorded_chair = capacity["chair"]
-    if isinstance(recorded_chair, str) and recorded_chair != chair:
+    if recorded_chair != chair:
+        # Exact match or refusal: a missing or non-string chair is not "unknown,
+        # so probably fine" -- it is a record this request was not admitted on.
         raise RequestCapacityRefusal(
             f"a generation bound for chair {chair!r} was asked for against a capacity "
             f"record admitted for chair {recorded_chair!r}; the row and the prompt cost "

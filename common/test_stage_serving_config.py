@@ -125,6 +125,15 @@ def _minimal_vllm_profile(*, chair: str, generation_config: str) -> dict[str, ob
     }
 
 
+def test_generation_config_auto_is_admitted_for_a_witness_chair():
+    """The positive half of the rule below: an Attestator row may pin its
+    occupant's own generation_config.json through `"auto"`."""
+    assert is_witness_role("attestator_2")
+    row = _minimal_vllm_profile(chair="attestator_2", generation_config="auto")
+    recipes = parse_serving_recipes({"schema": SCHEMA, "profiles": [row]})
+    assert recipes.profiles[0].generation_config == "auto"
+
+
 def test_generation_config_auto_is_refused_for_a_non_witness_chair():
     """The rule `test_the_real_catalogues_...` only checks the shipped rows never
     violate: a non-witness chair naming `generation_config = "auto"` must be

@@ -111,9 +111,12 @@
 # (b) confirms against `vllm/config/model.py::get_diff_sampling_param`.
 # `"auto"` makes the manager receipt record the digest of the chair's own
 # `generation_config.json`, so the pinned profile is auditable by revision
-# rather than merely assumed unchanged.  `designator_structure` and
-# `perlector` carry no vendor `generation_config.json` of their own to pin
-# and stay `"vllm"`.
+# rather than merely assumed unchanged.  `designator_structure` serves the
+# same Chandra-2 checkpoint (whose generation_config.json is pinned through
+# attestator_1's row) but is a Designator, not a witness, so the schema keeps
+# it at `"vllm"`; the Perlector's own weights ship no generation_config.json
+# worth pinning.  Both stay `"vllm"`, and the manager forces temperature 0 on
+# every reading regardless.
 #
 # WHAT IS STILL UNPROVEN, AND IT IS THE WHOLE OF IT: whether a card at each
 # tier has the VRAM for these contexts.  Raising `max_model_len` moves KV-cache
