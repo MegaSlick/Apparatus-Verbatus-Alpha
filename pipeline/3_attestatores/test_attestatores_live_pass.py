@@ -163,8 +163,10 @@ attestatores = _load_attestatores()
 # Every row was 2,048 while this chair's sealed prompt was the retired
 # `<output>` framing's 281 tokens and its dense-page answer 1,433 -- 1,715 with
 # the fixture page's single image token, which fitted.  The chair is now asked
-# in the vendor's own registry system string, measured at 27, and reserves a
-# dense page's 1,631: 1,659 against 2,048, which does not fit either.
+# in the vendor's own registry system string, measured at 27, and reserves
+# U14's re-measured dense-page answer over the vendor's own `HistoricalDocument`
+# grammar, 1,905 (not the retired 1,631 JSON contract): 1,933 against 2,048,
+# which does not fit either.
 # **The row moves, never the arithmetic and never the pixels**
 # -- the disposition `TOKEN_COST_REPORT.md` section 10 already took, and the
 # one the Perlector's own row took here when the reader stopped admitting on a
@@ -173,7 +175,8 @@ attestatores = _load_attestatores()
 # Chandra's row moves for the same reason and by the same disposition. Its
 # sealed prompt was this repository's own 256-token instruction; the chair is
 # now asked in the vendor's own `OCR_LAYOUT_PROMPT`, re-measured at 593, and
-# 593 + 1,520 + the fixture page's single image token is 2,114 against 2,048.
+# U14's re-measured answer (1,645, shared with `designator_structure`) plus the
+# fixture page's single image token is 2,239 against 2,048.
 # The shipped catalogue states 8,192 for this chair at every tier, so that is
 # what the stand-in states. The arithmetic and the pixels are untouched.
 LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 8192}
@@ -416,12 +419,15 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
 # refuses is the prompt and the reserved answer, both measured constants
 # (`common/request_capacity.py`). DAI is act-scoped: 1 + 84 + 230 = 315 against
 # 256. Churro is page-scoped and reserves a dense page's answer: its vendor
-# system string is one sentence, so 1 + 27 + 1,631 = 1,659 against 512.
-# Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,520 = 2,114
-# under the carried vendor prompt, so its testimony is what proves the refusals
-# were per request.
+# system string is one sentence, and U14's answer budget is the vendor's own
+# `HistoricalDocument` grammar (1,905, not the retired 1,631 JSON contract),
+# so 1 + 27 + 1,905 = 1,933 against 512.
+# Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,645 = 2,239
+# under the carried vendor prompt and U14's re-measured answer (1,645, shared
+# with `designator_structure` -- both send the same prompt and are read by the
+# same grammar), so its testimony is what proves the refusals were per request.
 REFUSING_CONTEXTS = {"attestator_2": 256, "attestator_3": 512}
-REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (1659, 512)}
+REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (1933, 512)}
 
 
 @pytest.fixture(scope="module")

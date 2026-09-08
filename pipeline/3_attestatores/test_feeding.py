@@ -1008,16 +1008,16 @@ def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
     [
         # `v3`'s bug, kept as the regression case: a width already under 1,500
         # is not by itself an identity view -- this crop's 5,000,000px is
-        # nearly 3x the smallest shipped row's `max_pixels` (1,806,336), so
+        # over the smallest shipped row's `max_pixels` (2,359,296, U15), so
         # `v3` recorded "identity" for a crop the engine would have resized
         # again on the laptop-tier row, with that second resize captured
         # nowhere (the hostile review's own finding). `v4`'s second pass
-        # catches it: beta = sqrt(5_000_000 / 1_806_336) ~= 1.66401, floored.
-        (500, 10_000, (300, 6_010), True),
+        # catches it: beta = sqrt(5_000_000 / 2_359_296) ~= 1.45577, floored.
+        (500, 10_000, (343, 6_869), True),
         # Also over the total-pixel ceiling alone (4,500,000px), even though
         # its width sits exactly at the width ceiling and neither `v2` nor
         # `v3` would have resized it a second time for total pixels here.
-        (1_500, 3_000, (950, 1_900), True),
+        (1_500, 3_000, (1_086, 2_172), True),
         # Over the width ceiling alone: floor-rounded aspect-preserving
         # resize -- 1,000 x 1,500 // 4,501 truncates to 333, not 334 -- and
         # its result (499,500px) is well under the total-pixel ceiling, so

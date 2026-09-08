@@ -51,7 +51,10 @@ DAI_MAX_WIDTH_PX = 1_500
 #
 # `DAI_MAX_TOTAL_PIXELS` is `min(max_pixels)` over every DAI (`attestator_2`)
 # row in the shipped real catalogue (`config/serving_recipes_real.toml`) --
-# 1,806,336, the `generic-24gb` tier -- pinned against that file by
+# 2,359,296 as of U15 (Tyrel's ruling, 2026-09-06: the per-tier pixel ladder
+# is retired, so every tier now ships the same DAI `max_pixels`, its own
+# trained-crop ceiling rather than a generic-24gb leftover) -- pinned against
+# that file by
 # `test_feeding.py::test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels`
 # so a future tier change cannot leave this stale. It is the *smallest*
 # across tiers, not the tier this run actually serves under, on purpose:
@@ -77,7 +80,7 @@ DAI_MAX_WIDTH_PX = 1_500
 # ceiling is the shipped serving catalogue itself, named above. A number
 # nobody can trace is exactly what GOVERNANCE 10 refuses, so both ceilings
 # carry their provenance into the record they seal.
-DAI_MAX_TOTAL_PIXELS = 1_806_336
+DAI_MAX_TOTAL_PIXELS = 2_359_296
 DAI_LIMIT_SOURCES = {
     "max_width_px": (
         "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR model card, "
@@ -87,9 +90,11 @@ DAI_LIMIT_SOURCES = {
     ),
     "max_total_pixels": (
         "config/serving_recipes_real.toml: the smallest max_pixels shipped for "
-        "the dai.v1 (attestator_2) row across every tier (generic-24gb, "
-        "1,806,336) -- the floor every deployed tier's engine actually admits, "
-        "so a client-side crop within it is never re-resized by any of them"
+        "the dai.v1 (attestator_2) row across every tier -- 2,359,296, the same "
+        "at every tier since U15 (Tyrel's ruling, 2026-09-06) retired the "
+        "per-tier pixel ladder -- the floor every deployed tier's engine "
+        "actually admits, so a client-side crop within it is never re-resized "
+        "by any of them"
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"

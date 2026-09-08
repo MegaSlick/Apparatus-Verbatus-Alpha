@@ -541,29 +541,30 @@ def _dai_region(width, height, x=0, y=0):
             id="one-past-the-width-ceiling",
         ),
         # `v3` recorded this as bound by the width ceiling alone (1,536 > 1,500)
-        # and left it at (1,500, 1,500) -- 2,250,000px, over even the smallest
-        # shipped row's `max_pixels` (1,806,336). `v4`'s second, total-pixel
-        # pass now runs after the width pass: beta = sqrt(2,250,000 /
-        # 1,806,336) ~= 1.11610, floored on both sides.
+        # and left it at (1,500, 1,500) -- 2,250,000px. Under U15's raised
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296, the shipped catalogue's own
+        # max_pixels at every tier now the ladder is retired) that no longer
+        # exceeds the total-pixel ceiling, so the width pass alone is what
+        # the second pass agrees with: no further scale-down.
         pytest.param(
             1_536,
             1_536,
             "L",
-            (1_344, 1_344),
+            (1_500, 1_500),
             "crop-resize-preserve-aspect",
             id="square-crop-also-bound-by-the-total-pixel-ceiling",
         ),
         # `v3`'s bug: a width this far under 1,500 was recorded as an identity
         # view "however tall the crop or however many total pixels it
-        # carries" -- but 576x4,097 is 2,359,872px, over the smallest shipped
-        # row's `max_pixels` (1,806,336), so the engine would have resized it
-        # again on that tier with nothing here to say so. `v4`'s second pass
-        # catches it: beta = sqrt(2,359,872 / 1,806,336) ~= 1.14304, floored.
+        # carries" -- but 576x4,097 is 2,359,872px, over U15's own
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the engine would have
+        # resized it again with nothing here to say so. `v4`'s second pass
+        # catches it: beta = sqrt(2,359,872 / 2,359,296) ~= 1.000122, floored.
         pytest.param(
             576,
             4_097,
             "L",
-            (503, 3_584),
+            (575, 4_096),
             "crop-resize-preserve-aspect",
             id="tall-crop-past-the-restored-total-pixel-ceiling",
         ),
@@ -573,7 +574,7 @@ def _dai_region(width, height, x=0, y=0):
             576,
             4_098,
             "L",
-            (503, 3_584),
+            (575, 4_096),
             "crop-resize-preserve-aspect",
             id="tall-crop-one-row-past-the-restored-total-pixel-ceiling",
         ),
@@ -610,7 +611,10 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
         resize = presented["transform"]["resize"]
         assert (resize["target_width_px"], resize["target_height_px"]) == target
         assert resize["target_width_px"] <= 1_500
-        assert resize["target_width_px"] * resize["target_height_px"] <= 1_806_336
+        # U15: `DAI_MAX_TOTAL_PIXELS` is 2,359,296 now that the per-tier pixel
+        # ladder is retired and every shipped DAI row states the same
+        # `max_pixels`.
+        assert resize["target_width_px"] * resize["target_height_px"] <= 2_359_296
     validate_presented_page_binding(
         presented,
         page_ordinal=1,

@@ -13,7 +13,6 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Final
 
 import pytest
 
@@ -125,18 +124,18 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
 
     Every row must hold the images its chair really sends at its own
     `max_pixels`, plus that chair's measured prompt, plus the answer that
-    request reserves.  Before this branch none of the 24 GB rows could, two
-    of the 48 GB rows could not fit the prompt alone, and Churro at 80 GB+ left
-    1,058 tokens for a 1,631-token answer.  A row that provably cannot answer
-    is not unproven; it is wrong, and the catalogue is not allowed to ship one.
+    request reserves.  Before U15 no row held every witness chair at its own
+    trained geometry; a per-tier generic pixel/context ladder either refused
+    the chair outright or left an answer no dense page could fit in.  A row
+    that provably cannot answer is not unproven; it is wrong, and the
+    catalogue is not allowed to ship one.
 
     Churro is weighed here as the live chair is really asked -- the vendor's
-    own registry-resolved system string, 27 tokens, and the dense-page answer it
-    reserves.  All three of its rows hold the request with the margin the
-    catalogue's own comment states.
-
-    **Its answer term is a known under-reservation**, weighed here at the sealed
-    number and re-weighed at the corrected one by the test below.
+    own registry-resolved system string, 27 tokens, and U14's re-measured
+    dense-page answer over the `HistoricalDocument` grammar it is actually
+    read under (1,905, not the retired 1,631 JSON-contract figure).  All three
+    of its rows hold the request with the margin the catalogue's own header
+    comment states.
     """
 
     _label, images, answer_budget = case
@@ -145,59 +144,18 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     assert record["headroom"] >= 0
 
 
-#: How far `MEASURED_DENSE_PAGE_ANSWER_TOKENS["attestator_3"]` under-reserves
-#: what the live Churro chair now answers, in tokens.  The sealed 1,631 was
-#: measured over the closed JSON contract this repository invented and U10
-#: retired; over one identical 800-word register body the vendor's own
-#: `HistoricalDocument` envelope measured 1,644 against that contract's 1,436,
-#: at the pinned `stanford-oval/churro-3B` tokenizer.  The derivation and the
-#: reason the constant is not corrected by addition -- a number carried forward
-#: that way wears a measurement's authority without being one (GOVERNANCE 10),
-#: and U14 re-runs the whole five-chair table over one body so the rows stay
-#: comparable -- are recorded at the constant itself in
-#: `common/request_capacity.py` and in `config/serving_recipes_real.toml`.
-CHURRO_VENDOR_GRAMMAR_ANSWER_SHORTFALL_TOKENS: Final = 208
-
-
-def test_churros_recorded_answer_shortfall_changes_no_shipped_admission():
-    """The claim the catalogue ships on, weighed rather than asserted in prose.
-
-    The sibling above admits every Churro row on the sealed 1,631.  This one
-    re-runs the same three rows on 1,631 + 208, which is what the chair is
-    measured to answer today, and requires them to hold anyway.  That is the
-    whole of what "it changes no admission at any shipped row" claims, and
-    keeping it as an assertion rather than a comment means a `max_model_len`,
-    `max_pixels` or prompt edit that eroded one of these margins fails here by
-    name instead of quietly making a recorded finding into a shipped defect.
-
-    It is deliberately not a re-pin.  Nothing here writes 1,839 into
-    `MEASURED_DENSE_PAGE_ANSWER_TOKENS`; the rows are still admitted on the
-    sealed number, and this test says what that costs.
-    """
-
-    rows = [row for row in _shipped_rows() if row.chair == "attestator_3"]
-    assert rows, "no Churro row was weighed; this guard would pass vacuously"
-    for row in rows:
-        for label, images, answer_budget in _request_shapes(row):
-            corrected = answer_budget + CHURRO_VENDOR_GRAMMAR_ANSWER_SHORTFALL_TOKENS
-            record = request_fits(row, images, PROMPT_TOKENS[row.chair], corrected)
-            assert record["fits"] is True, (row.tier, label, record["reason"])
-            assert record["headroom"] >= 0, (row.tier, label, record)
-
-
-def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_third():
-    """The one measured Perlector shape a shipped row cannot serve.
+def test_the_two_view_page_fallback_act_is_served_at_every_tier():
+    """The one measured Perlector shape that used to overrun a shipped row.
 
     An act whose bounds are the whole page, seen from two captures, sends four
-    page-sized images.  At 24 GB and 48 GB the raised 16,384 holds them; at
-    80 GB+ the same four images cost 20,400 tokens on their own, and no context
-    this catalogue ships can hold the request.  The prompt charged here is the
-    1,100 the seam admits on over the representative dossier, not the 790 floor
-    it used to be weighed against; the verdicts are unchanged by the difference
-    and the three needs move by 310 each.  Pinned rather than passed over:
-    the pipeline refuses it on this laptop with the arithmetic
-    (`pipeline/4_perlector/live_reader.py`), and a later edit that quietly
-    changes which tiers can serve it changes this test.
+    page-sized images.  At 24 GB and 48 GB the context holds them; at 80 GB+
+    the same four images cost 20,400 tokens on their own -- against the old
+    16,384 context this catalogue could not hold the request, which is why
+    this test was once named for the tier it could not serve.  U15 (Tyrel's
+    ruling, 2026-09-06) raises `generic-80gb-plus`'s `context_cap` to 32,768
+    for exactly this shape, and it now fits at every tier.  Pinned rather than
+    passed over: the pipeline no longer refuses it on this laptop, and a later
+    edit that quietly lowers the context again changes this test.
     """
 
     needs = {}
@@ -217,8 +175,8 @@ def test_the_two_view_page_fallback_act_is_served_at_two_tiers_and_named_at_the_
         "generic-24gb": (9278, True),
         # 4x3,102 + 1,100 + 1,318
         "generic-48gb": (14826, True),
-        # 4x5,100 + 1,100 + 1,318, against 16,384
-        "generic-80gb-plus": (22818, False),
+        # 4x5,100 + 1,100 + 1,318, against 32,768 (U15; was 16,384)
+        "generic-80gb-plus": (22818, True),
     }
 
 

@@ -334,8 +334,11 @@ def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
     assert over == [row.tier for row in rows]
     # Raised from 2,048/4,096/8,192 by the capacity unit so a whole page fits;
-    # still far under the 20,000 Churro's own paper allows for an answer.
-    assert [row.max_model_len for row in rows] == [8192, 8192, 16384]
+    # U15 (Tyrel, 2026-09-06) sets it to 8,192 at every tier now that Churro's
+    # own trained geometry (401,408 / 4,014,080 px) is what every row states,
+    # not a per-tier ladder -- still far under the 20,000 Churro's own paper
+    # allows for an answer.
+    assert [row.max_model_len for row in rows] == [8192, 8192, 8192]
 
 
 def _stand_in_row(max_model_len, chair="attestator_3"):
@@ -524,20 +527,24 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
     # system string, which is a single sentence where the retired layout
     # instruction was a two-message brief.
     assert capacity["prompt_tokens"] == 27
-    assert capacity["answer_budget"] == 1631
+    # U14: the dense-page answer is now measured over the vendor's own
+    # `HistoricalDocument` grammar, not the retired JSON contract (1,631).
+    assert capacity["answer_budget"] == 1905
 
 
 def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
     """The counterfactual this unit exists for, at the context the tree shipped.
 
-    A 300-dpi A4 page is 2,480x3,508.  Against the 24 GB Churro row's
-    `max_pixels` it costs 2,280 image tokens; with the measured 27-token vendor
-    system string and a 1,631-token dense-page answer that is 3,938 -- against
-    the `max_model_len = 2048` this catalogue carried until this branch.  The
-    request went to the endpoint and the engine answered HTTP 400; now nothing
-    is built.  The shipped row is 8,192 and admits the same page, which is what
-    `operations/serving/test_serving_catalogue_capacity.py` asserts; the row is
-    reconstructed here because the drill is about the refusal, not the row.
+    A 300-dpi A4 page is 2,480x3,508.  Against the Churro row's own `max_pixels`
+    (U15: 401,408 / 4,014,080, its trained geometry, the same at every tier)
+    it costs 5,100 image tokens; with the measured 27-token vendor system
+    string and U14's 1,905-token dense-page answer that is 7,032 -- against
+    the `max_model_len = 2048` this catalogue carried until an earlier branch.
+    The request went to the endpoint and the engine answered HTTP 400; now
+    nothing is built.  The shipped row is 8,192 and admits the same page,
+    which is what `operations/serving/test_serving_catalogue_capacity.py`
+    asserts; the row is reconstructed here because the drill is about the
+    refusal, not the row.
     """
 
     shipped = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
@@ -545,9 +552,9 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
     with pytest.raises(RequestCapacityRefusal) as error:
         _page_request_of_size(2480, 3508, row)
     record = error.value.capacity
-    assert record["image_prompt_tokens"] == 2280
-    assert record["need"] == 3938
-    assert record["headroom"] == 2048 - 3938
+    assert record["image_prompt_tokens"] == 5100
+    assert record["need"] == 7032
+    assert record["headroom"] == 2048 - 7032
     assert record["fits"] is False
     assert "downscaled" in str(error.value)
     # And the row the catalogue actually ships admits it.
@@ -559,18 +566,19 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
 def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     """DAI is act-scoped, and a page-fallback act's crop is the whole page.
 
-    The measured case from the token study, at DAI's `v2` ceilings (width,
-    height, and total pixels): a fallback band's presented crop was
-    1,291x1,826, costing 2,280 image tokens, which the 24 GB row cannot hold
-    beside an 84-token prompt even with the *smaller* single-act answer budget
-    reserved. `feeding.dai_dimensions` no longer produces exactly this size for
-    this input (`v4` restored a total-pixel ceiling `v3` had dropped, and
-    1,291x1,826 -- 2,357,366px -- is itself over it); ``adapter.present`` is
-    stubbed to hand the presentation back unchanged, so this drill exercises
-    `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
-    the resize rule, and the 1,291x1,826 probe stays valid for that. The image
-    cost alone is what settles it -- which is why an act chair reserving one
-    act's answer rather than a page's does not let a page-fallback act through.
+    The measured case from the token study: a fallback band's presented crop
+    was 1,291x1,826, costing 2,990 image tokens against U15's own DAI
+    `max_pixels` (2,359,296, the same at every tier as `DAI_MAX_TOTAL_PIXELS`),
+    which the 24 GB row cannot hold beside an 84-token prompt even with the
+    *smaller* single-act answer budget reserved. `feeding.dai_dimensions` no
+    longer produces exactly this size for this input (`v4` restored a
+    total-pixel ceiling `v3` had dropped, and 1,291x1,826 -- 2,357,366px -- is
+    itself over it); ``adapter.present`` is stubbed to hand the presentation
+    back unchanged, so this drill exercises `request_capacity_or_refuse`'s own
+    arithmetic on a fixed image size, not the resize rule, and the
+    1,291x1,826 probe stays valid for that. The image cost alone is what
+    settles it -- which is why an act chair reserving one act's answer rather
+    than a page's does not let a page-fallback act through.
     """
 
     context = SimpleNamespace(tree=_FakeTree())
@@ -585,8 +593,8 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     with pytest.raises(RequestCapacityRefusal) as error:
         live_witness.act_chair_request(context, adapter, presentation, profile=row)
     record = error.value.capacity
-    assert record["image_prompt_tokens"] == 2280
-    assert record["need"] == 2280 + 84 + 230
+    assert record["image_prompt_tokens"] == 2990
+    assert record["need"] == 2990 + 84 + 230
     assert record["fits"] is False
     assert _dai_row("generic-24gb").max_model_len == 8192
 
