@@ -7601,12 +7601,14 @@ def test_a_hung_verb_abandons_one_worker_and_then_ends_the_close() -> None:
         billing_cutoff_margin_seconds=3600,
     )
 
-    def status_workers() -> set[str]:
-        # Only this close's own `status` worker, by its exact name: a preceding
-        # test's terminate worker may still be unwinding, and a process-wide
-        # count would let its exit cancel out the worker this close abandons.
+    def status_workers() -> set[threading.Thread]:
+        # Only this close's own `status` workers, by their exact name, as thread
+        # objects rather than names: two abandoned workers share one name, and a
+        # set of names would count them as one. A preceding test's terminate
+        # worker may still be unwinding, and a process-wide count would let its
+        # exit cancel out the worker this close abandons.
         return {
-            thread.name
+            thread
             for thread in threading.enumerate()
             if thread.name == "http-deadline-provider status"
         }
