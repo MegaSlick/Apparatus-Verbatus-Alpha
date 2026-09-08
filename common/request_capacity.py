@@ -952,53 +952,55 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # because a row that cannot hold the demanding case cannot serve a dense page.
 #
 # **"Its own declared response shape" is what makes this expire with a prompt,
-# and two of these five rows are now expired.**  Both witness page chairs were moved to
-# their vendor's own output grammar by the vendor systems units, and neither
-# number has been re-taken over section 8's own 800 words, which are not in this
-# tree: `attestator_1`'s 1,520 was a Chandra page JSON and its grammar is now
-# HTML (U9), and `attestator_3`'s 1,631 was the closed JSON object this
-# repository invented for Churro, whose coordinate channel is retired (U10).
-# U14 re-runs those two with that report's harness and its own body, which
-# is what keeps the five rows comparable with each other; re-pinning a chair
-# here over a body the others were not measured on would make the rows mean
-# different things, which is the failure the paragraph below already names.
-# `designator_structure`'s row below is not in that debt: it was re-taken over
-# section 8's own 800 words in the same six blocks, and the paragraph after the
-# Churro finding records the harness and both spellings it was measured over.
+# and two of these five rows were expired until U14.**  Both witness page
+# chairs were moved to their vendor's own output grammar by the vendor systems
+# units, so neither number was still the cost of the shape a served chair
+# actually answers in: `attestator_1`'s 1,520 was a Chandra page JSON and its
+# grammar is now HTML (U9), and `attestator_3`'s 1,631 was the closed JSON
+# object this repository invented for Churro, whose coordinate channel is
+# retired (U10).  U14 re-runs both with `TOKEN_COST_REPORT_2026-09-05.md`
+# section 8's own harness and its own `FRENCH_ACT` body -- the same 800 words
+# `designator_structure`'s row below was re-taken over -- which is what keeps
+# all five rows comparable with each other; sealing a chair here over a body
+# the others were not measured on would make the rows mean different things.
+# `u14_final.py` (kept beside this repository's report of the run) reproduces
+# the superseded 1575 and 1520 exactly as its control, which is what says the
+# new numbers were taken by the same measurement rather than a different one
+# in the same units.
 #
-# **What Churro's row costs today is measured, and it is an under-reservation.**
-# Over one identical 800-word register body, tokenized by churro-3B's own
-# tokenizer at the pinned revision (2026-09-07, the same harness as the prompt
-# constants above), the three envelopes cost: bare words 1,224; the retired
-# `<output>` envelope 1,231; the retired JSON contract in six blocks 1,436; and
-# the vendor's `HistoricalDocument` grammar -- one `Page`, one `Body`, 67
-# `Line` elements -- 1,644.  So the grammar costs about **208 tokens more** than
-# the shape 1,631 was measured over, and the sealed budget is short by roughly
-# that much.  It changes no admission at any shipped row (a whole A4 page costs
-# this chair 2,280 image tokens and 27 prompt tokens, so even 1,839 clears
-# `max_model_len` at every tier), and it is recorded here rather than corrected
-# by arithmetic, because a number carried forward by addition would wear a
-# measurement's authority without being one (GOVERNANCE 10).
+# **`attestator_1`, 1520 -> 1645.**  It shares one prompt and one grammar with
+# `designator_structure` -- both send `chandra_layout.OCR_LAYOUT_PROMPT` and
+# are read by `chandra_layout.parse_layout_html` -- so the same fixture (six
+# `<div data-bbox=... data-label="Text"><p>...</p></div>` blocks, apostrophes
+# entity-escaped to `&#x27;`, the spelling the parser accepts and the dearer
+# of the two the grammar admits) costs the two chairs the same, measured
+# 2026-09-07: **1645**, identical to `designator_structure`'s own re-measurement
+# below because it is the same text tokenized by the same tokenizer.
 #
-# That last claim is asserted rather than left to this comment:
-# `operations/serving/test_serving_catalogue_capacity.py` re-weighs all three
-# shipped Churro rows at 1,631 + 208 and requires them to hold, so an edit that
-# eroded one of those margins turns a recorded finding into a named failure
-# instead of a shipped defect.
+# **`attestator_3`, 1631 -> 1905.**  Churro's grammar carries `Line` elements
+# per physical line, not one block per act, so the comparable convention is
+# the one the same 800-word `FRENCH_ACT` page fills at twelve words a line --
+# 67 lines, the density `answer_shapes.py` used for its own, differently-worded
+# exploration -- wrapped `<HistoricalDocument><Page><Body>...</Body></Page>
+# </HistoricalDocument>`, tokenized by `stanford-oval/churro-3B`'s own
+# tokenizer at the pinned revision: **1905**.  This retires the earlier
+# recorded-but-not-sealed finding of "1,644 over a non-comparable ACT text,
+# +208 against the retired JSON" -- that number used a different sentence than
+# `TOKEN_COST_REPORT.md`'s own `FRENCH_ACT` and was explicitly not comparable
+# with the other four rows (`answer_shapes.py`'s own docstring says so); this
+# measurement is, and it is what is sealed. Both changes are why
+# `operations/serving/test_serving_catalogue_capacity.py`'s former "shortfall,
+# not re-pinned" workaround (`CHURRO_VENDOR_GRAMMAR_ANSWER_SHORTFALL_TOKENS`)
+# is retired with U14: the budget itself now carries the corrected cost, so
+# re-weighing it against a separately-tracked shortfall would double the
+# correction.
 #
-# A denser answer costs more, and that too is recorded rather than sealed: the
-# retired JSON contract's same 800 words in 12 blocks measured 1,818 and in 24
-# blocks 2,204.  Twenty-four blocks is not the convention the other four chairs
-# were measured under.
-#
-# `designator_structure` moved with `verbatus-structure-prompt.v3`, for exactly
-# the reason the paragraph above gives: its declared response shape is no longer
-# the `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
+# `designator_structure` moved with `verbatus-structure-prompt.v3`, for the
+# same reason as `attestator_1`: its declared response shape is no longer the
+# `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
 # (`common/chandra_layout.py`). Re-measured 2026-09-07 by this section's own
 # harness -- the same `FRENCH_ACT` to 800 words in the same six blocks, the same
-# tokenizer at the same pinned revision -- at **1575 -> 1645**. The same run
-# reproduces the superseded 1575 and `attestator_1`'s 1520 exactly, which is what
-# says the numbers are comparable.
+# tokenizer at the same pinned revision -- at **1575 -> 1645**.
 #
 # **The 70 tokens are the fixture's escaping, not the grammar's tags**, and that
 # is measured rather than assumed. Written literally, the same six blocks in
@@ -1020,13 +1022,14 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # therefore an upper bound over the two spellings the grammar admits, and both
 # measurements are recorded here so a later reader can see which was sealed and
 # why. Neither number changes what any shipped row does: a whole 300-dpi page
-# is admitted on all three `designator_structure` tiers at either value.
+# is admitted on all three `designator_structure` tiers at either value, and
+# the same is true of `attestator_1`'s row (U15).
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 1645,
-        "attestator_1": 1520,
+        "attestator_1": 1645,
         "attestator_2": 1426,
-        "attestator_3": 1631,
+        "attestator_3": 1905,
         "perlector": 1318,
     }
 )

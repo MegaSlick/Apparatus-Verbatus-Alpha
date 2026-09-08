@@ -281,12 +281,13 @@ def test_the_record_is_closed_and_names_every_image_it_counted():
 
 def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context():
     """The measured finding, as a record: 6,720 prompt against 8,192, 1,472 left
-    for a 1,631-token dense-page answer.  Over by 159.
+    for a 1,905-token dense-page answer (U14: the `HistoricalDocument` grammar,
+    not the retired 1,631 JSON contract). Over by 433.
 
     The image is what dominates it, and the vendor's own framing narrows the
     margin without closing it: the prompt this chair is sent is one system
     sentence at 27 tokens, where this repository's retired layout instruction
-    cost 441.  The finding survives that by 159 tokens, because a 300-dpi A4
+    cost 441.  The finding survives that by 433 tokens, because a 300-dpi A4
     page costs 6,693 image tokens on its own.
     """
 
@@ -297,8 +298,8 @@ def test_churro_on_a_dense_a4_page_overruns_the_shipped_eighty_gigabyte_context(
         dense_page_answer_budget("attestator_3"),
     )
     assert record["image_prompt_tokens"] + record["prompt_tokens"] == 6720
-    assert record["need"] == 8351
-    assert record["headroom"] == -159
+    assert record["need"] == 8625
+    assert record["headroom"] == -433
     assert record["fits"] is False
 
 
@@ -310,7 +311,7 @@ def test_the_same_request_fits_once_the_row_states_a_larger_context():
         dense_page_answer_budget("attestator_3"),
     )
     assert record["fits"] is True
-    assert record["headroom"] == 16384 - 8351
+    assert record["headroom"] == 16384 - 8625
     assert record["reason"] is None
 
 
@@ -453,9 +454,13 @@ def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
         # `parse_layout_html` accepts it. `common/request_capacity.py` carries
         # both numbers and the reason.
         ("designator_structure", 1645),
-        ("attestator_1", 1520),
+        # U14: shares `designator_structure`'s prompt and grammar, so the same
+        # fixture costs it the same (1520 -> 1645).
+        ("attestator_1", 1645),
         ("attestator_2", 1426),
-        ("attestator_3", 1631),
+        # U14: re-measured over the vendor's `HistoricalDocument` grammar at
+        # the same 800-word `FRENCH_ACT` body, 67 `Line` elements (1631 -> 1905).
+        ("attestator_3", 1905),
         ("perlector", 1318),
     ],
 )
