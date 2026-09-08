@@ -58,6 +58,7 @@ def test_the_real_catalogues_generation_config_values_are_admitted_and_witness_s
     """
 
     root = Path(__file__).resolve().parents[1]
+    inspected = 0
     for catalogue_path in (
         root / "config/serving_recipes.toml",
         root / "config/serving_recipes_real.toml",
@@ -67,9 +68,15 @@ def test_the_real_catalogues_generation_config_values_are_admitted_and_witness_s
             generation_config = getattr(profile, "generation_config", None)
             if generation_config is None:
                 continue  # fixture/unsupported rows carry no vLLM flags at all
+            inspected += 1
             assert generation_config in {"vllm", "auto"}
             if generation_config == "auto":
                 assert is_witness_role(profile.chair), (
                     f"{catalogue_path.name} chair={profile.chair!r} uses generation_config="
                     "'auto' but is not a witness role"
                 )
+    # A catalogue with no `generation_config` field anywhere would pass this
+    # test vacuously -- every row taking the `continue` above -- and prove
+    # nothing about the rule it names. At least one row must actually carry
+    # the field for the loop above to have inspected anything.
+    assert inspected > 0, "no profile in either catalogue carries generation_config"

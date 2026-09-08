@@ -241,16 +241,13 @@ still admits `enable_prefix_caching` either way — the corrected value for the
 real rows is `config/serving_recipes_real.toml`, a row-data change outside
 this file's ownership.
 
-**Known blocker, not resolved by this unit:** as committed today,
-`config/serving_recipes_real.toml` sets `enable_prefix_caching = true` for
-exactly the three rows above (attestator_1, designator_structure, perlector),
-so a real launch of any of them refuses right now. The design note recording
-those rows (`workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`, "Serving
-rows", marked Tyrel's decision under hard rule 1) lists `enable_prefix_caching`
-as unchanged and names no unit that flips it. Reconciling the two — amend
-the row values, or drop this refusal — is a row-data decision, not a
-schema/preflight one; it is recorded here so it is not lost silently before
-the next real launch attempt.
+**Reconciled by U15:** `config/serving_recipes_real.toml` now sets
+`enable_prefix_caching = false` for exactly the three rows above
+(attestator_1, designator_structure, perlector), so the refusal above cannot
+fire on a shipped row. The prior text here described the opposite value as
+still committed; that was true only before U15 moved the rows (Tyrel's
+ruling, 2026-09-06 §10, per `workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`,
+"Serving rows").
 
 ## Prompt-token accounting and a deterministic readiness rejection
 

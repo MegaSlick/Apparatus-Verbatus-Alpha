@@ -1113,9 +1113,13 @@ def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable()
     """Absence stays absence: never a measured clean page (GOVERNANCE 10)."""
     regions = [{"payload": {"transform": {"source_page_ordinal": 2}}}]
 
-    assert RUN.testimony_content_for_continuation_pages({}, regions, 1) == [
-        {"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}
-    ]
+    rows = RUN.testimony_content_for_continuation_pages({}, regions, 1)
+    assert rows == [{"page_ordinal": 2, **RUN.NO_PAGE_CONTENT_COVERAGE}]
+    # The property this test is named for, stated independently of the
+    # constant it is spread from above: an unmeasured page is never a
+    # measured clean one.
+    assert rows[0]["shortfall"] is None
+    assert rows[0]["by_chair"] is None
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):

@@ -443,7 +443,11 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "user_parts": ("image_url", "text"),
         "generation_ceiling": 12_384,
         "ceiling_source": "chandra/settings.py:14 Settings.MAX_OUTPUT_TOKENS",
-        "required_generation_sent": ("max_tokens",),
+        # `max_tokens` is NOT unconditionally required: `sendable_max_tokens`
+        # (`common/request_capacity.py`) sends the row term by sending no field
+        # at all, so whether this key is owed depends on the row -- checked
+        # below, against the same strictly-less-than rule, not listed here.
+        "required_generation_sent": (),
         "allowed_generation_sent": ("max_tokens",),
     },
     "attestator_1": {
@@ -452,7 +456,7 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "user_parts": ("image_url", "text"),
         "generation_ceiling": 12_384,
         "ceiling_source": "chandra/settings.py:14 Settings.MAX_OUTPUT_TOKENS",
-        "required_generation_sent": ("max_tokens",),
+        "required_generation_sent": (),
         "allowed_generation_sent": ("max_tokens",),
     },
     "attestator_2": {
@@ -461,7 +465,7 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "user_parts": ("image_url", "text"),
         "generation_ceiling": 1_024,
         "ceiling_source": "model card README, `max_new_tokens=1024`",
-        "required_generation_sent": ("max_tokens", "repetition_penalty", "top_k", "top_p"),
+        "required_generation_sent": ("repetition_penalty", "top_k", "top_p"),
         "allowed_generation_sent": ("max_tokens", "repetition_penalty", "top_k", "top_p"),
     },
     "attestator_3": {
@@ -469,8 +473,8 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "prompt_fields": ("system",),
         "user_parts": ("image_url",),
         "generation_ceiling": 20_000,
-        "ceiling_source": "utils/llm/models.py COMPLETION_TOKENS_FOR_STANDARD_MODELS",
-        "required_generation_sent": ("max_tokens", "repetition_penalty"),
+        "ceiling_source": "CHURRO paper section B.2, 'chosen to allow generation of all gold outputs'",
+        "required_generation_sent": ("repetition_penalty",),
         "allowed_generation_sent": ("max_tokens", "repetition_penalty"),
     },
 }
@@ -582,7 +586,29 @@ def refuse_unless_vendor_request_shape(
         image_tokens=image_tokens,
         prompt_tokens=prompt_tokens,
     )
-    if sent["max_tokens"] != bound:
+    # `sendable_max_tokens` sends the field only where the declared vendor
+    # bound is *strictly* smaller than what the row leaves; at or below that,
+    # the row term is expressed by sending no field at all, and the wire is
+    # bounded by the engine's own context arithmetic instead. Mirrored here
+    # rather than re-derived, so this file and the sealed function cannot
+    # drift about which case is which.
+    row_headroom = max_model_len - image_tokens - prompt_tokens
+    bound_is_owed = spec["generation_ceiling"] < row_headroom
+    has_max_tokens = "max_tokens" in sent
+    if bound_is_owed and not has_max_tokens:
+        raise VendorRequestShapeRefusal(
+            f"{chair} sends no max_tokens, but its {spec['generation_ceiling']}-token "
+            f"ceiling ({spec['ceiling_source']}) is strictly below this row's "
+            f"{row_headroom}-token headroom, so the wire would be unbounded"
+        )
+    if not bound_is_owed and has_max_tokens:
+        raise VendorRequestShapeRefusal(
+            f"{chair} sends max_tokens={sent['max_tokens']}, but this row's "
+            f"{row_headroom}-token headroom does not exceed its "
+            f"{spec['generation_ceiling']}-token ceiling; the row term must be "
+            "expressed by sending no field at all"
+        )
+    if has_max_tokens and sent["max_tokens"] != bound:
         raise VendorRequestShapeRefusal(
             f"{chair} asks for max_tokens={sent['max_tokens']}, not the "
             f"{bound} its ceiling ({spec['ceiling_source']}) and this row allow"
@@ -603,7 +629,7 @@ def _png_and_uri(width: int = 4, height: int = 3) -> tuple[str, str]:
     return uri, hashlib.sha256(payload).hexdigest()
 
 
-def _conforming_request(chair: str, *, max_tokens: int) -> ChairRequest:
+def _conforming_request(chair: str, *, max_tokens: int | None) -> ChairRequest:
     spec = CHAIR_VENDOR_SYSTEMS[chair]
     uri, digest = _png_and_uri()
     image_part = {"type": "image_url", "image_url": {"url": uri}}
@@ -615,7 +641,7 @@ def _conforming_request(chair: str, *, max_tokens: int) -> ChairRequest:
             {"role": "system", "content": [{"type": "text", "text": "carried system bytes"}]}
         )
     messages.append({"role": "user", "content": user_content})
-    generation_sent: dict[str, Any] = {"max_tokens": max_tokens}
+    generation_sent: dict[str, Any] = {} if max_tokens is None else {"max_tokens": max_tokens}
     if chair == "attestator_2":
         generation_sent.update({"repetition_penalty": 1.05, "top_k": 1, "top_p": 0.001})
     if chair == "attestator_3":
@@ -643,6 +669,19 @@ SAMPLE_IMAGE_TOKENS: Final = 1_200
 SAMPLE_PROMPT_TOKENS: Final = 300
 
 
+def _bound_is_owed(chair: str, row: Mapping[str, Any]) -> bool:
+    """Whether this chair's row owes `max_tokens` on the wire, at the sample cost.
+
+    Mirrors `refuse_unless_vendor_request_shape`'s own test: the vendor ceiling
+    strictly below the row's headroom. At `ROW_TIER` with the sample costs
+    above, this is true for the three chairs whose ceiling is the tighter
+    term (Chandra x2, DAI) and false for Churro, whose 20,000-token ceiling
+    exceeds anything this row leaves -- so both branches get exercised.
+    """
+    headroom = row["max_model_len"] - SAMPLE_IMAGE_TOKENS - SAMPLE_PROMPT_TOKENS
+    return CHAIR_VENDOR_SYSTEMS[chair]["generation_ceiling"] < headroom
+
+
 @pytest.mark.parametrize("chair", sorted(CHAIR_VENDOR_SYSTEMS))
 def test_each_chairs_conforming_body_satisfies_both_this_shape_and_the_clients_own(chair: str):
     """The shape the design fixed, and the client's real refusal path, agree."""
@@ -653,7 +692,8 @@ def test_each_chairs_conforming_body_satisfies_both_this_shape_and_the_clients_o
         image_tokens=SAMPLE_IMAGE_TOKENS,
         prompt_tokens=SAMPLE_PROMPT_TOKENS,
     )
-    request = _conforming_request(chair, max_tokens=bound)
+    owed = _bound_is_owed(chair, row)
+    request = _conforming_request(chair, max_tokens=bound if owed else None)
 
     refuse_unless_vendor_request_shape(
         chair,
@@ -669,6 +709,11 @@ def test_each_chairs_conforming_body_satisfies_both_this_shape_and_the_clients_o
     assert len(chat_image_bytes_all({"messages": list(request.messages)})) == 1
     assert "temperature" not in request.generation_sent
     assert "seed" not in request.generation_sent
+    # The row-term-binding case, stated positively rather than only as the
+    # absence of a refusal: at this row and sample cost, Chandra x2 and DAI
+    # owe the vendor bound on the wire and Churro's row governs instead, so
+    # `max_tokens` is present for exactly the chairs where it is owed.
+    assert ("max_tokens" in request.generation_sent) == owed
 
 
 @pytest.mark.parametrize("chair", sorted(CHAIR_VENDOR_SYSTEMS))
@@ -691,19 +736,23 @@ def test_the_generation_bound_is_the_min_of_the_vendor_ceiling_and_the_rows_head
         vendor_generation_bound(chair, max_model_len=4_096, image_tokens=4_000, prompt_tokens=96)
 
 
-def _mutations(chair: str, bound: int) -> list[tuple[str, str, ChairRequest]]:
+def _mutations(chair: str, bound: int, *, owed: bool) -> list[tuple[str, str, ChairRequest]]:
     """One way of getting each rule wrong, per chair, with the reason expected.
 
     The expected reason is carried beside each case on purpose: a mutation that
     happens to be refused by some *other* rule would otherwise read as coverage
     of the rule it was written for, and the checker could lose a clause without
     a single test going red.
+
+    ``owed`` says whether this chair's row owes `max_tokens` on the wire
+    (:func:`_bound_is_owed`) -- the two ways of getting *that* rule wrong are
+    opposite depending on it, so the base request and its cases follow suit.
     """
     spec = CHAIR_VENDOR_SYSTEMS[chair]
     uri, _digest_unused = _png_and_uri()
     image_part = {"type": "image_url", "image_url": {"url": uri}}
     text_part = {"type": "text", "text": "the carried vendor prompt bytes"}
-    base = _conforming_request(chair, max_tokens=bound)
+    base = _conforming_request(chair, max_tokens=bound if owed else None)
 
     def rebuilt(**changes: Any) -> ChairRequest:
         fields: dict[str, Any] = {
@@ -802,22 +851,36 @@ def _mutations(chair: str, bound: int) -> list[tuple[str, str, ChairRequest]]:
         )
 
     sent = dict(base.generation_sent)
-    cases.append(
-        (
-            "no max_tokens at all",
-            "the wire would be unbounded",
-            rebuilt(
-                generation_sent={key: value for key, value in sent.items() if key != "max_tokens"}
-            ),
+    if owed:
+        cases.append(
+            (
+                "no max_tokens at all",
+                "the wire would be unbounded",
+                rebuilt(
+                    generation_sent={
+                        key: value for key, value in sent.items() if key != "max_tokens"
+                    }
+                ),
+            )
         )
-    )
-    cases.append(
-        (
-            "max_tokens past the row",
-            "asks for max_tokens",
-            rebuilt(generation_sent={**sent, "max_tokens": bound + 1}),
+        cases.append(
+            (
+                "max_tokens past the row",
+                "asks for max_tokens",
+                rebuilt(generation_sent={**sent, "max_tokens": bound + 1}),
+            )
         )
-    )
+    else:
+        # This row's headroom binds, not the vendor ceiling: the row term is
+        # owed by sending *no* field, so sending one at all -- correct value
+        # included -- is the departure, not a wrong value.
+        cases.append(
+            (
+                "max_tokens sent though the row governs",
+                "sending no field at all",
+                rebuilt(generation_sent={**sent, "max_tokens": bound}),
+            )
+        )
     cases.append(
         (
             "an unvendored generation key",
@@ -838,7 +901,7 @@ def test_every_way_of_departing_from_the_vendor_system_is_refused(chair: str):
         image_tokens=SAMPLE_IMAGE_TOKENS,
         prompt_tokens=SAMPLE_PROMPT_TOKENS,
     )
-    cases = _mutations(chair, bound)
+    cases = _mutations(chair, bound, owed=_bound_is_owed(chair, row))
     assert len(cases) >= 5, f"{chair} is exercised by only {len(cases)} departures"
 
     for label, expected_reason, request in cases:
@@ -882,14 +945,10 @@ def test_a_top_one_sample_at_a_nonzero_temperature_is_refused():
 def test_a_caller_that_names_a_manager_owned_field_is_refused_by_the_client():
     """The argmax pin is checked on the composed body because of exactly this."""
     chair = "attestator_3"
-    row = _serving_rows()[(chair, ROW_TIER)]
-    bound = vendor_generation_bound(
-        chair,
-        max_model_len=row["max_model_len"],
-        image_tokens=SAMPLE_IMAGE_TOKENS,
-        prompt_tokens=SAMPLE_PROMPT_TOKENS,
-    )
-    base = _conforming_request(chair, max_tokens=bound)
+    # attestator_3's row governs at this sample cost (`_bound_is_owed` is
+    # false), so the conforming body sends no `max_tokens` -- unrelated to
+    # the manager-owned field under test here.
+    base = _conforming_request(chair, max_tokens=None)
     request = ChairRequest(
         kind=base.kind,
         messages=base.messages,

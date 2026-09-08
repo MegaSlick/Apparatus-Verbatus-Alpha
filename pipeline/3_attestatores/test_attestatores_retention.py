@@ -2431,7 +2431,7 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     real_validate = attestatores.validate_testimonium_presentation
     validating: list[bool] = []
     reads: list[str] = []
-    reads_per_view: list[int] = []
+    reads_per_view: list[tuple[str, int]] = []
 
     def counting_sealed_source_page(context, presented):
         if not validating:
@@ -2448,7 +2448,7 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     def counting_publish_attempt(context, **fields):
         before = len(reads)
         result = real_publish_attempt(context, **fields)
-        reads_per_view.append(len(reads) - before)
+        reads_per_view.append((fields["chair"], len(reads) - before))
         return result
 
     monkeypatch.setattr(attestatores, "_sealed_source_page", counting_sealed_source_page)
@@ -2480,5 +2480,16 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     # (`takes_page_size`). What this test protects is unchanged and is the
     # reason it counts rather than asserts a ceiling: ONE read per view that
     # needs it, never one per derivation, and never zero because no view
-    # reached the derivation at all.
-    assert sorted(reads_per_view) == [0, 0, 0, 0, 1, 1]
+    # reached the derivation at all -- and the per-chair contract explicitly,
+    # not only the bare counts: Chandra reads the sealed page once per act
+    # view it appears in, DAI and Churro read it zero times, so moving the
+    # read to either of those chairs' views (same counts, wrong chair) fails
+    # this by name.
+    assert sorted(reads_per_view) == [
+        ("attestator_1", 1),
+        ("attestator_1", 1),
+        ("attestator_2", 0),
+        ("attestator_2", 0),
+        ("attestator_3", 0),
+        ("attestator_3", 0),
+    ]

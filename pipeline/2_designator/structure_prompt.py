@@ -98,6 +98,11 @@ def vendor_identity() -> dict[str, str]:
     the carried prompt itself. A re-parse under a different vendor pin is then
     visibly different rather than silently so.
     """
+    # `LAYOUT_TEXT_VIEW` is deliberately not in here. It is the record's own
+    # `text_view` field, and it is *ours*: the vendor's text path routes through
+    # markdownify and BeautifulSoup and drops what this one keeps. Filing it
+    # under the vendor's identity would credit the vendor with a reading it does
+    # not perform.
     return {
         "repository": VENDOR_REPOSITORY,
         "commit": VENDOR_COMMIT,
@@ -106,11 +111,6 @@ def vendor_identity() -> dict[str, str]:
         "parser_source": VENDOR_PARSER_SOURCE,
         "prompt_sha256": OCR_LAYOUT_PROMPT_SHA256,
     }
-    # `LAYOUT_TEXT_VIEW` is deliberately not in here. It is the record's own
-    # `text_view` field, and it is *ours*: the vendor's text path routes through
-    # markdownify and BeautifulSoup and drops what this one keeps. Filing it
-    # under the vendor's identity would credit the vendor with a reading it does
-    # not perform.
 
 
 def messages() -> tuple[dict[str, str], ...]:

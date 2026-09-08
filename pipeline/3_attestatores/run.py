@@ -115,37 +115,15 @@ DEFAULT_FORMAT_CAPABILITIES = {
 def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
     """What this adapter's own grammar can carry, validated, for a pre-send refusal.
 
-    Mirrors `live_witness._format_capabilities_for` (kept local rather than
-    imported for the same circular-import reason `DEFAULT_FORMAT_CAPABILITIES`
-    is duplicated in both modules): a `RequestCapacityRefusal` fires before any
-    request reaches the wire, but the refused attempt still names a real
-    adapter, and that adapter's declared expressiveness is a fact about it
-    whether or not this one request was sendable.
-
-    ``Mapping`` rather than ``dict``, matching the seam this mirrors: an
-    adapter declares its capabilities as a read-only mapping so one shared
-    default cannot be mutated into every undeclared adapter at once
-    (`witness_adapters.FALLBACK_FORMAT_CAPABILITIES`), and a `mappingproxy` is
-    not a `dict`. The returned value is copied into a plain object here, so the
-    record this feeds carries an ordinary mapping and never the adapter's own.
+    Thin wrapper over `witness_adapters.declared_format_capabilities`, the one
+    place this validation lives (it used to be a second copy of
+    `live_witness._format_capabilities_for`'s own body): a
+    `RequestCapacityRefusal` fires before any request reaches the wire, but
+    the refused attempt still names a real adapter, and that adapter's
+    declared expressiveness is a fact about it whether or not this one
+    request was sendable.
     """
-
-    capabilities = getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
-    if not isinstance(capabilities, Mapping) or set(capabilities) != {
-        "can_express_uncertainty",
-        "can_express_layout",
-    }:
-        raise SchemaRefusal(
-            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
-            f"object this seam knows: {capabilities!r}"
-        )
-    for field in ("can_express_uncertainty", "can_express_layout"):
-        if not isinstance(capabilities[field], bool):
-            raise SchemaRefusal(
-                f"adapter {adapter!r} declares format_capabilities.{field} as "
-                f"{capabilities[field]!r}, not a boolean"
-            )
-    return dict(capabilities)
+    return witness_adapters.declared_format_capabilities(adapter)
 
 
 def real_ingress(context) -> bool:

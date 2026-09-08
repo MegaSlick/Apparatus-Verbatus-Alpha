@@ -325,6 +325,13 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
         if "max_tokens" in sent:
             assert prompt + sent["max_tokens"] < row.max_model_len, row.tier
+        else:
+            # Every shipped row is smaller than the declared bound today, so
+            # this branch, not the one above, is the one that actually runs.
+            # Stated rather than left implicit: a row raised past
+            # `CHURRO_OUTPUT_TOKENS` must reach the branch above, or this test
+            # would keep passing while checking nothing at all.
+            assert CHURRO_OUTPUT_TOKENS >= row.max_model_len, row.tier
 
 
 def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():

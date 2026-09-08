@@ -123,6 +123,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakeLauncher,
     FakePackages,
     ScriptedAnswer,
+    scriptable_structure_refusals,
     scripted_structure_answer,
     scripted_structure_cut_off,
     scripted_structure_refusal,
@@ -865,7 +866,7 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     assert not any(key.startswith("proposal:2:") for key in rows)
 
 
-@pytest.mark.parametrize("outcome", ("no-layout-blocks", "blocks-not-at-top-level"))
+@pytest.mark.parametrize("outcome", scriptable_structure_refusals())
 def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
     """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
 

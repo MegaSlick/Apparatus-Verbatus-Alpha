@@ -760,7 +760,10 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
         "stop_token_ids",
     }
     assert call["generation_sent"]["stop_token_ids"] == [151643]
-    assert call["generation_sent"]["max_tokens"] <= DECLARED_ANSWER_BOUND_TOKENS["attestator_2"]
+    # DAI's declared ceiling (1,024) is strictly below what any shipped row
+    # leaves after its image and prompt tokens, so it is always the vendor
+    # bound that binds here, exactly -- never merely an upper bound on it.
+    assert call["generation_sent"]["max_tokens"] == DECLARED_ANSWER_BOUND_TOKENS["attestator_2"]
     assert call["generation_declared"]["repetition_penalty"] == {
         "schema": "wire-decimal.v1",
         "decimal": json.dumps(declared["repetition_penalty"]),

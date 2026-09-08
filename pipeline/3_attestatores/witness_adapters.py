@@ -68,6 +68,46 @@ FALLBACK_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
     {"can_express_uncertainty": False, "can_express_layout": False}
 )
 
+_FORMAT_CAPABILITY_FIELDS: Final = frozenset({"can_express_uncertainty", "can_express_layout"})
+
+
+def declared_format_capabilities(adapter: Any) -> dict[str, bool]:
+    """What this adapter's own grammar can carry, validated, as a plain dict.
+
+    Shared by `live_witness._format_capabilities_for` (a pre-publication read,
+    live) and `run.py::_declared_format_capabilities` (a pre-send read, before
+    a refused request reaches the wire) -- both need the identical fact about
+    the identical adapter, read the identical way, and a caller-local copy of
+    this validation had drifted into two docstrings saying so rather than one
+    function doing so. Living here rather than in `common/contracts/outcomes.py`
+    on purpose: this is a fact about one adapter's declared grammar, not a term
+    of the outcomes algebra `check_algebra_is_total` closes over, and moving it
+    into that contract would bind something the design never asked bound.
+
+    Read with ``getattr`` rather than an ``isinstance`` check on a known
+    adapter type: an ``adapter`` argument here is a duck-typed bundle of
+    callables (:class:`RunnableAdapter`, or a test's stand-in), never a shared
+    base class. Falls back to :data:`FALLBACK_FORMAT_CAPABILITIES` -- the old
+    blanket value every live attempt used to record -- for an adapter that
+    declares none. Raises :class:`SchemaRefusal` for a declaration that is not
+    the two-key boolean mapping this seam knows; returns a fresh ``dict``,
+    never the adapter's own (possibly read-only) mapping, so a Testimonium
+    never carries a value that could still be mutated out from under it.
+    """
+    capabilities = getattr(adapter, "format_capabilities", FALLBACK_FORMAT_CAPABILITIES)
+    if not isinstance(capabilities, Mapping) or set(capabilities) != _FORMAT_CAPABILITY_FIELDS:
+        raise SchemaRefusal(
+            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
+            f"object this seam knows: {capabilities!r}"
+        )
+    for field in _FORMAT_CAPABILITY_FIELDS:
+        if not isinstance(capabilities[field], bool):
+            raise SchemaRefusal(
+                f"adapter {adapter!r} declares format_capabilities.{field} as "
+                f"{capabilities[field]!r}, not a boolean"
+            )
+    return dict(capabilities)
+
 
 @dataclass(frozen=True, slots=True)
 class RunnableAdapter:
@@ -113,10 +153,12 @@ class RunnableAdapter:
     #: yet declared its own records precisely what it recorded before. Chandra
     #: and Churro declare their own here (`chandra.FORMAT_CAPABILITIES`,
     #: `churro.FORMAT_CAPABILITIES`); DAI's is `feeding.DAI_FORMAT_CAPABILITIES`.
-    #: Churro's and DAI's grammars, which *can* carry a doubt, both keep
-    #: `can_express_uncertainty` false until the Perlector can compare a
-    #: bracket-marker view, so that a declared uncertainty never becomes a
-    #: permanently uncomparable one.
+    #: Churro's and DAI's grammars both declare `can_express_uncertainty` true.
+    #: The flag was flipped only after the Perlector could derive a safe
+    #: comparison view for such a chair (`pipeline/4_perlector/run.py::
+    #: dissent_testimonia`, applying `common/alignment.py::bracket_marker_view`)
+    #: -- so declaring the capability truthfully never costs a chair its
+    #: dissent row.
     format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
     #: How this adapter reads the committed fixture's own declared bytes, where
     #: those are not in the vendor grammar a served chair answers in. ``None``

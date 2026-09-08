@@ -663,9 +663,12 @@ def test_an_oversized_response_is_refused_without_being_parsed():
 
 def test_more_blocks_than_the_ceiling_admits_are_refused_whole():
     one = '<div data-bbox="0 0 1 1" data-label="Text">x</div>'
-    assert parse_layout_html((one * MAX_LAYOUT_BLOCKS).encode()) != {
-        "parse_outcome": "too-many-layout-blocks"
-    }
+    at_ceiling = one * MAX_LAYOUT_BLOCKS
+    # The ceiling page must be small enough to reach the block count at all,
+    # or this case would pass on `response-too-large` and prove nothing.
+    assert len(at_ceiling.encode()) <= MAX_RESPONSE_BYTES
+    parsed = _read(at_ceiling)
+    assert len(parsed["blocks"]) == MAX_LAYOUT_BLOCKS
     parsed = parse_layout_html((one * (MAX_LAYOUT_BLOCKS + 1)).encode())
     assert parsed == {"parse_outcome": "too-many-layout-blocks"}
 

@@ -157,6 +157,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Mapping
 
 import feeding
+import witness_adapters
 
 from common.chair_wire import chandra_wire_fields
 from common.contracts.canonical import digest_bytes
@@ -180,14 +181,12 @@ from common.request_capacity import (
 )
 from operations.serving.client import ChairRequest, ChairResponse
 
-# Mirrors `run.py::DEFAULT_FORMAT_CAPABILITIES` exactly, and is now only the
-# *fallback* value -- see `_format_capabilities_for` below. Kept local rather
-# than imported to avoid the circular import `run.py` importing this module
-# creates.
-DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = {
-    "can_express_uncertainty": False,
-    "can_express_layout": False,
-}
+# The old blanket value every live attempt used to record, before an adapter
+# could declare its own. Re-exported from `witness_adapters` (the adapter
+# layer, not `common/contracts/outcomes.py`'s algebra: this is a fact about
+# one adapter's declared grammar, not a term `check_algebra_is_total` closes
+# over) rather than duplicated as a separate literal that could drift from it.
+DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = witness_adapters.FALLBACK_FORMAT_CAPABILITIES
 
 
 def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
@@ -195,49 +194,14 @@ def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
 
     A live witness never self-reports a format capability from the response
     itself -- `ChairResponse` carries none -- so this is a fact about the
-    *adapter's grammar*, not about any one reply. Read from the adapter as
-    ``adapter.format_capabilities`` (design's boundary section: Chandra
-    false/true, DAI true/false, Churro true/false, declared per adapter from
-    what its grammar can carry) rather than hard-coded here, so a Testimonium
-    stops claiming every witness reports identically the moment an adapter
-    declares its own value; until then, an adapter with no such attribute
-    falls back to exactly the blanket default every live attempt used to
-    record. Read with ``getattr`` rather than an ``isinstance`` check on a
-    known adapter type: this seam's ``adapter`` argument is a duck-typed
-    bundle of callables (`witness_adapters.RunnableAdapter`, or a test's
-    stand-in), never a shared base class this module could name without
-    creating the very circular import the module docstring already declines.
-
-    Validated the same two keys `run.py::format_capabilities_for` checks on
-    the fixture path (a local check, not an import of that function, for the
-    same circular-import reason `DEFAULT_FORMAT_CAPABILITIES` is duplicated
-    rather than shared): an adapter is code in this tree, so a declaration
-    that is not a two-key boolean mapping is this seam's own bug, and a
-    ``SchemaRefusal`` here says so before the value reaches an immutable
-    Testimonium, rather than only at `run.py::validate_tallied_testimonium`
-    after publication.
+    *adapter's grammar*, not about any one reply. Thin wrapper over
+    `witness_adapters.declared_format_capabilities`, the one place this
+    validation lives: it used to be duplicated here and in
+    `run.py::_declared_format_capabilities` (same body, same docstring,
+    naming the other as a "mirror"), which is a fact this seam should not have
+    to keep in sync by hand with a sibling stage's copy of it.
     """
-
-    capabilities = getattr(adapter, "format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
-    if not isinstance(capabilities, Mapping) or set(capabilities) != {
-        "can_express_uncertainty",
-        "can_express_layout",
-    }:
-        raise SchemaRefusal(
-            f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
-            f"object this seam knows: {capabilities!r}"
-        )
-    for field in ("can_express_uncertainty", "can_express_layout"):
-        if not isinstance(capabilities[field], bool):
-            raise SchemaRefusal(
-                f"adapter {adapter!r} declares format_capabilities.{field} as "
-                f"{capabilities[field]!r}, not a boolean"
-            )
-    # Copied, never handed on: an adapter declares this once as a read-only
-    # mapping so one shared default cannot be mutated into every undeclared
-    # adapter at once, and a `mappingproxy` in a Testimonium is a value the
-    # record's own serializer has never been asked to write.
-    return dict(capabilities)
+    return witness_adapters.declared_format_capabilities(adapter)
 
 
 # The allow-listed subset of `feeding.dai_generation()` vLLM's OpenAI-compatible

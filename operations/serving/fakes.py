@@ -469,6 +469,16 @@ _STRUCTURE_REFUSALS: Mapping[str, str] = {
 }
 
 
+def scriptable_structure_refusals() -> tuple[str, str]:
+    """The outcome names `scripted_structure_refusal` can build, sorted.
+
+    Public so a parametrized test can read the set this module actually
+    scripts instead of a literal copy of it that could silently stop covering
+    an outcome this file adds or drops.
+    """
+    return tuple(sorted(_STRUCTURE_REFUSALS))
+
+
 def scripted_structure_refusal(
     outcome: str, *, finish_reason: Any = "stop", **fields: Any
 ) -> ScriptedAnswer:

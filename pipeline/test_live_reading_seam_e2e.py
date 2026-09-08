@@ -974,11 +974,16 @@ def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, 
     kept, on the act that spans the page. The counterfactual below drops the row
     again and requires this to fail.
     """
-    rows = {
-        (review["payload"]["act_key"], row["page_ordinal"]): row
-        for review in reviews
-        for row in review["payload"]["testimony_content_coverage_continuation"]
-    }
+    rows: dict[tuple[str, int], dict[str, Any]] = {}
+    for review in reviews:
+        for row in review["payload"]["testimony_content_coverage_continuation"]:
+            key = (review["payload"]["act_key"], row["page_ordinal"])
+            assert key not in rows, (
+                f"two continuation coverage rows for {key}: {rows[key]!r} vs {row!r} -- "
+                "one review publishes one row per continuation page, so a second here is "
+                "a duplicate publication and a dict must not pick between them"
+            )
+            rows[key] = row
     assert set(rows) == {("a2", 2)}, sorted(rows)
     row = rows[("a2", 2)]
     assert row["shortfall"] is None, row

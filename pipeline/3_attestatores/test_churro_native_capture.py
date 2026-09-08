@@ -188,8 +188,10 @@ def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the
         + HEADER.encode()
         + b"\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
     )
-    # Cut in the *grammar*: a body that offers no grammar at all is the plain
-    # reading-order text the paper-era harness expected, and reads.
+    # Cut inside the *grammar*: these bytes open `HistoricalDocument` and stop
+    # mid-element, so the parser fails rather than reading them. A body that
+    # offers no grammar at all is different -- plain reading-order text, which
+    # reads (`test_feeding.py`).
     assert not raw.endswith(b"</HistoricalDocument>")
 
 

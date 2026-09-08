@@ -124,6 +124,9 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     )
     # The CHURRO paper section B.2's own bound, not a number of ours.
     assert CHURRO_OUTPUT_TOKENS == 20_000
+    # The retained view actually carries that bound, not only the module
+    # constant this test could otherwise check in isolation from it.
+    assert record["view"]["generation"]["max_new_tokens"] == CHURRO_OUTPUT_TOKENS
     assert record["raw_response_ref"]["sha256"] == digest_bytes(raw)
     assert record["findings"][0]["kind"] == "post-hoc-repetition"
     # A body that offers no grammar at all is the plain reading-order text the
@@ -993,7 +996,9 @@ def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
     import tomllib
 
     repo_root = Path(__file__).resolve().parents[2]
-    recipes = tomllib.loads((repo_root / "config" / "serving_recipes_real.toml").read_text())
+    recipes = tomllib.loads(
+        (repo_root / "config" / "serving_recipes_real.toml").read_text(encoding="utf-8")
+    )
     dai_max_pixels = [
         profile["max_pixels"]
         for profile in recipes["profiles"]
