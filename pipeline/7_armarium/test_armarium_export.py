@@ -3654,6 +3654,15 @@ def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutat
         verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
 
 
+def test_a_resealed_geometry_detail_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    def contradict_calibration(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
+        row["detail"]["configurations"][2]["calibrated_for_this_corpus"] = True
+
+    with pytest.raises(SchemaRefusal, match="calibrated_for_this_corpus.*sample_count is zero"):
+        verify_delivered_bundle(_resealed_manifest(contradict_calibration), tmp_path / "delivered")
+
+
 @pytest.mark.parametrize(
     ("instrument", "field", "value"),
     [
@@ -3680,6 +3689,8 @@ def test_a_resealed_not_measured_count_is_a_strict_integer(tmp_path):
         geometry = _entry(block, "designator-geometry-calibration")
         for row in geometry["detail"]["configurations"]:
             row["calibrated_for_this_corpus"] = True
+            if row["sample_count"] == 0:
+                row["sample_count"] = 1
         geometry["status"] = "measured"
         assert sum(row["status"] != "measured" for row in block["entries"]) == 1
         # Canonical JSON permits booleans, and True == 1 would otherwise let

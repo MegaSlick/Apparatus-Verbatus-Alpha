@@ -41,9 +41,13 @@ def test_tri_state_refuses_a_non_boolean_non_null_shortfall():
 
 def test_continuations_are_positive_unique_page_ordinals():
     row = {"by_chair": {}, "shortfall": None, "reason": "no comparable text", "page_ordinal": 2}
-    assert validate_testimony_content_coverage_continuation([row]) == [row]
+    rows = [row, {**row, "page_ordinal": 3}]
+    expected = copy.deepcopy(rows)
+    assert validate_testimony_content_coverage_continuation(rows) == expected
+    assert rows == expected
+    duplicate = {**row, "reason": "this distinct record still names the same page"}
     with pytest.raises(SchemaRefusal, match="repeats"):
-        validate_testimony_content_coverage_continuation([row, row])
+        validate_testimony_content_coverage_continuation([row, duplicate])
 
 
 @pytest.mark.parametrize("ordinal", [0, -1, True, "2", None])

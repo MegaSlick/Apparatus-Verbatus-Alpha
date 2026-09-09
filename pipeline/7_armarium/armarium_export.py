@@ -45,6 +45,7 @@ from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.annotations import validate_annotations
 from common.contracts.canonical import (
     canonical_bytes,
@@ -1051,6 +1052,12 @@ def _validate_not_measured_detail(
             if sample_count is not None:
                 _require_non_negative_integer(
                     sample_count, subject=f"a row in {subject} sample_count"
+                )
+            if not calibrated_claim_has_sample_evidence(
+                row["calibrated_for_this_corpus"], sample_count
+            ):
+                raise SchemaRefusal(
+                    f"a row in {subject} says calibrated_for_this_corpus but sample_count is zero"
                 )
     return detail
 

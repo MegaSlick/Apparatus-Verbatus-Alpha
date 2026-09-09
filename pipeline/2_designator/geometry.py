@@ -36,6 +36,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
 
@@ -195,6 +196,13 @@ def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
     if not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise ContractError(
             "the padding configuration's provenance calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            "the padding configuration's provenance says calibrated_for_this_corpus but "
+            "sample_count is zero"
         )
     return dict(provenance)
 

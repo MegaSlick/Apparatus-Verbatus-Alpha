@@ -3026,18 +3026,22 @@ def publish_review(
     only the route inputs would leave a future direct payload field unchecked.
     """
     refuse_capture_preference(payload, what="a Recensor review")
+    measurement_field = "testimony_content_coverage"
     try:
-        validate_testimony_content_coverage(payload["testimony_content_coverage"])
-        validate_testimony_content_coverage_continuation(
-            payload["testimony_content_coverage_continuation"]
-        )
-        coverage = payload.get("cross_capture_coverage")
+        validate_testimony_content_coverage(payload[measurement_field])
+        measurement_field = "testimony_content_coverage_continuation"
+        validate_testimony_content_coverage_continuation(payload[measurement_field])
+        measurement_field = "cross_capture_coverage"
+        coverage = payload.get(measurement_field)
         if coverage is not None:
             if not isinstance(coverage, dict):
                 raise SchemaRefusal("cross-capture coverage is neither an object nor null")
             validate_cross_capture_coverage(coverage)
     except (KeyError, SchemaRefusal, TypeError) as error:
-        raise FatalAccounting("a Recensor review has malformed measurement evidence") from error
+        raise FatalAccounting(
+            f"the Recensor review of {subject_id!r} has malformed measurement evidence "
+            f"in {measurement_field}: {error}"
+        ) from error
     return context.publish(
         kind="review",
         subject_id=subject_id,
