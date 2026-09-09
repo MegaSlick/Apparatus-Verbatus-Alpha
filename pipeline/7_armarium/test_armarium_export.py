@@ -36,7 +36,7 @@ from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
-from common.contracts.approval import real_ingress_record
+from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
@@ -50,6 +50,7 @@ TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 ROOT = Path(__file__).resolve().parents[2]
 ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 
 
 def _pixels(value: int) -> bytes:
@@ -411,8 +412,9 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
 def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
     """An older identity may not describe a newer closed claim set.
 
-    ``claims.ink_map`` took the manifest from v2 to v3 and ``claims.not_measured``
-    took it from v3 to v5, each for the same reason: a required claim a stale
+    ``claims.ink_map`` took the manifest from v2 to v3, ``claims.not_measured``
+    took it from v3 to v5, and the required Ink Map unmeasurable-page census
+    takes it from v5 to v7. Each has the same reason: a required claim a stale
     reader has no field for would be presented as a bundle that does not carry
     it. Old and new closed shapes need different identities rather than two
     incompatible meanings of one.
@@ -423,9 +425,14 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v5"
+    assert manifest["schema"] == "armarium-export-manifest.v7"
 
-    for stale in ("armarium-export-manifest.v2", "armarium-export-manifest.v3"):
+    for stale in (
+        "armarium-export-manifest.v2",
+        "armarium-export-manifest.v3",
+        "armarium-export-manifest.v5",
+        "armarium-export-manifest.v6",
+    ):
         manifest["schema"] = stale
         _refresh_manifest(members, manifest)
         with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
@@ -522,7 +529,7 @@ def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path
         row["sha256"] = digest_bytes(forged[row["path"]])
         row["bytes"] = len(forged[row["path"]])
     _refresh_manifest(forged, green_manifest)
-    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+    with pytest.raises(SchemaRefusal, match="ink-map claim does not match"):
         verify_export_bundle(_zip_bytes(forged), tmp_path / "forged-green")
 
 
@@ -539,7 +546,7 @@ def test_an_edited_ink_map_row_cannot_release_a_page_it_still_flags(tmp_path):
     sources["ink_map_pages"][0]["remeasured"]["outside_ink_pixels"] = 0
     members["sources.json"] = canonical_bytes(sources)
     _refresh_manifest_member(members, "sources.json")
-    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+    with pytest.raises(SchemaRefusal, match="ink-map claim does not match"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "edited-row")
 
 
@@ -1502,6 +1509,21 @@ def _designator_run_module():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = prior
+    return module
+
+
+def _ink_map_run_module():
+    """Load the Ink Map entry point without retaining its path insertion."""
+    spec = importlib.util.spec_from_file_location(
+        "ink_map_run_for_armarium_visibility_test", INK_MAP_CLI
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
     return module
 
 
@@ -2900,7 +2922,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v5"
+    assert manifest["schema"] == "armarium-export-manifest.v7"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3666,6 +3688,217 @@ def _block(projection) -> dict:
 
 def _entry(block: dict, instrument: str) -> dict:
     return next(row for row in block["entries"] if row["instrument"] == instrument)
+
+
+def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation(
+    tmp_path, monkeypatch
+):
+    """The stricter audit can refuse while Designator truthfully remains measured."""
+    designator = _designator_run_module()
+    ink_map = _ink_map_run_module()
+    armarium = _armarium_run_module()
+
+    width = height = 100
+    rows = [bytearray([30]) * width for _ in range(90)]
+    rows.extend(bytearray([0]) * width for _ in range(10))
+    page_bytes = encode_grayscale_png(width, height, rows)
+    page_digest = digest_bytes(page_bytes)
+    image_path = "1_exemplar/blobs/sha256/low-paper-page"
+    page_record = {
+        "subject_id": "pg-1",
+        "outcome": "sealed",
+        "payload": {
+            "ordinal": 1,
+            "image_path": image_path,
+            "source_sha256": page_digest,
+        },
+    }
+
+    class DesignatorContext:
+        def __init__(self):
+            self.records = []
+            self.tree = SimpleNamespace(read_bytes=lambda _path: page_bytes)
+
+        def input_ref(self, relative_path):
+            return {"relative_path": relative_path, "sha256": page_digest}
+
+        def publish(self, *, kind, subject_id, outcome, inputs, payload):
+            self.records.append(
+                {
+                    "kind": kind,
+                    "subject_id": subject_id,
+                    "outcome": outcome,
+                    "inputs": inputs,
+                    "payload": payload,
+                }
+            )
+            return SimpleNamespace(relative_path=f"2_designator/artifacts/{kind}/page-1.json")
+
+    designator_context = DesignatorContext()
+    grouping_path = ROOT / "config" / "designator_grouping.toml"
+    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_policy = designator.grouping_config.load_grouping_config(grouping_path)
+    assert grouping_policy["config_sha256"] == grouping_digest
+    analysis = designator._analyze_page({}, designator_context, 1, page_record, grouping_policy)
+    assert analysis["background"] == 30
+    assert analysis["ink_margin"] == 20
+    designator._publish_conservation_and_secondary(
+        designator_context,
+        1,
+        page_record,
+        analysis,
+        [{"act_id": "act-1", "bounds": {"x": 0, "y": 0, "w": width, "h": height}}],
+        {"chair_state": "absent"},
+        grouping_policy,
+    )
+    conservation = next(row for row in designator_context.records if row["kind"] == "conservation")
+    assert conservation["outcome"] == "proposed"
+    assert conservation["payload"]["ink_measurable"] is True
+    assert conservation["payload"]["total_ink_pixel_count"] == 1_000
+    assert conservation["payload"]["claimed_pixel_count"] == 1_000
+    assert conservation["payload"]["residual_pixel_count"] == 0
+
+    class InkMapContext:
+        def __init__(self):
+            self.tree = object()
+            self.args = SimpleNamespace(designator_grouping_config=str(grouping_path))
+            self.run = {"ingress": synthetic_fixture_ingress_record()}
+            self.published = []
+            self.required_configs = []
+
+        def require_sealed_config(self, name, observed_sha256):
+            self.required_configs.append((name, observed_sha256))
+
+        def input_ref(self, relative_path):
+            return {"relative_path": relative_path, "sha256": page_digest}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            pass
+
+        def finish(self):
+            pass
+
+    class Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    ink_map_context = InkMapContext()
+    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
+    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: ink_map_context)
+    monkeypatch.setattr(
+        ink_map,
+        "sealed_pages",
+        lambda _context: [(1, page_record, "1_exemplar/artifacts/page/page-1.json")],
+    )
+    monkeypatch.setattr(ink_map, "measured_page_bytes", lambda *_args: page_bytes)
+    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
+    (ink_record,) = ink_map_context.published
+    assert ink_record["outcome"] == ink_map.INK_NOT_MEASURABLE
+    assert ink_record["payload"]["ink_measurable"] is False
+    assert ink_record["payload"]["background_refusal"]
+    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)]
+
+    armarium_config_checks = []
+    armarium_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            build_manifest=lambda _stage: {
+                "artifacts": [{"kind": "ink-map", "artifact_id": "low-paper"}]
+            },
+            read_artifact=lambda _stage, _kind, _artifact_id: ink_record,
+        ),
+        require_sealed_config=lambda name, observed: armarium_config_checks.append(
+            (name, observed)
+        ),
+    )
+    (ink_map_page,) = armarium.ink_map_page_rows(armarium_context, {1: {"outcome": "sealed"}}, {})
+    assert ink_map_page == {
+        "ordinal": 1,
+        "initial_outcome": ink_map.INK_NOT_MEASURABLE,
+        "remeasured": None,
+    }
+    assert armarium_config_checks == [("designator-grouping", grouping_digest)]
+
+    conservation_manifest = {
+        DESIGNATOR: {"artifacts": [{"kind": "conservation", "artifact_id": "low-paper"}]}
+    }
+    conservation_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_artifact=lambda _stage, _kind, _artifact_id: conservation,
+        )
+    )
+    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
+    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
+    derived_basis = armarium.not_measured_basis(
+        conservation_context,
+        conservation_manifest,
+        {1: {"outcome": "sealed"}},
+        {},
+        [],
+    )
+    page_conservation_basis = derived_basis["page-ink-conservation"]
+    assert page_conservation_basis == {
+        "pages_sealed": 1,
+        "pages_not_reconciled": [],
+        "reasons": [],
+    }
+
+    projection = _otherwise_complete(ink_map_pages=(ink_map_page,))
+    source_region = {
+        **projection.acts[0]["source_regions"][0],
+        "declared_sha256": page_digest,
+    }
+    delivered_act = {**projection.acts[0], "source_regions": [source_region]}
+    page = {
+        **projection.pages[0],
+        "declared_sha256": page_digest,
+        "image_path": image_path,
+        "image_sha256": page_digest,
+    }
+    source = {**projection.source_manifest[0], "sha256": page_digest}
+    export_basis = _basis_for_acts((delivered_act,))
+    export_basis["page-ink-conservation"] = page_conservation_basis
+    projection = replace(
+        projection,
+        acts=(delivered_act,),
+        pages=(page,),
+        source_manifest=(source,),
+        not_measured_basis=export_basis,
+    )
+
+    def source_bytes(relative_path):
+        return page_bytes if relative_path == image_path else _source_bytes(relative_path)
+
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), source_bytes)
+    manifest = verify_export_bundle(bundle.data, tmp_path / "verified")
+    assert manifest["schema"] == "armarium-export-manifest.v7"
+    assert manifest["claims"]["status"] == "complete"
+    assert manifest["claims"]["ink_map"] == {
+        "denominator": "Unit 9 ink-map sealed pages",
+        "held_pages": [],
+        "unmeasurable_pages": [1],
+    }
+    conservation_claim = _entry(manifest["claims"]["not_measured"], "page-ink-conservation")
+    assert conservation_claim["status"] == "measured"
+    assert conservation_claim["detail"]["pages_not_reconciled"] == []
+    sources = json.loads(_members(bundle.data)["sources.json"])
+    assert sources["ink_map_pages"] == [ink_map_page]
+
+    for mutation in ("missing", "false-empty", "boolean-ordinal"):
+        members = _members(bundle.data)
+        forged = json.loads(members[EXPORT_MANIFEST_NAME])
+        if mutation == "missing":
+            del forged["claims"]["ink_map"]["unmeasurable_pages"]
+        elif mutation == "false-empty":
+            forged["claims"]["ink_map"]["unmeasurable_pages"] = []
+        else:
+            forged["claims"]["ink_map"]["unmeasurable_pages"] = [True]
+        _refresh_manifest(members, forged)
+        with pytest.raises(SchemaRefusal):
+            verify_export_bundle(_zip_bytes(members), tmp_path / f"forged-{mutation}")
 
 
 def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(

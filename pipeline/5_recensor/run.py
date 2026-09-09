@@ -34,6 +34,7 @@ from common.background import (  # noqa: E402
     load_background_config,
     resolve_background_policy,
     validate_ink_not_measurable_payload,
+    validate_measured_ink_map_payload,
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -84,6 +85,7 @@ from common.recovery import (  # noqa: E402
 )
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_INK_PIXELS,
     residual_ink,
 )
@@ -1833,6 +1835,24 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 ) from error
             maps[ordinal] = None
             continue
+        if record.get("outcome") not in {"mapped", "unclaimed-edge-ink"}:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an unknown measured outcome. The Recensor cannot "
+                "bind its retained runs to a current Ink Map measurement. Restore the sealed "
+                "Ink Map artifact or restart the run before rerunning the Recensor."
+            )
+        try:
+            measured = validate_measured_ink_map_payload(
+                payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+            )
+            context.require_sealed_config(
+                "designator-grouping", measured["background_config_sha256"]
+            )
+        except ContractError as error:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
+                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
+            ) from error
         if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
             raise FatalAccounting(
                 f"ink-map page {ordinal} has no readable ink-runs.v1 page-space evidence. The "
@@ -3875,16 +3895,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "is held rather than re-rolled because recovery recovers coverage and never "
                 "quality",
             )
-        elif (
-            page_coverage["unmeasurable_pages"] or geometry_coverage.get("ink_measurable") is False
-        ):
-            outcome, reason = (
-                "accepted",
-                "the reading is accepted; page ink could not be measured or reconciled for "
-                "this act's recorded page evidence",
-            )
         else:
-            outcome, reason = "accepted", "coverage and geometry reconcile"
+            outcome = "accepted"
+            if (
+                page_coverage["unmeasurable_pages"]
+                or geometry_coverage.get("ink_measurable") is False
+            ):
+                reason = (
+                    "the reading is accepted; page ink could not be measured or reconciled for "
+                    "this act's recorded page evidence"
+                )
+            else:
+                reason = "coverage and geometry reconcile"
 
         # Derived from the outcome's own class rather than counted by hand in each
         # branch above, so a review shape added later cannot land in the tree

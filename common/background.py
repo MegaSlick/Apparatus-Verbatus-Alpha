@@ -767,6 +767,83 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
     }
 
 
+def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> dict[str, Any]:
+    """Validate the closed current Ink Map measurement before consuming its runs.
+
+    The retained ``ink-runs.v1`` codec predates shared background inference.
+    Its schema therefore cannot establish the predicate that made the runs.
+    This envelope does: it names the page's complete audit background and the
+    sealed grouping bytes that selected it.
+    """
+    if not isinstance(payload, dict):
+        raise ContractError("the measured ink-map record has no object payload")
+    fields = {"page_ordinal", "ink_measurable", "background", "ink", "edge", "edge_findings"}
+    if set(payload) != fields:
+        raise ContractError(
+            "the measured ink-map payload is not closed: expected exactly "
+            "page_ordinal, ink_measurable, background, ink, edge, and edge_findings"
+        )
+    ordinal = payload["page_ordinal"]
+    if not _plain_int(ordinal) or ordinal <= 0:
+        raise ContractError(
+            "the measured ink-map payload page_ordinal is not a positive plain integer"
+        )
+    if payload["ink_measurable"] is not True:
+        raise ContractError("the measured ink-map payload ink_measurable is not true")
+    if not isinstance(payload["ink"], dict) or not isinstance(payload["edge"], dict):
+        raise ContractError("the measured ink-map payload has no object ink and edge findings")
+    if not isinstance(payload["edge_findings"], dict):
+        raise ContractError("the measured ink-map payload has no object retained edge findings")
+    background = payload["background"]
+    if not isinstance(background, dict):
+        raise ContractError("the measured ink-map payload has no object background evidence")
+    background_fields = {
+        "background_level",
+        "background_source",
+        "dark_mode",
+        "ink_margin",
+        "contrast_below_background",
+        "ink_threshold",
+        "config_sha256",
+    }
+    if set(background) != background_fields:
+        raise ContractError("the measured ink-map background evidence is not closed")
+    for field in (
+        "background_level",
+        "dark_mode",
+        "ink_margin",
+        "contrast_below_background",
+        "ink_threshold",
+    ):
+        if not _plain_int(background[field]):
+            raise ContractError(f"the measured ink-map background {field} is not a plain integer")
+    if not 0 <= background["background_level"] <= 255 or not 0 <= background["dark_mode"] <= 255:
+        raise ContractError("the measured ink-map background levels are outside 8-bit range")
+    if not PRIMARY_MARGIN <= background["ink_margin"] <= 255:
+        raise ContractError("the measured ink-map background ink_margin is outside its domain")
+    if background["dark_mode"] > background["background_level"]:
+        raise ContractError("the measured ink-map background dark_mode exceeds its paper level")
+    if not isinstance(background["background_source"], str) or background[
+        "background_source"
+    ] not in {
+        BACKGROUND_SOURCE_MODAL,
+        BACKGROUND_SOURCE_INTERIOR_MODE,
+    }:
+        raise ContractError("the measured ink-map background_source is unknown")
+    if background["contrast_below_background"] != audit_contrast:
+        raise ContractError("the measured ink-map background has the wrong audit contrast")
+    if background["ink_threshold"] != background["background_level"] - audit_contrast:
+        raise ContractError("the measured ink-map background ink_threshold is inconsistent")
+    if not 0 <= background["ink_threshold"] <= 255:
+        raise ContractError("the measured ink-map background ink_threshold is outside 8-bit range")
+    digest = background["config_sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ContractError(
+            "the measured ink-map background config_sha256 is not lowercase SHA-256 hex"
+        )
+    return {"page_ordinal": ordinal, "background_config_sha256": digest}
+
+
 def _plain_int(value: Any) -> bool:
     """An `int` that is not a `bool`.
 

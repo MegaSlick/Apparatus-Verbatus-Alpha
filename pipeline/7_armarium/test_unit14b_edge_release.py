@@ -38,6 +38,16 @@ _FLAGGED_RUNS = {
     "rows": [[[0, 40]], [[0, 40]]],
 }
 
+_BACKGROUND = {
+    "background_level": 220,
+    "background_source": "inferred-modal",
+    "dark_mode": 0,
+    "ink_margin": 73,
+    "contrast_below_background": 40,
+    "ink_threshold": 180,
+    "config_sha256": "0" * 64,
+}
+
 
 def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> dict:
     return {
@@ -45,6 +55,10 @@ def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> d
         "outcome": outcome,
         "payload": {
             "page_ordinal": ordinal,
+            "ink_measurable": True,
+            "background": dict(_BACKGROUND),
+            "ink": {},
+            "edge": {},
             "edge_findings": _RUNS if evidence is None else evidence,
         },
     }
@@ -92,6 +106,30 @@ def test_a_mapped_page_records_the_measurement_nobody_took_as_absence():
     armarium = _armarium()
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [_ink_record("a", 1)]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "mapped", "remeasured": None},)
+
+
+@pytest.mark.parametrize(
+    "defect", ["base-era", "wrong-seal", "missing-background-field", "array-source"]
+)
+def test_a_measured_ink_map_payload_must_name_the_current_background_contract(defect):
+    armarium = _armarium()
+    record = _ink_record("a", 1)
+    payload = record["payload"]
+    if defect == "base-era":
+        del payload["ink_measurable"]
+        del payload["background"]
+        del payload["ink"]
+        del payload["edge"]
+    elif defect == "wrong-seal":
+        payload["background"] = {**_BACKGROUND, "config_sha256": "1" * 64}
+    else:
+        payload["background"] = dict(_BACKGROUND)
+        if defect == "missing-background-field":
+            del payload["background"]["ink_threshold"]
+        else:
+            payload["background"]["background_source"] = []
+    with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
 
 
 def test_a_flagged_page_is_re_measured_against_the_crops_actually_cut():
