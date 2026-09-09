@@ -12,6 +12,10 @@ directory anywhere in this tree. Spec 06's contracts section names those as
 concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
 this handoff expresses each as an artifact *kind* below rather than a path.
 
+## Neutral dark-distribution evidence
+
+The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the primary scan and conservation denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
+
 ## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
@@ -550,10 +554,10 @@ inferred at all — no scan ran there, so there is no margin it ran at.
 either. It is the derivation's own other input, so a reader holding
 `background`, `dark_mode` and the sealed `ink_margin_bp` recomputes the margin
 exactly and can say what every ink count on this page was taken at. The
-`surround` block on the `conservation` record carries `dark_mode` as well, but
-only for pages that reach the surround branch — 65 of the 114 inferred pages of
-the 127-page calibration, the other 49 taking the plain modal branch and
-publishing no surround block at all. On those 49 the margin was published with
+`dark_distribution` block on the `conservation` record carries `dark_mode` as
+well, but only for pages that reach the interior-mode branch — 65 of the 114
+inferred pages of the 127-page calibration, the other 49 taking the plain modal
+branch and publishing no dark-distribution block at all. On those 49 the margin was published with
 its derivation dropped. The derivation runs on both branches, so its input is
 recorded on both.
 
@@ -576,15 +580,15 @@ trail for *how* this page was read, and they are published here because this is
 the one per-page record that already exists. `background_source` says where the
 ink threshold came from — `inferred-modal` when the page's own modal pixel was
 taken as its paper, `inferred-interior-mode` when the modal pixel was a
-photographic surround and the paper was taken from the page's own lighter
+a measured dark population and the paper was taken from the page's own lighter
 population instead — so a page whose threshold did not come from its own mode is
 visibly different on disk rather than identical to an ordinary scan. A page on
-the second branch also carries a `surround` block on its conservation record:
-the band the test ran on, the level it called dark, how many pixels that was,
-and the border and interior fractions it measured. That block is present only on
-such a page, so no existing record's bytes move for it. It carries two dark
-counts, which bracket the bezel from below and above rather than either one being
-it — see "The surround is measured, never removed" below.
+the second branch also carries a `dark_distribution` block on its conservation
+record: the band sampled, the level called dark, its count, and the border and
+interior fractions measured. The block is present only on such a page, so no
+existing record's bytes move for it. It records a dark population; it does not
+establish a bezel, page boundary, or paper region — see "The dark distribution is
+measured, never removed" below.
 `structure_evidence` says whether the crops on this page came from detection or
 from the predetermined grid. Both were computed in an in-process dict that
 nothing published, which meant neither fact survived the run. Both are `null` on
@@ -1442,14 +1446,14 @@ into blind fallback slabs and reconciled none of their ink
 (`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). The premise "the modal
 pixel is paper" is sound for a flatbed scan and false for a photograph.
 
-`structure._dark_surround` asks the one question a histogram cannot answer:
-whether the dark majority is a *frame* around a lighter interior, or the page
-itself. It is a geometric test because the distinction is geometric — an
-inverted scan and a photographed page are both "most of the page is dark", and
-what separates them is where the dark is. Where the interior is not itself dark,
-the paper value is the modal pixel at or above the page's own mean; that value
-still faces the `PRIMARY_MARGIN` guard, and every shape above still refuses by
-name. The thresholds are sealed in `config/designator_grouping.toml`'s
+`structure._dark_distribution` measures the dark fraction in a fixed interior
+sample. It admits the historical photographed examples and continues to refuse
+the measured inverted and dark-core controls, but it does not classify arbitrary
+spatial arrangements as a frame, bezel, or page boundary. Where the interior is
+within the sealed bound, the paper value is the modal pixel at or above the
+page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
+ink-fraction guard. The thresholds are sealed in
+`config/designator_grouping.toml`'s
 `[grouping.background]`, which is the one block in that file with a
 `calibrated_for_this_corpus = true` provenance and a `sample_count` above zero —
 its own block, because the rest of the file is unmeasured defaults and one
@@ -1543,28 +1547,21 @@ pixel, was not. A LANCZOS resample smooths a hard black spike away and the mode
 moves off it. The level is now a valley between two modes, which is what the 2
 grey levels above are measuring.
 
-**The surround is measured, never removed.** Every surround pixel stays on the
-page, stays below the ink threshold, and is counted as ink by `primary_scan` and
-reconciled as ink by `conservation.reconcile`. Masking it out would mean deciding
-where the page ends, and a page edge misjudged by thirty pixels would silently
-delete a marginal name — the loss GOALS 1 ranks worst. Counting the bezel is a
-visible over-count that reconciles; excluding it is an invisible loss. What the
-`surround` block on the conservation record buys is the interpretation. It
-carries two counts, and together they *bracket* the bezel rather than either one
-being it: `border_dark_pixel_count` is the dark inside the border band, a lower
-bound because a real frame is usually wider than `band_bp`, and
-`dark_pixel_count` is the whole page at or below the level, an upper bound
-because the page's own deep writing is at or below it too. Over the 65 pages of
-the 127-page calibration that infer through this branch, at the derived ink
-margin, the bezel is between **34.1% and 79.7%** of the counted ink by the lower
-bound (median 58.6%) and between **78.5% and 96.9%** by the upper (median 88.8%).
-Both figures rose when the margin was derived, and rose for the right reason: the
-denominator is now the ink the page actually has rather than the ink plus a
-quarter of its own paper. At the retired fixed margin of 20 the same pages
-measured 22.5%-58.1% (median 36.6%) and 30.3%-83.6% (median 56.9%).
-Without those numbers a reader takes an ink fraction of two thirds for two thirds
-of a page of writing. One number here would have been read as the bezel and been
-wrong in a direction nobody could tell, which is why there are two.
+**The dark distribution is measured, never removed.** Every sampled dark pixel
+stays on the page, stays below the ink threshold, and is counted as ink by
+`primary_scan` and reconciled as ink by `conservation.reconcile`. Masking any
+population out would mean deciding where the page ends, and a page edge misjudged
+by thirty pixels would silently delete a marginal name — the loss GOALS 1 ranks
+worst. The `dark_distribution` block records two observed counts:
+`border_dark_pixel_count` in the fixed border band and `dark_pixel_count` across
+the whole page at the selected level. They are not bounds on a bezel or on a
+paper region. For the 65 historical calibration pages that inferred through this
+branch, the historical ratios of observed dark counts to counted ink at the
+derived margin were **34.1%-79.7%** (median 58.6%) for the border-band count and
+**78.5%-96.9%** (median 88.8%) for the whole-page count. These are descriptive
+historical ratios, not page-boundary or writing measurements. At the retired
+fixed margin of 20, the same ratios were 22.5%-58.1% (median 36.6%) and
+30.3%-83.6% (median 56.9%).
 
 **What the same 127 pages then fixed** is the constant this section used to end
 by naming: `PRIMARY_MARGIN = 20` is no longer the margin the scan runs at. It is
@@ -1584,11 +1581,10 @@ population spread over dozens of grey levels by lighting, page curl and the
 camera's response, and the modal value is that population's *peak*, not its
 edge. An offset of 20 below the peak therefore lands inside the paper. Over the
 127 pages at the old constant, the whole-page ink fraction ran 0.028 to 0.66 with
-a median of 0.39, and even with the surround's own upper-bound dark count taken
-out of both the ink and the page — the paper region, the part a register page's
-writing is actually on — the ink fraction there was still a median of 23%. A
-written page is a few percent ink. 23% is not a measurement of writing; it is a
-measurement of paper being called ink.
+a median of 0.39, and, in the historical calculation that subtracted the whole-page dark count
+from both ink and page counts, the resulting dark-excluded statistic still had a
+median of 23%. It is not a paper-region or ground-truth writing measurement; it
+only showed that the old fixed threshold included substantial lighter population.
 
 **Why a fraction of the two modes, and not a valley.** The obvious repair is the
 classical one: put the threshold in the valley between the ink population and the
@@ -1611,30 +1607,28 @@ claim, and the table below is what it is worth.
 **Why the fraction is 3333 and not its neighbours.** Two measurements decide it,
 and a third rules out the extremes.
 
-* **The paper-region ink fraction** — the ink left after the surround block's own
-  upper-bound dark count is taken out of both the ink and the page. This is the
-  number that has to be one a register page can plausibly have. Over the ten
-  photographed pages of the survey's own margin sweep, driven live through the
-  shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at 3333**,
-  1.6%-4.2% at 3750, 1.2%-3.1% at 4000. At 2500 the densest page in the sample
-  puts a seventh of its paper region below the ink threshold, which is more ink
-  than a page of handwriting has; at 4000 even that page reads as sparse, which
-  is the ink-loss direction.
+* **The historical dark-excluded statistic** — ink left after the sampled
+  whole-page dark count is subtracted from both ink and page counts. It is a
+  descriptive comparison, not a paper-region or writing measurement. Over the
+  ten photographed pages of the survey's own margin sweep, driven live through
+  the shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at
+  3333**, 1.6%-4.2% at 3750, 1.2%-3.1% at 4000. The range is retained as a
+  historical observation of how the threshold moves the sampled population.
 * **The component count at the sealed `gap_tolerance_px = 3`** — checked for the
   two failures a wrong margin produces, and showing neither at 3333. The median
   over the same ten pages is 2721 / 2557 / **2653** / 2982 / 3197 across
   2500-4000: flat at the bottom through 3000-3333 and rising past it, which is
   fragmentation beginning. It is a weak discriminator between 3000 and 3333 and
   it is reported as one.
-* **Whether tightening loses writing or paper.** Going from 2500 to 3333 removes
-  39-53% of the paper-region ink pixels on all ten pages while the component
-  count moves by -24% to +35%, rising on three of them. Whole faint marks
-  disappearing would take the count down with the pixels; components appearing
-  instead is a welded mass separating. What is being removed is the paper skirt.
+* **Whether tightening changes the sampled distribution.** Going from 2500 to
+  3333 removes 39-53% of the historical dark-excluded pixels on all ten pages
+  while the component count moves by -24% to +35%, rising on three of them. The
+  result is retained as an observed component/threshold trade-off; it does not
+  identify paper, writing, or a physical boundary.
 
-3000 and 3333 are not separated by any of the three, and the report says so. 3333
-is chosen for the paper-region placement and because it is one third, which is a
-number the code can state without a second one beside it.
+3000 and 3333 are not separated by these historical comparisons, and the report
+says so. 3333 is retained as the sealed measured setting and because it is one
+third, which is a number the code can state without a second one beside it.
 
 **The floor is `PRIMARY_MARGIN` and it is load-bearing.** At 3333 it binds
 wherever the two modes are 60 grey levels apart or fewer. Ten of the 127 pages
@@ -1645,18 +1639,18 @@ page's threshold rises and no page can start counting as ink anything it did not
 count as ink before.
 
 **The bound `ink_margin_bp` is held under, and why it is structural.** The loader
-refuses any value at or past 5000. `_dark_surround` measures at the midpoint of
+refuses any value at or past 5000. `_dark_distribution` measures at the midpoint of
 the two modes and publishes two dark counts *as fractions of the ink the page
 goes on to count*; that reading is true exactly while the derived threshold stays
 at or above the midpoint, which is exactly while the fraction stays under 5000.
-At 5000 the two coincide; past it the surround block would be counting pixels the
-scan does not. Zero is refused for the reason the two bounds beside it are: it is
-the derivation switched off by a value rather than by a decision.
+At 5000 the two coincide; past it the dark-distribution block would count pixels
+the scan does not. Zero is refused for the reason the two bounds beside it are:
+it is the derivation switched off by a value rather than by a decision.
 
 **Scale invariance, measured.** Over the same 73 DPI-tagged pages resampled to a
 300-DPI equivalent with LANCZOS, the derived margin moves by **at most 8 grey
-levels** (median 0) and the paper-region ink fraction by at most 0.51 percentage
-points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
+levels** (median 0) and the historical dark-excluded statistic by at most 0.51
+percentage points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
 unit's 72 of 73, because the bound that decides it is not measured at the derived
 threshold — see the next paragraph.
 
@@ -1699,20 +1693,19 @@ shipped pass, one page per process, on the same pages in the same order.
 
 | statistic | min | p25 | median | p75 | p90 | max |
 |---|---:|---:|---:|---:|---:|---:|
-| paper-region ink fraction, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
-| paper-region ink fraction, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
+| historical dark-excluded statistic, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
+| historical dark-excluded statistic, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
 | whole-page ink fraction, fixed margin 20 | 0.0282 | 0.3448 | 0.3946 | 0.4630 | 0.5365 | 0.6595 |
 | whole-page ink fraction, derived margin | 0.0282 | 0.2097 | 0.2421 | 0.2752 | 0.3470 | 0.4728 |
 
-The paper region is the page with the surround block's own upper-bound dark count
-taken out of both the ink and the page — the part a register's writing is on. The
-whole-page figure stays high because the bezel is still counted as ink, on
-purpose: it is a visible over-count that reconciles, where masking it out would
-mean deciding where the page ends.
+The historical dark-excluded statistic subtracts the sampled whole-page dark
+count from both ink and page counts. It does not identify a paper region or the
+part a register's writing is on. The whole-page figure retains every sampled
+pixel and reconciles; no page boundary is inferred or masked.
 
 Per source, on the 114 inferred pages:
 
-| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | paper-region ink, derived |
+| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | historical dark-excluded, derived |
 |---|---|---|---|---|---|---|
 | teklia_dai_cretdhi | 172 / 212 / 231 | 0 / 0 / 22 | 57 / 69 / 75 | 0.2626 / 0.3710 / 0.6149 | 0.1875 / 0.2117 / 0.3899 | 0.0165 / 0.0356 / 0.0962 |
 | recordgold_production_train_v1 | 157 / 212 / 245 | 0 / 1 / 23 | 52 / 69 / 80 | 0.2816 / 0.3946 / 0.5365 | 0.1780 / 0.2481 / 0.4080 | 0.0192 / 0.0474 / 0.0696 |
@@ -1726,8 +1719,8 @@ Per source, on the 114 inferred pages:
 Oka is the source the floor is for: 10 of its 15 pages have 22 grey levels or
 fewer between their two modes and derive the floor margin of 20, so their ink
 fraction barely moves. Saint-Jacques takes the plain modal branch on all 15, so
-it has no surround block and no paper region to report; its whole-page figure is
-the relevant one, and it halves.
+it has no dark-distribution block or dark-excluded statistic to report; its
+whole-page figure is the relevant observed value, and it halves.
 
 **Components at the sealed `gap_tolerance_px = 3`**, over the 114 inferred pages:
 **87 / 2,772 / 24,617** against **87 / 6,237 / 24,617** at the fixed margin — the

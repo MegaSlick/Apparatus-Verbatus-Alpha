@@ -28,8 +28,9 @@ reaches the geometric test. `ink_margin_bp` joined it the same day for the same
 reason: it derives each page's own ink threshold and has nothing to do with a
 surround either. A sub-table named for one of its four fields is the misnaming
 GLOSSARY's "one word per concept" refuses, so it is named for what it governs.
-The *evidence* a framed page publishes is still `surround`, because that block
-really is about the surround.
+The optional evidence a page publishes is `dark_distribution`. A known
+photographed frame can contribute such a dark population, but this measurement
+does not establish a frame, bezel, or page boundary.
 
 `primary_margin` and `secondary_margin` are refused by name wherever they
 appear, in either sub-table or at the policy's own top level. They are
@@ -350,16 +351,13 @@ def _load_background(table: Any) -> dict[str, Any]:
                 f"integer in 0..{BP_DENOMINATOR}"
             )
     # `ink_margin_bp` is bounded strictly below half its range, and the bound is
-    # structural rather than a taste. `structure._dark_surround` measures at the
-    # midpoint of the page's two modes and its result is only readable as "this
-    # much of the counted ink is bezel" while every pixel it counts is a pixel
-    # the scan counts too -- which holds exactly while the derived threshold
-    # stays at or above that midpoint, i.e. while this fraction stays under
-    # 5000. At 5000 the two coincide and the surround block measures the whole
-    # of the page's ink; past it the block would count pixels the scan does not,
-    # and its two published counts would stop bracketing anything. Zero is
-    # refused for the reason the two bounds above are: a fraction of zero is the
-    # derivation switched off by a value rather than by a decision, leaving
+    # structural rather than a taste. `structure._dark_distribution` measures at
+    # the midpoint of the page's two modes; its two dark-population counts remain
+    # subsets of the ink scan exactly while the derived threshold stays at or
+    # above that midpoint, i.e. while this fraction stays under 5000. At 5000
+    # the two coincide; past it the record could count pixels the scan does not.
+    # Zero is refused for the reason the two bounds above are: a fraction of zero
+    # is the derivation switched off by a value rather than by a decision, leaving
     # every page on the floor.
     if (
         not _is_plain_int(values["ink_margin_bp"])
@@ -375,7 +373,7 @@ def _load_background(table: Any) -> dict[str, Any]:
         )
     # A band of zero leaves no border to measure and a band at or over half the
     # page leaves no interior, so both ends are refused rather than silently
-    # turning the test off -- `structure._dark_surround` would return `None` for
+    # turning the test off -- `structure._dark_distribution` would return `None` for
     # either, and a page would then refuse for a reason no config line stated.
     if not _is_plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BP_DENOMINATOR // 2:
         raise ContractError(

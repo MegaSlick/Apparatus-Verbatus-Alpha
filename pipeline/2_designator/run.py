@@ -561,10 +561,9 @@ def page_pixels(
 ) -> tuple[int, int, list, structure.BackgroundEvidence]:
     """Decode one sealed page and infer its own background, with the evidence.
 
-    Returns `structure.BackgroundEvidence` rather than a bare integer: a page
-    whose paper was inferred from its interior under a dark photographic
-    surround has a measurement to publish, and dropping it on the way back would
-    be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    Returns `structure.BackgroundEvidence` rather than a bare integer: an
+    interior-mode page has a dark distribution to publish, and dropping that
+    measured population on the way back would be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
     grouping config, resolved to *this* page's own background-inference policy
     here through `grouping_config.resolve_background_policy` -- the one resolver
     for that policy, so this call site and any other cannot come to disagree.
@@ -1207,14 +1206,9 @@ def publish_structure_status(
                 # to check either. `structure.BackgroundEvidence`'s own
                 # docstring promises a reader holding `background`, `dark_mode`
                 # and the sealed `ink_margin_bp` can recompute the margin
-                # exactly; the `surround` block on the conservation record
-                # carries `dark_mode` too, but only for pages that reach the
-                # surround branch -- 65 of the 114 inferred pages of the
-                # 127-page calibration, with the other 49 taking the plain modal
-                # branch and publishing no surround block at all. On those the
-                # promise was false: the margin was a number with its own
-                # derivation dropped. The derivation runs on both branches, so
-                # its input is recorded on both.
+                # exactly; `dark_distribution` is separately present only for
+                # pages that reach the interior-mode branch. The derivation runs
+                # on both branches, so its input is recorded on both.
                 "ink_margin": analysis["ink_margin"] if analysis else None,
                 "dark_mode": analysis["dark_mode"] if analysis else None,
                 "ink_threshold": (
@@ -1287,7 +1281,7 @@ def _analyze_page(
             )
             background = evidence["background"]
             background_source = evidence["source"]
-            surround = evidence["surround"]
+            dark_distribution = evidence["dark_distribution"]
             # The margin this page derived for itself, from the distance
             # between its own two population modes and the sealed
             # `ink_margin_bp` (`structure._derived_ink_margin`). It is carried
@@ -1296,16 +1290,16 @@ def _analyze_page(
             # derivations that agree today.
             ink_margin = evidence["ink_margin"]
             # The other end of the distance the margin above is a fraction of.
-            # Carried for the same reason and published for a different one: the
-            # `surround` block already records it, but only on pages that reach
-            # the surround branch, and the derivation runs on both.
+            # It is published on every measurable page because the derivation
+            # runs on both branches; `dark_distribution`, when present, records
+            # a separate sampled population rather than a page boundary.
             dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
-            surround = None
+            dark_distribution = None
             ink_margin = None
             dark_mode = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
@@ -1361,12 +1355,11 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": background_source,
-            # The dark-surround measurement, or `None` on a page that had no
-            # dark surround to measure. Published on the conservation record
-            # below, because that record is where this page's ink accounting
-            # lives and the surround is the part of that ink which is bezel
-            # rather than writing.
-            "surround": surround,
+            # The interior-mode branch's dark-population measurements, or
+            # `None` where that branch did not run. They retain sampled values
+            # beside this page's ink accounting without assigning them to a
+            # bezel, paper region, or writing.
+            "dark_distribution": dark_distribution,
             # This page's own derived ink margin, and `None` on a page whose
             # background could not be inferred -- where no threshold was
             # resolved, no scan ran, and naming a margin would be a resolution
@@ -2331,22 +2324,13 @@ def _publish_conservation_and_secondary(
         if withheld
         else RESIDUAL_ENUMERATION_COMPLETE,
     }
-    # Present only on a page that had a dark surround, absent on every other
-    # page, exactly like `residual_components` above. A key that is always
-    # present would carry `null` on every fixture page and move bytes that
-    # nothing measured differently; `background_source` already says which
-    # branch inferred this page's paper, so an absent `surround` is not a
-    # fact going unrecorded. What it records when present is how much of this
-    # page's counted ink is photographic bezel rather than writing. Its two
-    # dark counts bracket that: `border_dark_pixel_count` is a lower bound
-    # (34.1% to 79.7% of the counted ink on the 65 pages of the 127-page
-    # calibration that reach this branch, at the margin each page derives for
-    # itself) and `dark_pixel_count` an upper one (78.5% to 96.9%). The surround is never removed from the scan or from
-    # this reconciliation (see `structure._dark_surround` for why), so without
-    # this a reader would take an ink fraction of two thirds for two thirds of
-    # writing.
-    if analysis["surround"] is not None:
-        conservation_payload["surround"] = analysis["surround"]
+    # Present only when the interior-mode branch measured a dark distribution.
+    # The two counts retain their exact sampled band/page populations and remain
+    # in the primary scan and reconciliation. They are not a page-boundary mask:
+    # without independent ground truth they do not establish a bezel, a paper
+    # region, or writing excluded from either denominator.
+    if analysis["dark_distribution"] is not None:
+        conservation_payload["dark_distribution"] = analysis["dark_distribution"]
     if not withheld:
         conservation_payload["residual_components"] = components
     _refuse_text_fields(conservation_payload)
