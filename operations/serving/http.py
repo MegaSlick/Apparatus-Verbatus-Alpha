@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import errno
 import hashlib
 import http.client
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
+from ..http_deadline import DeadlineExceeded, call_within_deadline, recording_opener
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
@@ -83,7 +85,26 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+def _build_opener() -> tuple[urllib.request.OpenerDirector, Callable[[], None]]:
+    """One opener that reaches the loopback address it was given, and nowhere else.
+
+    ``ProxyHandler({})`` — an *explicit empty* proxy map — is what disables
+    urllib's environment proxy discovery; omitting the handler does not, it
+    installs the discovering one.  Every URL this module builds is provably
+    ``127.0.0.1``, but with discovery left on, a process started under
+    ``http_proxy`` and no matching ``no_proxy`` sends the request to that proxy
+    instead: the prompt and its embedded page image leave the machine before
+    any response validation runs, and a proxy that answers 200 can stand in for
+    a model that was never reached.  An operator's correct ``NO_PROXY`` is not
+    a control this boundary may depend on.
+
+    Built per call rather than once at import, so the guarantee is a property of
+    the opener the transport actually uses rather than of the environment that
+    happened to exist when the module was first imported — and so the returned
+    cancel owns exactly this call's socket.
+    """
+
+    return recording_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
 
 
 class UrllibHttpTransport:
@@ -101,17 +122,52 @@ class UrllibHttpTransport:
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        # `timeout_seconds` is the budget for the *whole* call — connect, headers
+        # and body against one monotonic deadline — not a per-receive timeout that
+        # a dribbling responder can reset indefinitely.  The socket timeout is set
+        # to the same value so an incomplete TCP connect, the one state the worker
+        # thread's cancellation cannot reach, is bounded by it too.
+        deadline = time.monotonic() + timeout_seconds
+        opener, cancel = _build_opener()
+
+        # One boundary over *both* body reads.  The 4xx/5xx read used to sit in a
+        # sibling `except` clause, where a failure raised inside it could not be
+        # caught by the clause that follows: the identical malformed chunked body
+        # became `EndpointUnavailable` at 200 and a bare `http.client.IncompleteRead`
+        # at 503.  The readiness poll retries the first and aborts the start on the
+        # second, so which of two equally broken responses arrived decided whether a
+        # launch got its remaining intervals.  An error status is still a complete
+        # HTTP response; reading its body is the same act, under the same contract.
+        def exchange() -> HttpResponse:
+            try:
+                with opener.open(request, timeout=timeout_seconds) as response:
+                    return HttpResponse(int(response.status), _bounded_read(response, deadline))
+            except urllib.error.HTTPError as error:
+                # `closing`, because nothing closed this one: `urlopen` returns the
+                # error response to its caller instead of the `with` above, and an
+                # unclosed socket per non-200 accumulates across a readiness poll.
+                # The status is kept whenever the body read completes — a complete
+                # 503 is an answer this transport reports, not a refusal it raises.
+                with contextlib.closing(error):
+                    return HttpResponse(int(error.code), _bounded_read(error, deadline))
+
         try:
-            with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
-                return HttpResponse(int(response.status), _bounded_read(response, timeout_seconds))
+            return call_within_deadline(
+                exchange,
+                budget_seconds=timeout_seconds,
+                label=f"{method} {url}",
+                cancel=cancel,
+            )
         except EndpointUnavailable:
             # This module's own refusal, already carrying its classification.
             # `EndpointUnavailable` is an OSError, so without this it would fall
             # into the transport clause below and be reclassified as something
             # observed on the wire.
             raise
-        except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), _bounded_read(error, timeout_seconds))
+        except DeadlineExceeded as error:
+            # An overrun says nothing about whether a listener owns the port, so
+            # it can never release the sequential residency lease.
+            raise EndpointUnavailable(str(error)) from error
         except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
             # An `HTTPException` — a truncated chunked body — arrives while
             # reading a response that already had a status line, so it is
@@ -505,18 +561,21 @@ def _connection_refused(error: BaseException) -> bool:
     return getattr(reason, "errno", None) == errno.ECONNREFUSED
 
 
-def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
+def _bounded_read(response: Any, deadline: float) -> bytes:
     """Read a body bounded in both size and time.
 
-    The socket timeout bounds one blocking receive, not the call.  A responder
-    that dribbles a byte just inside it holds this request open for as long as
-    it likes, and both loops that use this transport — the readiness watchdog
-    and the shutdown absence poll — check their own deadline only *between*
-    requests.  One such call therefore defeats a bound the whole design rests
-    on, on a card that bills by the hour.  So the body gets the same budget the
-    caller already declared for the request; a call can still take about twice
-    that in total, since connect and headers are bounded separately by
-    ``urlopen``.
+    ``deadline`` is the caller's *whole-call* monotonic deadline, set before the
+    connection was opened, not a fresh budget for the body alone.  That is the
+    repair: this function used to start its own clock once headers had already
+    arrived, so a request whose headers dribbled in spent the configured budget
+    twice — measured at 1.280 s against a declared 0.15 s at 36acde636f.  What
+    the connect and header phases actually consumed now comes out of the same
+    deadline the body is read against.
+
+    The whole-call bound is enforced above this, by a worker thread joined with
+    the budget, because no check between reads can regain control from a receive
+    that is already blocked.  This check is what turns the ordinary slow-body
+    case into a precise, named refusal instead of a cancelled thread.
 
     The extra byte requested past the size bound is what turns "read a lot" into
     a detectable overage rather than a response that merely happens to be
@@ -525,9 +584,17 @@ def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
     ``read1`` rather than ``read``: the latter blocks until it has the whole
     amount asked for, so a trickling responder would never return control here
     and the deadline below would never be consulted.
+
+    That choice costs one guarantee back, which is why the undelivered check at
+    the end exists.  ``HTTPResponse.read()`` raises ``IncompleteRead`` when a
+    ``Content-Length`` body ends early; ``read1`` just returns ``b""`` and closes
+    the connection, so a responder that declares 64 bytes, sends 16 and hangs up
+    handed this transport a short body and an HTTP 200.  Chunked bodies still
+    raise ``IncompleteRead`` and reach the caller's transport clause; identity
+    bodies had nothing at all, so ``length`` — what ``http.client`` still expects
+    and did not get — is checked here instead.
     """
 
-    deadline = time.monotonic() + timeout_seconds
     remaining = _MAX_RESPONSE_BYTES + 1
     chunks: list[bytes] = []
     while remaining > 0:
@@ -538,11 +605,16 @@ def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
         remaining -= len(chunk)
         if remaining > 0 and time.monotonic() >= deadline:
             raise EndpointUnavailable(
-                f"response body did not complete within its {timeout_seconds}s request budget"
+                "response did not complete within the request's whole-call deadline"
             )
     data = b"".join(chunks)
     if len(data) > _MAX_RESPONSE_BYTES:
         raise EndpointUnavailable(
             f"response exceeded the {_MAX_RESPONSE_BYTES}-byte bound for a loopback serving check"
+        )
+    undelivered = getattr(response, "length", None)
+    if isinstance(undelivered, int) and undelivered > 0:
+        raise EndpointUnavailable(
+            f"response body stopped {undelivered} bytes short of its declared length"
         )
     return data

@@ -448,6 +448,22 @@ def test_provenance_negative_sample_count_refused(tmp_path):
         load_grouping_config(path)
 
 
+def test_provenance_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    body = _valid_toml().replace(
+        "calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="calibrated_for_this_corpus.*sample_count is zero"):
+        load_grouping_config(path)
+
+
+def test_background_provenance_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    body = _valid_toml().replace("sample_count = 7", "sample_count = 0")
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="calibrated_for_this_corpus.*sample_count is zero"):
+        load_grouping_config(path)
+
+
 def test_string_provenance_fields_are_derived_from_the_whole_schema():
     """The two field sets partition `_PROVENANCE_FIELDS` exactly.
 

@@ -146,11 +146,13 @@ def python_module_command(module: str, *arguments: str) -> list[str]:
     boundary, and this function takes no workspace argument at all, so no
     caller can nominate the tree the confined child imports from. The child's
     *working directory* is a separate decision the trusted parent makes at
-    `run_confined(cwd=...)`, and the separation is deliberate: under an
-    installed wheel the operator's workspace is legitimately not this checkout
-    (see the `--workspace` default in `cli.py`), so the two cannot be checked
-    against each other. Isolated startup keeps that working directory off
-    `sys.path`, which is what makes holding them apart safe.
+    `run_confined(cwd=...)`, and the separation is deliberate: the operator's
+    workspace (the `--workspace` default in `cli.py`) is a folder of their own
+    and legitimately not this checkout, so the two cannot be checked against
+    each other. Isolated startup keeps that working directory off `sys.path`,
+    which is what makes holding them apart safe. A checkout is the only
+    supported way to run this code (`common/checkout.py` refuses otherwise);
+    an installed wheel is not a supported workspace.
     """
 
     root = Path(__file__).resolve().parents[2]

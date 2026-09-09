@@ -71,10 +71,12 @@ The GraphQL sibling transport is derived from the REST one by
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -83,6 +85,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol
 
+from ..http_deadline import DeadlineExceeded, call_within_deadline, recording_opener
 from . import notify_hooks
 from .controllers import PodDeadmanTimer
 from .fixture import FixtureRecorder, RecordingTransport
@@ -212,7 +215,6 @@ class UrllibRunPodTransport:
         # GraphQL's documented `?api_key=` (module docstring). The query form
         # is used only where the documentation offers nothing else.
         self.credential_placement = credential_placement
-        self.opener = urllib.request.build_opener(_RefuseRedirects)
 
     def sibling(self, *, root: str, credential_placement: str) -> "UrllibRunPodTransport":
         """The same capability and timeout, pointed at another documented root.
@@ -249,11 +251,58 @@ class UrllibRunPodTransport:
         else:
             headers["Authorization"] = f"Bearer {self.capability}"
         request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
+        # `timeout_seconds` bounds the whole call — connect, headers and body
+        # against one monotonic deadline — rather than one blocking receive. At
+        # 36acde636f this transport had no elapsed bound on the body at all: a
+        # loopback responder dribbling a byte at a time answered a 0.15 s budget
+        # after 8.559 s, and one dribbling its headers after 1.273 s. Every
+        # caller of this class is a money-path verb whose controller checks its
+        # own deadline only between calls, so an unbounded call is an unbounded
+        # controller.
+        deadline = time.monotonic() + self.timeout_seconds
+        # Environment proxy discovery is left ON for this opener, deliberately, and this is
+        # the opposite decision from `operations/serving/http.py`, which disables
+        # it with an explicit `ProxyHandler({})`. The two are different
+        # boundaries. That one addresses 127.0.0.1 and a proxy there means the
+        # request left the machine, which is the defect. This one addresses
+        # `rest.runpod.io`/`api.runpod.io` — an external service by design — and
+        # an operator on a network whose only route out is a proxy has to be
+        # able to reach it or no pod can ever be closed. The capability is not
+        # exposed to that proxy: both roots are HTTPS, so urllib issues
+        # `CONNECT` and the bearer header (or the query-placed key) travels
+        # inside TLS the proxy cannot read. A proxy that answers for the API
+        # anyway is a machine-in-the-middle the certificate check already
+        # refuses.
+        opener, cancel = recording_opener(_RefuseRedirects)
+
+        def exchange() -> HttpResponse:
+            try:
+                with opener.open(request, timeout=self.timeout_seconds) as response:
+                    return HttpResponse(int(response.status), _bounded_read(response, deadline))
+            except urllib.error.HTTPError as error:
+                # Closed explicitly: `urlopen` hands an error response to its
+                # caller rather than to the `with` above, so nothing closed it.
+                with contextlib.closing(error):
+                    return HttpResponse(int(error.code), _bounded_read(error, deadline))
+
         try:
-            with self.opener.open(request, timeout=self.timeout_seconds) as response:
-                observed = HttpResponse(int(response.status), _bounded_read(response))
-        except urllib.error.HTTPError as error:
-            observed = HttpResponse(int(error.code), _bounded_read(error))
+            observed = call_within_deadline(
+                exchange,
+                budget_seconds=self.timeout_seconds,
+                # The path, never the URL: in query placement the URL carries
+                # the key, and this label reaches the refusal below and records.
+                label=f"RunPod {method} {path}",
+                cancel=cancel,
+            )
+        except DeadlineExceeded as error:
+            # A mutating verb interrupted here has an *unknown* outcome, and
+            # this refusal deliberately says nothing about whether the provider
+            # acted. `RunPodProvider.create` is what preserves that: it
+            # correlates the launch token before it ever POSTs, so a create
+            # whose response was never seen is found rather than re-issued, and
+            # `recovery_only` makes the recovery path a pure lookup. Nothing
+            # here may retry a mutating call.
+            raise ProviderFailure(f"RunPod HTTP request failed: {error}") from error
         except (urllib.error.URLError, OSError) as error:
             # `reason`, never `str(error)` with a URL in it: in query placement
             # the URL carries the key, and this message reaches records.
@@ -1140,7 +1189,9 @@ def _unavailable(pod_id: str, window_start: datetime, cutoff: datetime, reason: 
     )
 
 
-def _bounded_read(stream: http.client.HTTPResponse | urllib.error.HTTPError) -> bytes:
+def _bounded_read(
+    stream: http.client.HTTPResponse | urllib.error.HTTPError, deadline: float | None = None
+) -> bytes:
     """Refuse to buffer a response past ``_MAX_RESPONSE_BYTES``, never truncate it silently.
 
     ``HTTPResponse.read(amt)`` is documented as returning *up to* ``amt`` bytes,
@@ -1149,11 +1200,25 @@ def _bounded_read(stream: http.client.HTTPResponse | urllib.error.HTTPError) -> 
     malformed.  CPython's own implementation happens not to short-read here
     today -- this accumulates against the documented contract rather than
     against that implementation detail.  Found by CodeRabbit on this branch.
+
+    ``deadline`` is the caller's whole-call monotonic deadline, checked between
+    reads.  It is a refinement and not the bound: ``read`` blocks until it has
+    the amount asked for, so a responder dribbling inside the socket timeout
+    never returns control to this loop at all.  What actually bounds that case
+    is the worker thread the caller joins with its budget
+    (``operations/http_deadline.py``); this check exists so a response arriving
+    in several complete-but-slow reads is refused here, by name, instead of
+    becoming a cancelled thread.  ``None`` keeps the unbounded behaviour for the
+    direct-call tests that hand this function a synthetic stream.
     """
 
     parts: list[bytes] = []
     total = 0
     while total <= _MAX_RESPONSE_BYTES:
+        if deadline is not None and parts and time.monotonic() >= deadline:
+            raise ProviderFailure(
+                "RunPod response did not complete within the request's whole-call deadline"
+            )
         chunk = stream.read(_MAX_RESPONSE_BYTES + 1 - total)
         if not chunk:
             return b"".join(parts)

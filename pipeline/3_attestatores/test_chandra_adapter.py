@@ -7,18 +7,32 @@ import json
 import subprocess
 import sys
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
+from common import chandra_layout
 from common.chairs import load_models_toml
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.imaging import (
+    convert_png_to_rgb,
+    crop_png,
+    encode_grayscale_png_deterministic,
+    encode_image_deterministic,
+    resize_png_lanczos,
+)
+from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import (
     partition_disagreement,
+    validate_native_capture,
     validate_observed,
+    validate_presented_page_binding,
 )
 from common.runtree.store import RunTree
 
@@ -37,6 +51,32 @@ def _load_stage_module(name: str):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_adapter_registry():
+    """`witness_adapters.py`, loaded the way its own suite loads it.
+
+    Its `RunnableAdapter` is a `slots=True` dataclass, and building one of those
+    re-creates the class and reaches for `sys.modules[cls.__module__]` to rebind
+    the name. Under `_load_stage_module`'s spec name that entry does not exist,
+    so the import fails inside `dataclasses` rather than anywhere this module
+    could name -- hence the registration around `exec_module`, and the stage
+    directory on the path so its bare sibling imports resolve.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "attestatores_witness_adapters_under_chandra_test", STAGE / "witness_adapters.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    sys.path.insert(0, str(STAGE))
+    try:
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+        sys.path[:] = original_path
     return module
 
 
@@ -142,7 +182,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
         "outcome": "unverified-response-schema",
     }
     chandra = _load_stage_module("chandra")
-    assert chandra.parse(
+    assert chandra.parse_fixture_placeholder(
         b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
         b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
     ) == {"parse_outcome": "malformed-block-geometry"}
@@ -258,7 +298,7 @@ def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path
 
 def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
     chandra = _load_stage_module("chandra")
-    assert chandra.parse(
+    assert chandra.parse_fixture_placeholder(
         b'{"schema":"fixture-chandra-response.v1","markdown":"one","text":"two","blocks":[]}'
     ) == {"parse_outcome": "conflicting-text-fields"}
     raw = json.dumps(
@@ -268,7 +308,7 @@ def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
             "blocks": [{"bbox": [0, 0, 10**400, 1]}],
         }
     ).encode()
-    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "malformed-block-geometry"}
     assert chandra.observe(_presented(), raw) == []
 
 
@@ -277,7 +317,9 @@ def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeyp
     chandra = _load_stage_module("chandra")
 
     monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 8)
-    assert chandra.parse(b"123456789") == {"parse_outcome": "response-too-large"}
+    assert chandra.parse_fixture_placeholder(b"123456789") == {
+        "parse_outcome": "response-too-large"
+    }
     assert chandra.observe(_presented(), b"123456789") == []
 
     monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 16 * 1024 * 1024)
@@ -289,7 +331,7 @@ def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeyp
             "blocks": [{"bbox": [0, 0, 1, 1]}, {"bbox": [1, 1, 2, 2]}],
         }
     ).encode()
-    assert chandra.parse(raw) == {"parse_outcome": "too-many-layout-blocks"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "too-many-layout-blocks"}
     assert chandra.observe(_presented(), raw) == []
 
 
@@ -310,7 +352,7 @@ def test_chandra_names_excessive_json_nesting_with_a_fixed_outcome(monkeypatch):
     monkeypatch.setattr(chandra.json, "loads", _exhausts_the_stack)
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[]}'
 
-    assert chandra.parse(raw) == {"parse_outcome": "excessive-json-nesting"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "excessive-json-nesting"}
 
 
 def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
@@ -327,16 +369,21 @@ def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
     # C recursion headroom runs out the nesting is named, and when the parser
     # survives the depth the declared markdown parses normally. This case is
     # only about the absence of an escaping error; the name is pinned above.
-    assert chandra.parse(nested) in ("x", {"parse_outcome": "excessive-json-nesting"})
+    assert chandra.parse_fixture_placeholder(nested) in (
+        "x",
+        {"parse_outcome": "excessive-json-nesting"},
+    )
     assert chandra.observe(_presented(), nested) == []
-    assert chandra.parse("not bytes") == {"parse_outcome": "raw-response-not-bytes"}
+    assert chandra.parse_fixture_placeholder("not bytes") == {
+        "parse_outcome": "raw-response-not-bytes"
+    }
 
 
 def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
     """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
     chandra = _load_stage_module("chandra")
     raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
-    assert chandra.parse(raw) == {"parse_outcome": "unverified-response-schema"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "unverified-response-schema"}
     assert chandra.observe(_presented(), raw) == []
 
 
@@ -371,6 +418,55 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
         },
     )
     with pytest.raises(SchemaRefusal, match=message):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+        )
+
+
+def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary(
+    tmp_path, monkeypatch
+):
+    """The retain recipe inside that branch is Chandra's, and now it says so.
+
+    `FIXTURE_NATIVE_RESPONSE_ADAPTERS` decides whose fixture rows may declare
+    `raw_response` bytes; the branch it opens retains them through Chandra's own
+    registry entry, `chandra.FIXTURE_PROMPT` and the `json` parser. Widening the
+    set without writing the new adapter's own branch would therefore publish a
+    Testimonium whose retained view and parser name a chair that never produced
+    those bytes -- the resolved identity and the record disagreeing, which
+    GOVERNANCE 6 does not permit. A comment said so and nothing checked it; this
+    is the check, and it fires where the set widens rather than at whatever
+    later reads the misfiled record.
+    """
+    attestatores = _load_stage_module("run")
+    monkeypatch.setattr(
+        attestatores, "FIXTURE_NATIVE_RESPONSE_ADAPTERS", frozenset({"chandra.v1", "churro.v1"})
+    )
+    resolved = replace(
+        load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"],
+        witness_adapter="churro.v1",
+    )
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-raw",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared text",
+                    "raw_response": "<output>declared text</output>",
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="would be retained through Chandra's recipe"):
         attestatores.resolve_attempt(
             context,
             {"act_key": "a1"},
@@ -503,7 +599,7 @@ def test_a_degenerate_native_box_is_named_and_derives_no_geometry(bbox):
     raw = json.dumps(
         {"schema": "fixture-chandra-response.v1", "markdown": "one", "blocks": [{"bbox": bbox}]}
     ).encode("utf-8")
-    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "malformed-block-geometry"}
     assert chandra.observe(_presented(), raw) == []
 
 
@@ -524,7 +620,7 @@ def test_one_degenerate_box_does_not_let_its_neighbours_pass_unnamed():
             "blocks": [{"bbox": [10, 10, 100, 100]}, {"bbox": [10, 10, 10, 10]}],
         }
     ).encode("utf-8")
-    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "malformed-block-geometry"}
     assert chandra.observe(_presented(), raw) == []
 
 
@@ -572,7 +668,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
         "sha256": digest_bytes(raw),
     }
-    surviving, overshoots = attestatores.chandra_page_partition_entries(
+    surviving, overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert surviving == [
@@ -648,7 +744,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
 def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
     """Two acts on one page legitimately re-derive the same chair's response.
 
-    `publish_page_testimonia_and_attachments` calls `chandra_page_partition_entries`
+    `publish_page_testimonia_and_attachments` calls `page_partition_entries`
     once per act on a page for a page-scoped Chandra chair, and two acts commonly
     share one raw response (the page record already dedupes `raw_response_refs` for
     exactly this reason). Re-deriving an out-of-page block from that same response
@@ -667,10 +763,10 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     }
 
     # Two acts on the page independently re-derive the identical response.
-    first_survivors, first_overshoots = attestatores.chandra_page_partition_entries(
+    first_survivors, first_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
-    second_survivors, second_overshoots = attestatores.chandra_page_partition_entries(
+    second_survivors, second_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
     assert first_overshoots == second_overshoots
@@ -756,7 +852,7 @@ def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, mess
     observed[0][field] = value
 
     with pytest.raises(SchemaRefusal, match=message):
-        attestatores.chandra_page_partition_entries(
+        attestatores.page_partition_entries(
             observed,
             page_size=(200, 260),
             raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
@@ -775,7 +871,7 @@ def test_an_in_page_observation_keeps_its_supported_text_span():
         }
     ]
 
-    survivors, findings = attestatores.chandra_page_partition_entries(
+    survivors, findings = attestatores.page_partition_entries(
         observed,
         page_size=(200, 260),
         raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
@@ -1094,3 +1190,606 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
     )
     assert out_of_order.returncode == 2
     assert not list((held_root / "r" / ATTESTATORES / "artifacts" / "stage-seal").glob("*.json"))
+
+
+def test_a_page_witness_that_mixed_reported_geometry_with_an_echo_is_refused_by_name():
+    """The partition seam fails closed on a shape no adapter has a rule for.
+
+    Both page adapters return either reported geometry or the no-geometry echo,
+    never both, so this is unreachable today. Filtering a mix instead of refusing
+    it would publish a page geometry derived from half a record and
+    indistinguishable from a complete one (GOVERNANCE 2), which is why the
+    behaviour is pinned rather than left to the adapters' current manners.
+    """
+    attestatores = _load_stage_module("run")
+    echo = {
+        "ordinal": 0,
+        "bounds": {"x": 0, "y": 0, "w": 4, "h": 4},
+        "bounds_source": "presented",
+        "span": None,
+    }
+    native = {
+        "ordinal": 1,
+        "bounds": {"x": 1, "y": 1, "w": 2, "h": 2},
+        "bounds_source": "native",
+        "span": None,
+    }
+
+    assert attestatores._partition_geometry([]) == []
+    assert attestatores._partition_geometry([echo]) == []
+    assert attestatores._partition_geometry([native]) == [native]
+    with pytest.raises(SchemaRefusal, match="reported geometry and a presentation echo"):
+        attestatores._partition_geometry([echo, native])
+
+
+# --- the vendor grammar: what a served chair is asked, and what it answers ----
+
+
+class _Published:
+    def __init__(self, relative_path):
+        self.relative_path = relative_path
+
+
+class _PageTree:
+    """One sealed Exemplar page, and a content-addressed blob store over it."""
+
+    def __init__(self, page_bytes: bytes):
+        self.page_bytes = page_bytes
+        self.blobs: dict[str, bytes] = {}
+
+    def read_artifact(self, stage, kind, item_id):
+        assert (stage, kind, item_id) == (EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", "page-1"))
+        return {
+            "payload": {
+                "image_path": "1_exemplar/page-1.png",
+                "source_sha256": digest_bytes(self.page_bytes),
+                "ordinal": 1,
+            }
+        }
+
+    def read_bytes(self, relative_path):
+        if relative_path == "1_exemplar/page-1.png":
+            return self.page_bytes
+        return self.blobs[relative_path]
+
+    def put_blob(self, stage, payload):
+        assert stage == ATTESTATORES
+        digest = digest_bytes(payload)
+        path = f"3_attestatores/blobs/sha256/{digest}"
+        self.blobs[path] = payload
+        return digest, _Published(path)
+
+
+def _page_png(width: int, height: int) -> bytes:
+    """A deterministic grayscale page with visible structure in it.
+
+    Not a flat field: a resize of a uniform image is uniform whatever the
+    resampler did, so a flat page would let a target this test asserts pass a
+    digest re-derivation that resampled nothing.
+    """
+    rows = [bytearray((x + y) % 256 for x in range(width)) for y in range(height)]
+    return encode_grayscale_png_deterministic(width, height, rows)
+
+
+def _page_presentation(page_bytes: bytes, width: int, height: int) -> dict:
+    return {
+        "kind": "page",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "1_exemplar/page-1.png",
+        "image_sha256": digest_bytes(page_bytes),
+        "transform": {
+            "operation": "whole",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": width, "h": height},
+        },
+    }
+
+
+def test_chandra_asks_a_served_chair_in_the_carried_vendor_prompt_bytes():
+    """One user turn, the vendor's own bytes, and nothing of this repository's.
+
+    The digests are the ones `common/chandra_layout.py` seals at import against
+    the vendor commit, restated on the record every reading carries, so a
+    Testimonium says which vendor pin its prompt came from (GOVERNANCE 6).
+    """
+    chandra = _load_stage_module("chandra")
+
+    assert chandra.prompt() == {"user": chandra_layout.OCR_LAYOUT_PROMPT}
+    assert chandra.vendor_identity() == {
+        "repository": "github.com/datalab-to/chandra",
+        "sha": "d4f7467435aa4137d9539f000ddf0b7ced3eb43f",
+        "carried_strings": {
+            "OCR_LAYOUT_PROMPT": chandra_layout.OCR_LAYOUT_PROMPT_SHA256,
+            "PROMPT_ENDING": chandra_layout.PROMPT_ENDING_SHA256,
+        },
+    }
+    # Fresh, plain containers: this travels into a retained record, and a shared
+    # read-only proxy would land there as a different type than every other
+    # value in it.
+    assert chandra.vendor_identity() is not chandra.vendor_identity()
+    assert chandra.FORMAT_CAPABILITIES == {
+        "can_express_uncertainty": False,
+        "can_express_layout": True,
+    }
+
+
+def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
+    """The pixels the chair sees are the vendor's `scale_to_fit`, and re-derive.
+
+    `validate_presented_page_binding` replays crop, resize and colour step from
+    the sealed page and compares digests, so this asserts the recorded recipe is
+    executable rather than merely well-formed (ARCHITECTURE invariant 3).
+    """
+    chandra = _load_stage_module("chandra")
+    adapters = _load_adapter_registry()
+    page = _page_png(200, 260)
+    context = SimpleNamespace(tree=_PageTree(page))
+    source = _page_presentation(page, 200, 260)
+
+    presented = chandra.present(context, source)
+
+    assert scale_to_fit_chandra(200, 260) == (196, 252)
+    assert presented["kind"] == "adapter-crop"
+    assert presented["transform"] == {
+        "operation": "chandra-scale-to-fit.v1",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        "colour_mode": "rgb",
+        "resize": {
+            "resampler": "pillow-lanczos",
+            "dimension_rounding": "grid-28",
+            "source_width_px": 200,
+            "source_height_px": 260,
+            "target_width_px": 196,
+            "target_height_px": 252,
+        },
+    }
+    # Really resized, not the sealed page under another name.
+    assert presented["image_sha256"] != digest_bytes(page)
+    # And really converted: the vendor's own loader hands `scale_to_fit` an RGB
+    # image on every call, so a grayscale blob here would be a recorded
+    # `colour_mode` that did not run.
+    with Image.open(BytesIO(context.tree.read_bytes(presented["image_path"]))) as shown:
+        assert shown.mode == "RGB"
+        assert shown.size == (196, 252)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/page-1.png",
+        page_sha256=digest_bytes(page),
+        page_size=(200, 260),
+        page_bytes=page,
+    )
+    adapters.validate_adapter_presentation("chandra.v1", source, presented)
+
+
+def test_the_presented_page_is_the_vendors_own_convert_then_resize_order():
+    """`load_image` converts and `scale_to_fit` resizes what it was handed.
+
+    Asserted against the two steps composed in that order over the same sealed
+    crop, so a future edit that reverses them inside `present` fails here rather
+    than only in a digest nobody can read.
+    """
+    chandra = _load_stage_module("chandra")
+    page = _page_png(200, 260)
+    context = SimpleNamespace(tree=_PageTree(page))
+
+    presented = chandra.present(context, _page_presentation(page, 200, 260))
+
+    vendors_order = resize_png_lanczos(
+        convert_png_to_rgb(crop_png(page, {"x": 0, "y": 0, "w": 200, "h": 260})), 196, 252
+    )
+    assert context.tree.read_bytes(presented["image_path"]) == vendors_order
+
+
+def test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page():
+    """Why `_COLOUR_BEFORE_RESIZE` exists, measured rather than argued.
+
+    On an `L`, `1` or `RGB` crop the choice of order is invisible: expanding one
+    grey sample into three channels commutes with a per-band resample. On the
+    `LA` and `RGBA` pages the Exemplar also seals it does not -- Pillow's
+    resampler does not treat an alpha band as one more colour band -- so a
+    replay that ran the colour step in the wrong place would re-derive a
+    different digest for a page the door legitimately admits, and an adapter
+    that ran it in the wrong place would show the chair pixels the vendor never
+    would.
+    """
+    for mode in ("1", "L", "RGB"):
+        crop = encode_image_deterministic(_page_in_mode(mode, 200, 260))
+        assert convert_png_to_rgb(resize_png_lanczos(crop, 196, 252)) == resize_png_lanczos(
+            convert_png_to_rgb(crop), 196, 252
+        ), mode
+    for mode in ("LA", "RGBA"):
+        crop = encode_image_deterministic(_page_in_mode(mode, 200, 260))
+        assert convert_png_to_rgb(resize_png_lanczos(crop, 196, 252)) != resize_png_lanczos(
+            convert_png_to_rgb(crop), 196, 252
+        ), mode
+
+
+def _page_in_mode(mode: str, width: int, height: int) -> Image.Image:
+    """The same structured page in one of the modes a sealed crop can arrive in."""
+
+    def pixel(value: int):
+        if mode == "1":
+            return 1 if value >= 128 else 0
+        if mode == "L":
+            return value
+        if mode == "LA":
+            return (value, 255 - value)
+        if mode == "RGB":
+            return (value, (value * 3) % 256, (value * 7) % 256)
+        return (value, (value * 3) % 256, (value * 7) % 256, 255 - value)
+
+    image = Image.new(mode, (width, height))
+    image.putdata([pixel((x + y) % 256) for y in range(height) for x in range(width)])
+    return image
+
+
+def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_readback():
+    """A digest that re-derives is not proof this adapter chose that target.
+
+    Any target re-derives, because re-derivation replays whatever the record
+    asks for. What the tally also has to prove is that the configured adapter's
+    own rule picked it -- otherwise a record could carry the vendor's operation
+    name over an image the vendor's code would never have produced.
+    """
+    chandra = _load_stage_module("chandra")
+    adapters = _load_adapter_registry()
+    page = _page_png(200, 260)
+    context = SimpleNamespace(tree=_PageTree(page))
+    source = _page_presentation(page, 200, 260)
+    forged = chandra.present(context, source)
+    # Still on the 28-pixel grid and still inside the vendor's area ceiling, so
+    # `validate_presented`'s own operation rules accept it; only the port says no.
+    forged["transform"]["resize"]["target_height_px"] = 224
+
+    with pytest.raises(SchemaRefusal, match="vendor's own scale_to_fit rule"):
+        adapters.validate_adapter_presentation("chandra.v1", source, forged)
+
+
+def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
+    """No chair was shown an act crop of a page witness, so none is recorded.
+
+    An act view of a page witness restates one page reading against one act's
+    Designator crop. Minting the vendor's resize recipe over those pixels would
+    record a preprocessing step that never ran, on an image nobody sent.
+    """
+    chandra = _load_stage_module("chandra")
+    adapters = _load_adapter_registry()
+    page = _page_png(200, 260)
+    context = SimpleNamespace(tree=_PageTree(page))
+    region = {
+        "kind": "region",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "region_ref": {"region_id": "rgn_1"},
+        "image_path": "2_designator/blobs/sha256/" + "1" * 64,
+        "image_sha256": "1" * 64,
+        "transform": {
+            "operation": "crop",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 20, "y": 20, "w": 160, "h": 80},
+        },
+    }
+
+    presented = chandra.present(context, region)
+
+    assert presented == region
+    adapters.validate_adapter_presentation("chandra.v1", region, presented)
+    with pytest.raises(SchemaRefusal, match="differs from the exact image it was given"):
+        adapters.validate_adapter_presentation(
+            "chandra.v1", region, {**region, "image_sha256": "2" * 64}
+        )
+
+
+def test_a_layout_answer_reads_as_page_text_with_one_box_per_placed_block():
+    """The whole live path of the grammar, over one hand-written page.
+
+    The blocks are read in document order, each `data-bbox` converts to sealed
+    page pixels through the one conversion both readings of a page share, and
+    each observation's span indexes the page text `parse` returns for the same
+    bytes -- checked against the closed observed contract rather than asserted.
+    """
+    chandra = _load_stage_module("chandra")
+    body = (
+        '<div data-bbox="100 77 900 385" data-label="Text">ACT ONE alpha</div>\n'
+        '<div data-bbox="100 462 900 846" data-label="Text">ACT TWO beta</div>'
+    ).encode("utf-8")
+
+    assert chandra.parse(body) == "ACT ONE alpha\nACT TWO beta"
+    observed = chandra.observe(_presented(), body, page_size=(200, 260))
+    assert observed == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 20, "y": 20, "w": 160, "h": 81},
+            "bounds_source": "native",
+            "span": {"start": 0, "end": 13},
+        },
+        {
+            "ordinal": 1,
+            "bounds": {"x": 20, "y": 120, "w": 160, "h": 100},
+            "bounds_source": "native",
+            "span": {"start": 14, "end": 26},
+        },
+    ]
+    validate_observed(
+        observed,
+        presented=_presented(),
+        page_size=(200, 260),
+        retained_text=chandra.parse(body),
+    )
+
+
+def test_a_layout_answer_carrying_page_geometry_is_refused_without_the_sealed_page_size():
+    """The denominator is the sealed page, and it is never guessed at."""
+    chandra = _load_stage_module("chandra")
+    body = b'<div data-bbox="100 77 900 385" data-label="Text">ACT ONE</div>'
+
+    with pytest.raises(SchemaRefusal, match="pass page_size"):
+        chandra.observe(_presented(), body)
+
+
+def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
+    """A block the model wrote but placed nowhere is retained, never invented.
+
+    The vendor prints "defaulting to full image" and substitutes [0, 0, 1, 1] --
+    a few pixels in the corner, not the full image its message claims. Here the
+    text stays in the page reading, the geometry stays unresolved, the fact is a
+    finding on the retained capture, and no rectangle is published for it
+    (GOVERNANCE 2 and 10).
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = (
+        '<div data-bbox="1_0 2 3 4" data-label="Text">unplaced but read</div>\n'
+        '<div data-bbox="100 462 900 846" data-label="Text">ACT TWO beta</div>\n'
+        '<div data-bbox="0 0 10 10" data-label="Blank-Page"></div>'
+    ).encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    assert chandra.parse(body) == "unplaced but read\nACT TWO beta"
+    observed = chandra.observe(_presented(), body, page_size=(200, 260))
+    assert observed == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 20, "y": 120, "w": 160, "h": 100},
+            "bounds_source": "native",
+            "span": {"start": 18, "end": 30},
+        }
+    ]
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+    assert record["parse"] == {
+        "state": "parsed",
+        "parser": "html",
+        "text": "unplaced but read\nACT TWO beta",
+    }
+    assert [finding["kind"] for finding in record["findings"]] == [
+        "malformed-bbox",
+        "blank-page-retained",
+    ]
+    assert record["findings"][0]["data_bbox"] == "1_0 2 3 4"
+    assert record["vendor_identity"] == chandra.vendor_identity()
+    # The whole capture is a shape the shared contract accepts, findings and
+    # vendor pin included -- not merely a dict this module built.
+    validate_native_capture(record)
+
+
+def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
+    """The vendor's retry ladder is not carried; the fact it detects is.
+
+    `chandra/model/vllm.py` re-rolls a stuck page up a rising-temperature ladder
+    under `_should_retry`. Re-rolling a reading until it stops looking stuck is
+    recovering quality, which GOVERNANCE 11 refuses to a recovery loop, so the
+    ladder stays with the vendor's harness. What crosses is the observation:
+    without it a page that degenerated but still ended under its bound would
+    reach the Perlector as full testimony under `transport_stop_reason "stop"`.
+
+    The scan reads the *transcription*, not the markup it arrived in: the tail
+    of these bytes is `</div>` and the tail of the reading is the repeated
+    phrase, and the finding names which view it looked at.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    stuck = "the same clause repeated over and over " * 12
+    body = f'<div data-bbox="100 100 900 900" data-label="Text">{stuck}</div>'.encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["state"] == "parsed"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["findings"][0]["inspected"] == "parsed-text"
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
+    # The bytes are untouched and the reading is untouched: the scan runs after
+    # capture and records, it does not gate (GOVERNANCE 7).
+    assert tree.read_bytes(record["raw_response_ref"]["relative_path"]) == body
+    validate_native_capture(record)
+
+
+def test_an_honest_chandra_reading_carries_no_repetition_finding():
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = (
+        b'<div data-bbox="100 100 900 400" data-label="Text">the first act, read plainly</div>'
+        b'<div data-bbox="100 420 900 900" data-label="Text">the second, different act</div>'
+    )
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["findings"] == []
+    assert record["stop_reason"] == "stop"
+
+
+def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
+    """Precedence, and the same precedence Churro's capture already uses.
+
+    A body this grammar could not place is the more load-bearing fact about the
+    capture, so it is what the stop reason names; the repetition stays in
+    `findings` either way, so nothing is lost by the ordering (GOVERNANCE 2).
+    The raw bytes are what was inspected, because no parse produced a text.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = ("nothing here is a layout block at all, over and over " * 8).encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["state"] == "unrecognized-shape"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["findings"][0]["inspected"] == "raw-response"
+    assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
+    """An unscanned body is a recorded fact, not a clean one.
+
+    The grammar refuses these bytes unread, and normalizing them here to count a
+    tail would spend exactly the memory the ceiling exists to refuse. The
+    capture says the scan did not run instead of saying nothing.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = b"x" * (chandra.MAX_RESPONSE_BYTES + 1)
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="length",
+        parser="html",
+        served=True,
+    )
+
+    assert record["parse"]["outcome"] == "response-too-large"
+    assert [finding["kind"] for finding in record["findings"]] == [
+        "post-hoc-repetition-uninspected"
+    ]
+    assert record["findings"][0]["inspected"] == "raw-response"
+    assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_the_placeholder_posture_is_scanned_for_repetition_too():
+    """The scan is posture-blind, as the retention it rides on is.
+
+    A degenerate body is a fact about a response whichever reader read it, and
+    the fixture's placeholder rows are read by a parser of this repository's own
+    -- so a stuck placeholder is recorded stuck rather than silently clean.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    stuck = "over and over and over again " * 12
+    body = json.dumps(
+        {"schema": chandra.FIXTURE_RESPONSE_SCHEMA, "markdown": stuck, "blocks": []}
+    ).encode("utf-8")
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": dict(chandra.FIXTURE_PROMPT)},
+        raw_response=body,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+
+    assert record["parse"]["state"] == "parsed"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
+
+
+def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_chair():
+    """Retained history, and no route by which it becomes a live reading.
+
+    The fixture's `fixture-chandra-response.v1` rows keep their reader until
+    U16 re-declares them in the vendor grammar, and the offline posture still
+    parses them. A served chair cannot reach that reader at all: the parser name
+    is what the record would carry, and a live capture written under it could
+    never be re-derived as the grammar the chair was actually asked in.
+    """
+    chandra = _load_stage_module("chandra")
+    feeding = _load_stage_module("feeding")
+    body = b'{"schema":"fixture-chandra-response.v1","markdown":"placeholder","blocks":[]}'
+    tree = _PageTree(_page_png(200, 260))
+
+    assert chandra.parse_fixture_placeholder(body) == "placeholder"
+    offline = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": dict(chandra.FIXTURE_PROMPT)},
+        raw_response=body,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+    assert offline["parse"] == {"state": "parsed", "parser": "json", "text": "placeholder"}
+    # Retained history carries no vendor pin: the fixture asks nothing of
+    # anybody, so no vendor bytes were sent for it to name.
+    assert "vendor_identity" not in offline
+
+    with pytest.raises(SchemaRefusal, match="placeholder parser"):
+        feeding.retain_model_view(
+            tree,
+            adapter="chandra.v1",
+            view={"prompt": chandra.prompt()},
+            raw_response=body,
+            transport_stop_reason="stop",
+            parser="json",
+            served=True,
+        )
+    # And under the live grammar the same bytes are a named surprise rather than
+    # a reading: the layout reader can place nothing in a JSON object.
+    served = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+    assert served["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "html",
+        "outcome": "no-layout-blocks",
+    }
+    assert served["stop_reason"] == "partial-parse-unrecognized-shape"

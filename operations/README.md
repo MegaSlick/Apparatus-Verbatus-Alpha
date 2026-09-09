@@ -21,6 +21,22 @@ There is no `local/`, `remote/`, or `deploy/` here. A pod runs the very same sta
 directories this repository holds. Where code runs is an operational fact, not an
 organising principle.
 
+## Verbatus runs from a checkout, and only from a checkout
+
+There is no wheel installation and no packaged distribution of this system. The pod
+bootstrap clones the repository at a pinned commit and runs `uv sync --locked`
+(`operations/pod/bootstrap.py`); nothing anywhere builds or installs a wheel, and the CI
+workflow test asserts the workflow does not `pip install .`.
+
+That is a contract, not an omission. `pyproject.toml` discovers `common` and `operations`
+only, so a built wheel carries no `pipeline/`, `config/`, `proof/` or `gold/` — while
+`common/stage.py` and `operations/submit/gate.py` resolve their defaults as siblings of
+those packages. An outside review built that wheel, installed it outside a checkout, and
+found the default data-handling policy missing. The repair is to say so, not to package
+private material: `common/checkout.py` refuses before any verb runs when the
+checkout-relative directories are not beside the code, and `verbatus` renders that as
+`not-a-checkout`.
+
 ## Start here: the operator rehearsal
 
 You do not need Terminal, SSH, Python, or an AI assistant for a normal rehearsal. On a
@@ -94,9 +110,10 @@ arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
 `NTFY_SERVER` override so stale process state cannot redirect the bearer topic.
 
 **Every event exits non-zero when delivery failed**, and prints one line beginning
-`notify: NOT DELIVERED`. A real delivery prints nothing at all. So the exit status is evidence
-for all four events, and a session that thinks it was heard cannot wait forever on a message
-that was never sent.
+`notify: NOT DELIVERED`; a real delivery prints one line, `notify: delivered (<event>)`, since
+2026-09-06, so silence is never evidence of either. The exit status is evidence for all four
+events, and a session that thinks it was heard cannot wait forever on a message that was
+never sent.
 
 `start` and `milestone` used to exit 0 even after printing that line, deliberately, so a
 session could not die because a ping did not land. Two independent reviewers found the same

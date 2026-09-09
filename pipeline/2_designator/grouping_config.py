@@ -65,6 +65,7 @@ from geometry import (
     _validate_dimensions,
 )
 
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
@@ -282,6 +283,13 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     if not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise ContractError(
             f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            "the grouping configuration's provenance says calibrated_for_this_corpus but "
+            "sample_count is zero"
         )
     return dict(provenance)
 

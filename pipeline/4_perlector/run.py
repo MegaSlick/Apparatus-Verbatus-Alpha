@@ -41,6 +41,7 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 from typing import Any, Final
@@ -62,7 +63,7 @@ from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
-from common.alignment import markup_text_view  # noqa: E402
+from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -79,7 +80,7 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
-from common.contracts.outcomes import ATTACHMENT_BASES  # noqa: E402
+from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
@@ -1182,16 +1183,34 @@ def act_attachment_view(
                 if native_capture is not None
                 else chair_testimonium["outcome"]
             )
-            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
-                reported_geometry_overlaps(
-                    page_payload.get("observed", []), basis["transform"]["bounds"]
-                )
-                for basis in page_bases
+            # Re-derived through the one shared rule the producer used
+            # (`common/contracts/outcomes.py::page_attachment_basis`), never a
+            # second local spelling of it: a page witness attaches on its own
+            # reported ink over this act's sealed proposal, or -- only where it
+            # reported none -- on an alignment that located this act's anchor
+            # line inside its page text. The second basis is what lets a chair
+            # whose grammar carries no geometry at all count at this act
+            # (`anchor-line`, in ATTACHMENT_BASES since the set was closed);
+            # without it every act sat one witness under a floor of three on a
+            # shortfall that had not happened. Still a derivation, not an
+            # assertion: `attached` and the basis label are both recomputed from
+            # the retained page Testimonium, so a resealed record cannot claim
+            # either one.
+            derived_basis = page_attachment_basis(
+                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+                geometry_overlaps=any(
+                    reported_geometry_overlaps(
+                        page_payload.get("observed", []), basis["transform"]["bounds"]
+                    )
+                    for basis in page_bases
+                ),
+                alignment=attachment["alignment"],
             )
-            if attachment["attached"] != geometrically_attached:
+            if attachment["attached"] != (derived_basis != "unattached"):
                 raise SchemaRefusal(
                     f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry against the sealed proposal"
+                    "that witness's reported geometry, or from an anchor line located in its "
+                    "page text, against the sealed proposal"
                 )
             edge_deltas.setdefault(chair, []).extend(
                 sealed_proposal_edge_deltas(page_payload, page_bases)
@@ -1290,8 +1309,20 @@ def act_attachment_view(
                     "unjoined-attempt record"
                 )
             alignment = attachment["alignment"]
-            if attachment["attached"] and attachment["attachment_basis"] != "geometric-overlap":
-                raise SchemaRefusal("an attached page witness has no geometric-overlap basis")
+            # The exact label, not membership in the two admissible ones. A
+            # widened basis set makes the weaker check ("is it one of these?")
+            # look sufficient while letting a record attached on its own
+            # geometry be filed as `anchor-line`, or the reverse -- and the two
+            # are not interchangeable, because the second says the chair counts
+            # here only because ANOTHER chair's anchor located its text. The
+            # label is evidence about independence and is re-derived like every
+            # other fact on this record.
+            if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
+                raise SchemaRefusal(
+                    f"act {act_id} page attachment for chair {chair!r} names basis "
+                    f"{attachment['attachment_basis']!r}, but its own retained evidence "
+                    f"attached it by {derived_basis!r}"
+                )
             if (
                 attachment["attached"]
                 and isinstance(alignment, dict)
@@ -1306,6 +1337,7 @@ def act_attachment_view(
                         "anchor_chair",
                         "anchor_span",
                         "witness_span",
+                        "anchor_line_match",
                         "line_geometry",
                         "loss",
                         "offset_maps",
@@ -1511,14 +1543,71 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
 
 
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
-    """Give dissent an act-anchored page slice without changing retained testimony."""
+    """Give dissent a safe comparison view without changing retained testimony.
+
+    Two sources, one per scope, and neither writes anything back to the
+    Attestatores record: the copy exists precisely so the retained Testimonium
+    stays the verbatim bytes GOVERNANCE 4 requires while dissent gets something
+    it can honestly diff.
+
+    * A **page witness** gets this act's anchored, markup-stripped slice of its
+      page reading, computed by `act_attachment_view`. Absence still means the
+      recorded alignment is explicitly unaligned, and `dissent.dissent_against`
+      says so by name.
+    * An **act-scoped chair whose format declares `can_express_uncertainty`**
+      gets its own retained text with exactly the RecordGold bracket markers
+      removed (`common/alignment.py::bracket_marker_view`). Without it such a
+      chair is `compared: "unknown"` forever: `dissent.is_comparable` refuses to
+      diff a format that may embed alternative-reading markup inline, and
+      `markup_text_view` -- which removes TAG markup -- does not touch
+      `[UNCERTAIN]`/`[CROSSED_OUT]`. That is the instrument ARCHITECTURE names
+      for catching a reader that learned to agree with witnesses going dark on
+      the one chair whose grammar says most about the ink it was unsure of.
+
+    **The gate is the capability, and that is narrower than it can prove.** A
+    format capability is two booleans; nothing in the record names WHICH
+    notation a chair uses. The only act-scoped chair the roster binds is DAI,
+    whose notation is exactly these two bracket tokens (the RecordGold card's),
+    so the view is the right one for every producer that can reach this line --
+    including once `dai.v1` declares the capability, which is ordered after this
+    wiring precisely so that declaring it truthfully never costs a dissent row.
+    It
+    would be the wrong one for a future act-scoped chair that expressed
+    uncertainty some other way -- its markers would survive and read as
+    disagreement. Named rather than assumed away (GOVERNANCE 10), and it is the
+    mirror of the hazard `dissent.is_comparable` already records for page
+    witnesses; the fix for both is a notation field on the capability, not a
+    silent widening here.
+
+    Nothing selects among witnesses (GOVERNANCE 3, hard rule 8): every chair
+    that reported gets a view derived from its OWN retained bytes, dissent is
+    computed after the reading is fixed, and no view is ever fed back into it.
+    """
     views = attachment_view["comparison_views"]
     result = []
     for record in testimonia:
         copied = {**record, "payload": dict(record["payload"])}
-        chair = copied["payload"]["chair"]
-        if copied["payload"].get("page_witness") and chair in views:
-            copied["payload"]["comparison_reported"] = views[chair]
+        payload = copied["payload"]
+        chair = payload["chair"]
+        if payload.get("page_witness"):
+            if chair in views:
+                payload["comparison_reported"] = views[chair]
+            result.append(copied)
+            continue
+        capabilities = payload.get("format_capabilities")
+        reported = payload.get("payload")
+        # `is True`, not truthiness: this is read from a retained record, and a
+        # non-boolean at a boolean field must not decide a comparison view. The
+        # producer's own seam refuses anything else
+        # (`live_witness._format_capabilities_for`), so a value that is not
+        # exactly `True` here is either an honest `False` or a record no
+        # producer wrote, and both mean "do not strip".
+        if (
+            isinstance(capabilities, Mapping)
+            and capabilities.get("can_express_uncertainty") is True
+            and isinstance(reported, str)
+        ):
+            payload["comparison_reported"] = bracket_marker_view(reported)["text"]
         result.append(copied)
     return result
 

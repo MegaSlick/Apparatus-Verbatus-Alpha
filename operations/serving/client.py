@@ -188,6 +188,68 @@ class RetainBytes(Protocol):
         """Return ``{"relative_path": ..., "sha256": ...}`` for ``data``."""
 
 
+def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
+    """A detached, canonical, deep-frozen snapshot of one capacity record.
+
+    Detached: the whole structure is rebuilt from canonical bytes, so no list
+    or nested mapping the caller still holds is reachable from the request.
+    Canonical: the round trip is through :func:`canonical_bytes`, the one
+    writer every retained artifact goes through, so a record carrying a float,
+    a non-string key, a cycle or an unencodable string is refused now — at the
+    construction the caller can still see — rather than when the call record is
+    serialized after the wire call has already happened. Frozen: mappings
+    become ``MappingProxyType`` and sequences tuples, so a later write anywhere
+    in the structure raises instead of silently rewriting admission evidence.
+    """
+
+    try:
+        detached = json.loads(canonical_bytes(_plain_capacity(value)))
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            "a request's capacity record cannot be written canonically, so it could not be "
+            f"retained beside the call it admitted: {error}",
+        ) from error
+    if not isinstance(detached, dict):
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            "a request's capacity record must be a mapping of the arithmetic one request was "
+            f"admitted on, not {type(detached).__name__}",
+        )
+    return _immutable_json(detached)
+
+
+def _plain_capacity(value: object) -> object:
+    """The same structure in the plain dicts and lists a JSON writer holds.
+
+    Both directions of the snapshot need it: on the way in, because a caller
+    may pass another request's already-frozen record and ``json.dumps`` refuses
+    a ``mappingproxy``; on the way out, because the call record is serialized
+    canonically and must carry the sealed evidence rather than a re-read of the
+    caller's own object. Its own recursion is not separately bounded: on the way
+    in it runs inside :func:`_sealed_capacity`'s guard, which turns a
+    `RecursionError` into the same named refusal `canonical_bytes` gives a
+    structure past its 256-level limit; on the way out it walks a value that
+    already came through that limit.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: _plain_capacity(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_capacity(item) for item in value]
+    return value
+
+
+def _immutable_json(value: object) -> object:
+    """Deep-freeze one already-canonical JSON value."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _immutable_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_immutable_json(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ChairRequest:
     """One reading request, built by the caller and refused, never repaired.
@@ -197,6 +259,29 @@ class ChairRequest:
     actually goes on the wire, and may never name ``model``, ``stream``,
     ``temperature``, ``seed``, or ``n`` — those are the manager's and the
     decoding policy's alone (GOVERNANCE 7).
+
+    ``capacity`` is the caller's own
+    ``common.request_capacity`` record for this request against the sealed row
+    it is about to be sent to. The client neither computes nor checks it — only
+    the caller knows which prompt and which answer shape this call is — but it
+    copies it onto the retained call record, so a run's receipts carry the
+    arithmetic a request was admitted on beside the request itself. ``None``
+    where the caller states none.
+
+    **The capacity record is sealed at construction, all the way down.** It
+    used to be frozen one level deep, and a capacity record is not flat: it
+    carries an ``images`` list of per-image dictionaries, and every production
+    builder passes ``request_fits``'s freshly built record straight in and
+    keeps its own reference to the same object. A caller that touched a nested
+    entry afterwards would leave the retained call record disagreeing with the
+    evidence the request was actually admitted on — the arithmetic in the
+    receipt would be one thing and the arithmetic that let the request through
+    another, with nothing able to tell which was which. :func:`_sealed_capacity`
+    takes a detached recursive snapshot instead: canonicalized through the same
+    writer the call record is serialized with (so a record that could not be
+    written is refused here, at the caller's own construction, rather than
+    inside receipt serialization long after the wire call), then deep-frozen.
+    Nothing the caller still holds reaches into it.
     """
 
     kind: str
@@ -204,10 +289,13 @@ class ChairRequest:
     image_sha256s: tuple[str, ...]
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
+    capacity: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
         object.__setattr__(self, "image_sha256s", tuple(self.image_sha256s))
+        if self.capacity is not None:
+            object.__setattr__(self, "capacity", _sealed_capacity(self.capacity))
         object.__setattr__(
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
@@ -374,10 +462,24 @@ class ChairClient:
         response = handle.request_reading(
             request.kind, body, handle.profile.request_timeout_seconds
         )
-        _refuse_bytes_from_the_wrong_source(
-            response, expected_model_id=handle.profile.served_model_id
-        )
+        # Retention comes first, and it comes first for the one artefact a
+        # rented card exists to produce: when vLLM refuses a request it says
+        # *why* in the body of a non-200, and that sentence -- "this model's
+        # maximum context length is N tokens, however you requested M" -- is
+        # the whole diagnostic. Refusing before retaining threw it away, on a
+        # card billing by the hour, which is exactly what GOVERNANCE 2 forbids.
+        #
+        # Retention is not attribution. A body from another model is still not
+        # this chair's evidence and still never becomes a reading: the refusal
+        # below is unchanged and no `ChairResponse` is returned. What changes is
+        # that the bytes exist afterwards, by their own digest, so the refusal
+        # can name them and a reader can see what actually arrived.
         raw_response_ref = self._retain(response.body)
+        _refuse_bytes_from_the_wrong_source(
+            response,
+            expected_model_id=handle.profile.served_model_id,
+            raw_response_ref=raw_response_ref,
+        )
 
         content: str | None
         finish_reason: str | None = None
@@ -428,6 +530,10 @@ class ChairClient:
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
             "parse_problem": parse_problem,
+            # Thawed out of the sealed snapshot rather than out of whatever the
+            # caller passed: the canonical writer holds dicts and lists, and
+            # what is written is exactly the evidence the request carried.
+            "capacity": _plain_capacity(request.capacity) if request.capacity is not None else None,
         }
         if set(record) != CHAIR_CALL_RECORD_FIELDS:
             raise AssertionError(  # pragma: no cover - closed by construction above
@@ -511,26 +617,68 @@ def _nonfinite_path(value: object, path: str = "") -> str | None:
     return None
 
 
-def _refuse_bytes_from_the_wrong_source(response: HttpResponse, *, expected_model_id: str) -> None:
-    """Refuse before retention: bytes from another model are not this chair's evidence.
+# How much of a refused body travels in the refusal's own detail. Enough to
+# carry vLLM's own overflow sentence, which is the artefact a real run is
+# paying for; short enough that a megabyte of HTML from something that is not
+# vLLM at all cannot be pasted into a traceback. The whole body is retained
+# either way and the refusal names where. Used on the non-200 branch alone:
+# a 200 from the wrong model carries a foreign reading, and its words do not
+# go into an exception message.
+_REFUSAL_BODY_PREVIEW_BYTES = 512
+
+
+def _body_preview(body: bytes) -> str:
+    """The head of a refused body, decoded loosely, for the refusal's detail."""
+
+    head = body[:_REFUSAL_BODY_PREVIEW_BYTES]
+    text = head.decode("utf-8", errors="replace")
+    if len(body) > _REFUSAL_BODY_PREVIEW_BYTES:
+        return f"{text!r} (first {_REFUSAL_BODY_PREVIEW_BYTES} of {len(body)} bytes)"
+    return f"{text!r} ({len(body)} bytes)"
+
+
+def _refuse_bytes_from_the_wrong_source(
+    response: HttpResponse,
+    *,
+    expected_model_id: str,
+    raw_response_ref: Mapping[str, str],
+) -> None:
+    """Refuse a response that is not this chair's, with its bytes already retained.
 
     Deliberately narrower than :func:`~operations.serving.http.parse_openai_reading`
     — it checks only status and, when the body parses as a JSON object naming a
     model, that name. Anything else (an unparseable body, one with no ``model``
-    field) is left for the full parse after retention, because that is
-    legitimate retained evidence for a malformed reading, not evidence from
-    somewhere else.
+    field) is left for the full parse, because that is legitimate retained
+    evidence for a malformed reading, not evidence from somewhere else.
+
+    ``raw_response_ref`` names the blob the caller has already written. Both
+    refusals carry it, so the bytes are reachable from the traceback as well as
+    on disk.
+
+    **Only the non-200 quotes the body.** A non-200 is the engine's own account
+    of why it refused -- "this model's maximum context length is N tokens" --
+    and that sentence is the artefact a rented card was paying for. A 200 from
+    the wrong model is the opposite case: the body is a *foreign* reading, text
+    some other model produced about who knows what image, and this repository
+    does not put a foreign reading's words into an exception message where they
+    would be read, logged, and quoted onward. It is retained, by its own digest,
+    and the refusal names where.
     """
 
     if response.status != 200:
         raise ChairResponseRefusal(
-            "CHAIR_RESPONSE_HTTP_ERROR", f"reading response returned HTTP {response.status}"
+            "CHAIR_RESPONSE_HTTP_ERROR",
+            f"reading response returned HTTP {response.status}; its body is retained at "
+            f"{dict(raw_response_ref)!r} and begins {_body_preview(response.body)}",
         )
     model = _peek_model(response.body)
     if model is not None and model != expected_model_id:
         raise ChairResponseRefusal(
             "CHAIR_RESPONSE_MODEL_MISMATCH",
-            f"reading response model={model!r}, expected {expected_model_id!r}",
+            f"reading response model={model!r}, expected {expected_model_id!r}; its "
+            f"{len(response.body)} bytes are retained at {dict(raw_response_ref)!r} and are "
+            "not quoted here: a reading from another model is not this chair's evidence and "
+            "does not travel in a refusal message",
         )
 
 
@@ -538,9 +686,12 @@ def _peek_model(body: bytes) -> str | None:
     """The response's declared ``model``, or ``None`` when it cannot be read.
 
     Never raises: an unparseable body or a missing field is exactly the shape
-    a malformed reading is allowed to have, and this helper is used both
-    before retention (where that must not raise) and while building the call
-    record (where ``response_model`` is simply ``null`` for such a body).
+    a malformed reading is allowed to have, and every one of this helper's
+    three callers depends on that. It decides the wrong-source refusal; it
+    separates a real foreign-model observation from a body that named no model
+    at all, which the parser's own comparison cannot tell apart; and it fills
+    ``response_model`` on the call record, which is simply ``null`` for such a
+    body. All three run *after* the bytes are retained.
     """
 
     try:

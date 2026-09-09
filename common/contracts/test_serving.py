@@ -56,6 +56,7 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "finish_reason",
             "usage",
             "parse_problem",
+            "capacity",
         }
     )
 

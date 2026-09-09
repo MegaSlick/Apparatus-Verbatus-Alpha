@@ -21,7 +21,7 @@ from .models import (
     is_witness_role,
 )
 
-_TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "model_root"}
+_TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "witness_framings", "model_root"}
 _CONFIGURED_COMMON = {
     "state",
     "source",
@@ -68,6 +68,7 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         model_root = _relative_posix("models.toml", "model_root", raw_model_root)
 
     adapter_recipes = _parse_adapter_recipes(raw.get("adapter_recipes", {}))
+    witness_framings = _parse_witness_framings(raw.get("witness_framings", {}))
     raw_chairs = raw.get("chairs")
     if not isinstance(raw_chairs, dict) or not raw_chairs:
         raise ConfigurationRefusal("models.toml", "chairs must be a non-empty table")
@@ -120,10 +121,25 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
             step = chairs.get(walker)
             walker = step.adapter_of if isinstance(step, ChairIdentity) else None
 
+    for role in witness_framings:
+        chair = chairs.get(role)
+        if not isinstance(chair, ChairIdentity):
+            raise ConfigurationRefusal(
+                "witness_framings",
+                f"{role!r} names no configured chair, so nothing would ever be asked in the "
+                "framing it declares",
+            )
+        if chair.witness_adapter is None:
+            raise ConfigurationRefusal(
+                "witness_framings",
+                f"{role!r} is not a witness chair and has no adapter to be framed",
+            )
+
     return ModelsConfig(
         witness_floor=witness_floor,
         chairs=chairs,
         adapter_recipes=adapter_recipes,
+        witness_framings=witness_framings,
         model_root=model_root,
         source_path=Path(source_path) if source_path is not None else None,
     )
@@ -226,6 +242,24 @@ def _parse_adapter_recipes(value: Any) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for name, recipe in value.items():
         parsed[_role(name)] = _text("adapter_recipes", str(name), recipe)
+    return parsed
+
+
+def _parse_witness_framings(value: Any) -> dict[str, str]:
+    """Which framing each witness chair is asked in, by role.
+
+    The name is checked against the chair's own adapter where the adapters are
+    known (`pipeline/3_attestatores/witness_adapters.py::
+    validate_runnable_adapter_bindings`), not here: `common/` may not import a
+    stage, and a spelling this file accepted but no adapter declares would then
+    be refused before a run opens rather than at the first request.
+    """
+
+    if not isinstance(value, dict):
+        raise ConfigurationRefusal("models.toml", "witness_framings must be a table of strings")
+    parsed: dict[str, str] = {}
+    for name, framing in value.items():
+        parsed[_role(name)] = _text("witness_framings", str(name), framing)
     return parsed
 
 
