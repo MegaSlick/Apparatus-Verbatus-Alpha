@@ -993,7 +993,12 @@ def not_measured_basis(
                     if reason
                     else "this act's continuation-page coverage is recorded unmeasured"
                 )
-        coverage = payload.get("cross_capture_coverage")
+        if "cross_capture_coverage" not in payload:
+            raise FatalAccounting(
+                f"the Recensor review of {act_key!r} carries no cross-capture coverage field; "
+                "an absent record may not be exported as an instrument with no producer"
+            )
+        coverage = payload["cross_capture_coverage"]
         if coverage is None:
             continue
         if not isinstance(coverage, dict):

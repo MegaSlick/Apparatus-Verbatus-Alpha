@@ -185,3 +185,20 @@ def test_armarium_consumption_refuses_malformed_review_measurements(
     with pytest.raises(armarium.FatalAccounting, match=match) as refusal:
         armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [])
     assert cause_match in str(refusal.value.__cause__)
+
+
+def test_armarium_consumption_refuses_a_review_without_cross_capture_coverage():
+    payload = {
+        "testimony_content_coverage": {
+            "by_chair": {
+                "chair": {
+                    "attached_spans": [],
+                    "uncovered_non_whitespace": {"ranges": [], "count": 0},
+                }
+            },
+            "shortfall": False,
+        },
+        "testimony_content_coverage_continuation": [],
+    }
+    with pytest.raises(armarium.FatalAccounting, match="act-one.*no cross-capture coverage field"):
+        armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [])
