@@ -423,21 +423,19 @@ def test_named_dossier_carries_each_witness_model_and_resolved_provenance(eviden
         assert row["resolved_provenance"] == provenance
 
 
-def test_named_dossier_carries_the_real_vendor_training_domain_not_a_fixture_placeholder(
+def test_named_dossier_carries_the_fixture_training_domain_for_the_fixture_roster(
     evidence,
 ):
-    """spec_08's factual context is the real witness's training domain, not the
-    fixture identity `config/models.toml` still resolves while the real roster
-    is commented out (VENDOR_SYSTEMS_DESIGN_2026-09-06.md, U7). The declaration
-    at `config/witness_context.toml` is the single source both this dossier and
-    the config-binding check (`common/stage.py::validate_witness_context_bindings`)
-    read, so asserting against it -- rather than restating the sentences here --
-    is what actually catches a config edit that silently reverts to the fixture
-    placeholder or drops a fact.
+    """The fixture roster must not receive vendor facts as though they were its own.
+
+    The default declaration is the single source both this dossier and the
+    config-binding check read, so asserting against it catches an accidental
+    real/fixture declaration swap.
     """
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")
     declared = dossier.load_witness_context(DECLARATION)
+    assert declared, "the fixture witness declaration must name at least one chair"
 
     by_label = {row["witness_label"]: row for row in named["testimonia"]}
     assert set(by_label) >= set(declared), (
@@ -445,19 +443,10 @@ def test_named_dossier_carries_the_real_vendor_training_domain_not_a_fixture_pla
     )
     for chair, entry in declared.items():
         assert by_label[chair]["training_domain"] == entry["training_domain"]
-        assert "fixture" not in entry["training_domain"].lower(), (
-            f"{chair!r}'s declared training_domain still reads as the retired "
-            "synthetic-fixture placeholder"
+        assert (
+            entry["training_domain"]
+            == "a synthetic fixture witness; no real training domain applies"
         )
-        assert "synthetic" not in entry["training_domain"].lower()
-
-    # Each chair's fact is specific to the real vendor system bound to it
-    # (VENDOR_SYSTEMS_DESIGN_2026-09-06.md's per-model sections), not generic or
-    # interchangeable text: a name unique to that vendor system reaches the
-    # dossier byte-for-byte, not paraphrased or dropped in transit.
-    assert "Datalab" in by_label["attestator_1"]["training_domain"]
-    assert "Teklia" in by_label["attestator_2"]["training_domain"]
-    assert "Stanford OVAL" in by_label["attestator_3"]["training_domain"]
 
 
 def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(evidence):

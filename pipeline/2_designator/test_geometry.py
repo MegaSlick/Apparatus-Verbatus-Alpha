@@ -548,3 +548,13 @@ def test_load_padding_config_refuses_a_non_boolean_calibrated_flag(tmp_path):
     _write_padding_toml(path, provenance={**PROVENANCE, "calibrated_for_this_corpus": "true"})
     with pytest.raises(ContractError, match="calibrated_for_this_corpus"):
         load_padding_config(path)
+
+
+def test_load_padding_config_refuses_calibrated_provenance_with_no_samples(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(
+        path,
+        provenance={**PROVENANCE, "calibrated_for_this_corpus": True, "sample_count": 0},
+    )
+    with pytest.raises(ContractError, match="calibrated_for_this_corpus.*sample_count is zero"):
+        load_padding_config(path)

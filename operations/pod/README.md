@@ -301,9 +301,12 @@ check.
   receipt, launch audit and evidence manifest each smoke publishes land
   content-addressed in that same directory (`PodPreflightReceiptPublisher`),
   because no run tree exists yet for a `StageContext` to own them; the
-  catalogue is `--serving-recipes-config` (default the fixture-only
-  `config/serving_recipes.toml`; a real launch names
-  `config/serving_recipes_real.toml`), and `--fixture` with
+  catalogue is `--serving-recipes-config` and the factual declaration is
+  `--witness-context-config` (the fixture defaults are
+  `config/serving_recipes.toml` and `config/witness_context.toml`; a real launch
+  names `config/serving_recipes_real.toml` and
+  `config/witness_context-real.toml` with `config/models-real.toml`), and
+  `--fixture` with
   `--page-witness-file` lets an operator supply a rendered page instead.
   `test_bootstrap_main.py` proves the wiring green through the real registry
   over the committed model fixtures and the serving package's fakes, and red
@@ -356,9 +359,11 @@ check.
   `pipeline/orchestrator/run.py` as a subprocess of the pod's own interpreter
   over the volume — run root `<volume>/runs` (or `--run-root`, inside the
   volume), `--submission-folder`/`--submission-manifest` inside the volume,
-  `--models-config` and `--serving-recipes-config` taken from the bootstrap plan
-  (the roster `PREFLIGHT` measured is the roster the run serves; naming a
-  different pair here is not offered), `--data-gate-policy` inside the
+  `--models-config`, `--serving-recipes-config`, and `--witness-context-config`
+  taken from the bootstrap plan (the roster and declaration checked by
+  `CONFIGURATION`, and the serving catalogue `PREFLIGHT` measured, are the trio
+  the run serves and seals; naming a different selection here is not offered),
+  `--data-gate-policy` inside the
   repository — and writes a `pod-run-report.v1` at its launch-bound
   `--report-path` before, during and after: `bootstrapping`, `running`, then
   `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`. **Exit
@@ -417,15 +422,27 @@ check.
   `held_to_hard_deadline`. `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
-  **The roster and the catalogue are named together or the plan is refused.**
+  **The roster, serving catalogue, and witness declaration are one selection.**
   `bootstrap_main` defaults `--serving-recipes-config` to the fixture-only
   `config/serving_recipes.toml`, which is right only while `--models-config` is
   the shipped fixture roster; any other roster must name its catalogue
-  explicitly, or the plan is refused before the boot. A real roster resolving
-  against the fixture catalogue is the mismatch `pipeline/orchestrator/run.py`
-  names and `operations/operator/surface._roster_argv` refuses, and on this path
-  it would otherwise be discovered only after the pod had billed for the boot
-  and the model fetch.
+  explicitly. The shipped real selection must also name
+  `--witness-context-config config/witness_context-real.toml`. After the pinned
+  checkout, the journaled `CONFIGURATION` step recognizes each role's known
+  shipped sentence, even among custom entries or with edge whitespace, and
+  matches its present witness to the shipped source, source reference, receipt
+  revision, and kind. It runs before uv sync, transfer, model materialization,
+  cache work, or serving. Its receipt binds the roster, declaration, serving
+  catalogue, and placement paths and raw digests. Partial and green resumes
+  revalidate those bindings before skipping completed work. A changed selection
+  or an old receipt without these bindings fails at `CONFIGURATION`, preserving
+  the original receipt; restore that selection or start a new journal. A failure
+  before this step first completes still permits configuration repair. Plan-only and
+  `--dry-run` report selected paths without reading files that may not exist
+  until checkout. A custom roster may use an operator-authored declaration that
+  passes the closed shape and exact-role coverage checks. A local repository
+  path alone neither proves the fixture profile nor identifies a Hugging Face
+  mirror, so custom local mirrors need that custom declaration.
 - `notify_hooks.py` is a small, vendor-neutral phone-notification seam, distinct from
   `notify_bridge.py`'s narrower spend-floor-warning one. It sends exactly one short line
   through `operations/notify/notify.sh` at each of three moments — launch (lease id,

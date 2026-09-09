@@ -20,7 +20,7 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -28,6 +28,7 @@ from common.stage import (
     EXIT_HELD,
     StageContext,
     load_fixture,
+    require_sealed_config,
     run_config_bindings,
 )
 
@@ -49,6 +50,27 @@ def _parser_stub():
     return SimpleNamespace(parse_args=lambda: SimpleNamespace())
 
 
+def _accepted_review() -> dict:
+    """A fresh continuation-inclusive Recensor review for terminal tests."""
+    return {
+        "artifact_id": "art_accepted",
+        "outcome": "accepted",
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
+            "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
+        },
+    }
+
+
 class _RecordingContext:
     """Just enough sealed-context surface for terminal-only stage paths."""
 
@@ -68,6 +90,30 @@ class _RecordingContext:
             False,
         )
         self.blobs: dict[str, bytes] = {}
+        # The sealed configuration paths the export reads for its
+        # `claims.not_measured` block: the three Designator geometry files whose
+        # `provenance` says whether their numbers were ever calibrated, and the
+        # Perlector audit policy whose `round_cap` decides whether an uncertain
+        # span was reachable at all. The shipped files, because this synthetic
+        # context stands in for a run sealed under them -- a stand-in that named
+        # invented paths would make the block's own honesty untestable here.
+        config = ROOT / "config"
+        self.args = SimpleNamespace(
+            designator_padding_config=config / "designator_padding.toml",
+            designator_geometry_config=config / "designator_geometry.toml",
+            designator_grouping_config=config / "designator_grouping.toml",
+        )
+        self.perlector_audit_config_path = config / "perlector_audit.toml"
+        # Mirror the real context's named point-of-use seals.  The terminal
+        # paths read all four files; recording their digests here makes the
+        # double refuse drift or an unsealed name instead of bypassing that
+        # boundary.
+        self.sealed_config_digests = {
+            "designator-padding": digest_bytes(self.args.designator_padding_config.read_bytes()),
+            "designator-geometry": digest_bytes(self.args.designator_geometry_config.read_bytes()),
+            "designator-grouping": digest_bytes(self.args.designator_grouping_config.read_bytes()),
+            "perlector-audit": digest_bytes(self.perlector_audit_config_path.read_bytes()),
+        }
 
         def read_bytes(relative_path: str) -> bytes:
             if relative_path not in self.blobs:
@@ -87,6 +133,12 @@ class _RecordingContext:
         # walk the real tree answers: one `mapped` page 1 finding, carrying
         # real `ink-runs.v1`-shaped evidence rather than a placeholder, and no
         # Designator regions to release anything with.
+        self.conservation_records = {
+            "page-1": {
+                "artifact_id": "page-1",
+                "payload": {"page_ordinal": 1, "ink_measurable": True},
+            }
+        }
         self.ink_map_records = {
             "page-1": {
                 "artifact_id": "page-1",
@@ -104,11 +156,18 @@ class _RecordingContext:
         }
 
         def build_manifest(stage: str) -> dict:
+            if stage == DESIGNATOR:
+                return {
+                    "artifacts": [
+                        {"kind": "conservation", "artifact_id": artifact_id}
+                        for artifact_id in self.conservation_records
+                    ]
+                }
             if stage != INK_MAP:
                 # An empty manifest is the truthful answer, not a swallowed
                 # lookup: the code under test polls this method for stages this
                 # synthetic context deliberately stores nothing for (the
-                # Designator, most plainly), and an empty inventory is what an
+                # Exemplar, for example), and an empty inventory is what an
                 # unpopulated stage really has. `read_artifact` below refuses
                 # instead because it is only ever called with an artifact id
                 # that must already exist.
@@ -121,6 +180,8 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
+            if stage == DESIGNATOR and kind == "conservation":
+                return self.conservation_records[artifact_id]
             if stage != INK_MAP or kind != "ink-map":
                 raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")
             return self.ink_map_records[artifact_id]
@@ -140,6 +201,11 @@ class _RecordingContext:
 
     def seal_boundary(self) -> None:
         self.sealed = True
+
+    def require_sealed_config(self, name: str, observed_sha256: str) -> None:
+        require_sealed_config(
+            self.sealed_config_digests, name, observed_sha256, "synthetic terminal context"
+        )
 
     def artifact_ref(self, stage: str, kind: str, identity: str) -> dict[str, str]:
         return {
@@ -288,17 +354,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
         "page_id": "pg_held",
         "outcome": "held",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage_continuation": [],
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -337,17 +393,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage_continuation": [],
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -412,17 +458,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage_continuation": [],
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -481,17 +517,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage_continuation": [],
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)

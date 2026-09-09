@@ -1456,6 +1456,34 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
+# Re-pinned for the export's `claims.not_measured` block, and the cause is one
+# new required manifest claim. Every bundle now names this build's five
+# instruments with what the run actually recorded for each, so
+# `EXPORT_MANIFEST.json` gains 36 leaves and the manifest's schema id moves with
+# its claim shape (v3 -> v5, and the clustered shape v4 -> v6). Nothing else in
+# the run changed: the block is derived at the last stage from records every
+# earlier stage had already written.
+#
+# Checked, not assumed, and checked twice over. Both trees were built and
+# compared leaf by leaf against the pre-block tree: happy 3 changed files / 13
+# changed JSON leaves, review the same, and **not one changed leaf is a
+# non-digest field** outside the Armarium -- the two that are not 64-hex are the
+# export artifact's reference to the bundle blob, whose own name is its content
+# digest, plus one renamed blob per scenario for the same reason. Inside the
+# package, exactly one member changed (`EXPORT_MANIFEST.json`), its 36 added
+# leaves are all under `claims.not_measured`, and its only other moves are the
+# schema id and the self-hash. Historical counts for this measurement were
+# unchanged: happy 96 files at exit 0, review 107 at exit 3. The current counts
+# and digests are the single active assignments below.
+#
+# Measured twice, in two independent temporary roots, at canonical run id "r",
+# through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
+# roots agreed exactly on both scenarios, and the same harness reproduced the
+# previous two digests byte-for-byte on the pre-block tree.
+# Historical: HAPPY_SNAPSHOT_FILES = 96
+# Historical: REVIEW_SNAPSHOT_FILES = 107
+# Historical: HAPPY_RUN_TREE_DIGEST = "ebb4da9bd23ff2101477986dd7af2f13b04233abb1b5859277836adbf9618608"
+# Historical: REVIEW_RUN_TREE_DIGEST = "6797ec3cbdbe52855435b6670b62f1278d22b6441f4b448155086af0fdedb594"
 #
 # Merge re-pin (`origin/main` adfadbc0d4 -- the request-capacity unit -- into
 # `work/churro-native-layout`, Unit 12). **Both parents moved these pins, for
@@ -1921,9 +1949,17 @@ REVIEW_SNAPSHOT_FILES = 111
 # independent roots carrying the fix agreed on the new values. File counts
 # and exit codes unmoved (100/0, 111/3); every moved leaf is a `relative_path`
 # or digest field in the cascade from `config_digest`, residue zero.
-HAPPY_RUN_TREE_DIGEST = "7b8b009f4c1df7d399232b03a24559f5303ffa4be85bbbe8d0f9f03e5e2cdddd"
-# Re-pinned by the same single cause, in the same measurement, as the happy digest.
-REVIEW_RUN_TREE_DIGEST = "6c22cf90e89478cb5b8d358051591866cabd32105a3c45616db2c8b1ad0c7ba4"
+# Re-measured after the honesty reconciliation. Two independent roots agreed:
+# happy remains 100 files/exit 0 and review 111 files/exit 3. The fixture
+# declaration is again truthful, real vendor facts move to the named real
+# declaration, and Armarium now records continuation-page `shortfall: null` as
+# unmeasured rather than silently treating an act's base-page result as whole-act
+# coverage. The full leaf attribution is retained in the integration evidence.
+# The recipient-verifier repair also names both coverage fields in the canonical
+# evidence reference. That manifest text and its digest cascade were remeasured
+# in two fresh roots per scenario; file counts and exit codes remain unchanged.
+HAPPY_RUN_TREE_DIGEST = "01613b0a1bc9b033a829282951080c3535a56711b1cee6f16c14e6e93addb30d"
+REVIEW_RUN_TREE_DIGEST = "cc01b77d37f701cf0a2ff155e1f9772aaf4a57db91ef273cf790051182e0720f"
 
 
 def orchestrate(
@@ -1933,6 +1969,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
+    witness_context_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
@@ -1976,6 +2013,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
+    if witness_context_config is not None:
+        command.extend(("--witness-context-config", str(witness_context_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
@@ -2226,6 +2265,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier is what the real catalogue's live rows require to resolve at all:
@@ -2238,6 +2278,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
+        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -2250,6 +2291,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
+        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
@@ -2766,7 +2808,8 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v3"
+                or manifest.get("schema")
+                not in {"armarium-export-manifest.v5", "armarium-export-manifest.v6"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3608,7 +3651,9 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
         _sqlite_logical_digest(b"not reached")
 
 
-def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+def _write_acceptance_bundle_tree(
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v5"
+) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
     ``damage`` mutates the package manifest *after* it is written and before the tree
@@ -3620,7 +3665,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v3",
+        "schema": manifest_schema,
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -3677,7 +3722,10 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
 
 
-def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     version_local = _acceptance_sqlite(
@@ -3690,21 +3738,24 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
-    _write_acceptance_bundle_tree(original_root, database)
-    _write_acceptance_bundle_tree(doctored_root, doctored)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
     changed = _acceptance_sqlite(
         tmp_path / "changed.sqlite",
         "changed row",
         derived_from_canonical_sha256=digest_bytes(b"original row"),
     )
-    _write_acceptance_bundle_tree(changed_root, changed)
+    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
 
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
-def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
 
     The two bundle-internal cases are the ones the reduction would otherwise *erase*:
@@ -3717,7 +3768,7 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
-    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
     original_semantic = semantic_snapshot_digest(original_root)
 
     manifest_hash_root = tmp_path / "manifest-self-hash"
@@ -3734,9 +3785,14 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
             {key: value for key, value in manifest.items() if key != "self_hash"}
         )
 
-    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
     _write_acceptance_bundle_tree(
-        member_digest_root, database, damage=damage_database_member_digest
+        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
+    )
+    _write_acceptance_bundle_tree(
+        member_digest_root,
+        database,
+        damage=damage_database_member_digest,
+        manifest_schema=manifest_schema,
     )
     shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
@@ -3747,6 +3803,20 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     for root in (manifest_hash_root, member_digest_root, export_hash_root):
         assert snapshot(root) != snapshot(original_root)
         assert semantic_snapshot_digest(root) != original_semantic
+
+
+def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "same row")
+    image_root = tmp_path / "image-local"
+    clustered_root = tmp_path / "clustered"
+    _write_acceptance_bundle_tree(
+        image_root, database, manifest_schema="armarium-export-manifest.v5"
+    )
+    _write_acceptance_bundle_tree(
+        clustered_root, database, manifest_schema="armarium-export-manifest.v6"
+    )
+
+    assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
 
 
 def export_of(tree: RunTree) -> dict:

@@ -85,11 +85,13 @@ import os
 import secrets
 import sys
 import time
+import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
 
+from common.chairs.config import parse_models_config
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -99,8 +101,15 @@ from common.chairs.registry import (
     SnapshotFetcher,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError
+from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
-from operations.serving.config import ServingConfigInputs, load_serving_recipes
+from operations.serving.config import (
+    ServingConfigInputs,
+    load_serving_recipes,
+    parse_serving_recipes,
+)
+from operations.serving.errors import ServingConfigurationError
 from operations.serving.http import HttpTransport
 from operations.serving.manager import PackageInspector, ReceiptPublication
 from operations.serving.process import ProcessLauncher
@@ -113,6 +122,7 @@ from operations.serving.smoke import (
 )
 
 from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -163,6 +173,7 @@ _PLAN_ONLY_FLAGS = (
     "fixture",
     "page_witness_file",
     "serving_recipes_config",
+    "witness_context_config",
     "submission_manifest",
     "transfer_source_root",
     "transfer_prefix",
@@ -214,6 +225,7 @@ class Plan:
     fixture: Path | None = None
     page_witness_file: Path | None = None
     serving_recipes_config: Path | None = None
+    witness_context_config: Path | None = None
     submission_manifest: Path | None = None
     transfer_source_root: Path | None = None
     transfer_prefix: str = "pod-transfer"
@@ -246,6 +258,9 @@ class Plan:
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
             "serving_recipes_config": str(self.serving_recipes_config)
             if self.serving_recipes_config
+            else None,
+            "witness_context_config": str(self.witness_context_config)
+            if self.witness_context_config
             else None,
             "submission_manifest": str(self.submission_manifest)
             if self.submission_manifest
@@ -431,6 +446,16 @@ def build_parser() -> argparse.ArgumentParser:
         "(config/serving_recipes_real.toml for the real roster) or the plan is refused",
     )
     parser.add_argument(
+        "--witness-context-config",
+        type=Path,
+        help="the Perlector-owned factual witness-context declaration the run seals; defaults "
+        "to <repository>/config/witness_context.toml, which describes every chair as a "
+        "synthetic fixture; after the pinned checkout, CONFIGURATION matches that parsed "
+        "profile to the selected chair identities. Name config/witness_context-real.toml "
+        "explicitly with config/models-real.toml; custom rosters require an operator-authored "
+        "declaration",
+    )
+    parser.add_argument(
         "--submission-manifest",
         type=Path,
         help="defaults to <volume-mount-path>/submission/manifest.json",
@@ -599,6 +624,17 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
+    # These paths may not exist until REPOSITORY checks out the pinned commit.
+    # Plan and dry-run therefore validate containment and selection only. The
+    # journaled CONFIGURATION step parses and pairs their content immediately
+    # after checkout, before uv, model materialization, cache work, or serving.
+    witness_context_config = _require_contained(
+        args.witness_context_config or (repository / "config" / "witness_context.toml"),
+        repository,
+        "--witness-context-config",
+        base_label="the checked-out repository",
+        report_path=report_path,
+    )
     submission_manifest = args.submission_manifest or (
         volume_mount_path / "submission" / "manifest.json"
     )
@@ -622,6 +658,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         fixture=fixture,
         page_witness_file=page_witness_file,
         serving_recipes_config=serving_recipes_config,
+        witness_context_config=witness_context_config,
         submission_manifest=submission_manifest,
         transfer_source_root=transfer_source_root,
         transfer_prefix=args.transfer_prefix or "pod-transfer",
@@ -1131,11 +1168,116 @@ class _LazyChairCache:
         return _build_cache(self._plan).verify()
 
 
+def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object]]:
+    """Read the pinned roster/declaration after checkout and before paid setup."""
+
+    def _validate() -> dict[str, object]:
+        if (
+            plan.repository is None
+            or plan.models_config is None
+            or plan.serving_recipes_config is None
+            or plan.placement_config is None
+            or plan.witness_context_config is None
+        ):
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                "bootstrap plan reached CONFIGURATION without its repository, roster, serving "
+                "catalogue, placement table, or declaration",
+                "Supply the complete bootstrap plan and start a new schema-v3 journal.",
+            )
+        try:
+            models_source = _read_configuration_source(plan.models_config, "model roster")
+            try:
+                parsed_models = tomllib.loads(models_source.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                raise ContractError(
+                    f"model roster {plan.models_config} could not be parsed: {error}"
+                ) from error
+            models = parse_models_config(parsed_models, source_path=plan.models_config)
+            validation = validate_witness_context_configuration(
+                models,
+                plan.witness_context_config,
+                shipped_config_root=plan.repository / "config",
+            )
+        except ContractError as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"witness roster/declaration validation failed: {error}",
+                "Repair the pinned roster/declaration selection. Use the fixture trio together, "
+                "the real trio together, or an operator-authored declaration for a custom roster; "
+                "then resume this journal before any environment or model work.",
+            ) from error
+        try:
+            serving_source = _read_configuration_source(
+                plan.serving_recipes_config, "serving catalogue"
+            )
+            placement_source = _read_configuration_source(plan.placement_config, "placement table")
+        except ContractError as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"a selected configuration source could not be read: {error}",
+                "Repair or restore the named file at the pinned commit, then resume this journal "
+                "before any environment or model work.",
+            ) from error
+        try:
+            serving_raw = tomllib.loads(serving_source.decode("utf-8"))
+            parse_serving_recipes(
+                serving_raw,
+                source_path=plan.serving_recipes_config,
+                source_sha256=digest_bytes(serving_source),
+            )
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError, ServingConfigurationError) as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"selected serving catalogue {plan.serving_recipes_config} could not be parsed: {error}",
+                "Repair or restore the named serving catalogue at the pinned commit, then resume "
+                "this journal before any environment or model work.",
+            ) from error
+        try:
+            load_placement_table(plan.placement_config, source_bytes=placement_source)
+        except PlacementRefusal as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"selected placement table {plan.placement_config} could not be parsed: {error}",
+                "Repair or restore the named placement table at the pinned commit, then resume "
+                "this journal before any environment or model work.",
+            ) from error
+        return {
+            "schema": CONFIGURATION_RECEIPT_SCHEMA,
+            "bindings": {
+                "models_config": _configuration_binding(plan.models_config, models_source),
+                "witness_context_config": {
+                    "path": str(plan.witness_context_config),
+                    "sha256": validation.source_sha256,
+                },
+                "serving_recipes_config": _configuration_binding(
+                    plan.serving_recipes_config, serving_source
+                ),
+                "placement_config": _configuration_binding(plan.placement_config, placement_source),
+            },
+            "witness_context_validation": validation.to_record(),
+        }
+
+    return _validate
+
+
+def _read_configuration_source(path: Path, label: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ContractError(f"{label} {path} could not be read: {error}") from error
+
+
+def _configuration_binding(path: Path, source: bytes) -> dict[str, str]:
+    return {"path": str(path), "sha256": digest_bytes(source)}
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real, tracked composition. Tests inject a fake instead of calling this."""
 
     return SubprocessBootstrapActions(
         repository=plan.repository,  # type: ignore[arg-type]
+        configuration=_build_configuration_validation(plan),
         transfer=_build_transfer(plan),
         materialize_model_store=lambda: _build_model_store(plan).materialize(),
         cache=_LazyChairCache(plan),  # type: ignore[arg-type]

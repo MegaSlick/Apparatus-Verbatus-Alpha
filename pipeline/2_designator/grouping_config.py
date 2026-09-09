@@ -34,6 +34,7 @@ from typing import Any, Final
 
 from geometry import _PROVENANCE_FIELDS, _is_plain_int, _pad_amount, _validate_dimensions
 
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
@@ -239,6 +240,13 @@ def _load_grouping_provenance(provenance: Any) -> dict[str, Any]:
     if not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise ContractError(
             "the grouping configuration's provenance calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            "the grouping configuration's provenance says calibrated_for_this_corpus but "
+            "sample_count is zero"
         )
     return dict(provenance)
 

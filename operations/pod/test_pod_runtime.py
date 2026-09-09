@@ -31,6 +31,7 @@ from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -4819,6 +4820,22 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
+def _fixture_configuration_receipt() -> dict[str, object]:
+    return {
+        "schema": CONFIGURATION_RECEIPT_SCHEMA,
+        "bindings": {
+            name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
+            for name in (
+                "models_config",
+                "witness_context_config",
+                "serving_recipes_config",
+                "placement_config",
+            )
+        },
+        "witness_context_validation": {},
+    }
+
+
 class FakeBootstrapActions:
     def __init__(
         self, *, crash_once: BootstrapStep | None = None, fail: BootstrapStep | None = None
@@ -4838,6 +4855,10 @@ class FakeBootstrapActions:
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
         return self._step(BootstrapStep.REPOSITORY) | {"commit": commit}
+
+    def validate_configuration(self) -> dict[str, object]:
+        self._step(BootstrapStep.CONFIGURATION)
+        return _fixture_configuration_receipt()
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT) | {"lockfile": str(lockfile)}
@@ -4937,9 +4958,35 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
 
     assert report.green
     assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
+    # CONFIGURATION is cheap and deliberately re-read before any completed
+    # receipt is reused; only the unfinished uv action runs again among paid steps.
+    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 2
     assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 2
     assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
+
+
+def test_a_repaired_configuration_resume_rechecks_before_expensive_steps(tmp_path: Path) -> None:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    actions = FakeBootstrapActions(fail=BootstrapStep.CONFIGURATION)
+    bootstrapper = Bootstrapper(
+        BootstrapJournal(
+            tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+        ),
+        actions,
+    )
+
+    refused = bootstrapper.run()
+    actions.fail = None
+    completed = bootstrapper.run()
+
+    assert refused.failure_step is BootstrapStep.CONFIGURATION
+    assert completed.green
+    assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
+    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 2
+    assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 1
+    assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
 
 
 def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: Path) -> None:
@@ -4955,13 +5002,13 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
         journal.load_or_create()
 
 
-def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
+def test_a_journal_from_before_the_configuration_step_is_refused_as_an_old_schema(
     tmp_path: Path,
 ) -> None:
     """A journal is not blamed for a change this code made to the step list.
 
-    Inserting ``MODEL_STORE`` before ``CHAIR_CACHE`` changed the valid completion
-    prefix. Under the old schema name a perfectly honest v1 journal was rejected
+    Inserting ``CONFIGURATION`` before ``UV_ENVIRONMENT`` changed the valid
+    completion prefix. Under the old schema name a perfectly honest v2 journal was rejected
     as "duplicated, reordered, or skips a step", which reads as tampering. The
     schema bump makes it what it is: a journal this code no longer understands,
     to be preserved and replaced.
@@ -4972,10 +5019,10 @@ def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
     path = tmp_path / "bootstrap.json"
     journal = BootstrapJournal(path, BootstrapPlan("f" * 40, lockfile), now=lambda: START)
     record = journal.load_or_create()
-    # Exactly what a v1 pod wrote after finishing everything through the chair
-    # cache: the step order that existed before the model store was inserted.
-    record["schema"] = "pod-bootstrap.v1"
-    record["completed"] = ["repository", "uv-environment", "transfer", "chair-cache"]
+    # Exactly what a v2 pod wrote after passing repository checkout and uv sync,
+    # without the new checked-out configuration validation between them.
+    record["schema"] = "pod-bootstrap.v2"
+    record["completed"] = ["repository", "uv-environment"]
     path.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(BootstrapStepFailure) as failure:
@@ -5035,6 +5082,7 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     other.write_text("locked = false\n", encoding="utf-8")
 
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -5069,6 +5117,7 @@ def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> N
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -5102,6 +5151,7 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
 
     monkeypatch.setattr("operations.pod.bootstrap.subprocess.run", run)
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -5133,6 +5183,7 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=tmp_path,
         transfer=lambda: {},
         materialize_model_store=lambda: {
@@ -5151,6 +5202,7 @@ def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path
     repository = tmp_path / "repository"
     repository.mkdir()
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
-from armarium_export import EXPORT_MANIFEST_NAME
+from armarium_export import EXPORT_MANIFEST_NAME, verify_export_bundle
 
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
@@ -827,3 +827,56 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
         assert mode == 0o755, f"published at {mode:o}, not 0o755 under a 0o022 umask"
     finally:
         os.umask(previous)
+
+
+def test_a_coherently_resealed_not_measured_claim_cannot_escape_retained_export_authority(
+    tmp_path, happy_run
+):
+    """Coherent blob references cannot bypass the retained manifest identity."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    export_path = tree.resolve(
+        tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
+    )
+    original_export = json.loads(export_path.read_text(encoding="utf-8"))
+
+    def mutate(_members, manifest):
+        row = next(
+            item
+            for item in manifest["claims"]["not_measured"]["entries"]
+            if item["instrument"] == "page-testimony-content-coverage"
+        )
+        assert row["detail"]["acts_unmeasured"], (
+            "happy fixture must name its retained unmeasured act"
+        )
+        row["detail"]["acts_unmeasured"] = [row["detail"]["acts_unmeasured"][0]]
+        row["detail"]["reasons"] = ["a changed package-only disclosure"]
+        row["status"] = "not-measured"
+        manifest["claims"]["not_measured"]["count"] = sum(
+            entry["status"] != "measured" for entry in manifest["claims"]["not_measured"]["entries"]
+        )
+
+    _reseal_export_bundle(tree, mutate)
+    changed_export = json.loads(export_path.read_text(encoding="utf-8"))
+    changed_reference = changed_export["payload"]["bundle"]["reference"]
+    verify_export_bundle(
+        tree.read_bytes(changed_reference["relative_path"]), tmp_path / "internally-valid"
+    )
+    original_bundle = original_export["payload"]["bundle"]
+    changed_bundle = changed_export["payload"]["bundle"]
+    assert changed_bundle["manifest_self_hash"] != original_bundle["manifest_self_hash"]
+    # Keep the new bytes at their own digest path and retain the helper's
+    # coherent input/reference. Preserve the original semantic authority so
+    # this reaches the publisher's manifest check, not a blob digest refusal.
+    changed_bundle["manifest_self_hash"] = original_bundle["manifest_self_hash"]
+    changed_bundle["claims_status"] = original_bundle["claims_status"]
+    changed_export["self_hash"] = self_hash(changed_export)
+    export_path.write_bytes(canonical_bytes(changed_export))
+
+    destination = tmp_path / "delivery"
+    result = _publish(root, "r", destination)
+    assert result.returncode != 0
+    assert "manifest identity or status disagrees" in result.stderr
+    assert not destination.exists()

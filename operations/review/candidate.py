@@ -16,7 +16,8 @@ from pathlib import Path
 
 from common.durability import sync_directory
 
-GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+GIT_ENV["GIT_NO_REPLACE_OBJECTS"] = "1"
 
 
 def git(root: Path, *arguments: str) -> str:

@@ -63,6 +63,53 @@ class _PublishingContext:
         return kwargs
 
 
+@pytest.mark.parametrize(
+    ("field", "malformed", "missing"),
+    [
+        ("testimony_content_coverage", None, False),
+        ("testimony_content_coverage_continuation", [None], False),
+        ("cross_capture_coverage", [], False),
+        ("testimony_content_coverage", None, True),
+        ("testimony_content_coverage_continuation", None, True),
+        ("cross_capture_coverage", None, True),
+    ],
+)
+def test_review_measurement_refusal_names_subject_and_field_before_publication(
+    field, malformed, missing, monkeypatch
+):
+    payload = {
+        "testimony_content_coverage": {
+            "by_chair": {},
+            "shortfall": None,
+            "reason": "no comparable text",
+        },
+        "testimony_content_coverage_continuation": [],
+        "cross_capture_coverage": None,
+    }
+    if missing:
+        del payload[field]
+    else:
+        payload[field] = malformed
+    context = _PublishingContext()
+    monkeypatch.setattr(
+        context, "publish", lambda **kwargs: pytest.fail("malformed evidence was published")
+    )
+
+    with pytest.raises(FatalAccounting, match="malformed measurement evidence") as caught:
+        RUN.publish_review(
+            context,
+            subject_id="act-under-review",
+            outcome="held-for-review",
+            attempt="test-attempt",
+            inputs=[],
+            payload=payload,
+        )
+
+    assert "act-under-review" in str(caught.value)
+    assert field in str(caught.value)
+    assert isinstance(caught.value.__cause__, KeyError if missing else SchemaRefusal)
+
+
 @pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
 def test_review_payload_refuses_witness_preference_vocabulary(field):
     """The durable review write has the same selector guard as Perlectio."""
