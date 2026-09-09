@@ -85,6 +85,18 @@ def test_measured_tri_state_requires_a_nonempty_chair_basis():
         validate_testimony_content_coverage({"by_chair": {}, "shortfall": False})
 
 
+def test_unmeasured_tri_state_preserves_a_null_chair_basis_unchanged():
+    record = {
+        "by_chair": None,
+        "shortfall": None,
+        "reason": "no page witness supplied comparable page text",
+    }
+    expected = copy.deepcopy(record)
+
+    assert validate_testimony_content_coverage(record) == expected
+    assert record == expected
+
+
 @pytest.mark.parametrize(
     ("shortfall", "unmeasured_reason"),
     [
@@ -113,3 +125,96 @@ def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall, u
     validated = validate_testimony_content_coverage(record)
     assert validated == expected
     assert record == expected
+
+
+def test_unmeasured_continuation_keeps_typed_uncovered_evidence_unchanged():
+    record = {
+        "by_chair": {
+            "attestator_1": {
+                "attached_spans": [],
+                "uncovered_non_whitespace": {
+                    "ranges": [{"start": 0, "end": 4}, {"start": 6, "end": 8}],
+                    "count": 6,
+                },
+            }
+        },
+        "shortfall": None,
+        "reason": "continuation text has no measurable act anchor",
+    }
+    expected = copy.deepcopy(record)
+
+    assert validate_testimony_content_coverage(record) == expected
+    assert record == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("measurement", {}, "closed measurement fields"),
+        ("measurement", None, "closed measurement fields"),
+        ("measurement_extra", True, "closed measurement fields"),
+        ("role", "  ", "blank chair role"),
+        ("attached_spans", {}, "attached_spans is not a list"),
+        (
+            "attached_span",
+            {"start": 0, "end": -1, "act_id": "act-one"},
+            "invalid offsets",
+        ),
+        ("attached_span", {"start": 0, "end": 1, "act_id": ""}, "act identity"),
+        ("uncovered_non_whitespace", {"ranges": []}, "closed count-and-ranges"),
+        ("ranges", {}, "is untyped"),
+        (
+            "ranges",
+            [{"start": 0, "end": 1}, {"start": 1, "end": 2}],
+            "positive half-open range",
+        ),
+        ("range", {"start": 2, "end": 2}, "positive half-open range"),
+        ("range", {"start": True, "end": 2}, "positive half-open range"),
+        ("count", True, "is untyped"),
+        ("count", 2, "count does not equal its ranges"),
+    ],
+)
+def test_chair_measurement_refuses_malformed_nested_evidence(field, value, match):
+    measurement = {
+        "attached_spans": [{"start": 0, "end": 1, "act_id": "act-one"}],
+        "uncovered_non_whitespace": {"ranges": [{"start": 2, "end": 3}], "count": 1},
+    }
+    role = "attestator_1"
+    if field == "role":
+        role = value
+    elif field == "measurement":
+        measurement = value
+    elif field == "measurement_extra":
+        measurement["unexpected"] = value
+    elif field == "attached_span":
+        measurement["attached_spans"] = [value]
+    elif field == "range":
+        measurement["uncovered_non_whitespace"]["ranges"] = [value]
+    elif field in {"ranges", "count"}:
+        measurement["uncovered_non_whitespace"][field] = value
+    else:
+        measurement[field] = value
+    record = {"by_chair": {role: measurement}, "shortfall": True}
+
+    with pytest.raises(SchemaRefusal, match=match):
+        validate_testimony_content_coverage(record)
+
+
+@pytest.mark.parametrize(
+    ("shortfall", "count"),
+    [(False, 1), (True, 0)],
+)
+def test_measured_shortfall_must_match_the_uncovered_count(shortfall, count):
+    ranges = [{"start": 2, "end": 3}] if count else []
+    record = {
+        "by_chair": {
+            "attestator_1": {
+                "attached_spans": [],
+                "uncovered_non_whitespace": {"ranges": ranges, "count": count},
+            }
+        },
+        "shortfall": shortfall,
+    }
+
+    with pytest.raises(SchemaRefusal, match="shortfall disagrees with its uncovered counts"):
+        validate_testimony_content_coverage(record)

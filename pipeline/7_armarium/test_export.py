@@ -728,4 +728,5 @@ def test_the_absence_codes_the_export_reads_are_the_recensors_own(tmp_path):
     recensor = _stage_module("recensor_absence_codes", ROOT / "pipeline" / "5_recensor" / "run.py")
     armarium = _armarium_module()
 
+    assert recensor.INSTRUMENT_ABSENT_CODES, "an empty vocabulary proves no shared absence codes"
     assert armarium._VISIBILITY_ABSENCE_CODES == recensor.INSTRUMENT_ABSENT_CODES

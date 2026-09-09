@@ -50,6 +50,27 @@ def _parser_stub():
     return SimpleNamespace(parse_args=lambda: SimpleNamespace())
 
 
+def _accepted_review() -> dict:
+    """A fresh continuation-inclusive Recensor review for terminal tests."""
+    return {
+        "artifact_id": "art_accepted",
+        "outcome": "accepted",
+        # Both coverage facts every Recensor review shape writes. A double
+        # that omitted the continuation restatement would be a review no
+        # producer can emit, and the export reads it unconditionally.
+        "payload": {
+            "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
+            "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
+        },
+    }
+
+
 class _RecordingContext:
     """Just enough sealed-context surface for terminal-only stage paths."""
 
@@ -146,7 +167,7 @@ class _RecordingContext:
                 # An empty manifest is the truthful answer, not a swallowed
                 # lookup: the code under test polls this method for stages this
                 # synthetic context deliberately stores nothing for (the
-                # Designator, most plainly), and an empty inventory is what an
+                # Exemplar, for example), and an empty inventory is what an
                 # unpopulated stage really has. `read_artifact` below refuses
                 # instead because it is only ever called with an artifact id
                 # that must already exist.
@@ -333,23 +354,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
         "page_id": "pg_held",
         "outcome": "held",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage": {
-                "by_chair": None,
-                "shortfall": None,
-                "reason": "synthetic terminal context has no comparable page testimony",
-            },
-            "testimony_content_coverage_continuation": [],
-            "cross_capture_coverage": None,
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -388,23 +393,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage": {
-                "by_chair": None,
-                "shortfall": None,
-                "reason": "synthetic terminal context has no comparable page testimony",
-            },
-            "testimony_content_coverage_continuation": [],
-            "cross_capture_coverage": None,
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -469,23 +458,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage": {
-                "by_chair": None,
-                "shortfall": None,
-                "reason": "synthetic terminal context has no comparable page testimony",
-            },
-            "testimony_content_coverage_continuation": [],
-            "cross_capture_coverage": None,
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
@@ -544,23 +517,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
         "page_id": "pg_proposed",
         "outcome": "proposed",
     }
-    accepted_review = {
-        "artifact_id": "art_accepted",
-        "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
-        "payload": {
-            "coverage": {"under_witnessed": False},
-            "testimony_content_coverage": {
-                "by_chair": None,
-                "shortfall": None,
-                "reason": "synthetic terminal context has no comparable page testimony",
-            },
-            "testimony_content_coverage_continuation": [],
-            "cross_capture_coverage": None,
-        },
-    }
+    accepted_review = _accepted_review()
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)

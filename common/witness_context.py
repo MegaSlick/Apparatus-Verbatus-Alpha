@@ -6,7 +6,6 @@ the chair model contract, and imports no image, serving, or stage dependency.
 
 from __future__ import annotations
 
-import hashlib
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +14,7 @@ from typing import Any
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ConfigurationRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
+from common.contracts.canonical import digest_bytes
 
 _TRAINING_DOMAIN_FIELDS = {"training_domain"}
 _SHIPPED_PROFILES = (
@@ -196,7 +196,7 @@ def validate_witness_context_configuration(
         profile = "mixed"
 
     return WitnessContextValidation(
-        source_sha256=hashlib.sha256(source).hexdigest(),
+        source_sha256=digest_bytes(source),
         profile=profile,
         declared_roles=tuple(sorted(declaration)),
         verified_present_roles=tuple(verified),

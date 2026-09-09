@@ -1634,6 +1634,24 @@ def _validate_not_measured_basis(basis: object) -> dict[str, Any]:
     return record
 
 
+def _require_not_measured_denominators(
+    details: dict[str, dict[str, Any]], *, acts_total: int, sealed_pages: int, subject: str
+) -> None:
+    """Bind the three page/act denominators to the population actually exported."""
+    if details[_TESTIMONY_COVERAGE]["acts_total"] != acts_total:
+        raise SchemaRefusal(
+            f"{subject} testimony-content denominator does not equal its complete act population"
+        )
+    if details[_ACT_VISIBILITY_SURVEY]["acts_total"] != acts_total:
+        raise SchemaRefusal(
+            f"{subject} visibility-survey denominator does not equal its complete act population"
+        )
+    if details[_PAGE_INK_CONSERVATION]["pages_sealed"] != sealed_pages:
+        raise SchemaRefusal(
+            f"{subject} conservation denominator does not equal its sealed page census"
+        )
+
+
 def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
     """One instrument's status, read off what this run actually recorded."""
     if instrument == _TESTIMONY_COVERAGE:
@@ -1740,6 +1758,12 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "At least one sealed page finding would be lost or one unsealed page would be counted. "
             "Rebuild the projection from the reconciled stage inventories."
         )
+    _require_not_measured_denominators(
+        not_measured_basis,
+        acts_total=len(projection.acts),
+        sealed_pages=len(sealed),
+        subject="an Armarium projection's not-measured basis",
+    )
     for source in projection.source_manifest:
         if not isinstance(source, dict):
             raise SchemaRefusal("an Armarium projection source-manifest row is not an object")
@@ -4863,6 +4887,13 @@ def _verify_product_accounting(
         outcomes[act_id]["act_key"] != act_keys[act_id] for act_id in outcomes
     ):
         raise SchemaRefusal("source act outcomes do not reconcile to the manifest act partition")
+    not_measured = manifest["claims"]["not_measured"]
+    _require_not_measured_denominators(
+        {entry["instrument"]: entry["detail"] for entry in not_measured["entries"]},
+        acts_total=len(outcomes),
+        sealed_pages=sum(page["outcome"] == "sealed" for page in sources["pages"]),
+        subject="the manifest not-measured claim",
+    )
     citations = _act_citation_sources(sources)
     if set(citations) != delivered or any(
         citations[act_id]["act_key"] != act_keys[act_id] for act_id in citations

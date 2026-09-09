@@ -2808,7 +2808,8 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v5"
+                or manifest.get("schema")
+                not in {"armarium-export-manifest.v5", "armarium-export-manifest.v6"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3650,7 +3651,9 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
         _sqlite_logical_digest(b"not reached")
 
 
-def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+def _write_acceptance_bundle_tree(
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v5"
+) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
     ``damage`` mutates the package manifest *after* it is written and before the tree
@@ -3662,7 +3665,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v5",
+        "schema": manifest_schema,
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -3719,7 +3722,10 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
 
 
-def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     version_local = _acceptance_sqlite(
@@ -3732,21 +3738,24 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
-    _write_acceptance_bundle_tree(original_root, database)
-    _write_acceptance_bundle_tree(doctored_root, doctored)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
     changed = _acceptance_sqlite(
         tmp_path / "changed.sqlite",
         "changed row",
         derived_from_canonical_sha256=digest_bytes(b"original row"),
     )
-    _write_acceptance_bundle_tree(changed_root, changed)
+    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
 
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
-def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
 
     The two bundle-internal cases are the ones the reduction would otherwise *erase*:
@@ -3759,7 +3768,7 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
-    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
     original_semantic = semantic_snapshot_digest(original_root)
 
     manifest_hash_root = tmp_path / "manifest-self-hash"
@@ -3776,9 +3785,14 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
             {key: value for key, value in manifest.items() if key != "self_hash"}
         )
 
-    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
     _write_acceptance_bundle_tree(
-        member_digest_root, database, damage=damage_database_member_digest
+        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
+    )
+    _write_acceptance_bundle_tree(
+        member_digest_root,
+        database,
+        damage=damage_database_member_digest,
+        manifest_schema=manifest_schema,
     )
     shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
@@ -3789,6 +3803,20 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     for root in (manifest_hash_root, member_digest_root, export_hash_root):
         assert snapshot(root) != snapshot(original_root)
         assert semantic_snapshot_digest(root) != original_semantic
+
+
+def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "same row")
+    image_root = tmp_path / "image-local"
+    clustered_root = tmp_path / "clustered"
+    _write_acceptance_bundle_tree(
+        image_root, database, manifest_schema="armarium-export-manifest.v5"
+    )
+    _write_acceptance_bundle_tree(
+        clustered_root, database, manifest_schema="armarium-export-manifest.v6"
+    )
+
+    assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
 
 
 def export_of(tree: RunTree) -> dict:

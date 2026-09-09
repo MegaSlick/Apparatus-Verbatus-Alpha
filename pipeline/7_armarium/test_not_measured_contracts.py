@@ -76,21 +76,30 @@ def test_conservation_exact_census_keeps_legitimate_degraded_sealed_pages(rows, 
 
 
 @pytest.mark.parametrize(
-    "rows, sealed",
+    "rows, sealed, message",
     [
-        ([], {1}),
+        (
+            [],
+            {1},
+            "the Designator conservation ordinal census does not exactly cover the sealed page census",
+        ),
         (
             [
                 {"page_ordinal": 1, "ink_measurable": True},
                 {"page_ordinal": 1, "ink_measurable": True},
             ],
             {1},
+            "the Designator conservation inventory repeats a sealed page ordinal",
         ),
-        ([{"page_ordinal": 2, "ink_measurable": True}], {1}),
+        (
+            [{"page_ordinal": 2, "ink_measurable": True}],
+            {1},
+            "the Designator conservation ordinal census does not exactly cover the sealed page census",
+        ),
     ],
 )
-def test_conservation_refuses_missing_duplicate_or_unsealed_ordinals(rows, sealed):
-    with pytest.raises(armarium.FatalAccounting, match="conservation"):
+def test_conservation_refuses_missing_duplicate_or_unsealed_ordinals(rows, sealed, message):
+    with pytest.raises(armarium.FatalAccounting, match=message):
         armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed)
 
 
@@ -117,7 +126,7 @@ def test_geometry_may_omit_sample_count():
 
 
 @pytest.mark.parametrize(
-    "payload, match",
+    "payload, match, cause_match",
     [
         (
             {
@@ -126,10 +135,19 @@ def test_geometry_may_omit_sample_count():
                 "cross_capture_coverage": None,
             },
             "testimony-content",
+            "shortfall is not true, false, or null",
         ),
         (
             {
-                "testimony_content_coverage": {"by_chair": {"chair": {}}, "shortfall": False},
+                "testimony_content_coverage": {
+                    "by_chair": {
+                        "chair": {
+                            "attached_spans": [],
+                            "uncovered_non_whitespace": {"ranges": [], "count": 0},
+                        }
+                    },
+                    "shortfall": False,
+                },
                 "testimony_content_coverage_continuation": [
                     {"by_chair": {}, "shortfall": None, "reason": "unmeasured", "page_ordinal": 2},
                     {"by_chair": {}, "shortfall": None, "reason": "unmeasured", "page_ordinal": 2},
@@ -137,20 +155,33 @@ def test_geometry_may_omit_sample_count():
                 "cross_capture_coverage": None,
             },
             "testimony-content",
+            "repeats a page ordinal",
         ),
         (
             {
-                "testimony_content_coverage": {"by_chair": {"chair": {}}, "shortfall": False},
+                "testimony_content_coverage": {
+                    "by_chair": {
+                        "chair": {
+                            "attached_spans": [],
+                            "uncovered_non_whitespace": {"ranges": [], "count": 0},
+                        }
+                    },
+                    "shortfall": False,
+                },
                 "testimony_content_coverage_continuation": [],
                 "cross_capture_coverage": {"components": []},
             },
             "cross-capture",
+            "cross-capture coverage record is not closed",
         ),
     ],
 )
-def test_armarium_consumption_refuses_malformed_review_measurements(monkeypatch, payload, match):
+def test_armarium_consumption_refuses_malformed_review_measurements(
+    monkeypatch, payload, match, cause_match
+):
     monkeypatch.setattr(armarium, "conservation_not_reconciled", lambda *_args: {})
     monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
     monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
-    with pytest.raises(armarium.FatalAccounting, match=match):
+    with pytest.raises(armarium.FatalAccounting, match=match) as refusal:
         armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [])
+    assert cause_match in str(refusal.value.__cause__)

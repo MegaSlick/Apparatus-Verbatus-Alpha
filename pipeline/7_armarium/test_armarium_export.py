@@ -133,9 +133,12 @@ def _test_not_measured_basis(**overrides):
     return basis
 
 
-def _basis_for_acts(acts):
-    """Keep hand-built projection caveats aligned with their act rows."""
+def _basis_for_acts(acts, *, sealed_pages=1):
+    """Keep hand-built projection caveats aligned with their act and page rows."""
     basis = _test_not_measured_basis()
+    basis["page-testimony-content-coverage"]["acts_total"] = len(acts)
+    basis["act-visibility-survey"]["acts_total"] = len(acts)
+    basis["page-ink-conservation"]["pages_sealed"] = sealed_pages
     delivered = [act for act in acts if act["category"] == ArmariumCategory.DELIVERED.value]
     spans = sum(
         isinstance(act.get("uncertainty"), dict) and bool(act["uncertainty"].get("uncertain_spans"))
@@ -372,6 +375,7 @@ def _otherwise_complete(**fields) -> ArmariumProjection:
         acts=acts,
         expected_acts=1,
         aggregate_basis=basis,
+        not_measured_basis=_basis_for_acts(acts),
         **fields,
     )
     return replace(
@@ -1972,7 +1976,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
         replace(
             original,
             acts=held,
-            not_measured_basis=_basis_for_acts(held),
+            not_measured_basis=_basis_for_acts(held, sealed_pages=2),
             pages=pages,
             ink_map_pages=ink_map_pages,
             source_manifest=source_manifest,
@@ -2554,6 +2558,7 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
             }
             for page in pages
         ),
+        not_measured_basis=_basis_for_acts(base.acts, sealed_pages=2),
         aggregate=run_aggregate(
             {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
             base.aggregate_basis["coverage_records"],
@@ -3664,6 +3669,46 @@ def test_a_resealed_geometry_detail_refuses_calibrated_claim_with_zero_samples(t
 
 
 @pytest.mark.parametrize(
+    ("instrument", "field", "value", "match"),
+    [
+        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
+        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
+        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
+    ],
+)
+def test_projection_refuses_not_measured_sibling_denominators_that_do_not_match_its_population(
+    instrument, field, value, match
+):
+    projection = _projection()
+    basis = _basis_for_acts(projection.acts)
+    basis[instrument][field] = value
+    with pytest.raises(SchemaRefusal, match=match):
+        build_armarium_bundle(
+            replace(projection, not_measured_basis=basis),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+@pytest.mark.parametrize(
+    ("instrument", "field", "value", "match"),
+    [
+        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
+        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
+        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
+    ],
+)
+def test_a_coherently_resealed_not_measured_claim_refuses_wrong_sibling_denominators(
+    instrument, field, value, match, tmp_path
+):
+    def contradict_denominator(manifest):
+        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
+
+    with pytest.raises(SchemaRefusal, match=match):
+        verify_delivered_bundle(_resealed_manifest(contradict_denominator), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize(
     ("instrument", "field", "value"),
     [
         pytest.param("page-testimony-content-coverage", "acts_total", False, id="bool-count"),
@@ -3766,8 +3811,8 @@ def test_a_page_whose_ink_was_never_reconciled_reaches_the_block_by_ordinal():
         not_measured_basis=_test_not_measured_basis(
             **{
                 "page-ink-conservation": {
-                    "pages_sealed": 2,
-                    "pages_not_reconciled": [2],
+                    "pages_sealed": 1,
+                    "pages_not_reconciled": [1],
                     "reasons": ["the page's background could not be inferred"],
                 }
             }
@@ -3776,7 +3821,7 @@ def test_a_page_whose_ink_was_never_reconciled_reaches_the_block_by_ordinal():
 
     changed = _entry(_block(projection), "page-ink-conservation")
     assert changed["status"] == "not-measured"
-    assert changed["detail"]["pages_not_reconciled"] == [2]
+    assert changed["detail"]["pages_not_reconciled"] == [1]
 
 
 def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs():
