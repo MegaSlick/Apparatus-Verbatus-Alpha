@@ -71,6 +71,7 @@ class _PublishingContext:
         ("cross_capture_coverage", [], False),
         ("testimony_content_coverage", None, True),
         ("testimony_content_coverage_continuation", None, True),
+        ("cross_capture_coverage", None, True),
     ],
 )
 def test_review_measurement_refusal_names_subject_and_field_before_publication(

@@ -168,13 +168,38 @@ def test_internal_whitespace_cannot_disguise_a_known_fixture_sentence(tmp_path, 
         _bindings(REAL_ROSTER, copied)
 
 
-def test_a_formatting_only_match_keeps_the_selected_declaration_bytes_as_evidence(tmp_path):
+def test_letter_casing_cannot_disguise_a_known_fixture_sentence(tmp_path):
+    copied = tmp_path / "recased-fixture-context.toml"
+    _write_context(
+        copied,
+        {
+            "attestator_1": "an operator-authored first witness",
+            "attestator_2": _FIXTURE_SENTENCE.upper(),
+            "attestator_3": "an operator-authored third witness",
+        },
+    )
+
+    with pytest.raises(ContractError, match="attestator_2.*shipped-fixture identity projection"):
+        _bindings(REAL_ROSTER, copied)
+
+
+@pytest.mark.parametrize(
+    "disguised",
+    [
+        _FIXTURE_SENTENCE.replace("fixture witness", "fixture  \t\nwitness"),
+        _FIXTURE_SENTENCE.upper(),
+    ],
+    ids=["whitespace", "letter-case"],
+)
+def test_a_formatting_only_match_keeps_the_selected_declaration_bytes_as_evidence(
+    tmp_path, disguised
+):
     copied = tmp_path / "formatted-fixture-context.toml"
     sentences = {
         role: entry["training_domain"]
         for role, entry in tomllib.loads(FIXTURE_CONTEXT.read_text(encoding="utf-8")).items()
     }
-    sentences["attestator_2"] = _FIXTURE_SENTENCE.replace("fixture witness", "fixture  \t\nwitness")
+    sentences["attestator_2"] = disguised
     _write_context(copied, sentences)
 
     validation = validate_witness_context_configuration(

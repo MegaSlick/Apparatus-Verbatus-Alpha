@@ -3032,7 +3032,7 @@ def publish_review(
         measurement_field = "testimony_content_coverage_continuation"
         validate_testimony_content_coverage_continuation(payload[measurement_field])
         measurement_field = "cross_capture_coverage"
-        coverage = payload.get(measurement_field)
+        coverage = payload[measurement_field]
         if coverage is not None:
             if not isinstance(coverage, dict):
                 raise SchemaRefusal("cross-capture coverage is neither an object nor null")

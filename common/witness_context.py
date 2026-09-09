@@ -24,9 +24,9 @@ _SHIPPED_PROFILES = (
 
 
 def _comparable_sentence(value: str) -> str:
-    """Collapse formatting whitespace without changing the declaration evidence."""
+    """Normalize whitespace and casing only for recognized-sentence comparison."""
 
-    return " ".join(value.split())
+    return " ".join(value.split()).casefold()
 
 
 @dataclass(frozen=True, slots=True)
