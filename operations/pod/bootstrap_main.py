@@ -85,12 +85,13 @@ import os
 import secrets
 import sys
 import time
+import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
 
-from common.chairs.config import load_models_toml
+from common.chairs.config import parse_models_config
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -116,6 +117,7 @@ from operations.serving.smoke import (
 )
 
 from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -1168,20 +1170,34 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
         if (
             plan.repository is None
             or plan.models_config is None
+            or plan.serving_recipes_config is None
+            or plan.placement_config is None
             or plan.witness_context_config is None
         ):
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                "bootstrap plan reached CONFIGURATION without its repository, roster, or declaration",
+                "bootstrap plan reached CONFIGURATION without its repository, roster, serving "
+                "catalogue, placement table, or declaration",
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
-            models = load_models_toml(plan.models_config)
+            models_source = _read_configuration_source(plan.models_config, "model roster")
+            try:
+                parsed_models = tomllib.loads(models_source.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                raise ContractError(
+                    f"model roster {plan.models_config} could not be parsed: {error}"
+                ) from error
+            models = parse_models_config(parsed_models, source_path=plan.models_config)
             validation = validate_witness_context_configuration(
                 models,
                 plan.witness_context_config,
                 shipped_config_root=plan.repository / "config",
             )
+            serving_source = _read_configuration_source(
+                plan.serving_recipes_config, "serving catalogue"
+            )
+            placement_source = _read_configuration_source(plan.placement_config, "placement table")
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1191,12 +1207,33 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "then resume this journal before any environment or model work.",
             ) from error
         return {
-            "models_config": str(plan.models_config),
-            "witness_context_config": str(plan.witness_context_config),
-            **validation.to_record(),
+            "schema": CONFIGURATION_RECEIPT_SCHEMA,
+            "bindings": {
+                "models_config": _configuration_binding(plan.models_config, models_source),
+                "witness_context_config": {
+                    "path": str(plan.witness_context_config),
+                    "sha256": validation.source_sha256,
+                },
+                "serving_recipes_config": _configuration_binding(
+                    plan.serving_recipes_config, serving_source
+                ),
+                "placement_config": _configuration_binding(plan.placement_config, placement_source),
+            },
+            "witness_context_validation": validation.to_record(),
         }
 
     return _validate
+
+
+def _read_configuration_source(path: Path, label: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ContractError(f"{label} {path} could not be read: {error}") from error
+
+
+def _configuration_binding(path: Path, source: bytes) -> dict[str, str]:
+    return {"path": str(path), "sha256": digest_bytes(source)}
 
 
 def build_actions(plan: Plan) -> BootstrapActions:

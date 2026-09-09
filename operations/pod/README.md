@@ -428,10 +428,16 @@ check.
   the shipped fixture roster; any other roster must name its catalogue
   explicitly. The shipped real selection must also name
   `--witness-context-config config/witness_context-real.toml`. After the pinned
-  checkout, the journaled `CONFIGURATION` step recognizes the parsed fixture or
-  real declaration and matches every present witness to that shipped roster's
-  source, source reference, and receipt revision. It runs before uv sync,
-  transfer, model materialization, cache work, or serving. Plan-only and
+  checkout, the journaled `CONFIGURATION` step recognizes each role's known
+  shipped sentence, even among custom entries or with edge whitespace, and
+  matches its present witness to the shipped source, source reference, receipt
+  revision, and kind. It runs before uv sync, transfer, model materialization,
+  cache work, or serving. Its receipt binds the roster, declaration, serving
+  catalogue, and placement paths and raw digests. Partial and green resumes
+  revalidate those bindings before skipping completed work. A changed selection
+  or an old receipt without these bindings fails at `CONFIGURATION`, preserving
+  the original receipt; restore that selection or start a new journal. A failure
+  before this step first completes still permits configuration repair. Plan-only and
   `--dry-run` report selected paths without reading files that may not exist
   until checkout. A custom roster may use an operator-authored declaration that
   passes the closed shape and exact-role coverage checks. A local repository

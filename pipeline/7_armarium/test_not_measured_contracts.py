@@ -31,15 +31,18 @@ def _conservation_context(rows):
 
 
 @pytest.mark.parametrize(
-    "rows, sealed",
+    "rows, sealed, expected",
     [
-        ([{"page_ordinal": 1, "ink_measurable": False, "reason": "background unavailable"}], {1}),
-        ([{"page_ordinal": 1, "ink_measurable": True}], {1}),
+        (
+            [{"page_ordinal": 1, "ink_measurable": False, "reason": "background unavailable"}],
+            {1},
+            {1: "background unavailable"},
+        ),
+        ([{"page_ordinal": 1, "ink_measurable": True}], {1}, {}),
     ],
 )
-def test_conservation_exact_census_keeps_legitimate_degraded_sealed_pages(rows, sealed):
-    result = armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed)
-    assert set(result) <= sealed
+def test_conservation_exact_census_keeps_legitimate_degraded_sealed_pages(rows, sealed, expected):
+    assert armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed) == expected
 
 
 @pytest.mark.parametrize(
@@ -61,18 +64,20 @@ def test_conservation_refuses_missing_duplicate_or_unsealed_ordinals(rows, seale
         armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed)
 
 
-@pytest.mark.parametrize(
-    "provenance",
-    [
-        {"calibrated_for_this_corpus": "false"},
-        {"calibrated_for_this_corpus": False, "sample_count": True},
-        {"calibrated_for_this_corpus": False, "sample_count": -1},
-    ],
-)
-def test_calibration_provenance_refuses_malformed_present_values(provenance):
-    with pytest.raises(armarium.FatalAccounting):
-        armarium._typed_calibration_flag(provenance, "designator-padding")
-        armarium._typed_sample_count(provenance, "designator-padding")
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_calibration_flag_refuses_non_boolean_values(value):
+    with pytest.raises(armarium.FatalAccounting, match="non-boolean"):
+        armarium._typed_calibration_flag(
+            {"calibrated_for_this_corpus": value}, "designator-padding"
+        )
+
+
+@pytest.mark.parametrize("value", [True, -1])
+def test_calibration_sample_count_refuses_boolean_or_negative_values(value):
+    with pytest.raises(armarium.FatalAccounting, match="invalid sample_count"):
+        armarium._typed_sample_count(
+            {"calibrated_for_this_corpus": False, "sample_count": value}, "designator-padding"
+        )
 
 
 def test_geometry_may_omit_sample_count():

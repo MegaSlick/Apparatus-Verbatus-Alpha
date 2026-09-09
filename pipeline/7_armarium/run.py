@@ -974,11 +974,10 @@ def not_measured_basis(
             ) from error
         # `shortfall: None` is the F2 ruling's own record of a page whose
         # testimony content coverage was not measured -- a continuation page
-        # most often -- and a review with no such field at all measured it even
-        # less. Both belong in the list; neither is a clean measurement.
-        if not isinstance(content, dict) or content.get("shortfall") is None:
+        # most often. The shared validator already required this closed record.
+        if content["shortfall"] is None:
             unmeasured_coverage.append(act_key)
-            reason = content.get("reason") if isinstance(content, dict) else None
+            reason = content.get("reason")
             coverage_reasons.append(
                 str(reason)
                 if reason

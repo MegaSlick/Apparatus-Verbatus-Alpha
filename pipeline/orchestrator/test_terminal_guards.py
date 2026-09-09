@@ -112,6 +112,12 @@ class _RecordingContext:
         # walk the real tree answers: one `mapped` page 1 finding, carrying
         # real `ink-runs.v1`-shaped evidence rather than a placeholder, and no
         # Designator regions to release anything with.
+        self.conservation_records = {
+            "page-1": {
+                "artifact_id": "page-1",
+                "payload": {"page_ordinal": 1, "ink_measurable": True},
+            }
+        }
         self.ink_map_records = {
             "page-1": {
                 "artifact_id": "page-1",
@@ -129,6 +135,13 @@ class _RecordingContext:
         }
 
         def build_manifest(stage: str) -> dict:
+            if stage == "designator":
+                return {
+                    "artifacts": [
+                        {"kind": "conservation", "artifact_id": artifact_id}
+                        for artifact_id in self.conservation_records
+                    ]
+                }
             if stage != INK_MAP:
                 # An empty manifest is the truthful answer, not a swallowed
                 # lookup: the code under test polls this method for stages this
@@ -146,6 +159,8 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
+            if stage == "designator" and kind == "conservation":
+                return self.conservation_records[artifact_id]
             if stage != INK_MAP or kind != "ink-map":
                 raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")
             return self.ink_map_records[artifact_id]
@@ -326,7 +341,13 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
         # producer can emit, and the export reads it unconditionally.
         "payload": {
             "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
             "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
         },
     }
 
@@ -375,7 +396,13 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         # producer can emit, and the export reads it unconditionally.
         "payload": {
             "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
             "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
         },
     }
 
@@ -450,7 +477,13 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
         # producer can emit, and the export reads it unconditionally.
         "payload": {
             "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
             "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
         },
     }
 
@@ -519,7 +552,13 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
         # producer can emit, and the export reads it unconditionally.
         "payload": {
             "coverage": {"under_witnessed": False},
+            "testimony_content_coverage": {
+                "by_chair": None,
+                "shortfall": None,
+                "reason": "synthetic terminal context has no comparable page testimony",
+            },
             "testimony_content_coverage_continuation": [],
+            "cross_capture_coverage": None,
         },
     }
 

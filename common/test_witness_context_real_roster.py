@@ -24,6 +24,7 @@ from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.stage import run_config_bindings, validate_witness_context_bindings
+from common.witness_context import validate_witness_context_configuration
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROSTER = ROOT / "config" / "models.toml"
@@ -40,6 +41,15 @@ def _bindings(models_config: Path, witness_context_config: Path) -> dict:
         {"fixture": "none"},
         "test",
         witness_context_config_path=witness_context_config,
+    )
+
+
+def _write_context(path: Path, sentences: dict[str, str]) -> None:
+    path.write_text(
+        "\n".join(
+            f'[{role}]\ntraining_domain = "{sentence}"\n' for role, sentence in sentences.items()
+        ),
+        encoding="utf-8",
     )
 
 
@@ -89,6 +99,40 @@ def test_a_semantically_copied_fixture_declaration_is_refused_for_the_real_roste
     )
 
     with pytest.raises(ContractError, match="shipped-fixture identity projection"):
+        _bindings(REAL_ROSTER, copied)
+
+
+def test_known_fixture_sentences_remain_bound_inside_a_partly_custom_declaration(tmp_path):
+    copied = tmp_path / "partly-custom-context.toml"
+    _write_context(
+        copied,
+        {
+            "attestator_1": "an operator-authored description for the first witness",
+            "attestator_2": _FIXTURE_SENTENCE,
+            "attestator_3": _FIXTURE_SENTENCE,
+        },
+    )
+
+    with pytest.raises(
+        ContractError,
+        match="attestator_2.*shipped-fixture identity projection.*attestator_3",
+    ):
+        _bindings(REAL_ROSTER, copied)
+
+
+def test_edge_whitespace_cannot_disguise_a_known_fixture_sentence(tmp_path):
+    copied = tmp_path / "edge-whitespace-context.toml"
+    _write_context(
+        copied,
+        {
+            "attestator_1": "an operator-authored first witness",
+            "attestator_2": f"  {_FIXTURE_SENTENCE}  ",
+            "attestator_3": "an operator-authored third witness",
+        },
+    )
+    assert digest_bytes(copied.read_bytes()) != digest_bytes(FIXTURE_CONTEXT.read_bytes())
+
+    with pytest.raises(ContractError, match="attestator_2.*shipped-fixture identity projection"):
         _bindings(REAL_ROSTER, copied)
 
 
@@ -212,6 +256,43 @@ def test_a_recognized_profile_keeps_coverage_but_skips_an_explicit_absence():
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
     ) == digest_bytes(REAL_CONTEXT.read_bytes())
+
+
+def test_mixed_custom_known_and_absent_roles_preserve_the_narrow_contract(tmp_path):
+    roster = ChairRegistry.from_toml(FIXTURE_ROSTER).config
+    changed = replace(
+        roster,
+        chairs={
+            **roster.chairs,
+            "attestator_3": AbsentChair(
+                role="attestator_3", reason="unavailable for this degraded run"
+            ),
+        },
+    )
+    mixed = tmp_path / "mixed-context.toml"
+    _write_context(
+        mixed,
+        {
+            "attestator_1": "an operator-authored description for a custom fixture witness",
+            "attestator_2": _FIXTURE_SENTENCE,
+            "attestator_3": _FIXTURE_SENTENCE,
+        },
+    )
+
+    validation = validate_witness_context_configuration(
+        changed,
+        mixed,
+        shipped_config_root=ROOT / "config",
+    )
+
+    assert validation.source_sha256 == digest_bytes(mixed.read_bytes())
+    assert validation.profile == "mixed"
+    assert dict(validation.role_profiles) == {
+        "attestator_1": "operator-authored",
+        "attestator_2": "shipped-fixture",
+        "attestator_3": "shipped-fixture",
+    }
+    assert validation.verified_present_roles == ("attestator_2",)
 
 
 def test_local_repository_is_a_location_not_proof_of_the_fixture_identity():

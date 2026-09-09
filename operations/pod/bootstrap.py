@@ -26,6 +26,14 @@ BOOTSTRAP_SCHEMA = "pod-bootstrap.v3"
 steps complete without ever validating the checked-out roster/declaration
 pair. It cannot be resumed under the stronger order and is refused by schema.
 """
+CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v1"
+"""The checked-out selections re-read before any completed bootstrap is reused."""
+_CONFIGURATION_BINDINGS = {
+    "models_config",
+    "witness_context_config",
+    "serving_recipes_config",
+    "placement_config",
+}
 BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -283,7 +291,7 @@ class BootstrapJournal:
 
 
 class Bootstrapper:
-    """Run only unfinished steps.  A crash re-enters the current idempotent step."""
+    """Revalidate configuration, then run only unfinished effectful steps."""
 
     def __init__(self, journal: BootstrapJournal, actions: BootstrapActions) -> None:
         # Static typing is not a repository gate, so structural fixtures must
@@ -305,9 +313,17 @@ class Bootstrapper:
 
     def run(self) -> BootstrapReport:
         record = self.journal.load_or_create()
+        completed = set(record["completed"])
+        if BootstrapStep.CONFIGURATION.value in completed:
+            failure = self._revalidate_completed_configuration(record)
+            if failure is not None:
+                # Keep the original completed receipt intact. It is the evidence
+                # of what the paid steps ran under, not a slot for the new
+                # selection to overwrite during a failed resume.
+                self.journal.mark_failure(record, failure)
+                return _report_from_record(record)
         if record["status"] == "green":
             return _report_from_record(record)
-        completed = set(record["completed"])
         for step in ORDERED_STEPS:
             if step.value in completed:
                 continue
@@ -339,11 +355,74 @@ class Bootstrapper:
         self.journal.mark_green(record)
         return _report_from_record(record)
 
+    def _revalidate_completed_configuration(
+        self, record: dict[str, object]
+    ) -> BootstrapStepFailure | None:
+        """Re-read the cheap binding before skipping completed or green work."""
+
+        remediation = (
+            "Restore the roster, declaration, serving catalogue, and placement selection "
+            "recorded by this journal, or preserve the journal and start a new one for the "
+            "new selection. A completed configuration receipt is never rewritten."
+        )
+        try:
+            current = self.actions.validate_configuration()
+        except BootstrapStepFailure as error:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"completed configuration could not be revalidated: {error.detail}",
+                remediation,
+            )
+        except ChairRefusal as error:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"completed configuration security refusal {error.code}: {error}",
+                remediation,
+            )
+        except Exception as error:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"completed configuration could not be revalidated: {error}",
+                remediation,
+            )
+
+        receipts = record["receipts"]
+        if not isinstance(receipts, dict):  # already guarded by journal validation
+            recorded = None
+        else:
+            recorded = receipts.get(BootstrapStep.CONFIGURATION.value)
+        current_problem = _configuration_receipt_problem(current)
+        recorded_problem = _configuration_receipt_problem(recorded)
+        if current_problem is not None or recorded_problem is not None:
+            problem = current_problem or recorded_problem
+            source = "current" if current_problem is not None else "completed"
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"{source} configuration receipt lacks the required binding: {problem}",
+                remediation,
+            )
+        if current != recorded:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                "current configuration paths or source digests differ from the completed "
+                "configuration receipt, or that receipt lacks the required binding",
+                remediation,
+            )
+        return None
+
     def _execute(self, step: BootstrapStep) -> dict[str, object]:
         if step is BootstrapStep.REPOSITORY:
             return self.actions.checkout_commit(self.journal.plan.repository_commit)
         if step is BootstrapStep.CONFIGURATION:
-            return self.actions.validate_configuration()
+            receipt = self.actions.validate_configuration()
+            problem = _configuration_receipt_problem(receipt)
+            if problem is not None:
+                raise BootstrapStepFailure(
+                    BootstrapStep.CONFIGURATION,
+                    f"configuration receipt lacks the required binding: {problem}",
+                    "Correct the configuration validation action before any paid step runs.",
+                )
+            return receipt
         if step is BootstrapStep.UV_ENVIRONMENT:
             return self.actions.sync_uv_environment(self.journal.plan.lockfile)
         if step is BootstrapStep.TRANSFER:
@@ -355,6 +434,36 @@ class Bootstrapper:
         if step is BootstrapStep.PREFLIGHT:
             return self.actions.run_preflight()
         raise AssertionError(f"unhandled bootstrap step {step}")  # pragma: no cover
+
+
+def _configuration_receipt_problem(receipt: object) -> str | None:
+    """Return why a receipt cannot bind a resume, without reading any selected file."""
+
+    if not isinstance(receipt, dict):
+        return "receipt is not an object"
+    required = {"schema", "bindings", "witness_context_validation"}
+    if set(receipt) != required or receipt.get("schema") != CONFIGURATION_RECEIPT_SCHEMA:
+        return f"receipt must be a closed {CONFIGURATION_RECEIPT_SCHEMA!r} object"
+    bindings = receipt.get("bindings")
+    if not isinstance(bindings, dict) or set(bindings) != _CONFIGURATION_BINDINGS:
+        return "receipt does not name all four selected configuration sources"
+    for name in sorted(_CONFIGURATION_BINDINGS):
+        binding = bindings[name]
+        if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
+            return f"{name!r} must have only path and sha256"
+        path = binding.get("path")
+        digest = binding.get("sha256")
+        if not isinstance(path, str) or not path.strip():
+            return f"{name!r} path is not a non-blank string"
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            return f"{name!r} sha256 is not a lowercase digest"
+    if not isinstance(receipt.get("witness_context_validation"), dict):
+        return "witness_context_validation is not an object"
+    return None
 
 
 class ChairCacheBootstrapAction:

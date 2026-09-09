@@ -44,6 +44,7 @@ from common.stage import load_fixture
 from common.witness_context import validate_witness_context_configuration
 from operations.pod.arming import ControllerArming, ControllerReadiness
 from operations.pod.bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapJournal,
     Bootstrapper,
     BootstrapPlan,
@@ -340,12 +341,28 @@ class FixtureBootstrapActions:
 
     def validate_configuration(self) -> dict[str, object]:
         root = self.surface.workspace
+        config_root = root / "config"
         validation = validate_witness_context_configuration(
-            load_models_toml(root / "config" / "models.toml"),
-            root / "config" / "witness_context.toml",
-            shipped_config_root=root / "config",
+            load_models_toml(config_root / "models.toml"),
+            config_root / "witness_context.toml",
+            shipped_config_root=config_root,
         )
-        return validation.to_record()
+        return {
+            "schema": CONFIGURATION_RECEIPT_SCHEMA,
+            "bindings": {
+                name: {
+                    "path": str(config_root / filename),
+                    "sha256": sha256_file(config_root / filename),
+                }
+                for name, filename in (
+                    ("models_config", "models.toml"),
+                    ("witness_context_config", "witness_context.toml"),
+                    ("serving_recipes_config", "serving_recipes.toml"),
+                    ("placement_config", "pod_placement.toml"),
+                )
+            },
+            "witness_context_validation": validation.to_record(),
+        }
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         if not lockfile.is_file():

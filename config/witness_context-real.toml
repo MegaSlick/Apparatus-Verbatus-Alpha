@@ -17,9 +17,11 @@
 # default declaration. It is selected only with the real roster; no fixture
 # dossier presents it as a fact about a local snapshot.
 
-# datalab-to/chandra-ocr-2 (config/models-real.toml).
+# datalab-to/chandra-ocr-2 (config/models-real.toml). Pinned Hugging Face
+# config revision af93b47dba1b47b6640c86ccf487ed2260ab9a09 records architecture
+# Qwen3_5ForConditionalGeneration/model_type qwen3_5; the README credits Qwen3.5.
 [attestator_1]
-training_domain = "Chandra-2, a Qwen3.5-VL vision-language model fine-tuned by Datalab for general document OCR to an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
+training_domain = "Chandra-2, a vision-language OCR model from Datalab whose published configuration names Qwen3.5; it emits an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
 
 # Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR (config/models-real.toml).
 [attestator_2]

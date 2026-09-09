@@ -779,7 +779,14 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         act_text_status=aggregate_basis["act_text_status"],
     )
     projection = ArmariumProjection(
-        not_measured_basis=_not_measured_basis(armarium_export, acts_total=1, pages_sealed=2),
+        not_measured_basis=_not_measured_basis(armarium_export, acts_total=1, pages_sealed=2)
+        | {
+            "perlector-uncertain-spans": {
+                "sealed_audit_round_cap": 1,
+                "acts_delivered": 1,
+                "acts_with_uncertain_spans": 0,
+            }
+        },
         fixture_id="u19d-composed",
         scenario="happy",
         config_digest="a" * 64,

@@ -31,6 +31,7 @@ from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -4819,6 +4820,22 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
+def _fixture_configuration_receipt() -> dict[str, object]:
+    return {
+        "schema": CONFIGURATION_RECEIPT_SCHEMA,
+        "bindings": {
+            name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
+            for name in (
+                "models_config",
+                "witness_context_config",
+                "serving_recipes_config",
+                "placement_config",
+            )
+        },
+        "witness_context_validation": {},
+    }
+
+
 class FakeBootstrapActions:
     def __init__(
         self, *, crash_once: BootstrapStep | None = None, fail: BootstrapStep | None = None
@@ -4840,7 +4857,8 @@ class FakeBootstrapActions:
         return self._step(BootstrapStep.REPOSITORY) | {"commit": commit}
 
     def validate_configuration(self) -> dict[str, object]:
-        return self._step(BootstrapStep.CONFIGURATION)
+        self._step(BootstrapStep.CONFIGURATION)
+        return _fixture_configuration_receipt()
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT) | {"lockfile": str(lockfile)}
@@ -4940,7 +4958,9 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
 
     assert report.green
     assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
-    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 1
+    # CONFIGURATION is cheap and deliberately re-read before any completed
+    # receipt is reused; only the unfinished uv action runs again among paid steps.
+    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 2
     assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 2
     assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1

@@ -743,7 +743,7 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 
 # --- What this run did not measure ------------------------------------------
 #
-# `DELIVERED` and `aggregate.status == "complete"` are reachable over four
+# `DELIVERED` and `aggregate.status == "complete"` are reachable over five
 # things nothing in this run measured: a page whose testimony content coverage
 # was recorded unmeasured rather than clean, a page whose ink was never
 # reconciled, two instruments with no producer, and geometry thresholds no
@@ -1024,6 +1024,10 @@ def _validate_not_measured_detail(
         if detail["sealed_audit_round_cap"] != 0 and detail["acts_with_uncertain_spans"] != 0:
             raise SchemaRefusal(
                 f"{subject} names uncertain spans although its nonzero sealed audit cap makes them unreachable"
+            )
+        if detail["acts_with_uncertain_spans"] > detail["acts_delivered"]:
+            raise SchemaRefusal(
+                f"{subject} names more acts with uncertain spans than delivered acts"
             )
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]

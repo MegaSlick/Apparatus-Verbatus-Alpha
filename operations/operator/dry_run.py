@@ -89,6 +89,7 @@ def make_transcript(output: str | Path) -> Path:
             "models.toml",
             "models-real.toml",
             "pod_placement.toml",
+            "serving_recipes.toml",
             "witness_context.toml",
             "witness_context-real.toml",
         ):

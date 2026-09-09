@@ -25,12 +25,13 @@ _SHIPPED_PROFILES = (
 
 @dataclass(frozen=True, slots=True)
 class WitnessContextValidation:
-    """The declaration bytes and any shipped identity profile they matched."""
+    """The declaration bytes and role-level shipped identity profiles they matched."""
 
     source_sha256: str
     profile: str
     declared_roles: tuple[str, ...]
     verified_present_roles: tuple[str, ...]
+    role_profiles: tuple[tuple[str, str], ...]
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -38,6 +39,7 @@ class WitnessContextValidation:
             "profile": self.profile,
             "declared_roles": list(self.declared_roles),
             "verified_present_roles": list(self.verified_present_roles),
+            "role_profiles": dict(self.role_profiles),
         }
 
 
@@ -87,12 +89,12 @@ def validate_witness_context_configuration(
     *,
     shipped_config_root: str | Path,
 ) -> WitnessContextValidation:
-    """Validate coverage and bind either shipped declaration to its shipped identities.
+    """Validate coverage and bind each known shipped sentence to its shipped identity.
 
-    Comments, whitespace, and location do not select a profile: parsed semantic
-    content does. A declaration unlike either shipped profile is operator-authored
-    and remains accepted under the closed shape and coverage rules; this code has
-    no basis for inferring the truth of arbitrary training-domain prose.
+    Comments, location, TOML formatting, and edge whitespace inside the value do
+    not disguise a known sentence. Each genuinely different role entry remains
+    operator-authored under the closed shape and coverage rules; this code has no
+    basis for inferring the truth of arbitrary training-domain prose.
     """
 
     selected_path = Path(witness_context_path)
@@ -113,7 +115,7 @@ def validate_witness_context_configuration(
         )
 
     config_root = Path(shipped_config_root)
-    matches: list[tuple[str, ModelsConfig]] = []
+    shipped_profiles: list[tuple[str, dict[str, dict[str, str]], ModelsConfig]] = []
     for profile, declaration_name, roster_name in _SHIPPED_PROFILES:
         _, shipped_declaration = _read_declaration(config_root / declaration_name)
         shipped_roster = load_models_toml(config_root / roster_name)
@@ -123,51 +125,70 @@ def validate_witness_context_configuration(
                 f"shipped profile {profile!r} no longer has exact declaration coverage for "
                 "its roster",
             )
-        if declaration == shipped_declaration:
-            matches.append((profile, shipped_roster))
-    if len(matches) > 1:
-        raise ConfigurationRefusal(
-            "witness-context",
-            "the shipped fixture and real declarations have identical semantic content; their "
-            "identity profiles cannot be distinguished",
-        )
+        shipped_profiles.append((profile, shipped_declaration, shipped_roster))
 
     verified: list[str] = []
-    profile = "operator-authored"
-    if matches:
-        profile, shipped_roster = matches[0]
-        mismatches: list[str] = []
-        for role in models.witness_chairs:
-            selected = models.chairs[role]
-            if isinstance(selected, AbsentChair):
-                continue
-            expected = shipped_roster.chairs.get(role)
-            if not isinstance(selected, ChairIdentity) or not isinstance(expected, ChairIdentity):
-                mismatches.append(
-                    f"present witness {role!r} cannot be matched to the {profile} identity profile"
-                )
-                continue
-            observed_identity = _identity_projection(selected)
-            expected_identity = _identity_projection(expected)
-            if observed_identity != expected_identity:
-                mismatches.append(
-                    f"present witness {role!r} does not match the {profile} identity projection: "
-                    f"expected {expected_identity!r}, got {observed_identity!r}"
-                )
-                continue
-            verified.append(role)
-        if mismatches:
+    role_profiles: list[tuple[str, str]] = []
+    mismatches: list[str] = []
+    for role in models.witness_chairs:
+        selected_sentence = declaration[role]["training_domain"].strip()
+        known_matches = [
+            (profile, shipped_roster)
+            for profile, shipped_declaration, shipped_roster in shipped_profiles
+            if role in shipped_declaration
+            and selected_sentence == shipped_declaration[role]["training_domain"].strip()
+        ]
+        if len(known_matches) > 1:
             raise ConfigurationRefusal(
                 "witness-context",
-                "; ".join(mismatches) + ". A local "
-                "repository location alone does not prove a fixture identity, and a legitimate "
-                "local mirror cannot be inferred to be a Hugging Face identity. Supply an "
-                "operator-authored declaration whose parsed content describes this custom roster",
+                f"the known shipped sentence for {role!r} names more than one identity profile; "
+                "the profiles cannot be distinguished",
             )
+        if not known_matches:
+            role_profiles.append((role, "operator-authored"))
+            continue
+
+        role_profile, shipped_roster = known_matches[0]
+        role_profiles.append((role, role_profile))
+        selected = models.chairs[role]
+        if isinstance(selected, AbsentChair):
+            continue
+        expected = shipped_roster.chairs.get(role)
+        if not isinstance(selected, ChairIdentity) or not isinstance(expected, ChairIdentity):
+            mismatches.append(
+                f"present witness {role!r} cannot be matched to the {role_profile} identity profile"
+            )
+            continue
+        observed_identity = _identity_projection(selected)
+        expected_identity = _identity_projection(expected)
+        if observed_identity != expected_identity:
+            mismatches.append(
+                f"present witness {role!r} does not match the {role_profile} identity projection: "
+                f"expected {expected_identity!r}, got {observed_identity!r}"
+            )
+            continue
+        verified.append(role)
+    if mismatches:
+        raise ConfigurationRefusal(
+            "witness-context",
+            "; ".join(mismatches) + ". A local "
+            "repository location alone does not prove a fixture identity, and a legitimate "
+            "local mirror cannot be inferred to be a Hugging Face identity. Supply an "
+            "operator-authored declaration whose parsed content describes this custom roster",
+        )
+
+    distinct_profiles = {role_profile for _, role_profile in role_profiles}
+    if not distinct_profiles:
+        profile = "operator-authored"
+    elif len(distinct_profiles) == 1:
+        profile = next(iter(distinct_profiles))
+    else:
+        profile = "mixed"
 
     return WitnessContextValidation(
         source_sha256=hashlib.sha256(source).hexdigest(),
         profile=profile,
         declared_roles=tuple(sorted(declaration)),
         verified_present_roles=tuple(verified),
+        role_profiles=tuple(role_profiles),
     )

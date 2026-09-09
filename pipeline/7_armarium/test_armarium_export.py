@@ -3988,3 +3988,19 @@ def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
     basis["perlector-uncertain-spans"]["acts_delivered"] = 0
     with pytest.raises(SchemaRefusal, match="does not exactly reconcile"):
         _manifest_of(replace(_projection(), not_measured_basis=basis))
+
+
+def test_a_resealed_cap_zero_uncertainty_count_cannot_exceed_delivered_acts(tmp_path):
+    """Recipient validation must enforce the bound without a producer projection."""
+
+    def contradict_counts(manifest):
+        block = manifest["claims"]["not_measured"]
+        entry = _entry(block, "perlector-uncertain-spans")
+        detail = entry["detail"]
+        detail["sealed_audit_round_cap"] = 0
+        detail["acts_with_uncertain_spans"] = detail["acts_delivered"] + 1
+        entry["status"] = "measured"
+        block["count"] = sum(row["status"] != "measured" for row in block["entries"])
+
+    with pytest.raises(SchemaRefusal, match="more acts with uncertain spans than delivered acts"):
+        verify_delivered_bundle(_resealed_manifest(contradict_counts), tmp_path / "delivered")

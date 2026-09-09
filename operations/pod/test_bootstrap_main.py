@@ -15,14 +15,15 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 from . import bootstrap_main
-from .bootstrap import BootstrapStep, BootstrapStepFailure
+from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
@@ -53,11 +54,28 @@ def _stamp(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _fixture_configuration_receipt() -> dict[str, object]:
+    return {
+        "schema": CONFIGURATION_RECEIPT_SCHEMA,
+        "bindings": {
+            name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
+            for name in (
+                "models_config",
+                "witness_context_config",
+                "serving_recipes_config",
+                "placement_config",
+            )
+        },
+        "witness_context_validation": {},
+    }
+
+
 @dataclass
 class FakeActions:
     """A minimal stand-in for every ``BootstrapActions`` method, all green by default."""
 
     fail_step: BootstrapStep | None = None
+    configuration_action: Callable[[], dict[str, object]] | None = None
     calls: list[BootstrapStep] = field(default_factory=list)
 
     def _step(self, step: BootstrapStep, receipt: dict[str, object]) -> dict[str, object]:
@@ -70,7 +88,8 @@ class FakeActions:
         return self._step(BootstrapStep.REPOSITORY, {"commit": commit})
 
     def validate_configuration(self) -> dict[str, object]:
-        return self._step(BootstrapStep.CONFIGURATION, {"profile": "fixture"})
+        receipt = self._step(BootstrapStep.CONFIGURATION, _fixture_configuration_receipt())
+        return self.configuration_action() if self.configuration_action is not None else receipt
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT, {"lockfile": str(lockfile)})
@@ -1007,6 +1026,7 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
         store_root=ws.store_root,
         models_config=ws.models_config,
         placement_config=ws.placement_config,
+        serving_recipes_config=ws.repository / "config" / "serving_recipes.toml",
         witness_context_config=ws.repository / "config" / "witness_context.toml",
         cache_root=ws.volume / "chair-cache",
         fixture=ws.repository / "proof" / "fixtures" / "synthetic-two-page-v0" / "page-1.png",
@@ -1100,6 +1120,214 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
 WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+
+
+def _checked_out_configuration_plan(tmp_path: Path) -> tuple[Workspace, bootstrap_main.Plan]:
+    ws = _workspace(tmp_path)
+    shutil.copytree(ROOT / "config", ws.repository / "config")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    return ws, plan
+
+
+def _configuration_actions(
+    plan: bootstrap_main.Plan,
+    *,
+    fail_step: BootstrapStep | None = None,
+) -> FakeActions:
+    return FakeActions(
+        configuration_action=bootstrap_main._build_configuration_validation(plan),
+        fail_step=fail_step,
+    )
+
+
+def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path: Path) -> None:
+    _ws, plan = _checked_out_configuration_plan(tmp_path)
+
+    receipt = bootstrap_main._build_configuration_validation(plan)()
+
+    assert receipt["schema"] == "pod-bootstrap-configuration.v1"
+    bindings = receipt["bindings"]
+    for name, selected in (
+        ("models_config", plan.models_config),
+        ("witness_context_config", plan.witness_context_config),
+        ("serving_recipes_config", plan.serving_recipes_config),
+        ("placement_config", plan.placement_config),
+    ):
+        assert selected is not None
+        assert bindings[name] == {  # type: ignore[index]
+            "path": str(selected),
+            "sha256": hashlib.sha256(selected.read_bytes()).hexdigest(),
+        }
+
+
+def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(tmp_path: Path) -> None:
+    ws, original = _checked_out_configuration_plan(tmp_path)
+    first_actions = _configuration_actions(original, fail_step=BootstrapStep.UV_ENVIRONMENT)
+    first = bootstrap_main.run_bootstrap(
+        original,
+        now=lambda: START,
+        actions_factory=lambda plan: first_actions,
+    )
+    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+
+    alternate = ws.repository / "config" / "alternate-context.toml"
+    alternate.write_bytes(original.witness_context_config.read_bytes())  # type: ignore[union-attr]
+    changed = replace(original, witness_context_config=alternate)
+    resumed_actions = _configuration_actions(changed)
+    resumed = bootstrap_main.run_bootstrap(
+        changed,
+        now=lambda: START,
+        actions_factory=lambda plan: resumed_actions,
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    assert journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
+        "path"
+    ] == str(original.witness_context_config)
+    assert journal["failure"]["step"] == "configuration"
+
+
+def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
+    tmp_path: Path,
+) -> None:
+    ws, original = _checked_out_configuration_plan(tmp_path)
+    first_actions = _configuration_actions(original)
+    first = bootstrap_main.run_bootstrap(
+        original,
+        now=lambda: START,
+        actions_factory=lambda plan: first_actions,
+    )
+    assert not isinstance(first, int) and first.green
+
+    alternate = ws.repository / "config" / "alternate-placement.toml"
+    assert original.placement_config is not None
+    alternate.write_bytes(original.placement_config.read_bytes())
+    changed = replace(original, placement_config=alternate)
+    resumed_actions = _configuration_actions(changed)
+    resumed = bootstrap_main.run_bootstrap(
+        changed,
+        now=lambda: START,
+        actions_factory=lambda plan: resumed_actions,
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    assert BootstrapStep.UV_ENVIRONMENT not in resumed_actions.calls
+
+
+def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(tmp_path: Path) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    first_actions = _configuration_actions(plan, fail_step=BootstrapStep.UV_ENVIRONMENT)
+    first = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: first_actions,
+    )
+    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+    original_receipt = json.loads(ws.journal.read_text(encoding="utf-8"))["receipts"][
+        "configuration"
+    ]
+
+    assert plan.serving_recipes_config is not None
+    plan.serving_recipes_config.write_bytes(
+        plan.serving_recipes_config.read_bytes() + b"\n# changed after CONFIGURATION\n"
+    )
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: resumed_actions,
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    assert journal["receipts"]["configuration"] == original_receipt
+
+
+def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_steps(
+    tmp_path: Path,
+) -> None:
+    _ws, plan = _checked_out_configuration_plan(tmp_path)
+    first_actions = _configuration_actions(plan)
+    first = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: first_actions,
+    )
+    assert not isinstance(first, int) and first.green
+
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: resumed_actions,
+    )
+
+    assert not isinstance(resumed, int) and resumed.green
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
+def test_a_completed_receipt_missing_one_binding_fails_closed(tmp_path: Path) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    first_actions = _configuration_actions(plan)
+    first = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: first_actions,
+    )
+    assert not isinstance(first, int) and first.green
+
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    del journal["receipts"]["configuration"]["bindings"]["placement_config"]
+    ws.journal.write_text(json.dumps(journal), encoding="utf-8")
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan,
+        now=lambda: START,
+        actions_factory=lambda selected: resumed_actions,
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert "lacks the required binding" in (resumed.detail or "")
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
+def test_a_failed_configuration_may_repair_its_selection_before_first_completion(
+    tmp_path: Path,
+) -> None:
+    ws, repaired_plan = _checked_out_configuration_plan(tmp_path)
+    bad_context = ws.repository / "config" / "bad-context.toml"
+    bad_context.write_text('attestator_1 = "not a table"\n', encoding="utf-8")
+    bad_plan = replace(repaired_plan, witness_context_config=bad_context)
+    first_actions = _configuration_actions(bad_plan)
+    first = bootstrap_main.run_bootstrap(
+        bad_plan,
+        now=lambda: START,
+        actions_factory=lambda selected: first_actions,
+    )
+
+    assert not isinstance(first, int) and first.failure_step is BootstrapStep.CONFIGURATION
+    failed_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    assert failed_journal["completed"] == ["repository"]
+    assert "configuration" not in failed_journal["receipts"]
+
+    repaired_actions = _configuration_actions(repaired_plan)
+    repaired = bootstrap_main.run_bootstrap(
+        repaired_plan,
+        now=lambda: START,
+        actions_factory=lambda selected: repaired_actions,
+    )
+
+    assert not isinstance(repaired, int) and repaired.green
+    assert repaired_actions.calls[0] is BootstrapStep.CONFIGURATION
+    assert BootstrapStep.UV_ENVIRONMENT in repaired_actions.calls
+    repaired_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    assert repaired_journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
+        "path"
+    ] == str(repaired_plan.witness_context_config)
 
 
 def _toml_value(value: object) -> str:
