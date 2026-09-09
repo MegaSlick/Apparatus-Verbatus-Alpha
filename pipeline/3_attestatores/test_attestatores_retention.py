@@ -2404,12 +2404,13 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
     assert all(row["span"] is None for row in page_attachments)
 
 
-def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
+def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     """One sealed-page read per act view's own derivations (CodeRabbit round 1, T8).
 
-    `publish_attempt` needs the sealed page's size twice for a Chandra act
+    `publish_attempt` needs the sealed page's size twice for a page-scoped act
     view: once to convert the wire contract's normalized boxes
-    (`chandra.observe`), and once for the page-edge overshoot split. It called
+    (`chandra.observe`, `churro.observe`), and once for the page-edge overshoot
+    split. It called
     `_sealed_source_page` at both, and that function reads the whole page blob
     and re-digests it every time -- two full reads and two SHA-256 passes per
     act view, for one number that cannot change between them. The size is now
@@ -2430,7 +2431,7 @@ def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     real_validate = attestatores.validate_testimonium_presentation
     validating: list[bool] = []
     reads: list[str] = []
-    reads_per_view: list[int] = []
+    reads_per_view: list[tuple[str, int]] = []
 
     def counting_sealed_source_page(context, presented):
         if not validating:
@@ -2447,7 +2448,7 @@ def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     def counting_publish_attempt(context, **fields):
         before = len(reads)
         result = real_publish_attempt(context, **fields)
-        reads_per_view.append(len(reads) - before)
+        reads_per_view.append((fields["chair"], len(reads) - before))
         return result
 
     monkeypatch.setattr(attestatores, "_sealed_source_page", counting_sealed_source_page)
@@ -2470,8 +2471,25 @@ def test_a_chandra_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
     )
 
     assert attestatores.main() == 0
-    # Six act views: two acts times three chairs. `attestator_1` is the
-    # fixture's Chandra chair, so exactly its two views need the sealed size at
-    # all, and each needs it once. A ceiling alone would pass vacuously if no
-    # view had reached the derivation.
-    assert sorted(reads_per_view) == [0, 0, 0, 0, 1, 1]
+    # Six act views: two acts times three chairs. One chair needs the sealed
+    # size -- `attestator_1` (Chandra), whose grammar reports boxes normalized
+    # against the whole page, so its declared fixture observations get the
+    # page-edge check. Neither of the other two does: DAI is act-scoped, and
+    # Churro's `HistoricalDocument` carries no coordinate anywhere, so its
+    # `observe` takes no page size and its registry entry says so
+    # (`takes_page_size`). What this test protects is unchanged and is the
+    # reason it counts rather than asserts a ceiling: ONE read per view that
+    # needs it, never one per derivation, and never zero because no view
+    # reached the derivation at all -- and the per-chair contract explicitly,
+    # not only the bare counts: Chandra reads the sealed page once per act
+    # view it appears in, DAI and Churro read it zero times, so moving the
+    # read to either of those chairs' views (same counts, wrong chair) fails
+    # this by name.
+    assert sorted(reads_per_view) == [
+        ("attestator_1", 1),
+        ("attestator_1", 1),
+        ("attestator_2", 0),
+        ("attestator_2", 0),
+        ("attestator_3", 0),
+        ("attestator_3", 0),
+    ]

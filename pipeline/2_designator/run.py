@@ -309,6 +309,12 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "prompt_version",
         "prompt_sha256",
         "answer_schema",
+        # The rule the record's text digests were taken under, and the vendor
+        # code whose prompt bytes were sent and whose grammar was read
+        # (`structure_prompt.vendor_identity`). Both arrived with
+        # `verbatus-structure-prompt.v3`; neither carries text.
+        "text_view",
+        "vendor",
         "call_record_ref",
         "raw_response_ref",
         "custody_ref",
@@ -322,6 +328,11 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "parse_outcome",
         "disposition",
         "reason_code",
+        # How many top-level blocks the chair's answer carried, and the ones
+        # that proposed no rectangle -- recorded rather than dropped, which is
+        # the whole of "malformed-bbox blocks recorded, never minted".
+        "block_count",
+        "blocks_without_proposal",
         "act_count",
         "acts",
         "findings",
@@ -329,11 +340,18 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "page_text_rule",
         "decoding",
         "provenance",
+        # The `verbatus-request-capacity.v1` record this page's request was
+        # admitted or held on. Counts and dimensions only -- no text -- so it
+        # passes `_refuse_text_fields` like every other block here.
+        "capacity",
     }
 )
 # Geometry, and both of the chair's free strings only as a digest and a length.
 # `label` and `text` are absent from this set on purpose: the day either name
-# reappears in the record, this refuses.
+# reappears in the record, this refuses. `label_vocabulary` is not that name
+# coming back -- it carries which of the vendor grammar's own twenty admitted
+# words the answer named, or `null`, and a closed range is not a reading
+# (`structure_pass._label_fields` argues it in full).
 _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
     {
         "ordinal",
@@ -341,14 +359,54 @@ _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
         "raw_bounds",
         "text_digest",
         "text_length",
+        "label_vocabulary",
+        "label_declared",
         "label_digest",
         "label_length",
+        "nested_bbox_count",
     }
 )
+# One of the chair's blocks that proposed no rectangle: everything an act row
+# carries except the geometry it does not have, plus the closed reason it has
+# instead. Closed separately from the act row, because the two are different
+# shapes and a field that wandered from one into the other should refuse.
+_STRUCTURE_ANSWER_UNPROPOSED_FIELDS = frozenset(
+    {
+        "ordinal",
+        "reason",
+        "blank_page",
+        "label_vocabulary",
+        "label_declared",
+        "label_digest",
+        "label_length",
+        "text_digest",
+        "text_length",
+        "nested_bbox_count",
+    }
+)
+_STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
+    {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
+)
 _STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
-# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
-# declared here or it does not publish.
-_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+# Seven finding kinds: this pass's own `duplicate-rectangle`, and the six the
+# Chandra layout grammar raises (`common/chandra_layout.py`), carried onto the
+# record by `structure_pass._designator_finding`. Declared here independently of
+# that function on purpose -- a validator that imported the producer's own table
+# would agree with the producer by construction and report nothing. `data_bbox`
+# is absent from the malformed-bbox row and `data_bbox_digest` stands in its
+# place: the quoted attribute is bytes the chair wrote, and this stage publishes
+# no string the chair wrote.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {
+    "duplicate-rectangle": frozenset({"kind", "ordinals"}),
+    "malformed-bbox": frozenset(
+        {"kind", "ordinal", "reason", "data_bbox_digest", "data_bbox_truncated"}
+    ),
+    "blank-page-retained": frozenset({"kind", "ordinal"}),
+    "nested-bbox-retained": frozenset({"kind", "blocks", "attributes"}),
+    "unclosed-block": frozenset({"kind", "ordinal", "detail"}),
+    "block-count-mismatch": frozenset({"kind", "parsed_blocks", "top_level_divs"}),
+    "content-outside-blocks": frozenset({"kind", "characters", "detail"}),
+}
 
 
 def _closed_object(value: object, fields: frozenset, what: str) -> dict:
@@ -371,11 +429,29 @@ def _validate_structure_answer_payload(payload: object) -> None:
     _closed_object(
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
+    _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
     for act in acts:
         _closed_object(act, _STRUCTURE_ANSWER_ACT_FIELDS, "structure-answer act")
+    unproposed = record["blocks_without_proposal"]
+    if not isinstance(unproposed, list):
+        raise ContractError(
+            "a Designator structure-answer payload carries no list of the blocks that "
+            "proposed nothing; a block dropped from the mint is recorded or it is lost"
+        )
+    for block in unproposed:
+        _closed_object(
+            block, _STRUCTURE_ANSWER_UNPROPOSED_FIELDS, "structure-answer unproposed block"
+        )
+        reason = block["reason"]
+        if reason not in structure_pass.NO_PROPOSAL_REASONS:
+            raise ContractError(
+                f"a Designator structure-answer block proposed nothing for reason {reason!r}, "
+                f"which is not one of the declared reasons "
+                f"{sorted(structure_pass.NO_PROPOSAL_REASONS)}"
+            )
     findings = record["findings"]
     if not isinstance(findings, list):
         raise ContractError("a Designator structure-answer payload carries no finding list")
@@ -485,10 +561,9 @@ def page_pixels(
 ) -> tuple[int, int, list, structure.BackgroundEvidence]:
     """Decode one sealed page and infer its own background, with the evidence.
 
-    Returns `structure.BackgroundEvidence` rather than a bare integer: a page
-    whose paper was inferred from its interior under a dark photographic
-    surround has a measurement to publish, and dropping it on the way back would
-    be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    Returns `structure.BackgroundEvidence` rather than a bare integer: an
+    interior-mode page has a dark distribution to publish, and dropping that
+    measured population on the way back would be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
     grouping config, resolved to *this* page's own background-inference policy
     here through `grouping_config.resolve_background_policy` -- the one resolver
     for that policy, so this call site and any other cannot come to disagree.
@@ -1131,14 +1206,9 @@ def publish_structure_status(
                 # to check either. `structure.BackgroundEvidence`'s own
                 # docstring promises a reader holding `background`, `dark_mode`
                 # and the sealed `ink_margin_bp` can recompute the margin
-                # exactly; the `surround` block on the conservation record
-                # carries `dark_mode` too, but only for pages that reach the
-                # surround branch -- 65 of the 114 inferred pages of the
-                # 127-page calibration, with the other 49 taking the plain modal
-                # branch and publishing no surround block at all. On those the
-                # promise was false: the margin was a number with its own
-                # derivation dropped. The derivation runs on both branches, so
-                # its input is recorded on both.
+                # exactly; `dark_distribution` is separately present only for
+                # pages that reach the interior-mode branch. The derivation runs
+                # on both branches, so its input is recorded on both.
                 "ink_margin": analysis["ink_margin"] if analysis else None,
                 "dark_mode": analysis["dark_mode"] if analysis else None,
                 "ink_threshold": (
@@ -1211,7 +1281,7 @@ def _analyze_page(
             )
             background = evidence["background"]
             background_source = evidence["source"]
-            surround = evidence["surround"]
+            dark_distribution = evidence["dark_distribution"]
             # The margin this page derived for itself, from the distance
             # between its own two population modes and the sealed
             # `ink_margin_bp` (`structure._derived_ink_margin`). It is carried
@@ -1220,16 +1290,16 @@ def _analyze_page(
             # derivations that agree today.
             ink_margin = evidence["ink_margin"]
             # The other end of the distance the margin above is a fraction of.
-            # Carried for the same reason and published for a different one: the
-            # `surround` block already records it, but only on pages that reach
-            # the surround branch, and the derivation runs on both.
+            # It is published on every measurable page because the derivation
+            # runs on both branches; `dark_distribution`, when present, records
+            # a separate sampled population rather than a page boundary.
             dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
-            surround = None
+            dark_distribution = None
             ink_margin = None
             dark_mode = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
@@ -1285,12 +1355,11 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": background_source,
-            # The dark-surround measurement, or `None` on a page that had no
-            # dark surround to measure. Published on the conservation record
-            # below, because that record is where this page's ink accounting
-            # lives and the surround is the part of that ink which is bezel
-            # rather than writing.
-            "surround": surround,
+            # The interior-mode branch's dark-population measurements, or
+            # `None` where that branch did not run. They retain sampled values
+            # beside this page's ink accounting without assigning them to a
+            # bezel, paper region, or writing.
+            "dark_distribution": dark_distribution,
             # This page's own derived ink margin, and `None` on a page whose
             # background could not be inferred -- where no threshold was
             # resolved, no scan ran, and naming a margin would be a resolution
@@ -2255,22 +2324,13 @@ def _publish_conservation_and_secondary(
         if withheld
         else RESIDUAL_ENUMERATION_COMPLETE,
     }
-    # Present only on a page that had a dark surround, absent on every other
-    # page, exactly like `residual_components` above. A key that is always
-    # present would carry `null` on every fixture page and move bytes that
-    # nothing measured differently; `background_source` already says which
-    # branch inferred this page's paper, so an absent `surround` is not a
-    # fact going unrecorded. What it records when present is how much of this
-    # page's counted ink is photographic bezel rather than writing. Its two
-    # dark counts bracket that: `border_dark_pixel_count` is a lower bound
-    # (34.1% to 79.7% of the counted ink on the 65 pages of the 127-page
-    # calibration that reach this branch, at the margin each page derives for
-    # itself) and `dark_pixel_count` an upper one (78.5% to 96.9%). The surround is never removed from the scan or from
-    # this reconciliation (see `structure._dark_surround` for why), so without
-    # this a reader would take an ink fraction of two thirds for two thirds of
-    # writing.
-    if analysis["surround"] is not None:
-        conservation_payload["surround"] = analysis["surround"]
+    # Present only when the interior-mode branch measured a dark distribution.
+    # The two counts retain their exact sampled band/page populations and remain
+    # in the primary scan and reconciliation. They are not a page-boundary mask:
+    # without independent ground truth they do not establish a bezel, a paper
+    # region, or writing excluded from either denominator.
+    if analysis["dark_distribution"] is not None:
+        conservation_payload["dark_distribution"] = analysis["dark_distribution"]
     if not withheld:
         conservation_payload["residual_components"] = components
     _refuse_text_fields(conservation_payload)

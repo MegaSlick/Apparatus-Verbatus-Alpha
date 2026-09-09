@@ -93,6 +93,22 @@ RECENSOR_RUN = _load_recensor()
 NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
 NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
+
+def _perlector_dissent():
+    """The Perlector's own `dissent` module, loaded the way `_load_recensor` is.
+
+    Imported by path rather than by name: `pipeline/4_perlector` is a
+    numeric-prefixed directory its own stage program adds to `sys.path`, and
+    this suite must not acquire that path as a side effect of a comparison it
+    makes in one test.
+    """
+    path = ROOT / "pipeline/4_perlector/dissent.py"
+    spec = importlib.util.spec_from_file_location("perlector_dissent_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
 # what a run writes, and never loosened: "nothing changed" must not be satisfiable
@@ -1440,208 +1456,33 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-#
-# Moved again, 2026-09-05, for `config/designator_grouping.toml` alone.
-# `infer_background` learned to tell a photographed page (dark surround, lighter
-# interior) from a genuinely dark page, and the three thresholds that test runs
-# under are sealed in a new `[grouping.surround]` block with its own provenance.
-# Every run seals that file's bytes, so its digest moved
-# (a56df58d0c7e... -> 968b72aeaca9657d0dc1381a63c0a38b276243f1b2f603b6df9ecd5802b84b72),
-# which moves `run.json`'s
-# `sealed_config_digests`, its `config_digest` and its `self_hash`, and every
-# digest computed over those downstream.
-#
-# **No fixture page reaches the new branch.** Every walking-skeleton page is
-# white synthetic: its modal pixel is its paper, so it takes the same modal path
-# it always took, records the same `background_source: "inferred-modal"`, and
-# publishes no `surround` block at all (`test_structure.py::
-# test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`). The
-# resolved surround policy is deliberately not a field of `GroupingThresholds`
-# either, so `structure-status.resolved_thresholds` is byte-identical
-# (`test_grouping_config.py::
-# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
-#
-# Checked, not assumed, in this file's own style. Both trees were built from
-# real orchestrator runs -- the `before` tree from a worktree pinned at the
-# preceding commit with its own venv -- and compared leaf by leaf: happy 75
-# changed files / 391 changed JSON leaves, review 87 / 471, and **not one of
-# them is a non-digest field**. Every changed leaf is a 64-hex digest or a
-# content-addressed blob path, plus one renamed blob per scenario in
-# `4_perlector` and `7_armarium` whose own name is its content digest. Snapshot
-# counts and exit codes are unmoved: happy 96 files at exit 0, review 107 at
-# exit 3.
-#
-# And once more, same day, for `config/alignment.toml` alone: `timeout_seconds`
-# 5 -> 25, on the measurement in that file's own header. Its bytes are sealed at
-# run creation like every other config's, so the same digest cascade follows.
-# The value has no effect on a fixture run's *content* -- no fixture alignment
-# comes within two orders of magnitude of either deadline -- which the leaf
-# comparison confirms: happy 75 changed files / 385 changed leaves, review 87 /
-# 445, **zero non-digest changed leaves**, baseline built from a worktree pinned
-# at the preceding commit with its own venv. Counts and exit codes unmoved.
-#
-# And a third time the same day, for a *comment*: `config/designator_grouping.toml`
-# documents every one of its fields in its header and said nothing at all about
-# the `[grouping.surround]` block added above, which is the defect class that
-# header exists to prevent. Sealed bytes are sealed bytes, so the header now
-# describes the block and the digest moved again
-# (968b72aeaca9... -> c9a7607b04122b0238d9907afb72cba1a5845cb90712a38dc4f3bcc793073043).
-# Same proof: happy 75 changed files / 385 changed leaves, review 87 / 445,
-# **zero non-digest changed leaves**, counts and exit codes unmoved.
-#
-# And a fourth time, 2026-09-06, for the same file again: the background
-# inference was redesigned on a 127-page survey, `[grouping.surround]` became
-# `[grouping.background]`, `min_border_dark_bp` was removed, `max_ink_bp` added,
-# `max_interior_dark_bp` moved 3000 -> 5000, and the provenance block was
-# rewritten at `sample_count = 127`
-# (c9a7607b0412... -> c5c009796e0acdd067405220335f7aaeb299284fb97a6ef6857851625abea0af).
-#
-# **No fixture page's inference moves for any of it**, which is what makes the
-# digest cascade the whole of the change. Every walking-skeleton page is white
-# synthetic: its modal pixel is at or above its own mean, so it takes the plain
-# modal branch exactly as before, never reaches the surround test, publishes no
-# `surround` block, and clears the new `max_ink_bp` bound by a wide margin
-# (`test_structure.py::test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`,
-# and the ink-bound tests beside it). The resolved policy is still not a field of
-# `GroupingThresholds`, so `resolved_thresholds` is byte-identical
-# (`test_grouping_config.py::
-# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
-#
-# Proved the same way and attributed leaf by leaf, baseline built from a
-# worktree pinned at the preceding commit under its own name with its own venv:
-# happy 75 changed files / 391 changed leaves, review 87 / 452. Every one of
-# those leaves is accounted for -- 373 and 432 are bare 64-hex digests, 18 and
-# 20 are `relative_path` values naming a content-addressed blob
-# (`blobs/sha256/<digest>`), and **zero are anything else**. Two blobs per
-# scenario are renamed in `4_perlector` and `7_armarium`, each one's name being
-# its own content digest. Snapshot counts and exit codes unmoved: happy 96 files
-# at exit 0, review 107 at exit 3.
-#
-# And a fifth time, 2026-09-06, for the Designator's ink margin. Two things move
-# this one and they are different in kind, so they are attributed separately.
-#
-# 1. `config/designator_grouping.toml` gains `[grouping.background] ink_margin_bp
-#    = 3333` with a rewritten provenance and header, and its bytes are sealed at
-#    run creation like every other config's
-#    (c5c009796e0a... -> the file's own digest in the run's
-#    `sealed_config_digests`), which moves `config_digest`, `self_hash` and every
-#    digest computed over them.
-# 2. `structure-status` publishes two new fields, `ink_margin` and
-#    `ink_threshold`. **This is the first move on this branch that changes a
-#    leaf which is not a digest**, and the leaf comparison names them rather
-#    than tolerating them: 4 newly-present leaves per scenario, all four carrying
-#    `ink_margin = 46` and `ink_threshold = 184` — the margin every page in these
-#    two scenarios derives and the threshold it implies. Not every
-#    walking-skeleton page: the ink-free third page's two modes coincide, so it
-#    derives the floor of 20, and it appears in neither scenario.
-#
-# **No fixture page's cut moves for any of it.** The primary scan now runs at the
-# margin each page derives from the distance between its own two grey-level
-# population modes rather than at `structure.PRIMARY_MARGIN`. On a synthetic page
-# that is the same pixel set: paper is 230, ink is 40 and 90, the derived margin
-# is 46 and the floor is 20, and every ink value is far below both thresholds
-# (`test_structure.py::test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`
-# asserts the two scans return the identical set). Components, groups, crops and
-# every act identity are therefore unmoved, and what is left is the digest
-# cascade plus the two recorded integers.
-#
-# Proved the same way, baseline built from a worktree pinned at the preceding
-# commit `60de02fca7` under its own name with its own venv, and that baseline
-# reproduced both previous pins exactly before anything was compared: happy 75
-# changed files / 382 changed leaves, review 87 / 468. Every one is accounted for
-# — 366 and 438 are bare 64-hex digests, 12 and 26 are `relative_path` values
-# naming a content-addressed blob, 4 and 4 are the two new fields above, and
-# **zero are anything else** (`scripts/leafdiff_values.py`, which prints any leaf
-# it cannot attribute and printed none). Two blobs per scenario are renamed in
-# `4_perlector` and `7_armarium`, each one's name being its own content digest.
-# Snapshot counts and exit codes unmoved: happy 96 files at exit 0, review 107 at
-# exit 3.
-#
-# And a sixth time, 2026-09-06, applying a second reader's findings against the
-# unit above. Two things move it, both of the kinds already described.
-#
-# 1. `config/designator_grouping.toml`'s `[grouping.background]` caveat is
-#    corrected -- `band_bp = 500`'s stated reason was refuted by the table three
-#    lines below it (1000 bp has the widest valley of the three, not 500; the
-#    real reason is that at 1000 the band is 36% of the page and stops being a
-#    frame), the scale-invariance figure now names the 67 pairs that infer both
-#    ways rather than all 72, the limit found on the `da9e07ec...` review proxy
-#    is added to what the sample does not establish, and a missing sentence break
-#    is repaired. Sealed bytes, so the same digest cascade follows.
-# 2. `structure-status` publishes a third field, `dark_mode`. The record already
-#    carried `ink_margin`, and `structure.BackgroundEvidence`'s docstring
-#    promises a reader can recompute that margin from `background`, `dark_mode`
-#    and the sealed `ink_margin_bp` -- but `dark_mode` reached the tree only
-#    inside the `surround` block, which the 49 modal-branch pages of the
-#    127-page calibration do not publish, and which no walking-skeleton page
-#    publishes at all. On those pages the margin was a number with its
-#    derivation dropped. It is 2 newly-present leaves per scenario, both
-#    `dark_mode = 90`: the ink tone of both pages of both scenarios, and the
-#    other end of the 140-level distance whose sealed third is the margin 46
-#    already on the record.
-#
-# **No fixture page's cut moves**, for the same reason as the fifth move: the
-# scan runs at the same derived margin it already ran at and nothing about the
-# inference changed. The only new leaf is a recording.
-#
-# Measured the same way and to the same standard: both scenarios built twice in
-# two independent temporary roots, which agreed exactly on both digests, and
-# compared leaf by leaf against the trees the fifth move left behind -- trees
-# that reproduce the two pins above exactly, which is what makes them a
-# baseline. Happy 75 changed files / 380 changed leaves, review 87 / 447. Every
-# one is accounted for: 366 and 428 are bare 64-hex digests, 12 and 17 are
-# `relative_path` values naming a content-addressed blob, 2 and 2 are the new
-# field, and **zero are anything else** (`scripts/leafdiff_values.py`, which
-# prints any leaf it cannot attribute and printed none). Two blobs per scenario
-# are renamed in `4_perlector` and `7_armarium`, each one's name being its own
-# content digest. Snapshot counts and exit codes unmoved: happy 96 files at exit
-# 0, review 107 at exit 3.
-# **Shared background inference (`work/shared-background-inference`).** Both
-# digests move again, for the sealed config's bytes and for two record shapes.
-# The Ink Map and the Recensor's residual-ink audit now infer a page's paper
-# value through `common/background.py` under the same sealed
-# `[grouping.background]` block the Designator runs under, instead of taking the
-# page's raw histogram mode; `config/designator_grouping.toml`'s header gained a
-# paragraph saying three stages read it, and that file's bytes are sealed into
-# every run by SHA-256, so a comment moves every downstream digest.
-#
-# **No fixture page's measurement moves.** A walking-skeleton page is
-# majority-paper, so its raw mode and the shared inference's paper value are the
-# same 230, it takes the same `inferred-modal` branch, and every count is
-# identical: page 1 `total_ink_pixels` 11,520 and `outside_ink_pixels` 8,328 at
-# the edge, page 2 3,840 and 3,384, 2,880 and 960 retained runs. Checked against
-# the baseline trees leaf by leaf rather than asserted.
-#
-# What actually changes in a record is shape, in three places. Each `ink-map`
-# payload gains `ink_measurable: true` and one `background` block
-# (`background_level` 230, `background_source` "inferred-modal", `dark_mode` 90,
-# `ink_margin` 46, `contrast_below_background` 40, `ink_threshold` 190, and the
-# sealed policy's `config_sha256`) -- GOVERNANCE 6: the record names what it ran
-# under. `background_level` leaves the `ink` and `edge` findings for that one
-# block, so a page states its paper value once. And every Recensor review
-# record's `page_coverage` gains `unmeasurable_pages`, empty on every fixture
-# page because no fixture page's background is refused.
-#
-# Attributed leaf by leaf against baseline trees built from a worktree pinned at
-# the preceding commit with its own venv, which reproduced the retired digests
-# `9100c2c2...` and `d71e9463...` exactly before anything was compared. Happy:
-# 75 changed files, 418 changed leaves -- 377 bare 64-hex digests, 21
-# `relative_path` values naming a content-addressed blob, 16 the new fields
-# above, 4 the moved `background_level`, and **zero anything else**. Review: 87
-# files, 491 leaves -- 442, 29, 16, 4, and **zero**. Two blobs per scenario are
-# renamed in `4_perlector` and `7_armarium`, each one's name being its own
-# content digest. `unmeasurable_pages` is an empty list on every fixture page, so
-# it adds a key and no leaf: it moves the bytes of the records that carry it
-# without appearing in that leaf census, and it is named here rather than left
-# to look like an unattributed digest. Snapshot counts and exit codes unmoved:
-# happy 96 files at exit 0, review 107 at exit 3. Both digests measured twice in
-# independent temporary roots at canonical run id "r" through this module's own
-# `orchestrate` and `semantic_snapshot_digest`, and the two trees compared file
-# by file.
-HAPPY_SNAPSHOT_FILES = 96
-REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "81c789e680fc980560a665b8b14d365d35bdab34c366fe626ae9070ad296b4e4"
-REVIEW_RUN_TREE_DIGEST = "5b4a8b9307f5e8b30662ae6d333a480b332756e2d09f8d15de11229277339a25"
+# Provisional final-main control, measured on committed Designator source
+# 700baa2a9ca7bebc79a3eadd6cb94e824b8348a8. Two fresh canonical-run-id "r"
+# roots per scenario agreed on every raw byte and JSON/ZIP leaf. The incoming
+# Shared Background predecessor changes sealed configuration and record shape, so
+# these 100/111-file control pins are retained only until an integrated candidate
+# is measured; they are not claimed as that candidate's acceptance result.
+# Relative to the original Designator54ba1065, current main7f427cce retains four
+# additional vendor image-preparation blobs (96 -> 100 files, 107 -> 111), native
+# capture/attachment evidence, continuation coverage, and Armarium not_measured.
+# All those main changes remain in the integrated output.
+# Relative to the retained exact main tree, direct changes are the sealed
+# designator-grouping bytes and three new structure-status leaves on each of two
+# pages: dark_mode90, ink_margin46=(230-90)*3333//10000, ink_threshold184.
+# Fixture pixel sets, geometry, text, review decisions and output counts match
+# main. Remaining differences follow config/artifact/reference/member hashes;
+# content-addressed JSON and ZIP blobs were paired by stable producer slots.
+# Every logical JSON/JSONL/SQLite leaf, raw file and ZIP member was attributed
+# against both parents: no unexplained changes or ambiguous blob pairings.
+# Local evidence: workbench/raw/codex-queue-2026-09-08/designator/
+# acceptance-causal-attribution-700baa2a.json and independent direct-semantics report.
+# The separate native127 survey reproduces114 inferred/13 refused, with every
+# deterministic measurement unchanged after the neutral dark_distribution rename.
+# It uses deterministic grouping rectangles, not served/padded final proposals.
+HAPPY_SNAPSHOT_FILES = 100
+REVIEW_SNAPSHOT_FILES = 111
+HAPPY_RUN_TREE_DIGEST = "45473ed3e442dbbc964da582f66a2b22dcd02dec509591c6e7bd7bd4b5fd27fe"
+REVIEW_RUN_TREE_DIGEST = "2953f0d9a1cc4a2b8c9830ea69f41af96e7bccf0db1f712e05d13bb6a590c83f"
 
 
 def orchestrate(
@@ -1651,6 +1492,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
+    witness_context_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
@@ -1694,6 +1536,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
+    if witness_context_config is not None:
+        command.extend(("--witness-context-config", str(witness_context_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
@@ -1944,6 +1788,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier is what the real catalogue's live rows require to resolve at all:
@@ -1956,6 +1801,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
+        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -1968,6 +1814,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
+        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
@@ -2484,7 +2331,8 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v3"
+                or manifest.get("schema")
+                not in {"armarium-export-manifest.v5", "armarium-export-manifest.v6"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3326,7 +3174,9 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
         _sqlite_logical_digest(b"not reached")
 
 
-def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+def _write_acceptance_bundle_tree(
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v5"
+) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
     ``damage`` mutates the package manifest *after* it is written and before the tree
@@ -3338,7 +3188,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v3",
+        "schema": manifest_schema,
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -3395,7 +3245,10 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
 
 
-def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     version_local = _acceptance_sqlite(
@@ -3408,21 +3261,24 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
-    _write_acceptance_bundle_tree(original_root, database)
-    _write_acceptance_bundle_tree(doctored_root, doctored)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
     changed = _acceptance_sqlite(
         tmp_path / "changed.sqlite",
         "changed row",
         derived_from_canonical_sha256=digest_bytes(b"original row"),
     )
-    _write_acceptance_bundle_tree(changed_root, changed)
+    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
 
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
-def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+)
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
 
     The two bundle-internal cases are the ones the reduction would otherwise *erase*:
@@ -3435,7 +3291,7 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
-    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
     original_semantic = semantic_snapshot_digest(original_root)
 
     manifest_hash_root = tmp_path / "manifest-self-hash"
@@ -3452,9 +3308,14 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
             {key: value for key, value in manifest.items() if key != "self_hash"}
         )
 
-    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
     _write_acceptance_bundle_tree(
-        member_digest_root, database, damage=damage_database_member_digest
+        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
+    )
+    _write_acceptance_bundle_tree(
+        member_digest_root,
+        database,
+        damage=damage_database_member_digest,
+        manifest_schema=manifest_schema,
     )
     shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
@@ -3465,6 +3326,20 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     for root in (manifest_hash_root, member_digest_root, export_hash_root):
         assert snapshot(root) != snapshot(original_root)
         assert semantic_snapshot_digest(root) != original_semantic
+
+
+def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "same row")
+    image_root = tmp_path / "image-local"
+    clustered_root = tmp_path / "clustered"
+    _write_acceptance_bundle_tree(
+        image_root, database, manifest_schema="armarium-export-manifest.v5"
+    )
+    _write_acceptance_bundle_tree(
+        clustered_root, database, manifest_schema="armarium-export-manifest.v6"
+    )
+
+    assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
 
 
 def export_of(tree: RunTree) -> dict:
@@ -3511,6 +3386,71 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
     assert export["non_delivered"] == []
+    assert {item["category"] for item in export["delivered"]} == {"delivered"}
+
+
+def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
+    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+
+    Both acts are marked out on page 1; a2 continues onto page 2, and both page
+    witnesses transcribe page 2's whole text. No attachment there can ever be
+    `aligned` — the Perlector declares every continuation row
+    `continuation-page-no-act-anchor` because the act anchor is derived from the
+    act's own primary page — so the span union page 2's text was diffed against
+    is empty by declaration, not by measurement.
+
+    Until this ruling the Recensor called that `shortfall: True` on a page no
+    act's review read, and the export said DELIVERED over 34 transcribed
+    non-whitespace characters nothing accounted for. Now the observation is kept
+    and the verdict is withheld: `shortfall: None`, the reason naming the cause,
+    the chairs, the page and the count, restated on the act that spans the page
+    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    happy path still establishes both acts — this is a visible partial, not a
+    hold — and the Perlector gap that would make the measurement real is filed.
+    """
+    _, tree = happy_run
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "complete"
+    assert export["aggregate"]["reasons"] == []
+
+    review_records = artifacts(tree, RECENSOR, "review")
+    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
+    # Counted before anything is read out of it: a second review for one act is
+    # an accounting failure, and a lookup keyed by `act_key` would silently keep
+    # whichever of the two the manifest happened to list last.
+    assert len(reviews_by_key) == len(review_records)
+    # And the whole key set: an extra review under a third key would hide behind
+    # a count that only catches a repeated one.
+    assert set(reviews_by_key) == {"a1", "a2"}
+    assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
+    rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
+    assert [row["page_ordinal"] for row in rows] == [2]
+    row = rows[0]
+    assert row["shortfall"] is None
+    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"]
+    for chair, measured in sorted(row["by_chair"].items()):
+        assert measured["attached_spans"] == [], chair
+        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
+        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
+    assert "continuation-page-no-act-anchor" in row["reason"]
+    assert "page 2's testimony content coverage is unmeasured" in row["reason"]
+    # Unmeasured is not a hold and not a route input: a2 is delivered.
+    assert reviews_by_key["a2"]["outcome"] == "accepted"
+
+    entry_payloads = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    entries = {payload["act_key"]: payload for payload in entry_payloads}
+    delivered = {item["act_key"]: item for item in export["delivered"]}
+    # The same count, for the same reason, on both restatements.
+    assert len(entries) == len(entry_payloads)
+    assert len(delivered) == len(export["delivered"])
+    assert set(entries) == set(delivered) == {"a1", "a2"}
+    for restatement in (entries, delivered):
+        assert restatement["a1"]["testimony_content_coverage_continuation"] == []
+        assert restatement["a2"]["testimony_content_coverage_continuation"] == rows
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 
@@ -5599,7 +5539,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # The count includes two retained Chandra-response blobs, Unit 12's two
     # content-addressed raw Churro responses, Unit 13's retained DAI act
-    # responses, and Unit 9's ink-map artifacts.
+    # responses, Unit 9's ink-map artifacts, and -- since the Chandra adapter
+    # runs the vendor's own `scale_to_fit` -- the two published page images it
+    # presents, one per witnessed page.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -6113,7 +6055,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
-def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
     tmp_path, happy_run
 ):
     """Capability handling stays live without blinding the reference instrument.
@@ -6122,16 +6064,22 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed
-    after the fact — so it is not a picker. What it is, is a hole in the
-    instrument ARCHITECTURE names for catching a reader that "learned to agree
-    with witnesses rather than to read ink."
+    after the fact — so it is not a picker. What it was, until U12, is a hole in
+    the instrument ARCHITECTURE names for catching a reader that "learned to
+    agree with witnesses rather than to read ink": the declaration alone put a
+    chair permanently outside the comparison.
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
-    unknown until R4 provided act-anchored comparison views; now that R4's
-    alignment lands a comparison view for both, only the capability-declared
-    chair stays unknown, and the reference happy run — where no chair declares
-    the capability — compares all three.
+    dedicated `witness-capabilities` scenario, and chair 2 is act-scoped. It is
+    now compared — not because the exemption was deleted, but because
+    `pipeline/4_perlector/run.py::dissent_testimonia` derives it a
+    `comparison_reported` from its own retained bytes
+    (`common/alignment.py::bracket_marker_view`), and the exemption lifts for a
+    chair that has a safe view. The counterfactual below is what says those are
+    different things: the RETAINED record, which carries no derived view, is
+    still refused by `is_comparable`. Every chair in this scenario is now
+    compared, exactly as in the reference happy run where none declares the
+    capability.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -6144,9 +6092,13 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     )
     by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_2"]["compared"] == "unknown"
-    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert by_chair["attestator_2"]["compared"] is True
+    assert "reason" not in by_chair["attestator_2"]
+    assert {chair: row["compared"] for chair, row in by_chair.items()} == {
+        "attestator_1": True,
+        "attestator_2": True,
+        "attestator_3": True,
+    }
 
     testimonium = next(
         record
@@ -6154,8 +6106,15 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     )
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    # The capability blinds the comparison and nothing else: the outcome, the
-    # class, and the coverage count are what they would be without it.
+    # The counterfactual, on this run's own retained evidence: the exemption is
+    # still there and still bites. The retained Testimonium carries the verbatim
+    # report and no derived view (GOVERNANCE 4), and on that record
+    # `is_comparable` is False — so what lifted it above is the view
+    # `dissent_testimonia` builds, not a relaxed rule.
+    assert "comparison_reported" not in testimonium["payload"]
+    assert _perlector_dissent().is_comparable(testimonium) is False
+    # The capability decides the comparison route and nothing else: the outcome,
+    # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"
     entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
     assert entry["witness_coverage"]["by_class"] == {

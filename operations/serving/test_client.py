@@ -7,6 +7,7 @@ imports vLLM, starts a server, or contacts a provider.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from pathlib import Path
 from typing import Mapping
@@ -19,10 +20,12 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import CHAIR_CALL_RECORD_FIELDS, CHAIR_CALL_RECORD_SCHEMA
 
 from .client import (
+    _FORBIDDEN_GENERATION_SENT_KEYS,
     ChairClient,
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
+    _plain_capacity,
     serving_mode_for,
 )
 from .config import (
@@ -276,6 +279,43 @@ def test_forbidden_generation_sent_keys_refused(tmp_path: Path) -> None:
     assert len(blob_store) == 0
 
 
+def test_a_top_k_of_one_never_reaches_the_wire_without_temperature_zero(tmp_path: Path) -> None:
+    """DAI's decoding equivalence, pinned where the wire body is actually built.
+
+    DAI's carried `generation_config.json` is `do_sample: true, temperature:
+    0.1, top_k: 1, top_p: 0.001` -- deterministic greedy, because `top_k = 1`
+    leaves the argmax as the entire candidate set. This pipeline sends
+    `top_k`/`top_p`/`repetition_penalty` and lets this client put `temperature:
+    0` on the wire, where vLLM takes its greedy path over the same
+    repetition-penalised logits: the same token, every step.
+
+    **That equivalence rests on the two fields travelling together, and nothing
+    said so until now.** Drop `top_k` and leave `temperature: 0` and decoding
+    is still greedy; drop `temperature` as well and vLLM's own defaults --
+    `temperature 1.0`, `top_k 0` -- make it full random sampling on a
+    handwriting reader. So this asserts the pairing on the posted body, and
+    asserts that a caller cannot separate them: `temperature` is manager-owned
+    and refused in `generation_sent`.
+    """
+
+    client, endpoint, _, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="read", finish_reason="stop"))
+        client.read(
+            _request(generation_sent={"top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05})
+        )
+        # Not a coincidence of this call site: no caller can say otherwise --
+        # the client itself refuses a caller that names a manager-owned field,
+        # proven here rather than only asserted of the forbidden-set
+        # membership.
+        assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
+        with pytest.raises(ChairRequestRefusal):
+            client.read(_request(generation_sent={"top_k": 1, "temperature": 0.7}))
+    posted = endpoint.requests[0]
+    assert posted["top_k"] == 1
+    assert posted["temperature"] == 0
+
+
 def test_image_digest_drift_refused_before_any_request_is_sent(tmp_path: Path) -> None:
     client, endpoint, blob_store, _ = _built(tmp_path)
     image_bytes = b"\x89PNG not a real image but bytes"
@@ -362,29 +402,87 @@ def test_request_sha256_is_the_digest_of_the_body_actually_posted(tmp_path: Path
     assert response.request_sha256 == digest_bytes(posted_body)
 
 
-# --- refuse-before-retain: model mismatch and non-200 -------------------------
+# --- retain, then refuse: model mismatch and non-200 --------------------------
 
 
-def test_response_model_mismatch_refuses_with_no_blob_written(tmp_path: Path) -> None:
+def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
+    tmp_path: Path,
+) -> None:
+    """Retention is not attribution.
+
+    A body from another model is still not this chair's evidence and still
+    never becomes a reading -- the refusal is unchanged and no `ChairResponse`
+    comes back. What changed is that the bytes exist afterwards, by their own
+    digest, so a reader can see what actually arrived instead of taking the
+    refusal's word for it.
+
+    And what the refusal does *not* carry: the foreign reading itself. The
+    model's name is a field this check compared and says so; the text that
+    model produced is a reading from somewhere else, and a reading from
+    somewhere else does not enter an exception message to be logged and quoted
+    onward. It is on disk, by its digest, which the refusal names.
+    """
+
     client, endpoint, blob_store, _ = _built(tmp_path)
+    foreign = ScriptedAnswer(
+        content="A READING NO CHAIR HERE ASKED FOR",
+        finish_reason="stop",
+        model="someone-elses-model",
+    )
     with client:
-        endpoint.script(
-            ScriptedAnswer(content="hello", finish_reason="stop", model="someone-elses-model")
-        )
+        endpoint.script(foreign)
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_MODEL_MISMATCH"
-    assert len(blob_store) == 0
+    assert len(blob_store) == 1
+    assert b"someone-elses-model" in blob_store.written[0]
+    assert digest_bytes(blob_store.written[0]) in excinfo.value.detail
+    assert "someone-elses-model" in excinfo.value.detail
+    assert "A READING NO CHAIR HERE ASKED FOR" not in excinfo.value.detail
+    assert str(len(blob_store.written[0])) in excinfo.value.detail
 
 
-def test_non_200_refuses_with_no_blob_written(tmp_path: Path) -> None:
+def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
+    tmp_path: Path,
+) -> None:
+    """The one artefact a rented card exists to produce, no longer discarded.
+
+    When vLLM refuses a request it says *why* in the body of a non-200, and
+    that sentence is the whole diagnostic. It used to be thrown away here --
+    `_refuse_bytes_from_the_wrong_source` ran before `self._retain` -- so the
+    predicted first real boot returned a stack trace and no engine account of
+    what went wrong. GOVERNANCE 2: nothing is lost silently.
+    """
+
+    body = (
+        b'{"object":"error","message":"This model\'s maximum context length is 2048 tokens. '
+        b'However, you requested 3994 tokens.","type":"BadRequestError","code":400}'
+    )
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
-        endpoint.script(ScriptedAnswer(status=500, body=b'{"error":"boom"}'))
+        endpoint.script(ScriptedAnswer(status=400, body=body))
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
-    assert len(blob_store) == 0
+    assert blob_store.written == [body]
+    assert blob_store.has(digest_bytes(body))
+    assert "HTTP 400" in excinfo.value.detail
+    assert "maximum context length is 2048" in excinfo.value.detail
+    assert digest_bytes(body) in excinfo.value.detail
+
+
+def test_a_long_refused_body_is_retained_whole_and_previewed_short(tmp_path: Path) -> None:
+    """The detail carries a bounded head; the blob carries all of it."""
+
+    body = b'{"error":"' + b"x" * 4000 + b'"}'
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(status=502, body=body))
+        with pytest.raises(ChairResponseRefusal) as excinfo:
+            client.read(_request())
+    assert blob_store.written == [body]
+    assert len(excinfo.value.detail) < 1000
+    assert f"first 512 of {len(body)} bytes" in excinfo.value.detail
 
 
 # --- raw bytes retained before parsing; malformed body never raises -----------
@@ -583,6 +681,8 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["usage"] == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
     assert response.usage == record["usage"]
     assert record["parse_problem"] is None
+    # No caller stated one here, and the client never invents one.
+    assert record["capacity"] is None
     # GOVERNANCE 7: the exact bytes the engine returned, never stripped,
     # cased, or trimmed — carried verbatim into both the response and the
     # blob the record was built alongside.
@@ -591,6 +691,99 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     # Canonical: re-serializing the parsed record reproduces the stored bytes.
     assert canonical_bytes(record) == record_bytes
     assert response.call_record_ref["sha256"] == digest_bytes(record_bytes)
+
+
+def test_a_callers_capacity_record_reaches_the_call_record_verbatim(tmp_path: Path) -> None:
+    """The client carries the arithmetic; it neither computes nor checks it.
+
+    Only the caller knows which prompt and which answer shape a call is, so
+    whether a request fits its sealed row is decided in the stage
+    (`common/request_capacity.py`). What the client owes is that the record
+    lands on the retained call record, beside the request it admitted, so every
+    stage can reach it through the reference it already keeps.
+    """
+
+    capacity = {
+        "schema": "verbatus-request-capacity.v1",
+        "need": 3619,
+        "headroom": 4573,
+        "fits": True,
+    }
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="ok", finish_reason="stop"))
+        response = client.read(_request(capacity=capacity))
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    assert json.loads(record_bytes)["capacity"] == capacity
+
+
+def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_record(
+    tmp_path: Path,
+) -> None:
+    """The retained arithmetic is the arithmetic the request was admitted on.
+
+    A capacity record is not flat -- `request_fits` returns an `images` list of
+    per-image dictionaries -- and every production builder passes that record
+    straight into `ChairRequest` while keeping its own reference to it. Freezing
+    only the outer mapping left the nested data live: a caller could rewrite an
+    image's token cost, or drop an image, after the request was built and
+    before the client retained the record, and the receipt would then carry
+    numbers no admission decision was ever made on.
+
+    Both directions are exercised: a rewrite through the caller's own reference
+    changes nothing on the request or in the retained record, and a write
+    through the request's own view raises instead of succeeding quietly.
+    """
+
+    capacity: dict[str, object] = {
+        "schema": "verbatus-request-capacity.v1",
+        "images": [{"width": 2480, "height": 3508, "image_prompt_tokens": 1715}],
+        "image_prompt_tokens": 1715,
+        "prompt_tokens": 790,
+        "answer_budget": 216,
+        "need": 2721,
+        "headroom": 13663,
+        "fits": True,
+    }
+    admitted = copy.deepcopy(capacity)
+    request = _request(capacity=capacity)
+
+    # The caller still holds the object it passed in, and rewrites it.
+    images = capacity["images"]
+    assert isinstance(images, list)
+    images[0]["image_prompt_tokens"] = 1
+    images.append({"width": 1, "height": 1, "image_prompt_tokens": 1})
+    capacity["fits"] = False
+
+    assert request.capacity is not None
+    assert _plain_capacity(request.capacity) == admitted
+    # And the request's own view refuses a write rather than taking one.
+    with pytest.raises(TypeError):
+        request.capacity["images"][0]["image_prompt_tokens"] = 1  # type: ignore[index]
+
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="ok", finish_reason="stop"))
+        response = client.read(request)
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    assert json.loads(record_bytes)["capacity"] == admitted
+
+
+def test_a_capacity_record_the_canonical_writer_cannot_hold_is_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    """Refused where the caller can still see it, not inside serialization.
+
+    `canonical_bytes` refuses floats, non-string keys and cycles, and the call
+    record goes through it. Sealing the snapshot through the same writer moves
+    that refusal to `ChairRequest` construction: before the wire call, with the
+    caller's own frame on the stack, rather than after a pod has answered.
+    """
+
+    with pytest.raises(ChairRequestRefusal):
+        _request(capacity={"schema": "verbatus-request-capacity.v1", "headroom": 1.5})
+    with pytest.raises(ChairRequestRefusal):
+        _request(capacity={"schema": "verbatus-request-capacity.v1", 7: "no"})
 
 
 # --- a vendor's float decoding values, recorded exactly as they were sent -----

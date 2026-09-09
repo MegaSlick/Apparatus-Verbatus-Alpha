@@ -200,6 +200,127 @@ start succeeds only when all three immutable references return; a successful
 handle cannot silently drop the audit or its linkage. They are exposed on the
 `ServiceHandle` and copied as references beside pod smoke evidence.
 
+## `generation_config`: `"vllm"` or `"auto"`
+
+A row's `generation_config` is `"vllm"` (vLLM's own uniform defaults) or
+`"auto"`, and `"auto"` is admitted only for a witness (Attestator) row —
+`config.py` refuses it at catalogue-parse time for any other chair, with the
+reason: a witness's vendor-shipped `generation_config.json` is itself a
+pinned artifact of that chair's revision, so deferring to it is not an
+unaudited default; the Perlector and Designator carry no vendor generation
+defaults to defer to. When a proven row is `"auto"`, `manager.start` reads
+`generation_config.json` from the verified base snapshot before ever
+launching a process and records its SHA-256 as `generation_config_digest` in
+the launch audit's `profile` block (`null` for a `"vllm"` row) — so `"auto"`
+is a value pinned by the chair's own revision, not a moving target, and a
+missing or unreadable file refuses by name before any GPU-hours are spent.
+
+## Hybrid-attention prefix caching
+
+(`manager.assert_processor_geometry` already checks a row's declared
+`patch_size`/`merge_size` against the checked-out chair's own
+`processor_config.json`/`preprocessor_config.json` at launch, entirely
+offline — landed alongside the request-shape work this unit builds on.)
+
+Chandra-2 (`datalab-to/chandra-ocr-2`, serving both the `attestator_1` and
+`designator_structure` roles) and the Perlector (`Qwen/Qwen3.8-27B`) are both
+hybrid Mamba/attention (`qwen3_5`) checkpoints. `manager.start` refuses to
+launch either one with `enable_prefix_caching` on. vLLM v0.27.1 itself keeps
+prefix caching over recurrent state opt-in for hybrid models rather than
+unsupported (`arg_utils.py`'s own default is `not model_config.is_hybrid`,
+commented "keep it opt-in for now") — the caution here is this project's:
+it only costs recurrent-state memory for the privilege (hostile review
+2026-09-06 item L; this catalogue's own rows for these chairs range
+`max_num_seqs` 1-4 across tiers, so a blanket "nothing else is ever
+resident" claim would not hold at every tier). The check is
+keyed on the identity's exact `repo`, never on role — role names
+(`attestator_1`, `perlector`, ...) are reused throughout this package's test
+suite as generic fixture identifiers unrelated to these two checkpoints, and
+every such fixture is pinned at an `example/...` placeholder rather than a
+real vendor repository, so the two never collide. The catalogue *schema*
+still admits `enable_prefix_caching` either way — the corrected value for the
+real rows is `config/serving_recipes_real.toml`, a row-data change outside
+this file's ownership.
+
+**Reconciled by U15:** `config/serving_recipes_real.toml` now sets
+`enable_prefix_caching = false` for exactly the three rows above
+(attestator_1, designator_structure, perlector), so the refusal above cannot
+fire on a shipped row. The prior text here described the opposite value as
+still committed; that was true only before U15 moved the rows (Tyrel's
+ruling, 2026-09-06 §10, per `workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`,
+"Serving rows").
+
+## Prompt-token accounting and a deterministic readiness rejection
+
+`usage.prompt_tokens` is present on every real vLLM v0.27.1 response
+regardless of launch flags. Every real profile now also launches with
+`--enable-prompt-tokens-details`, which gates a different field:
+`usage.prompt_tokens_details.multimodal_tokens`, a per-modality breakdown of
+the tokens already counted in `prompt_tokens` (hostile review item H) —
+without the flag, that breakdown is simply absent, and a silently dropped
+`mm_processor_kwargs` (vllm-project/vllm#49015, #54527) would otherwise read
+a page at the wrong scale with no error anywhere.
+`preflight.reconcile_usage_against_capacity` compares the observed
+`prompt_tokens` against the laptop's own image/text token arithmetic within a
+caller-supplied per-chair tolerance and returns a `UsageReconciliation`; a
+mismatch is published through `.to_finding()` as a `usage-capacity-mismatch`
+finding, never raised, because what a mismatch *means* is a GOVERNANCE 10
+question, not a hard-coded verdict. When the response carries the
+`multimodal_tokens` breakdown, `localized_to` compares the image half and the
+text half independently and can name which one moved even on a *mixed* real
+request — Chandra, DAI, and Churro all send image and text together, so this
+is the case that matters for every real request, not only the image-only or
+text-only ones a scalar-only comparison could ever tell apart. Without that
+breakdown it falls back to naming a half only when the *other* half carries
+no expected tokens at all, and is honestly `"unlocalized"` otherwise rather
+than guessed at from one scalar.
+
+`_wait_until_ready`'s readiness loop now tells apart an engine that is not
+warmed up yet from one that has fully initialized and is rejecting the exact
+probe body every poll resends: a probe HTTP status in `4xx` is named
+deterministic and breaks the loop immediately, rather than retrying to
+`startup_timeout_seconds` (real GPU-hours on the live path) to learn nothing
+new. A `5xx`/connection failure still retries as before — that is ordinary
+boot-time unavailability.
+
+## Env-override files and three static preflight assertions
+
+`manager.assert_no_discoverable_local_env` refuses a real launch the moment
+an env-override file (`local.env`, or `.env`/`.env.*` other than the tracked
+`.env.example` — this repository's own credential-filename convention,
+per `.gitignore` and `.githooks/check_ingress.py`) is discoverable in the
+process's current working directory — the same directory an owned vLLM
+subprocess inherits with no explicit `cwd`. Nothing in this package's
+config-inputs sealing or launch audit would ever see a value such a file
+silently injected into that subprocess's environment (a Hub token enabling a
+network fetch the real path forbids, a proxy, an engine flag). It is checked
+inside `ServingManager.start` itself, not only from the smoke-preflight
+lifecycle: `start` is the one door every real launch already passes through,
+whether it arrives through `ServingSmokeReader.read` or directly through
+`ChairClient.__enter__`, so a check placed anywhere upstream of it would
+guard only the caller that happened to run it.
+
+Three further preflight primitives, generic and offline-testable, close
+hostile review item A's static-assertion gap so `proven` can never again be
+earned by a smoke string alone; each is wired by the adapter/request-shape
+units whose files actually render a request:
+
+- `assert_image_before_text_on_wire(content)` — refuses a rendered chat
+  request whose first content part is not the image, checked against the
+  exact list that serializes onto the wire. This means anything only because
+  `render_vllm_argv` pins `--chat-template-content-format openai`: under
+  vLLM's `string` format every image placeholder is hoisted ahead of the
+  text regardless of a caller's own part order (vllm-project/vllm#14047),
+  which would make a rendered-body check pass no matter what order the
+  caller assembled — so the format is pinned, and this check runs against
+  the rendered body, never the pre-render call, so it still catches an
+  adapter that built the wrong order.
+- `assert_resized_pixels_within_trained_geometry(...)` — refuses a
+  post-resize image outside a chair's own declared trained pixel range.
+- `assert_generation_config_key_coverage(...)` — refuses a vendor
+  `generation_config.json` key that is neither sent on the wire nor named,
+  with a reason, as deliberately withheld.
+
 ## Pod seam
 
 `assemble_serving_smoke_reader()` is the narrow production assembly seam. It
@@ -334,6 +455,27 @@ itself cannot be verified (`ServiceStopError`), the drift refusal is what the
 caller sees — the stop failure is chained onto it (`__cause__`), never
 allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
 
+**What a reading request looks like, and who decides each part of it.** The
+stages build the messages and this package puts them on the wire unchanged, so
+two facts about the shape are settled outside here and named for a reader who
+finds them surprising in a recorded body. First, **the image part comes before
+the text part** in a chair's user turn: every chat template these occupants
+ship emits content parts in list order, and all three were fine-tuned with the
+vision block first, so that order is the token sequence the model was trained
+on (`pipeline/3_attestatores/live_witness.py::_user_content`,
+`pipeline/2_designator/structure_pass.py::page_request`). Second, **a chair's
+`max_tokens` is `min(its declared upstream bound, max_model_len − the request's
+own image and prompt cost)`, with the row term expressed by sending no field**
+(`common/request_capacity.py::sendable_max_tokens`) — sending our own count of
+the row's remainder would risk an HTTP 400 the engine's own count would not,
+while the declared bound, sent only where it is strictly smaller, is what stops
+a chair generating far past the length its own publisher runs it at. Alongside
+it travel the few decoding values `generation_config = "vllm"` makes the engine
+discard: `repetition_penalty` for Churro, `stop_token_ids` for DAI's second EOS
+id, `chat_template_kwargs` for both Chandra chairs. All of them ride
+`generation_sent`, so the retained `chair-call-record.v1` says exactly what went
+out.
+
 `ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
 in this order: refuse an unbuildable request (a `kind` other than
 `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
@@ -344,10 +486,15 @@ order) before anything is built or sent; build the body deterministically
 profile's seed — this is why the client refuses at construction unless its
 caller's `record_temperature` is already 0, so a policy that disagrees is a
 named refusal, not a silent override); POST through
-`ServiceHandle.request_reading`; refuse before retention if the response is
-non-200 or names another model (bytes from the wrong source are not this
-chair's evidence); retain the raw response through the caller's `retain`
-callable; only then parse content — a content/choices problem becomes
+`ServiceHandle.request_reading`; **retain the raw response through the caller's
+`retain` callable, before anything is checked** — when vLLM refuses a request it
+says why in the body of a non-200, and that sentence is the artefact a rented
+card exists to produce, so it reaches disk before any refusal can discard it
+(this used to run the other way round, and the refusal's own docstring claimed
+otherwise); then refuse if the response is non-200 or names another model, with
+the retained reference and the head of the body in the refusal's `detail` —
+retention is not attribution, and bytes from the wrong source still never become
+a reading; only then parse content — a content/choices problem becomes
 `parse_problem` on the returned `ChairResponse`, never a raised exception,
 because a malformed body from a witness or reader is retained evidence, not a
 stage abort; and finally write one `chair-call-record.v1` blob (the closed
@@ -360,6 +507,27 @@ comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 `CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
 the recorded `parse_problem` never asserts a foreign-source observation that
 was never made (GOVERNANCE 10).
+
+**The capacity record travels with the request, and the client neither
+computes nor checks it.** `ChairRequest.capacity` is the caller's own
+`common.request_capacity` record: whether this request's images, prompt and
+answer budget fit the sealed row it is about to be sent to. Only the caller
+knows which prompt and which answer shape a call is, so the arithmetic belongs
+to the stage; what belongs here is carrying it. `read` copies it onto the
+`chair-call-record.v1` blob — `null` where the caller states none, as the
+readiness probe and `smoke.py` do — so every stage that keeps a reading can
+reach the arithmetic that admitted it through the call record it already names,
+without a second reference.
+
+It is sealed at construction, all the way down. A capacity record is not flat —
+`request_fits` returns an `images` list of per-image dictionaries — and every
+builder passes that record straight in while keeping its own reference to it,
+so freezing the outer mapping alone left the nested data live and a later write
+could have made the retained receipt disagree with the evidence the request was
+admitted on. `ChairRequest` takes a detached recursive snapshot instead,
+canonicalized through `canonical_bytes` (a record the writer could not hold is
+refused there and then, as `CHAIR_REQUEST_INVALID`, rather than inside receipt
+serialization after the wire call) and then deep-frozen.
 
 **The reading parser, against the probe parser.** `http.parse_openai_reading`
 is not `parse_openai_answer` reused: a readiness probe must prove the engine
@@ -397,7 +565,8 @@ bare configuration error instead.
 
 `fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
 `FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and
-the structure-chair builders `structure_box_1000`, `structure_answer_body`,
+the structure-chair builders `structure_box_1000`, `structure_layout_block`,
+`structure_answer_body`, `structure_blank_page_body`,
 `scripted_structure_answer`, `scripted_structure_refusal`,
 `scripted_structure_cut_off`) is a shared fake endpoint for stage tests built against `ChairClient` — mirrors of
 this package's own `test_manager.py` fakes, not moved from there, so that
@@ -425,18 +594,34 @@ because retain-after-parse and retain-before-parse look identical whenever
 parsing succeeds.
 
 The structure-chair builders take rectangles in the sealed page's own pixels
-and return the wire JSON whose normalized boxes convert back to exactly those
-rectangles, found by search over the 0-1000 grid and checked through
+and return **Chandra's layout HTML** — the grammar that chair is asked for
+since `verbatus-structure-prompt.v3` carried the vendor's own prompt bytes —
+whose normalized `data-bbox` values convert back to exactly those rectangles,
+found by search over the 0-1000 grid and checked through
 `common.structure_answer.to_page_bounds` itself rather than by a second
-closed-form formula — a builder that re-derived the arithmetic could agree with
-a converter that had changed underneath it. Each builder then parses the body
-it built through the contract that will parse it live, so a drifted builder
-fails in the builder rather than as an unexplained hold three stages
-downstream. `scripted_structure_refusal` is keyed by the `PARSE_OUTCOMES` code
-and verifies the body reaches that outcome and no other;
-`scripted_structure_cut_off` truncates a real answer mid-object and sets the
-`length` stop word, which is what a page whose transcription overran
-`max_model_len` actually looks like.
+closed-form formula: a builder that re-derived the arithmetic could agree with
+a converter that had changed underneath it. Each builder then reads the body it
+built back through `common/chandra_layout.py::parse_layout_html`, the grammar
+that will read it live, and checks that it resolves to the rectangles it was
+asked for — so a drifted builder fails in the builder rather than as an
+unexplained hold three stages downstream.
+
+`structure_layout_block` writes one top-level `<div>` and is the way to script
+the answers rectangles cannot express: a malformed or absent `data-bbox`, a
+label outside the vendor's own nineteen, a `Blank-Page`.
+`structure_blank_page_body` is the page a chair reports as blank, which is what
+the retired JSON contract spelled as an empty act list — there is no empty-list
+shape in this grammar, and an answer with no `<div>` in it is a refusal rather
+than an empty page. `scripted_structure_refusal` is keyed by the
+`PARSE_OUTCOMES` code and verifies the body reaches that outcome and no other;
+it scripts the two of the grammar's six that a body's *shape* can reach, the
+other four being properties of the wire bytes and measured in
+`common/test_chandra_layout.py`. `scripted_structure_cut_off` truncates a real
+answer before its first block closes and sets the `length` stop word, which is
+what a page whose transcription overran `max_model_len` actually looks like —
+and under this grammar the truncated body still reads, with an
+`unclosed-block` finding, so the fixture proves the page is held on the stop
+word alone rather than on a shape the parser could not take.
 
 `FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
 `test_manager.py`'s own fake: it keeps the loopback health endpoint answering
@@ -457,13 +642,18 @@ chairs at all three tiers — so the selector under test is the sealed one, not 
 test-only switch.
 
 Two facts that suite establishes and no single-stage suite can. First, a live
-run reaches a **sealed terminal export that is held for review, not delivered**:
-both acts are read and every reading names the exact bytes its engine sent, but
-two witnesses of a floor of three count. Chandra now reads under its own
-response contract and its act attachment aligns live; what is still missing is
-Churro, which publishes no native layout and so never attaches to an act by
-geometry on a live path — a Churro layout channel is Unit 12's obligation, and
-the export stays held until it lands (`pipeline/3_attestatores/HANDOFF.md`).
+run reaches a **sealed terminal export**: both acts are read and every reading
+names the exact bytes its engine sent. That export is **held for review** on
+this tree, and the hold is the rules working rather than a defect. Chandra
+reads under its vendor's own layout grammar and attaches by its own block
+geometry; DAI reads its act crops; Churro reads its vendor's
+`HistoricalDocument` grammar, which carries no coordinate vocabulary anywhere,
+so it reports no geometry, does not attach, and two of a floor of three count.
+Attaching an aligned page witness that reports no geometry is the Perlector's
+`anchor-line` basis, which lands with the Perlector attachment unit. Even once
+it does, one scripted run over a fixture whose page text is exactly its two
+acts is not a proven pipeline (GOVERNANCE 10): a real register page carries
+material no proposal covers, and testimony content coverage will hold it.
 Second, two independent drivers reach the same
 fixture tree byte for byte: the orchestrator's own subprocess chain on one
 side, and — on the other — the identical driver this module uses for the live

@@ -8,17 +8,17 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import churro
 import feeding
 import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
-    DAI_MAX_HEIGHT_PX,
+    DAI_FORMAT_CAPABILITIES,
     DAI_MAX_TOTAL_PIXELS,
     DAI_MAX_WIDTH_PX,
     SCHEDULING_POLICY,
     SingleChairResidency,
     churro_generation,
-    churro_prompt,
     dai_generation,
     dai_model_view,
     dai_prompt,
@@ -26,7 +26,6 @@ from feeding import (
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
-    validate_churro_xml,
     validate_dai_model_view,
     validate_dai_text,
 )
@@ -35,7 +34,7 @@ from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
-from common.native_witness import CHURRO_MAX_RESPONSE_BYTES
+from common.native_witness import CHURRO_MAX_RESPONSE_BYTES, validate_vendor_identity
 from common.runtree.store import BLOBS_DIR
 
 
@@ -95,82 +94,46 @@ class _Tree:
             raise FileNotFoundError(2, "No such file or directory", path) from None
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        b'<!DOCTYPE output [<!ENTITY x "y">]><output>&x;</output>',
-        b'<?xml version="1.0"?><!doctype output><output>text</output>',
-    ],
-)
-def test_churro_xml_refuses_a_doctype_before_the_parser_sees_it(raw):
-    """A legitimate Churro response is one plain <output> element; a DTD is the
-    door to entity tricks the validator has no reason to keep open. Escaped text
-    (&lt;!DOCTYPE) never carries these bytes, so honest transcriptions pass."""
-    with pytest.raises(SchemaRefusal, match="DOCTYPE"):
-        validate_churro_xml(raw)
+# --- Churro on its vendor's own grammar (U10) ---------------------------------
+#
+# The chair carries no prompt bytes of this repository's any more: what it is
+# asked is one of two vendor-attested system strings in
+# `common/churro_document.py`, resolved by name through `churro.FRAMINGS`. What
+# this module still owns for the chair is the retention seam -- one parser name,
+# the grammar's findings beside the post-hoc scan's, and the vendor pin on the
+# record.
+
+_DOCUMENT = b"<HistoricalDocument><Page><Body><Line>read</Line></Body></Page></HistoricalDocument>"
 
 
-def test_churro_xml_refuses_a_response_that_is_not_raw_bytes():
-    """A str here would slip past the DOCTYPE byte scan and still parse, making
-    that refusal skippable by the caller's choice of type."""
-    with pytest.raises(SchemaRefusal, match="not raw bytes"):
-        validate_churro_xml("<output>text</output>")
+def _churro_view() -> dict:
+    """The prompt and generation view a served Churro chair retains."""
+    return {"prompt": churro.prompt(), "generation": churro_generation()}
 
 
-def test_churro_xml_refuses_an_output_element_carrying_attributes_or_children():
-    with pytest.raises(SchemaRefusal, match="plain <output> XML element"):
-        validate_churro_xml(b'<output kind="decorated">text</output>')
-    with pytest.raises(SchemaRefusal, match="plain <output> XML element"):
-        validate_churro_xml(b"<output><child>text</child></output>")
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    (
-        (
-            b"<output>Marie Anne, fille de<!-- scribe note --> Pierre</output>",
-            "Marie Anne, fille de Pierre",
-        ),
-        (b"<output>AAA<!--one-->BBB<!--two-->CCC</output>", "AAABBBCCC"),
-        (b"<output>AAA<?render x?>BBB</output>", "AAABBB"),
-        (b"<output>AAA<![CDATA[BBB]]>CCC</output>", "AAABBBCCC"),
-    ),
-)
-def test_a_comment_inside_the_output_element_does_not_shorten_the_transcription(raw, expected):
-    """The whole reading must survive a node the parser does not keep.
-
-    ElementTree drops comments and processing instructions, and the worry is
-    that `root.text` would then stop at the first one: half an act's text gone
-    while the capture still sealed as parsed, complete and untruncated, with
-    nothing downstream able to see the loss (GOALS 2). It does not happen --
-    the builder accumulates character data across a dropped node, so the text
-    either side is joined -- and this pins that rather than assuming it, on
-    every interpreter the matrix runs.
-
-    It also pins why the obvious hardening is wrong. Retaining comments with
-    `TreeBuilder(insert_comments=True)` would put them in `list(root)`, and the
-    closed-shape check above refuses any `<output>` with children -- turning a
-    correct reading that merely contains a comment into a refusal.
-    """
-    assert validate_churro_xml(raw) == expected
-
-
-def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
+def test_churro_records_its_declared_bound_and_detects_repetition_after_complete_capture():
     tree = _Tree()
     raw = b"a" * 72
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="eos",
         parser="xml",
     )
-    assert CHURRO_OUTPUT_TOKENS == 24_000
+    # The CHURRO paper section B.2's own bound, not a number of ours.
+    assert CHURRO_OUTPUT_TOKENS == 20_000
+    # The retained view actually carries that bound, not only the module
+    # constant this test could otherwise check in isolation from it.
+    assert record["view"]["generation"]["max_new_tokens"] == CHURRO_OUTPUT_TOKENS
     assert record["raw_response_ref"]["sha256"] == digest_bytes(raw)
     assert record["findings"][0]["kind"] == "post-hoc-repetition"
-    assert record["stop_reason"] == "partial-parse-failed"
-    assert record["parse"]["state"] == "failed"
+    # A body that offers no grammar at all is the plain reading-order text the
+    # paper-era harness itself expected, so it reads rather than being thrown
+    # away (GOALS 1); the repeated tail is still a finding beside it.
+    assert record["parse"]["state"] == "parsed"
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
@@ -182,7 +145,7 @@ def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repe
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=b"\xff\xfe not utf-8 at all",
         transport_stop_reason="eos",
     )
@@ -198,31 +161,171 @@ def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repe
     assert record["stop_reason"] == "eos"
 
 
-def test_churro_prompt_retains_the_trained_two_message_xml_bytes():
-    prompt = churro_prompt()
-    assert set(prompt) == {"system", "user"}
+def test_this_module_owns_no_churro_prompt_bytes_any_more():
+    """The retired names are gone, not merely unused.
+
+    `churro_prompt` was the Churro library's model-agnostic *fallback* prompt --
+    a drifted copy of the paper's zero-shot comparison-VLM instruction -- carried
+    here and described as the trained framing; `churro_layout_prompt` was a
+    modified carry of it asking for a JSON coordinate channel Churro-DS carries
+    no geometry for. Both, and the two version constants that named them, leave
+    with the wire contract they served.
+    """
+    for retired in (
+        "churro_prompt",
+        "churro_layout_prompt",
+        "CHURRO_LAYOUT_PROMPT_VERSION",
+        "CHURRO_TRAINED_PROMPT_VERSION",
+    ):
+        assert not hasattr(feeding, retired), retired
+
+
+def test_the_chair_is_asked_in_the_vendors_own_system_only_framing():
+    prompt = churro.prompt()
+    assert set(prompt) == {"system"}
+    assert prompt["system"] == "Transcribe the entirety of this historical document to XML format."
     assert digest_bytes(prompt["system"].encode("utf-8")) == (
-        "ee91b159b30493ae43ee035079114debdf20d651b40c4cd59d70c645d02ff704"
+        "13592f5580805cf12d2aa14c963b872e3a4e6a5834e5d2afd7b86effd42a8b4d"
     )
-    assert digest_bytes(prompt["user"].encode("utf-8")) == (
-        "048a11aafd9fdac9e28a82d86b0554d43b22937f016246292bbc0c1250c318ea"
-    )
-    assert "<output>\nextracted text here\n</output>" in prompt["user"]
-    assert "ſ" in prompt["user"] and "а" in prompt["user"]
 
 
-def test_churro_validates_xml_without_discarding_the_raw_response():
+def test_the_runnable_parser_names_are_exactly_the_ones_the_capture_contract_admits():
+    """Two modules name this chair's parsers; a drift would strand one posture.
+
+    `feeding` decides which `(adapter, parser)` pairs may be asked for, and
+    `common/native_witness.py::CHURRO_PARSERS` decides which a retained capture
+    may carry. A name in one and not the other is either a parse this boundary
+    can ask for and no record may hold, or a record shape nothing can produce.
+    """
+    from common.native_witness import CHURRO_PARSERS
+
+    names = {parser for adapter, parser in feeding._RUNNABLE_PARSERS if adapter == "churro.v1"}
+    assert names == set(CHURRO_PARSERS) == {"xml"}
+
+
+def test_the_one_churro_parser_name_runs_and_no_other_does():
     tree = _Tree()
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
-        raw_response=b"<output>verbatim</output>",
+        view=_churro_view(),
+        raw_response=_DOCUMENT,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+    assert record["parse"] == {"state": "parsed", "parser": "xml", "text": "read"}
+    for retired in ("churro", "json", "html"):
+        with pytest.raises(SchemaRefusal, match="does not run for adapter"):
+            retain_model_view(
+                tree,
+                adapter="churro.v1",
+                view=_churro_view(),
+                raw_response=_DOCUMENT,
+                transport_stop_reason="eos",
+                parser=retired,
+            )
+
+
+def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identity():
+    """GOVERNANCE 6's other half once the chair runs the vendor's own system.
+
+    Keyed on the bytes the view retained rather than on a framing name, so a
+    record cannot name a pin for a prompt it did not send.
+    """
+    tree = _Tree()
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view=_churro_view(),
+        raw_response=_DOCUMENT,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+    assert record["vendor_identity"] == {
+        "repository": "github.com/stanford-oval/Churro",
+        "sha": "4abb17386d9656199c2776195926545fc527a691",
+        "carried_strings": {
+            "CHURRO_3B_XML_TEMPLATE.system_message": (
+                "13592f5580805cf12d2aa14c963b872e3a4e6a5834e5d2afd7b86effd42a8b4d"
+            )
+        },
+    }
+    validate_vendor_identity(record["vendor_identity"])
+
+    # A prompt no vendor artifact supplied leaves the field honestly absent
+    # rather than naming a provenance for bytes nobody carried.
+    unpinned = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": {"system": "a framing of our own"}, "generation": churro_generation()},
+        raw_response=_DOCUMENT,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+    assert "vendor_identity" not in unpinned
+
+
+def test_the_paper_harness_framing_pins_its_own_file_and_commit():
+    """Two attested variants, two files, two commits; the record says which."""
+    identity = churro.vendor_identity(churro.prompt("paper-harness-ed09bc7")["system"])
+    assert identity["sha"] == "ed09bc7fd6475c333a25427f3d0b9227af46ce27"
+    assert set(identity["carried_strings"]) == {"SYSTEM_MESSAGE"}
+
+
+def test_churro_reads_the_vendor_grammar_without_discarding_the_raw_response():
+    tree = _Tree()
+    raw = (
+        b"<HistoricalDocument><Page><Header><Line>rubric</Line></Header>"
+        b"<Body><Line>verbatim</Line></Body></Page></HistoricalDocument>"
+    )
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view=_churro_view(),
+        raw_response=raw,
         transport_stop_reason="length",
         parser="xml",
     )
-    assert record["parse"] == {"state": "parsed", "parser": "xml", "text": "verbatim"}
+    assert record["parse"] == {"state": "parsed", "parser": "xml", "text": "rubric\nverbatim"}
     assert record["stop_reason"] == "length"
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def test_the_grammars_own_findings_reach_the_capture_beside_the_repetition_scan():
+    """A shape nobody asked for is visible on the record rather than silent.
+
+    The retired `<output>` envelope still reads, so retained history parses --
+    and it says, as a finding, that it arrived in a framing this chair no longer
+    sends (GOVERNANCE 2).
+    """
+    tree = _Tree()
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view=_churro_view(),
+        raw_response=b"<output>retained history</output>",
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+    assert record["parse"]["text"] == "retained history"
+    assert record["findings"] == [{"kind": "retired-output-envelope"}]
+
+
+def test_a_body_that_offers_the_grammar_and_will_not_parse_is_a_retained_failure():
+    tree = _Tree()
+    raw = b"<HistoricalDocument><Page><Body><Line>cut off mid-element"
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view=_churro_view(),
+        raw_response=raw,
+        transport_stop_reason="length",
+        parser="xml",
+    )
+    assert record["parse"]["state"] == "failed"
+    assert "not parseable XML" in record["parse"]["reason"]
+    assert record["stop_reason"] == "partial-parse-failed"
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
 def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained():
@@ -231,7 +334,7 @@ def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained()
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="eos",
         parser="xml",
@@ -247,7 +350,7 @@ def test_an_oversized_churro_response_is_retained_but_never_parsed_or_scanned():
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="eos",
         parser="xml",
@@ -273,7 +376,6 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
 
     def detector(observed):
         observations.append(observed)
-        assert observed is raw
         assert raw in tree.blobs.values(), "capture must precede every detector call"
         return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
 
@@ -281,7 +383,7 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="eos",
     )
@@ -289,16 +391,20 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
-def test_repetition_is_detected_in_a_COMPLETE_churro_response_envelope_and_all():
-    """The XML envelope must not hide repetition in an otherwise complete response."""
+def test_repetition_is_detected_in_a_COMPLETE_churro_response_and_reads_the_transcription():
+    """The grammar's markup must not hide repetition in an otherwise complete response."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
-    raw = f"<output>{clause * 6}</output>".encode()
+    raw = (
+        b"<HistoricalDocument><Page><Body><Line>"
+        + (clause * 6).encode("utf-8")
+        + b"</Line></Body></Page></HistoricalDocument>"
+    )
 
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="eos",
         parser="xml",
@@ -316,7 +422,7 @@ def test_repetition_is_detected_in_a_COMPLETE_churro_response_envelope_and_all()
     ]
     assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
-    # The closing tag makes raw tail windows unequal.
+    # The closing tags make raw tail windows unequal.
     assert detect_repetition(raw) is None
 
 
@@ -324,12 +430,12 @@ def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_byt
     """Without parsed text, repetition remains an independent raw-byte finding."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
-    raw = f"<output>{clause * 6}".encode()
+    raw = b"<HistoricalDocument><Page><Body><Line>" + (clause * 6).encode("utf-8")
 
     record = retain_model_view(
         tree,
         adapter="churro.v1",
-        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        view=_churro_view(),
         raw_response=raw,
         transport_stop_reason="length",
         parser="xml",
@@ -383,7 +489,10 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
 def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypatch):
     attestatores = _load_attestatores()
     tree = _Tree()
-    raw = "<output>complete captured text</output>"
+    raw = (
+        "<HistoricalDocument><Page><Body><Line>complete captured text</Line>"
+        "</Body></Page></HistoricalDocument>"
+    )
     context = SimpleNamespace(
         tree=tree,
         scenario="churro-native",
@@ -401,8 +510,9 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
 
     def detector(observed):
         assert tree.blobs, "the response must be retained before detection"
-        # The transcription, not the envelope: `</output>` inside every tail
-        # window makes the real detector blind to a wholly repeated response.
+        # The transcription, not the markup: the grammar's closing tags inside
+        # every tail window make the real detector blind to a wholly repeated
+        # response.
         assert observed == b"complete captured text"
         return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
 
@@ -421,10 +531,17 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
 
 
 def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordable():
-    """A received parse failure is unrecordable, not a no-response channel."""
+    """A received parse failure is unrecordable, not a no-response channel.
+
+    "Malformed" is now measured against the vendor grammar: a body that offers
+    `HistoricalDocument` and will not parse is `failed` with its bytes retained.
+    A body that offers no grammar at all is not malformed -- it is the plain
+    reading-order text the paper-era harness itself expected, and throwing a
+    page of ink away over an unclosed tag is the loss GOALS 1 refuses.
+    """
     attestatores = _load_attestatores()
     tree = _Tree()
-    raw = "<output>unterminated"
+    raw = "<HistoricalDocument><Page><Body><Line>unterminated"
     context = SimpleNamespace(
         tree=tree,
         scenario="churro-native",
@@ -773,8 +890,6 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     assert DAI_MAX_WIDTH_PX == 1_500
-    assert DAI_MAX_HEIGHT_PX == 4_096
-    assert DAI_MAX_TOTAL_PIXELS == 2_359_296
     assert view["transform"]["target_width_px"] == 1_500
     assert view["transform"]["target_height_px"] == 500
     assert view["model_image_ref"] == _ref("attestatores/model-views/a.jpg", "b" * 64)
@@ -822,6 +937,22 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
     assert validate_dai_text(response.encode("utf-8")) == response
 
 
+def test_dai_declares_its_own_format_capabilities():
+    """DAI's grammar carries a doubt and no geometry, and says exactly that.
+
+    The uncertainty flag is true only because the Perlector can now derive a
+    bracket-marker comparison view for an act-scoped chair that declares it
+    (`pipeline/4_perlector/run.py::dissent_testimonia`, U12). Declared before
+    that wiring it would have put this chair at `compared: "unknown"` for good.
+    """
+    assert dict(DAI_FORMAT_CAPABILITIES) == {
+        "can_express_uncertainty": True,
+        "can_express_layout": False,
+    }
+    with pytest.raises(TypeError):
+        DAI_FORMAT_CAPABILITIES["can_express_uncertainty"] = False
+
+
 def test_every_dai_ceiling_seals_where_it_came_from():
     """A sealed ceiling states its source, and a chosen one says it was chosen."""
     view = dai_model_view(
@@ -834,33 +965,77 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     limits = view["image_limits"]
-    assert limits["schema"] == "dai-image-limits.v2"
+    # v4: the height ceiling stays retired (neither reads off anything the
+    # model states); the width ceiling is sourced to the model card rather
+    # than "design v2.1 section 2", which named the same number without the
+    # model's own source for it. The total-pixel ceiling `v3` dropped is
+    # restored -- a hostile review (U11) showed the served row's own ceiling
+    # is not redundant with the width ceiling alone -- sourced to the shipped
+    # serving catalogue rather than the retired `v2` constant it replaces.
+    assert limits["schema"] == "dai-image-limits.v4"
     ceilings = set(limits) - {"schema", "sources"}
+    assert ceilings == {"max_width_px", "max_total_pixels"}
     assert ceilings == set(limits["sources"]), "every ceiling names a source, and only ceilings do"
     assert all(limits["sources"][name].strip() for name in ceilings)
-    # The two sourced ceilings name where they were read; the chosen one names
-    # itself as chosen and the arithmetic that fixes its value.
-    assert "serve_dai.sh" in limits["sources"]["max_total_pixels"]
-    assert "design v2.1" in limits["sources"]["max_width_px"]
-    assert "no model source" in limits["sources"]["max_height_px"]
-    assert DAI_MAX_HEIGHT_PX * 576 == DAI_MAX_TOTAL_PIXELS
+    assert "Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR" in limits["sources"]["max_width_px"]
+    assert "1500 pixels (max)" in limits["sources"]["max_width_px"]
+    assert "serving_recipes_real.toml" in limits["sources"]["max_total_pixels"]
+    assert limits["max_total_pixels"] == DAI_MAX_TOTAL_PIXELS
     assert view["image_limits_sha256"] == digest_of(limits)
 
 
+def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
+    """`DAI_MAX_TOTAL_PIXELS` is read off the file, not retyped from memory.
+
+    The floor every deployed tier's engine actually admits: the smallest
+    `max_pixels` shipped for the dai.v1 (`attestator_2`) row across every
+    tier in the real serving catalogue. A tier added below this floor, or a
+    lowered existing one, must move this constant with it or this test fails
+    before a stale ceiling ships.
+    """
+    import tomllib
+
+    repo_root = Path(__file__).resolve().parents[2]
+    recipes = tomllib.loads(
+        (repo_root / "config" / "serving_recipes_real.toml").read_text(encoding="utf-8")
+    )
+    dai_max_pixels = [
+        profile["max_pixels"]
+        for profile in recipes["profiles"]
+        if profile.get("chair") == "attestator_2"
+    ]
+    assert dai_max_pixels, "the real serving catalogue ships no attestator_2 (DAI) row"
+    assert DAI_MAX_TOTAL_PIXELS == min(dai_max_pixels)
+
+
 @pytest.mark.parametrize(
-    ("width_px", "height_px", "expected"),
+    ("width_px", "height_px", "expected", "resized"),
     [
-        (500, 10_000, (204, 4_080)),
-        (1_500, 3_000, (1_086, 2_172)),
-        # This crossover distinguishes predicate search from a pre-floored
-        # height bound: 565x4096 fits, while nested flooring chooses only 564.
-        (581, 4_212, (565, 4_096)),
+        # `v3`'s bug, kept as the regression case: a width already under 1,500
+        # is not by itself an identity view -- this crop's 5,000,000px is
+        # over the smallest shipped row's `max_pixels` (2,359,296, U15), so
+        # `v3` recorded "identity" for a crop the engine would have resized
+        # again on the laptop-tier row, with that second resize captured
+        # nowhere (the hostile review's own finding). `v4`'s second pass
+        # catches it: beta = sqrt(5_000_000 / 2_359_296) ~= 1.45577, floored.
+        (500, 10_000, (343, 6_869), True),
+        # Also over the total-pixel ceiling alone (4,500,000px), even though
+        # its width sits exactly at the width ceiling and neither `v2` nor
+        # `v3` would have resized it a second time for total pixels here.
+        (1_500, 3_000, (1_086, 2_172), True),
+        # Over the width ceiling alone: floor-rounded aspect-preserving
+        # resize -- 1,000 x 1,500 // 4,501 truncates to 333, not 334 -- and
+        # its result (499,500px) is well under the total-pixel ceiling, so
+        # only the first pass runs.
+        (4_501, 1_000, (1_500, 333), True),
     ],
 )
-def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px, expected):
+def test_dai_resize_applies_its_two_sealed_ceilings(width_px, height_px, expected, resized):
+    source = _ref("designator/crops/tall.png")
+    model = _ref("attestatores/model-views/tall.jpg", "b" * 64) if resized else source
     view = dai_model_view(
-        source_image_ref=_ref("designator/crops/tall.png"),
-        model_image_ref=_ref("attestatores/model-views/tall.jpg", "b" * 64),
+        source_image_ref=source,
+        model_image_ref=model,
         width_px=width_px,
         height_px=height_px,
         system_prompt_ref=_ref("models/dai/system.txt"),
@@ -870,8 +1045,8 @@ def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px,
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
     assert target[0] <= DAI_MAX_WIDTH_PX
-    assert target[1] <= DAI_MAX_HEIGHT_PX
     assert target[0] * target[1] <= DAI_MAX_TOTAL_PIXELS
+    assert (view["transform"]["kind"] == "identity") != resized
 
 
 def test_dai_identity_view_requires_the_exact_source_image_reference():

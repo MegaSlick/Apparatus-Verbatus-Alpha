@@ -96,6 +96,17 @@ class ChairResponseRefusal(ServingError):
     response: the raw bytes are retained before this is raised, so a caller
     that must keep evidence rather than abort can catch this and record
     ``code`` as ``parse_problem``.
+
+    That retention claim was once false for exactly the two codes raised
+    earliest — ``CHAIR_RESPONSE_HTTP_ERROR`` and ``CHAIR_RESPONSE_MODEL_MISMATCH``
+    were raised *before* the body was written, so a vLLM 400 explaining a
+    context overflow was discarded on a card that bills by the hour. It is true
+    now: ``ChairClient.read`` retains before it checks, and both of those
+    refusals carry the retained reference in ``detail``. The non-200 also
+    carries the head of the body, because that is where the engine's own
+    account of its refusal lives; the wrong-model refusal names the blob and
+    nothing else, because a 200 from another model is a foreign reading and a
+    foreign reading's text does not travel in an exception message.
     """
 
     def __init__(self, code: str, detail: str) -> None:

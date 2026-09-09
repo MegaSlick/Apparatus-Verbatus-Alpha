@@ -20,8 +20,10 @@ which includes the witness roster the run was authorized with, not only the acts
 """
 
 import sys
+import tomllib
 import unicodedata
 from pathlib import Path
+from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # Second, so it lands ahead of the repository root: `spec_from_file_location` does not
@@ -31,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
+    NOT_MEASURED_BASIS_SCHEMA,
+    NOT_MEASURED_INSTRUMENTS,
     ArmariumProjection,
     build_armarium_bundle,
     edge_hold_pages_from_rows,
@@ -85,6 +89,10 @@ from common.stage import (  # noqa: E402
     submission_identity,
     unaddressed_chairs,
     validate_serving_provenance,
+)
+from common.testimony_content_coverage import (  # noqa: E402
+    validate_testimony_content_coverage,
+    validate_testimony_content_coverage_continuation,
 )
 
 _SOURCE_CITATION_FIELDS = frozenset(
@@ -800,6 +808,282 @@ def ink_map_page_rows(
     return tuple(rows)
 
 
+# The sealed configurations whose own `provenance` block says whether the
+# numbers in them were ever measured against this project's corpus. Named by
+# the CLI attribute the run seals, so a file renamed in `config/` moves here
+# rather than leaving the export quietly reporting one fewer caveat.
+_CALIBRATED_CONFIG_ATTRIBUTES: Final = (
+    ("designator-padding", "designator_padding_config", "padding"),
+    ("designator-geometry", "designator_geometry_config", "geometry"),
+    ("designator-grouping", "designator_grouping_config", "grouping"),
+)
+# The Recensor's named absence codes for the act-visibility survey. Spelled
+# here rather than imported: `common/` owns nothing of them and a stage may not
+# import another stage's implementation module, so this is the reader's own
+# copy of a closed vocabulary, and `test_export.py` reconciles the two lists.
+_VISIBILITY_ABSENCE_CODES: Final = frozenset(
+    {
+        "act-visibility-survey-absent",
+        "cross-capture-registration-absent",
+        "act-visibility-survey-spans-two-pages",
+    }
+)
+
+
+def _config_provenance(context, name: str, path, table: str) -> dict:
+    """One sealed configuration's `provenance` block, refused if it has none."""
+    try:
+        data = Path(path).read_bytes()
+        context.require_sealed_config(name, digest_bytes(data))
+        record = tomllib.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise FatalAccounting(
+            f"the sealed configuration at {path} could not be read for its calibration "
+            "provenance; the export may not report a caveat it did not read"
+        ) from error
+    provenance = record.get(table, {}).get("provenance")
+    if not isinstance(provenance, dict) or "calibrated_for_this_corpus" not in provenance:
+        raise FatalAccounting(
+            f"the sealed configuration at {path} declares no calibration provenance; the "
+            "export cannot say whether the geometry its act boundaries rest on was measured"
+        )
+    return provenance
+
+
+def _typed_calibration_flag(provenance: dict, name: str) -> bool:
+    value = provenance["calibrated_for_this_corpus"]
+    if not isinstance(value, bool):
+        raise FatalAccounting(
+            f"the sealed {name} calibration provenance has a non-boolean calibrated_for_this_corpus flag"
+        )
+    return value
+
+
+def _typed_sample_count(provenance: dict, name: str) -> int | None:
+    if "sample_count" not in provenance:
+        return None
+    value = provenance["sample_count"]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise FatalAccounting(
+            f"the sealed {name} calibration provenance has an invalid sample_count"
+        )
+    return value
+
+
+def geometry_calibration_rows(context) -> list[dict]:
+    """What each sealed geometry configuration says about its own calibration.
+
+    Read from the same bytes the run sealed (`sealed_config_digests`), so a row
+    here is the caveat the run actually ran under rather than whatever is in
+    `config/` now. `sample_count` is `None` where the file declares none, which
+    is not a zero: `designator_geometry.toml` carries no sample field at all,
+    and reporting 0 for it would be a measurement nobody took.
+    """
+    rows = []
+    for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:
+        provenance = _config_provenance(context, name, getattr(context.args, attribute), table)
+        rows.append(
+            {
+                "configuration": name,
+                "calibrated_for_this_corpus": _typed_calibration_flag(provenance, name),
+                "sample_count": _typed_sample_count(provenance, name),
+            }
+        )
+    return rows
+
+
+def sealed_audit_round_cap(context) -> int:
+    """The `round_cap` this run sealed, which decides whether a span can exist."""
+    try:
+        data = Path(context.perlector_audit_config_path).read_bytes()
+        context.require_sealed_config("perlector-audit", digest_bytes(data))
+        record = tomllib.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise FatalAccounting(
+            "the sealed Perlector audit policy could not be read; the export cannot say "
+            "whether an uncertain span was reachable on this run"
+        ) from error
+    cap = record.get("round_cap")
+    if not isinstance(cap, int) or isinstance(cap, bool):
+        raise FatalAccounting("the sealed Perlector audit policy declares no integer round cap")
+    return cap
+
+
+def conservation_not_reconciled(
+    context, manifest_cache: dict[str, dict], sealed_ordinals: set[int]
+) -> dict[int, str]:
+    """Every sealed page whose ink this run never reconciled, with its reason.
+
+    `ink_measurable: false` is the Designator's own record of a page it cut and
+    read but could not reconcile -- `infer_background` refused, so conservation
+    never ran on it. A page whose record is missing the field entirely is
+    counted here too, and for the stronger reason: absent evidence may never
+    read cleaner than recorded unmeasurability (GOVERNANCE 10).
+    """
+    unreconciled: dict[int, str] = {}
+    seen_ordinals: set[int] = set()
+    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
+        if entry["kind"] != "conservation":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
+        payload = record["payload"]
+        ordinal = payload.get("page_ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                f"the Designator conservation record {entry['artifact_id']} names no page "
+                "ordinal, so the export cannot say which page its ink facts describe"
+            )
+        if ordinal in seen_ordinals:
+            raise FatalAccounting(
+                "the Designator conservation inventory repeats a sealed page ordinal"
+            )
+        seen_ordinals.add(ordinal)
+        if payload.get("ink_measurable") is True:
+            continue
+        unreconciled[ordinal] = str(
+            payload.get("reason") or "the record states no reason for the unmeasured page"
+        )
+    if seen_ordinals != sealed_ordinals:
+        raise FatalAccounting(
+            "the Designator conservation ordinal census does not exactly cover the sealed page census"
+        )
+    return unreconciled
+
+
+def not_measured_basis(
+    context,
+    manifest_cache: dict[str, dict],
+    census: dict[int, dict],
+    reviews: dict[str, dict],
+    projected_acts: list[dict],
+) -> dict:
+    """The run's own answer to "what did this run not measure?".
+
+    Every number below is read from a record this run wrote or a configuration
+    it sealed. Nothing here is a constant, and nothing is inferred from another
+    stage's word for it: `armarium_export` turns this into the bundle's closed
+    `not_measured` block and derives each status from these values alone.
+    """
+    unmeasured_coverage: list[str] = []
+    coverage_reasons: list[str] = []
+    capture_rows = 0
+    rows_with_named_absence = 0
+    absence_codes: set[str] = set()
+    acts_with_presentation = 0
+    for act_key in sorted(reviews):
+        payload = reviews[act_key]
+        content = payload.get("testimony_content_coverage")
+        try:
+            content = validate_testimony_content_coverage(content)
+            continuation = validate_testimony_content_coverage_continuation(
+                payload.get("testimony_content_coverage_continuation")
+            )
+        except SchemaRefusal as error:
+            raise FatalAccounting(
+                "a Recensor testimony-content measurement is malformed"
+            ) from error
+        # `shortfall: None` is the F2 ruling's own record of a page whose
+        # testimony content coverage was not measured -- a continuation page
+        # most often. The shared validator already required this closed record.
+        if content["shortfall"] is None:
+            unmeasured_coverage.append(act_key)
+            reason = content.get("reason")
+            coverage_reasons.append(
+                str(reason)
+                if reason
+                else "this act's review records no measured page testimony coverage"
+            )
+        for row in continuation:
+            if row["shortfall"] is None:
+                if act_key not in unmeasured_coverage:
+                    unmeasured_coverage.append(act_key)
+                reason = row.get("reason")
+                coverage_reasons.append(
+                    str(reason)
+                    if reason
+                    else "this act's continuation-page coverage is recorded unmeasured"
+                )
+        if "cross_capture_coverage" not in payload:
+            raise FatalAccounting(
+                f"the Recensor review of {act_key!r} carries no cross-capture coverage field; "
+                "an absent record may not be exported as an instrument with no producer"
+            )
+        coverage = payload["cross_capture_coverage"]
+        if coverage is None:
+            continue
+        if not isinstance(coverage, dict):
+            raise FatalAccounting(
+                "a Recensor cross-capture coverage record is neither an object nor null"
+            )
+        try:
+            coverage = validate_cross_capture_coverage(coverage)
+        except (SchemaRefusal, TypeError) as error:
+            raise FatalAccounting(
+                "a Recensor cross-capture coverage record is malformed"
+            ) from error
+        acts_with_presentation += 1
+        for component in coverage.get("components", []):
+            for row in component.get("captures", []):
+                capture_rows += 1
+                codes = [
+                    code
+                    for code in row.get("finding_codes", [])
+                    if code in _VISIBILITY_ABSENCE_CODES
+                ]
+                if codes:
+                    rows_with_named_absence += 1
+                    absence_codes.update(codes)
+
+    sealed_pages = sorted(
+        ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"
+    )
+    unreconciled = conservation_not_reconciled(context, manifest_cache, set(sealed_pages))
+    with_spans = sum(
+        1
+        for act in projected_acts
+        if isinstance(act.get("uncertainty"), dict) and act["uncertainty"].get("uncertain_spans")
+    )
+    delivered = sum(
+        1 for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
+    )
+    basis = {
+        "schema": NOT_MEASURED_BASIS_SCHEMA,
+        "page-testimony-content-coverage": {
+            "acts_total": len(reviews),
+            "acts_unmeasured": unmeasured_coverage,
+            "reasons": sorted(set(coverage_reasons)),
+        },
+        "page-ink-conservation": {
+            "pages_sealed": len(sealed_pages),
+            "pages_not_reconciled": sorted(unreconciled),
+            "reasons": sorted({reason for reason in unreconciled.values()}),
+        },
+        "act-visibility-survey": {
+            "acts_total": len(reviews),
+            "acts_with_capture_presentation": acts_with_presentation,
+            "capture_rows": capture_rows,
+            "rows_with_named_absence": rows_with_named_absence,
+            "absence_codes": sorted(absence_codes),
+        },
+        "perlector-uncertain-spans": {
+            "sealed_audit_round_cap": sealed_audit_round_cap(context),
+            "acts_delivered": delivered,
+            "acts_with_uncertain_spans": with_spans,
+        },
+        "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
+    }
+    # The producer and the export's closed instrument list are two places that
+    # must name the same set; a key added to one and missed in the other would
+    # be a caveat the bundle silently stops carrying.
+    missing = [name for name in NOT_MEASURED_INSTRUMENTS if name not in basis]
+    if missing:
+        raise FatalAccounting(
+            f"the not-measured basis names no record for instrument(s) {missing}; the export "
+            "cannot omit a caveat because its producer forgot one"
+        )
+    return basis
+
+
 def _cached_manifest(context, stage: str, manifest_cache: dict[str, dict]) -> dict:
     """``context.tree.build_manifest(stage)``, read and revalidated once per run.
 
@@ -1378,6 +1662,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # acts. Without it a silent page reconciles behind its busy neighbours.
     act_pages: dict[str, list[int]] = {}
     manifest_cache: dict[str, dict] = {}
+    # Each act's Recensor review payload, kept for the not-measured basis: the
+    # two page-level facts the export must qualify its own `complete` with --
+    # testimony content coverage and the act-visibility survey -- exist only
+    # inside these reviews.
+    reviews: dict[str, dict] = {}
     marked_out_pages = pages_marked_out(context, manifest_cache)
     delivered: list[dict] = []
     review_items: list[dict] = []
@@ -1406,6 +1695,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "category": category.value,
             "under_witnessed": review["payload"]["coverage"]["under_witnessed"],
             "witness_coverage": review["payload"]["coverage"],
+            # Restated here, not left in the Recensor tree, because this is the
+            # record the export publishes about the act. A continuation page's
+            # testimony content coverage carries no verdict -- the Perlector
+            # declares the page unanchorable, so the diff has no span union to
+            # take -- and an export that delivered the act while saying nothing
+            # about that would be a partial result wearing a complete one's face
+            # (GOVERNANCE 2). Indexed, not `.get`: every review shape this stage
+            # can read writes the field, and a review without it is a stale or
+            # foreign record this stage should refuse over rather than paper.
+            #
+            # The detailed continuation rows remain in the retained Recensor review.
+            # The ZIP carries their derived unmeasured-act disclosure and its retained-run
+            # evidence location; it does not replay per-page Recensor evidence.
+            "testimony_content_coverage_continuation": review["payload"][
+                "testimony_content_coverage_continuation"
+            ],
             "evidence_refs": export_evidence_refs(context, review, established),
         }
         approval_ref = exclusion_approval_ref(act, category)
@@ -1476,6 +1781,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         categories[act_key] = category
         coverages[act_key] = review["payload"]["coverage"]
+        reviews[act_key] = review["payload"]
         act_pages[act_key] = marked_out_pages[act["act_id"]]
         if category is ArmariumCategory.DELIVERED:
             canonical_clean_text = entry.get("text")
@@ -1576,6 +1882,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "act_text_status": act_text_status,
             },
             ink_map_pages=ink_map_pages,
+            not_measured_basis=not_measured_basis(
+                context, manifest_cache, census, reviews, projected_acts
+            ),
         ),
         formats,
         context.tree.read_bytes,

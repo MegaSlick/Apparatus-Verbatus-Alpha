@@ -74,5 +74,30 @@
 # Nothing above authorises deleting or retaining the network volume after a
 # close.  That is its own separately named decision, and every close report
 # states the volume's ongoing hourly price so it cannot be forgotten.
+# Configured 2026-09-06 on Tyrel's approval (standing ledger TYREL_RULINGS_2026-09-04.md
+# §8 and §9) for the first live tests, Stage 1 of FIRST_LIVE_TESTS_PLAN_2026-09-06:
+# the cheapest reviewed card (RTX A5000 at $0.27/h plus a modest volume clears $0.40;
+# the A40 at $0.44 and everything above it does not).  Raising max_hourly_usd later is
+# the deliberate, recorded act that opens Stage 3.  This file being configured is not
+# permission to launch: every boot is asked for separately in the session that runs it.
 schema = "pod-spend.v3"
-state = "unconfigured"
+state = "configured"
+currency = "USD"
+
+# Decimal STRINGS, never TOML numbers.
+max_hourly_usd = "0.40"
+max_estimated_metered_cost_usd = "2.00"
+
+# Documented, unverified default -- Tyrel checks it against the RunPod balance before a
+# live run.  Nothing re-reads the balance once a pod is live.
+account_balance_floor_usd = "50.00"
+account_balance_alert_usd = "75.00"
+
+# Four hours: Stage 1's seal (worst case $1.08 of pod at $0.27/h).
+hard_lifetime_seconds = 14400
+laptop_heartbeat_timeout_seconds = 900
+shutdown_poll_interval_seconds = 30
+shutdown_deadline_seconds = 900
+
+# The verifier's accepted maximum; not a measured RunPod value.
+billing_cutoff_margin_seconds = 3600

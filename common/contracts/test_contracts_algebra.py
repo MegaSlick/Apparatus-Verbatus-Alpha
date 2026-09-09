@@ -11,8 +11,11 @@ loop asserts an exact expected count, never "at least one", so a vocabulary that
 quietly emptied would fail rather than pass vacuously.
 """
 
+import random
+
 import pytest
 
+from common import alignment as alignment_module
 from common.contracts import outcomes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import (
@@ -1027,3 +1030,305 @@ def test_a_damage_layer_that_cannot_be_read_is_refused_rather_than_called_whole(
         outcomes.derive_record_text_status("ink", [], {"uncertain_spans": []})
     with pytest.raises(SchemaRefusal, match="exactly one string text"):
         outcomes.derive_record_text_status(None, [], _layer())
+
+
+# --- the one shared page-attachment derivation, branch by branch ---------------
+
+_LOCATED = {
+    "status": "aligned",
+    "anchor_basis": "act-anchor",
+    "anchor_chair": "attestator_1",
+    "anchor_span": {"start": 0, "end": 12},
+    "witness_span": {"start": 4, "end": 16},
+    # The whole twelve-character anchor line, matched in one run: what a chair
+    # that really transcribed this act's line produces.
+    "anchor_line_match": {
+        "anchor_characters": 12,
+        "matched_characters": 12,
+        "longest_matched_run": 12,
+    },
+    "line_geometry": [],
+    "loss": {},
+    "offset_maps": {},
+}
+
+
+def test_page_attachment_basis_covers_every_branch_and_its_counterfactual():
+    """The truth table, stated once, because three seams read this answer.
+
+    The producer and both readers call this and compare the result against a
+    stored boolean and a stored label, so a branch that is wrong here is not a
+    wrong label in one place -- it is a record every consumer refuses, or worse,
+    a chair silently on or off the witness floor.
+    """
+    # Geometry attaches, and takes precedence over an equally valid anchor line:
+    # the chair reported ink over this act, which is the stronger claim, and
+    # `anchor-line` would understate what its own record proves.
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=True, alignment=_LOCATED)
+        == "geometric-overlap"
+    )
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=True, alignment=None)
+        == "geometric-overlap"
+    )
+    # No geometry, a located anchor line: the basis a grammar carrying no
+    # coordinates reaches.
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=False, alignment=_LOCATED)
+        == "anchor-line"
+    )
+    # Neither: nothing attached it, so nothing decided a basis.
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=False, alignment=None)
+        == "unattached"
+    )
+    # A chair that did not produce a reading attaches on nothing, whatever else
+    # its record carries. Both routes are gated on it, not only the geometry.
+    for overlaps, alignment in ((True, _LOCATED), (False, _LOCATED), (True, None)):
+        assert (
+            outcomes.page_attachment_basis(
+                reading=False, geometry_overlaps=overlaps, alignment=alignment
+            )
+            == "unattached"
+        )
+    # And every answer it can give is a word the closed vocabulary knows.
+    assert {
+        outcomes.page_attachment_basis(
+            reading=reading, geometry_overlaps=overlaps, alignment=alignment
+        )
+        for reading in (True, False)
+        for overlaps in (True, False)
+        for alignment in (_LOCATED, None)
+    } <= outcomes.ATTACHMENT_BASES
+
+
+@pytest.mark.parametrize(
+    ("alignment", "reason"),
+    [
+        (None, "no alignment at all"),
+        ({"status": "unaligned", "reason": "no-overlap-with-act-anchor"}, "explicitly unaligned"),
+        ({**_LOCATED, "anchor_basis": "no-page-anchor"}, "the page carries no anchor"),
+        ({**_LOCATED, "anchor_basis": "act-line-not-located"}, "this act's line was not located"),
+        ({**_LOCATED, "witness_span": {"start": 4, "end": 4}}, "a zero-length slice"),
+        ({**_LOCATED, "witness_span": {"start": 9, "end": 4}}, "an inverted span"),
+        ({**_LOCATED, "witness_span": {"start": 0, "end": True}}, "a boolean at an int field"),
+        ({**_LOCATED, "witness_span": {"start": 0}}, "a one-bound span"),
+        ({**_LOCATED, "witness_span": [4, 16]}, "a span that is not a mapping"),
+        ("aligned", "an alignment that is not a mapping"),
+        # The measurement, and every way it can fail to say a line was located.
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 12,
+                    "matched_characters": 2,
+                    "longest_matched_run": 1,
+                },
+            },
+            "two coincidental characters, matched one at a time",
+        ),
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 34,
+                    "matched_characters": 15,
+                    "longest_matched_run": 3,
+                },
+            },
+            "many short coincidental runs and no long one",
+        ),
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 0,
+                    "matched_characters": 0,
+                    "longest_matched_run": 0,
+                },
+            },
+            "an anchor line with no characters in it",
+        ),
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 12,
+                    "matched_characters": 20,
+                    "longest_matched_run": 12,
+                },
+            },
+            "more characters matched than the anchor line holds",
+        ),
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 12,
+                    "matched_characters": 4,
+                    "longest_matched_run": 8,
+                },
+            },
+            "a run longer than the total it is part of",
+        ),
+        (
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 12,
+                    "matched_characters": 12,
+                    "longest_matched_run": True,
+                },
+            },
+            "a boolean at an int field",
+        ),
+        ({**_LOCATED, "anchor_line_match": {"anchor_characters": 12}}, "a partial measurement"),
+        ({**_LOCATED, "anchor_line_match": [12, 12, 12]}, "a measurement that is not a mapping"),
+        (
+            {key: value for key, value in _LOCATED.items() if key != "anchor_line_match"},
+            "no measurement at all",
+        ),
+    ],
+)
+def test_no_anchor_line_is_located_by_a_record_that_did_not_locate_one(alignment, reason):
+    """Each way the same record can be honest and still place nothing here.
+
+    The three that matter most are the aligned ones. `no-page-anchor` and
+    `act-line-not-located` are the producer's own words for "this reading was
+    trivially attached because it was genuinely empty, and no line for this act
+    was found"; the zero-length span is what that trivial attach carries. Read as
+    "aligned, therefore located", each of them would put a chair on the witness
+    floor for a slice with no characters in it (GOVERNANCE 10).
+
+    The malformed shapes are here for a different reason: this is read from
+    untrusted retained evidence, and it must answer `False` rather than raise a
+    bare TypeError out of a derivation whose result is compared against a
+    producer's boolean.
+    """
+    assert outcomes.anchor_line_located(alignment) is False, reason
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=False, alignment=alignment)
+        == "unattached"
+    ), reason
+    # Geometry is unaffected by any of it: this function decides the second
+    # route only.
+    assert (
+        outcomes.page_attachment_basis(reading=True, geometry_overlaps=True, alignment=alignment)
+        == "geometric-overlap"
+    ), reason
+
+
+def test_a_located_anchor_line_is_a_measured_placement_not_a_coincidence():
+    """The positive case, so the parametrized refusals above are not vacuous.
+
+    One character is NOT enough, and the wording this test used to carry ("the
+    rule is placed something, not placed much") was the defect: `align_to_anchor`
+    keeps every matching block of size one, so a witness whose text has nothing
+    to do with the page shares a character or two with any anchor line and got a
+    positive span out of it. What has to hold is that a run of this act's own
+    anchor line was matched -- `ANCHOR_LINE_RUN_FLOOR` characters of it, or the
+    whole line where the line is shorter than that.
+    """
+    assert outcomes.anchor_line_located(_LOCATED) is True
+    # Exactly at the floor, on a line long enough for the floor to bite.
+    assert (
+        outcomes.anchor_line_located(
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 40,
+                    "matched_characters": outcomes.ANCHOR_LINE_RUN_FLOOR,
+                    "longest_matched_run": outcomes.ANCHOR_LINE_RUN_FLOOR,
+                },
+            }
+        )
+        is True
+    )
+    # One under it, on the same line: the boundary is a real one.
+    assert (
+        outcomes.anchor_line_located(
+            {
+                **_LOCATED,
+                "anchor_line_match": {
+                    "anchor_characters": 40,
+                    "matched_characters": outcomes.ANCHOR_LINE_RUN_FLOOR - 1,
+                    "longest_matched_run": outcomes.ANCHOR_LINE_RUN_FLOOR - 1,
+                },
+            }
+        )
+        is False
+    )
+    # An anchor line shorter than the floor is still reachable -- by matching
+    # the whole of it, contiguously, and by nothing less.
+    for run, located in ((3, True), (2, False)):
+        assert (
+            outcomes.anchor_line_located(
+                {
+                    **_LOCATED,
+                    "witness_span": {"start": 4, "end": 4 + run},
+                    "anchor_line_match": {
+                        "anchor_characters": 3,
+                        "matched_characters": run,
+                        "longest_matched_run": run,
+                    },
+                }
+            )
+            is located
+        ), run
+
+
+def test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading():
+    """The constant is a measurement of this tree's own aligner, not a guess.
+
+    `ANCHOR_LINE_RUN_FLOOR` exists to separate a witness that placed this act's
+    line from one that shares a few characters with it by accident, and the only
+    honest way to choose it is to measure both against the aligner the producer
+    actually runs. So this measures them: unrelated prose, and random text over
+    the anchor's own alphabet at four lengths, must stay BELOW the floor; a real
+    reading of the line, clean and at a synthetic ten-percent character-error
+    rate, must reach it.
+
+    What this deliberately does not claim: that the floor separates a badly
+    misread line from a different act written in the same register formula. It
+    does not, and no character-level measure does (GOVERNANCE 10) -- the same
+    formula really does share long runs. The floor refuses a coincidence, which
+    is what the review found it letting through.
+    """
+    limits, _digest = alignment_module.load_alignment_limits(
+        alignment_module.DEFAULT_ALIGNMENT_CONFIG_PATH
+    )
+    line = (
+        "Le vingt et unieme jour de mars mil sept cent quatre vingt trois a ete "
+        "baptisee Marie Anne fille de Jean Baptiste Leclerc et de Marguerite Dubois"
+    )
+    anchor = (
+        line + "\nLe second jour d avril mil sept cent quatre vingt trois a ete "
+        "inhume Pierre Martin age de soixante ans"
+    )
+    act_range = (0, len(line))
+
+    def longest_run(witness: str) -> int:
+        result = alignment_module.align_to_anchor(witness, anchor, limits)
+        if result["status"] != "aligned":
+            return 0
+        runs = [
+            min(span["anchor"]["end"], act_range[1]) - max(span["anchor"]["start"], act_range[0])
+            for span in result["spans"]
+        ]
+        return max([run for run in runs if run > 0], default=0)
+
+    coincidences = {
+        "unrelated prose": "Lorem ipsum dolor sit amet, consectetur adipiscing elit " * 8,
+    }
+    generator = random.Random(11)
+    for length in (200, 1000, 4000):
+        coincidences[f"random text, {length} characters"] = "".join(
+            generator.choice("abcdefghijklmnopqrstuvwxyz ") for _ in range(length)
+        )
+    for name, witness in coincidences.items():
+        assert longest_run(witness) < outcomes.ANCHOR_LINE_RUN_FLOOR, name
+
+    misread = line.replace("unieme", "vnicme").replace("Marguerite", "Marguerste")
+    for name, witness in (("the line itself", line), ("the line misread", misread)):
+        assert longest_run(witness) >= outcomes.ANCHOR_LINE_RUN_FLOOR, name

@@ -69,8 +69,8 @@ from common.background import (  # noqa: F401  (re-exported: see the note below)
     BackgroundEvidence,
     BackgroundInferenceRefusal,
     BackgroundPolicy,
-    SurroundEvidence,
-    _dark_surround,
+    DarkDistributionEvidence,
+    _dark_distribution,
     _derived_ink_margin,
     _ink_threshold,
     _settle_background_evidence,
@@ -89,7 +89,7 @@ class Component(TypedDict):
 # and is re-exported here. It moved on 2026-09-06 because three stages threshold
 # ink and only this one had the measured inference: the Ink Map and the
 # Recensor's residual-ink audit took the page's raw histogram mode as paper,
-# which on a photographed opening is the bezel, so their audit measured
+# which on a photographed opening is a dark population, so their audit measured
 # approximately zero ink over a page full of writing and the cross-stage
 # containment pin held vacuously. The names below are this module's own history
 # and every caller in this stage still reaches for them here; nothing in this

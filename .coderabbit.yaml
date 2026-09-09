@@ -16,6 +16,9 @@ reviews:
   request_changes_workflow: false
 
   high_level_summary: true
+  # Keep the generated overview in the walkthrough rather than rewriting the PR body.
+  high_level_summary_in_walkthrough: true
+  review_details: true
   sequence_diagrams: true
   estimate_code_review_effort: true
   related_prs: true
@@ -26,9 +29,9 @@ reviews:
   auto_review:
     enabled: true
     auto_incremental_review: true
-    # Default is 5. A stage branch carries 17-39 commits, so the default silently
-    # stops reviewing partway through exactly the pull requests that need it most.
-    auto_pause_after_reviewed_commits: 0
+    # This counts reviewed commits, not review runs. After two reviewed commits CodeRabbit
+    # pauses; a later material commit needs a manual incremental request and HEAD coverage check.
+    auto_pause_after_reviewed_commits: 2
 
   pre_merge_checks:
     # Every mode stays `warning`. `error` requires resolution before merging, and a
@@ -52,8 +55,10 @@ reviews:
           copied. Adapted, renamed and reformatted count as copied. Where a line is
           carried across anyway it must be named as carried in both the commit message
           and the report, and third-party code must record its source and licence.
-          Flag any addition that reads as lifted from elsewhere without that naming.
-          Do not flag ordinary new code merely because it resembles a common pattern.
+          When available evidence identifies carried code, check its source and attribution
+          against the commit and report. Name that evidence; resemblance or AI authorship
+          alone does not prove copying. If provenance cannot be established, report the
+          limitation rather than inventing a source or claiming the carry was verified.
       - name: No witness picker
         mode: warning
         instructions: >-
@@ -66,11 +71,15 @@ reviews:
       - name: Nothing is lost silently
         mode: warning
         instructions: >-
-          GOVERNANCE 2 and CLAUDE.md hard rule 7. Flag a swallowed exception, a bare
-          `except: pass`, a discarded write failure, a default substituted for missing
-          evidence, or any state, receipt or status field that reads as success when the
-          evidence behind it is absent or unverified. A missed act is worse than a poorly
-          read act: an honest failure is correct, a quiet one is not.
+          GOVERNANCE 2 and CLAUDE.md hard rule 7. Flag changes that reduce a declared
+          collection without reconciling the source, retained, and published identities or
+          counts; substitute an ordinary value for required missing or unverified evidence;
+          swallow a write failure; or publish complete/success after a required record
+          disappears. Trace the changed producer or consumer through a supported path and
+          check whether a regression independently establishes the missing member and proves
+          it is retained, held, or refused before publication. Treat explicitly typed null
+          according to its contract. State any uncertainty or unavailable evidence rather
+          than claiming a hypothetical bypass was demonstrated.
 
   finishing_touches:
     docstrings:
@@ -100,7 +109,10 @@ reviews:
         anything that loses, reorders or quietly defaults a record accordingly. Several
         vision models report on each act as witnesses; a trained reader establishes the
         text. Witnesses are clues, never options — code that picks among them is a
-        defect however well it scores.
+        defect however well it scores. Report every finding with a concrete trigger, impact,
+        evidence, and any uncertainty, including low-severity findings. Label an improvement
+        that is not required for correctness as optional; session disposition filters findings,
+        rather than suppressing them.
     - path: "operations/pod/**"
       instructions: >-
         This is the money path: it creates, adopts, guards and shuts down GPU pods that
@@ -143,10 +155,14 @@ reviews:
         `subprocess` are not command injection.
     - path: "**/test_*.py"
       instructions: >-
-        Every test here is AI-written and none has been mutation-tested. Ask whether a
-        test would actually fail if the behaviour it names regressed, and say so when it
-        would not. A test asserting on a string that the implementation also produces is
-        not evidence.
+        Every test here is AI-written. Mutation coverage is sampled, not comprehensive.
+        Check whether the input or a positive control independently establishes the named
+        condition, and whether deleting or bypassing the production behaviour would fail
+        at the intended assertion rather than during import, setup, or an unrelated guard.
+        A diagnostic string is supporting evidence; also look for an outcome, state, cause,
+        side effect, count, or identity assertion proving the guarded behaviour ran. Report
+        the specific surviving regression when one is demonstrated; do not infer test
+        effectiveness from the number of passing tests.
 
   tools:
     ruff:
@@ -163,6 +179,23 @@ reviews:
       enabled: true
     ast-grep:
       essential_rules: true
+
+issue_enrichment:
+  planning:
+    enabled: true
+    auto_planning:
+      enabled: false
+
+code_generation:
+  unit_tests:
+    path_instructions:
+      - path: "**/*.py"
+        instructions: >-
+          Generate behaviour-focused tests with independent expected values, including positive
+          and negative cases that fail when the named behaviour regresses. Isolate external services
+          and unrelated collaborators explicitly, never the behaviour under test. Do not call live
+          network services or pods,
+          edit governed files, push, or merge automatically.
 
 knowledge_base:
   opt_out: false

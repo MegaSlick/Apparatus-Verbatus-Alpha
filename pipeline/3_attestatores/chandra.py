@@ -1,65 +1,134 @@
-"""Chandra's page-witness adapter.
+"""Chandra's page-witness adapter, running the vendor's own system.
 
-The vendor has not published a stable response specimen.  This module therefore
-accepts exactly two declared shapes -- the repository's own wire contract
-(`chandra_response.py`, the shape `prompt` asks for) and the committed fixture's
-synthetic placeholder -- retains every response byte before inspection, and
-names every other shape in the derived payload instead of pretending it
-contained no testimony.  Geometry is derived only from the raw response that
-was retained beside it.
+Tonight's ruling (Tyrel, 2026-09-06) is that each witness runs as its
+developers intended: the vendor's preprocessing, prompt bytes, message shape,
+generation values and output grammar are adopted verbatim and pinned by digest,
+and the vendor's harness is not. This module is where that ruling reaches the
+Chandra chair. The grammar itself -- the carried prompt bytes and the reader
+for the answer they ask for -- lives in `common/chandra_layout.py`, because the
+Designator's structure pass reads the same grammar for its own purpose and two
+readers of one page that disagreed about what a `data-bbox` means would be two
+page-pixel mappings for one chair.
 
-**Provenance.** The
-occupant is ``datalab-to/chandra`` ("Chandra OCR 2",
-https://github.com/datalab-to/chandra), which converts page images to structured
-HTML/Markdown/JSON with block identification and reading order.  Unlike
-``feeding.churro_prompt``, **no vendor bytes are carried here.** The instruction
-below is this repository's own wording and both accepted shapes are this
-repository's own declarations, because the vendor publishes no output specimen
-to carry: as of the host's reading on 2026-08-22 its README documents what the
-model produces but shows no example response body.  There is therefore nothing
-to license and no borrowed line to name, and the honest record is that
-Chandra's *native* wire shape is **unverified** rather than specified.
+**What this module retired, and why the old premise was false.** Until now
+`prompt()` asked the served chair for a closed JSON shape of this repository's
+own invention (`_LIVE_INSTRUCTION`, parsed by `chandra_response.py`), on the
+stated premise that "the vendor publishes no output specimen to carry ...
+there is therefore nothing to license and no borrowed line to name." That was
+true of the *model card* and false of the vendor's own repository, which ships
+both the prompt every caller sends (`chandra/prompts.py::OCR_LAYOUT_PROMPT`)
+and the parser for the answer it asks for (`chandra/output.py::parse_layout`)
+under Apache-2.0. Both are now carried, cited and digest-pinned in
+`common/chandra_layout.py`, and the instruction, its wire contract and its
+module are gone. The churn is deliberate and is recorded as such in the vendor
+systems design.
 
-That is why the served Chandra witness is asked, in `prompt`, for a closed JSON
-shape of this repository's choosing -- the same move the Designator's structure
-pass makes with `verbatus-structure-answer.v1` -- rather than parsed in a
-native mode nobody has a specimen of.  The first real response either follows
-the instruction, and parses, or does not, and lands as a named surprise with
-its bytes intact (GOVERNANCE 10).  Replacing that with a measured native shape
-is the work a pod reading pays for.
+**The four vendor pieces this adapter is responsible for.**
+
+* *Preprocess.* `present` reproduces what the vendor's inference path does to a
+  page before its model sees it: `chandra/input.py::load_image`'s
+  `convert("RGB")` and `chandra/model/util.py::scale_to_fit` -- through
+  `common/imaging_ports.py::scale_to_fit_chandra`, which is the port, and
+  `common/imaging.py`, which moves the pixels and performs the colour step --
+  recorded as an `adapter-crop` under the vendor's own operation name
+  `chandra-scale-to-fit.v1` with `colour_mode = "rgb"`, so the exact image the
+  chair saw re-derives from the sealed Exemplar (ARCHITECTURE invariant 3).
+* *Prompt.* `prompt` sends `chandra_layout.OCR_LAYOUT_PROMPT`'s carried bytes
+  as one `user` turn with no system message, which is the shape
+  `chandra/model/vllm.py` builds.
+* *Parse.* `parse_layout` is `chandra_layout.parse_layout_html`, the
+  re-expression of the vendor's own `parse_layout` over the standard library.
+* *Observe.* `observe` converts each block's `data-bbox` to sealed-page pixels
+  through `chandra_layout.block_page_bounds`, whose denominator is the sealed
+  page and not the resized view -- because the vendor's own denominator is the
+  same one (`InferenceManager` runs `parse_chunks` against the original image).
+
+**Two answer shapes, and only one of them is a grammar.** The live grammar is
+HTML, read under the parser name `html`. The committed fixture's synthetic rows
+still declare `fixture-chandra-response.v1`, a JSON placeholder this repository
+invented for a fixture that asks nothing of anybody, and those pinned bytes stay
+until U16 re-declares the `proof/` rows in the vendor grammars. So the
+placeholder keeps its own parser name, `json`, and its own reader
+(`parse_fixture_placeholder`) -- **retained as history, never parsed as the live
+grammar**. The two are told apart by the answer's own declared `schema` member,
+which the vendor grammar has no field for, and the posture is told apart at the
+retention seam by the parser name the record is written under: a *served* chair
+may not be retained under `json` at all (`feeding.retain_model_view`), so the
+placeholder cannot become a live reading by accident. That refusal is the same
+one `served=` used to make inside `parse`; it now lives at the seam, where the
+parser name that will be written onto the record is what it is checked against.
 
 **Two prompts, deliberately.** `prompt()` is what a served chair is asked.
 `FIXTURE_PROMPT` is the instruction the committed fixture's synthetic Chandra
 rows were declared against, and it is what the fixture posture records in the
 retained model view (`run.py::resolve_attempt`), because that view is sealed
 into the fixture's pinned bytes: the fixture never asks anything, so its
-recorded prompt is a declaration, and rewording the live instruction must not
-move a fixture byte.
+recorded prompt is a declaration, and changing what a served chair is asked must
+not move a fixture byte.
+
+**Provenance.** `datalab-to/chandra` at commit
+`d4f7467435aa4137d9539f000ddf0b7ced3eb43f` (`chandra-ocr` 0.2.0, Apache-2.0)
+for the prompt bytes, the resize rule and the layout grammar;
+`datalab-to/chandra-ocr-2` at `af93b47dba1b47b6640c86ccf487ed2260ab9a09` for
+the weights. No vendor package is installed: every carried byte is cited where
+it is carried and re-checked against the vendor by
+`common/test_vendor_parity.py`.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from typing import Any, Final
+from types import MappingProxyType
+from typing import Any, Final, Mapping
 
-import chandra_response
+import feeding
 
+from common import chandra_layout
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES
+from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
+from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import validate_presented
 
 QUANTIZATION_RULE = "chandra.v1.floor-min-ceil-max.sealed-page-pixels"
 FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
-PAGE_RESPONSE_SCHEMA = chandra_response.PAGE_RESPONSE_SCHEMA
-# Independent parser bounds for bytes that cross the native model boundary.
-# The byte ceiling matches the repository's existing RunPod response ceiling;
-# keeping it here as well makes direct and future non-RunPod callers obey the
-# same finite intake.  The block ceiling is a chosen operational ceiling, not a
-# claim about Chandra's behaviour: ten thousand layout blocks on one page leaves
-# ample headroom while preventing one compact response from expanding into an
-# unbounded list of derived geometry records.
-MAX_RESPONSE_BYTES: Final = 16 * 1024 * 1024
-MAX_LAYOUT_BLOCKS: Final = 10_000
+
+#: The vendor preprocessing this adapter records over its own presented pixels.
+#: The name is `common/native_witness.py`'s, where the operation is admitted,
+#: its rounding rule declared (`grid-28`) and its replay from sealed page bytes
+#: implemented; spelled once here so the writer and the vocabulary cannot drift.
+PRESENT_OPERATION: Final = "chandra-scale-to-fit.v1"
+#: The vendor's own conversion to three 8-bit colour samples, performed here and
+#: recorded, because the vendor performs it before its model sees a pixel.
+#: `scale_to_fit` itself converts nothing, but nothing ever reaches it
+#: unconverted: `chandra/input.py::load_image` opens every image file as
+#: `Image.open(filepath).convert("RGB")` and the PDF path renders
+#: `.to_pil().convert("RGB")`, so every image handed to
+#: `chandra/model/vllm.py`'s `scale_to_fit(item.image)` is already RGB. Left to
+#: the engine's own `do_convert_rgb` the conversion would still happen --
+#: server-side, on a grayscale blob, unrecorded -- and the exact image the chair
+#: saw would no longer re-derive from the Exemplar plus the recorded transforms
+#: (ARCHITECTURE invariant 3). `present` runs it, before the resize, where the
+#: vendor runs it; see there for why the order is not a detail.
+PRESENT_COLOUR_MODE: Final = "rgb"
+# One ceiling per fact, declared beside the grammar that also enforces it and
+# re-exported here because the fixture placeholder's own reader below has to
+# apply the same finite intake to bytes crossing the same boundary.
+MAX_RESPONSE_BYTES: Final = chandra_layout.MAX_RESPONSE_BYTES
+MAX_LAYOUT_BLOCKS: Final = chandra_layout.MAX_LAYOUT_BLOCKS
+
+#: What Chandra's grammar can carry, declared from the grammar rather than
+#: assumed from a blanket default (vendor systems design, Contract boundary:
+#: "Chandra false/true"). Its answer is a list of labelled blocks each carrying
+#: a `data-bbox`, so it expresses layout; it has no vocabulary for uncertainty
+#: at all -- no confidence attribute, no bracket marker, nothing the grammar
+#: could carry a doubt in -- so it does not express uncertainty, and saying so
+#: is what keeps `dissent.is_comparable` from being asked to compare a doubt
+#: this chair had no way to report.
+FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
+    {"can_express_uncertainty": False, "can_express_layout": True}
+)
 
 # The instruction the committed fixture's synthetic Chandra responses were
 # declared against. Recorded by the fixture posture only; see the module
@@ -68,79 +137,112 @@ FIXTURE_PROMPT: Final[dict[str, str]] = {
     "instruction": "Transcribe this complete page and report layout blocks in reading order."
 }
 
-_LIVE_INSTRUCTION: Final = (
-    "Transcribe this complete page exactly as written -- nothing corrected, "
-    "modernized, summarized, or left out -- through to its end, and report its "
-    "layout blocks in reading order.\n\n"
-    "For each block, report:\n"
-    "- box_1000: one rectangle [x0, y0, x1, y1] in normalized integer "
-    "coordinates from 0 to 1000, measured against the image exactly as shown "
-    "-- x0,y0 the top-left corner and x1,y1 the bottom-right corner.\n"
-    "- text: the block's transcription exactly as written.\n\n"
-    "Respond with exactly this JSON shape and nothing else -- no explanation, "
-    "no markdown fencing, no text outside the JSON object:\n\n"
-    f'{{"schema": "{PAGE_RESPONSE_SCHEMA}", "blocks": '
-    '[{"box_1000": [x0, y0, x1, y1], "text": "..."}]}\n\n'
-    "If you can transcribe the page but cannot place its blocks, respond "
-    f'instead with {{"schema": "{PAGE_RESPONSE_SCHEMA}", "text": "..."}} '
-    "carrying the whole page's transcription. If the page holds no text, "
-    "report an empty blocks list."
-)
-
 
 def prompt() -> dict[str, str]:
-    """Frame the page request for the closed shape `chandra_response` parses."""
-    return {"instruction": _LIVE_INSTRUCTION}
+    """The vendor's own layout prompt, as the one `user` turn it is sent in.
 
-
-def _decode(raw_response: Any) -> tuple[Any | None, str | None]:
-    """Decode bounded raw JSON into a value or one closed parse outcome."""
-    if not isinstance(raw_response, bytes):
-        return None, "raw-response-not-bytes"
-    if len(raw_response) > MAX_RESPONSE_BYTES:
-        return None, "response-too-large"
-    try:
-        return json.loads(raw_response.decode("utf-8")), None
-    except RecursionError:
-        # The stdlib scanner raises this separately from JSONDecodeError for a
-        # sufficiently deep but otherwise valid value.  It is still one bad
-        # witness response, never permission to crash the whole stage.
-        return None, "excessive-json-nesting"
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, "invalid-json"
-
-
-def parse(raw_response: bytes, *, served: bool = False) -> Any:
-    """Return validated page text, or a named shape outcome that preserves custody.
-
-    Dispatches on the declared `schema`: the wire contract goes to
-    `chandra_response.parse` (which re-decodes under its own stricter
-    duplicate-member guard), the fixture placeholder is validated here exactly
-    as it always was, and any other shape is named.
-
-    ``served`` says these bytes came off a chair that actually answered, and it
-    changes exactly one thing: the fixture placeholder schema is then refused
-    as `unverified-response-schema` like any other undeclared shape (CodeRabbit
-    round 1, T7). `FIXTURE_RESPONSE_SCHEMA` is the committed fixture's own
-    stand-in, declared by `proof/skeleton_fixture.toml` and never asked for by
-    `prompt()`; a served chair answering in it is answering a question nobody
-    put to it, and reading that as a page of text would publish a reading whose
-    shape this repository never verified against anything (GOVERNANCE 10). The
-    bytes are already retained before this runs, so the refusal loses nothing:
-    it names a surprise instead of dressing it as a reading. The fixture
-    posture passes nothing and keeps the acceptance its pinned bytes depend on.
+    `chandra/model/vllm.py:64-76` builds a single user message whose content is
+    the image block followed by the text prompt, and sends no system message at
+    all; `live_witness._page_messages` builds exactly that from this shape. The
+    bytes are `chandra_layout.OCR_LAYOUT_PROMPT`, checked against their recorded
+    digest at import of that module, so a chair cannot be asked something no
+    vendor commit names.
     """
+
+    return {"user": chandra_layout.OCR_LAYOUT_PROMPT}
+
+
+def vendor_identity() -> dict[str, Any]:
+    """Which vendor pin the prompt bytes beside a reading were taken from.
+
+    GOVERNANCE 6 already puts the model's resolved identity on every stored
+    reading. This is the other half once the chair runs the vendor's own
+    system: the prompt is the vendor's, taken at one commit, and a later
+    re-parse under a different pin produces a different reading of the same
+    retained response. Returned as fresh, plain containers because it travels
+    into a retained record (`common/native_witness.py::validate_vendor_identity`
+    closes its shape).
+
+    Both carried strings are named, not only the prompt that is sent:
+    `PROMPT_ENDING` is interpolated into `OCR_LAYOUT_PROMPT`, so a record that
+    digested only the composite could not say which half of it moved.
+    """
+
+    return {
+        "repository": chandra_layout.VENDOR_REPOSITORY,
+        "sha": chandra_layout.VENDOR_COMMIT,
+        "carried_strings": {
+            "OCR_LAYOUT_PROMPT": chandra_layout.OCR_LAYOUT_PROMPT_SHA256,
+            "PROMPT_ENDING": chandra_layout.PROMPT_ENDING_SHA256,
+        },
+    }
+
+
+def parse_layout(raw_response: Any) -> Any:
+    """The vendor's layout answer read whole, or one named refusal.
+
+    A `ParsedLayout` -- blocks, page text, spans and findings -- or a
+    `{"parse_outcome": ...}` record from `chandra_layout.PARSE_OUTCOMES`. This
+    is the shape `feeding.retain_model_view` needs, because a capture retains
+    the findings beside the reading; `parse` below is the same call reduced to
+    the two return kinds every adapter's `parse` has.
+    """
+
+    return chandra_layout.parse_layout_html(raw_response)
+
+
+def parse(raw_response: bytes) -> Any:
+    """Return the page text of a vendor layout answer, or a named shape outcome.
+
+    The two return kinds `churro.parse` has, for the same reason: a caller that
+    already handles one page witness handles this one. Nothing here repairs,
+    reorders or defaults an answer -- a block whose geometry could not be
+    resolved is still a block, and the fact is a finding on the capture beside
+    the retained bytes rather than a substituted rectangle (GOVERNANCE 2).
+    """
+
+    parsed = parse_layout(raw_response)
+    if chandra_layout.is_refusal(parsed):
+        return {"parse_outcome": parsed["parse_outcome"]}
+    return parsed["page_text"]
+
+
+def declares_fixture_placeholder(raw_response: Any) -> bool:
+    """Whether these bytes are the committed fixture's own JSON placeholder.
+
+    A shape question, not a choice among readings (hard rule 8): the placeholder
+    declares `FIXTURE_RESPONSE_SCHEMA` in a top-level JSON object, and the
+    vendor grammar is HTML with no schema member anywhere in it, so no body can
+    be both. Used by `observe`, which is handed bytes without being told which
+    posture retained them, and by nothing that decides what a reading says.
+    """
+
+    decoded, problem = _decode(raw_response)
+    return (
+        problem is None
+        and isinstance(decoded, dict)
+        and decoded.get("schema") == FIXTURE_RESPONSE_SCHEMA
+    )
+
+
+def parse_fixture_placeholder(raw_response: bytes) -> Any:
+    """The committed fixture's placeholder, read exactly as it always was.
+
+    Retained history, never the live grammar. `proof/skeleton_fixture.toml`'s
+    Chandra rows declare `fixture-chandra-response.v1` bodies and their bytes
+    are pinned into the fixture's own digests, so this reader stays until U16
+    re-declares those rows in the vendor grammar. A *served* chair is never
+    retained under this parser at all -- `feeding.retain_model_view` refuses the
+    pair -- so a live answer in this shape lands as a named surprise rather than
+    as a reading whose shape nobody verified against anything (GOVERNANCE 10).
+    """
+
     decoded, problem = _decode(raw_response)
     if problem is not None:
         return {"parse_outcome": problem}
     if not isinstance(decoded, dict):
         return {"parse_outcome": "top-level-not-object"}
-    if decoded.get("schema") == PAGE_RESPONSE_SCHEMA:
-        parsed = chandra_response.parse(raw_response)
-        if chandra_response.is_refusal(parsed):
-            return parsed
-        return parsed["page_text"]
-    if served or decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
+    if decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
         return {"parse_outcome": "unverified-response-schema"}
     if "markdown" in decoded and "text" in decoded and decoded["markdown"] != decoded["text"]:
         return {"parse_outcome": "conflicting-text-fields"}
@@ -179,9 +281,8 @@ def retain(
     pin their names for the same reason; this one now does too, and accepts no
     `adapter` argument to pin.
     """
-    from feeding import retain_model_view
 
-    return retain_model_view(
+    return feeding.retain_model_view(
         tree,
         adapter="chandra.v1",
         view=view,
@@ -193,15 +294,142 @@ def retain(
 
 
 def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
-    """Bind either verified compatibility region or the page witness view.
+    """Size a whole page the way Chandra's own pipeline sizes it, and record it.
 
-    Scope controls invocation, not presentation kind: the act compatibility
-    records retain their original Designator crop while the durable witness
-    record carries the whole page. ``context`` remains part of the common
-    adapter interface because adapters may publish their own derived crop.
+    `chandra/model/util.py::scale_to_fit` runs on every image the vendor's
+    inference path sends, and under tonight's ruling it runs here too: the crop
+    comes off the sealed Exemplar, `common/imaging_ports.scale_to_fit_chandra`
+    decides the target, `common/imaging.resize_png_lanczos` moves the pixels,
+    `common/imaging.convert_png_to_rgb` performs the vendor's own colour step,
+    and the result is published as an `adapter-crop` whose transform names the
+    vendor operation and the colour mode. That is what makes the exact image the
+    chair saw re-derivable from the Exemplar plus the record (ARCHITECTURE
+    invariant 3): `common/native_witness.py::validate_presented_page_binding`
+    replays exactly these steps against the sealed page and refuses a digest
+    that does not come back.
+
+    **The colour step is the vendor's, and it is ours to run.** `scale_to_fit`
+    converts nothing itself, but the vendor never hands it anything unconverted:
+    `chandra/input.py::load_image` is `Image.open(filepath).convert("RGB")` and
+    the PDF path renders `.to_pil().convert("RGB")`, so RGB is what reaches
+    `scale_to_fit(item.image)` on every vendor call. A grayscale page sent
+    without it is not read differently -- the engine's own `do_convert_rgb`
+    performs the same conversion server-side -- but it performs it on pixels
+    nothing in this repository recorded, which is exactly the unrecorded
+    server-side step `convert_png_to_rgb` was written to take back (ARCHITECTURE
+    invariant 3). So the departure `colour_mode = "keep"` recorded is closed here
+    rather than merely described.
+
+    **The order is the vendor's, and the order is load-bearing.** `load_image`
+    converts and `scale_to_fit` then resizes what it was handed, so the
+    conversion runs first here too, and `validate_presented_page_binding`
+    replays it first for this operation (`_COLOUR_BEFORE_RESIZE`). That is not
+    ceremony: on an `L`, `1` or `RGB` crop the two orders are the same bytes,
+    but on the `LA` and `RGBA` pages the Exemplar also seals they are not --
+    Pillow's resampler treats an alpha band differently from a colour one, and
+    converting afterwards was measured to move most of the image by a sample
+    level (`test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page`).
+    Converting first also retires a departure: `resize_png_lanczos` promotes a
+    bitonal crop to `L` before resampling, because Pillow substitutes NEAREST
+    for LANCZOS on mode `1`, and a Chandra crop is already `RGB` before it gets
+    there.
+
+    **Only a whole-page presentation is resized, and that is the honest line.**
+    Chandra is a page witness: the image a chair is ever shown is a page
+    (`live_witness.page_chair_request`), and the vendor resize is a fact about
+    that image. An act view of a page witness is a compatibility record that
+    restates one page reading against one act's Designator crop; no chair was
+    ever shown those pixels, and minting a vendor resize recipe over them would
+    record a preprocessing step that never ran on an image nobody sent. So a
+    `region` presentation is returned exactly as it arrived, as it always was,
+    and `witness_adapters.validate_adapter_presentation` re-derives both cases
+    apart.
+
+    **An identity-sized target still records the vendor operation**, unlike
+    DAI's crop step, which falls back to a plain `crop` when its resize would
+    change nothing. The two rules differ because the two operation names mean
+    different things: DAI's `crop-resize-preserve-aspect` names a resampler, and
+    naming one that never ran would be false, while `chandra-scale-to-fit.v1`
+    names the vendor function, which runs on every call and sometimes returns
+    the size it was given. `resize_png_lanczos` is still called and still frames
+    the output, so no step is claimed that did not happen.
     """
+
     validate_presented(presentation)
-    return presentation
+    if presentation["kind"] != "page":
+        return presentation
+    transform = presentation["transform"]
+    page_id = transform["source_page_id"]
+    page_bytes = feeding.sealed_page_bytes(context, page_id, what="Chandra")
+    # Bounds failures must stay SchemaRefusals so callers can hold the attempt;
+    # `crop_png` alone would expose a bare ValueError at this boundary.
+    validate_presented(presentation, page_size=dimensions(page_bytes))
+    bounds = dict(transform["bounds"])
+    source_width, source_height = bounds["w"], bounds["h"]
+    target_width, target_height = scale_to_fit_chandra(source_width, source_height)
+    try:
+        # Before the resize, where `load_image` performs it. See the docstring:
+        # on an alpha-bearing page the other order is measurably other pixels.
+        converted = convert_png_to_rgb(crop_png(page_bytes, bounds))
+    except ValueError as error:
+        # `load_image`'s own conversion, named at this boundary rather than
+        # raised through it. `convert_png_to_rgb` refuses an image mode a sealed
+        # crop cannot arrive in, and a bare `ValueError` out of an adapter is
+        # the thing the bounds check above already exists to prevent: a caller
+        # that could have held this attempt with a reason gets an unnamed
+        # interpreter error instead (GOVERNANCE 2).
+        raise SchemaRefusal(
+            f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
+            f"loader performs on every image before scale_to_fit sees it: {error}"
+        ) from error
+    model_image = resize_png_lanczos(converted, target_width, target_height)
+    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    return {
+        "kind": "adapter-crop",
+        "source_page_id": page_id,
+        "source_page_ordinal": transform["source_page_ordinal"],
+        "image_path": published.relative_path,
+        "image_sha256": digest,
+        "transform": presented_transform(
+            page_id,
+            transform["source_page_ordinal"],
+            bounds,
+            (target_width, target_height),
+        ),
+    }
+
+
+def presented_transform(
+    page_id: str,
+    page_ordinal: int,
+    bounds: dict[str, int],
+    target: tuple[int, int],
+) -> dict[str, Any]:
+    """The one transform this adapter writes, so the re-deriver reads it here.
+
+    `witness_adapters.validate_adapter_presentation` has to state what this
+    adapter could have produced without running it. Two hand-written copies of
+    one recipe agree only for as long as both are edited together, which is the
+    failure `_validate_resize_recipe` already names for the vendor's own trim
+    loop; there is nothing to gain by repeating it, so the writer and the
+    re-deriver call this.
+    """
+
+    return {
+        "operation": PRESENT_OPERATION,
+        "source_page_id": page_id,
+        "source_page_ordinal": page_ordinal,
+        "bounds": dict(bounds),
+        "colour_mode": PRESENT_COLOUR_MODE,
+        "resize": {
+            "resampler": "pillow-lanczos",
+            "dimension_rounding": "grid-28",
+            "source_width_px": bounds["w"],
+            "source_height_px": bounds["h"],
+            "target_width_px": target[0],
+            "target_height_px": target[1],
+        },
+    }
 
 
 def observe(
@@ -212,65 +440,104 @@ def observe(
 ) -> list[dict[str, Any]]:
     """Derive Chandra's page-pixel geometry from its retained raw response.
 
-    A wire-contract body's normalized boxes are converted to sealed-page pixels
-    with `chandra_response.block_page_bounds`, which needs the sealed page's
-    own size: the act view of a page witness presents one crop while restating
-    page-level geometry, so the presentation's bounds are not the denominator.
-    `run.py` passes ``page_size`` at both of its Chandra call sites; a caller
-    that omits it for a body that needs it is refused rather than handed
-    geometry in the wrong space. Each block's span indexes the page text
-    `parse` returns for the same bytes. A body that reports no block geometry
-    -- the page-text form, or an empty blocks list -- derives none, exactly as
-    the fixture placeholder's empty block list does; the page record then
-    carries the presentation echo `run.py` gives every page with no reported
-    geometry (excluded from routing and coverage by its `bounds_source`), and
-    the shared page-edge check, which admits only reported geometry, is never
-    handed an echo by this adapter.
+    A layout answer's `data-bbox` values are normalized 0-1000 against the
+    *sealed page*, which is the vendor's own denominator, so `page_size` is
+    required and a caller that omits it for a body carrying geometry is refused
+    rather than handed rectangles in the wrong space. `run.py` passes it at both
+    Chandra call sites. Each entry's span indexes the page text `parse` returns
+    for the same bytes.
 
-    The fixture placeholder's page-pixel float boxes are quantized by the
-    declared rule as before and need no page size.
+    A block whose `data-bbox` was absent or malformed, and a `Blank-Page` block,
+    report no rectangle at all: `chandra_layout.block_page_bounds` returns
+    `None` for them and this returns no entry for them. It does not return a
+    substituted box, and it does not drop the block -- the block, its text and
+    the finding that named its geometry unresolved are all on the capture beside
+    these bytes. Ordinals here are dense over the entries that *do* carry
+    geometry, because that is what the closed `observed` schema requires
+    (`native_witness.validate_observed`); the block a rectangle came from is
+    recoverable through its span and through the retained response.
+
+    An answer with no resolvable geometry at all -- a refused parse, a page of
+    blocks that all report none -- derives nothing. The page record then carries
+    the presentation echo `run.py` gives every page with no reported geometry,
+    which routing and coverage exclude by its `bounds_source`, so the shared
+    page-edge check is never handed an echo by this adapter.
+
+    The committed fixture's placeholder is recognized by its own declared schema
+    and keeps the page-pixel float boxes and the declared quantization rule it
+    always had; it needs no page size, because those boxes are already page
+    pixels.
     """
+
     validate_presented(presentation)
-    decoded, problem = _decode(native_payload)
-    if problem is not None:
+    if declares_fixture_placeholder(native_payload):
+        return _placeholder_observed(native_payload)
+    parsed = parse_layout(native_payload)
+    if chandra_layout.is_refusal(parsed):
         return []
-    if isinstance(decoded, dict) and decoded.get("schema") == PAGE_RESPONSE_SCHEMA:
-        parsed = chandra_response.parse(native_payload)
-        if chandra_response.is_refusal(parsed) or not parsed["blocks"]:
-            return []
-        if page_size is None:
-            raise SchemaRefusal(
-                "a Chandra wire-contract response carries normalized block geometry, which "
-                "converts to sealed-page pixels only against the sealed page's own size; "
-                "pass page_size"
-            )
-        return [
-            {
-                "ordinal": block["ordinal"],
-                "bounds": chandra_response.block_page_bounds(block, page_size=page_size),
-                "bounds_source": "native",
-                "span": dict(span),
-            }
-            for block, span in zip(parsed["blocks"], parsed["spans"], strict=True)
-        ]
-    if (
-        not isinstance(decoded, dict)
-        or decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA
-        or not isinstance(decoded.get("blocks"), list)
-        or len(decoded["blocks"]) > MAX_LAYOUT_BLOCKS
-    ):
+    located = [
+        (block, span)
+        for block, span in zip(parsed["blocks"], parsed["spans"], strict=True)
+        if not block["blank_page"] and block["bbox_1000"] is not None
+    ]
+    if not located:
+        return []
+    if page_size is None:
+        raise SchemaRefusal(
+            "a Chandra layout answer carries block geometry normalized against the sealed "
+            "page, which converts to page pixels only against that page's own size; "
+            "pass page_size"
+        )
+    return [
+        {
+            "ordinal": ordinal,
+            "bounds": chandra_layout.block_page_bounds(block, page_size=page_size),
+            "bounds_source": "native",
+            "span": dict(span),
+        }
+        for ordinal, (block, span) in enumerate(located)
+    ]
+
+
+def _placeholder_observed(native_payload: Any) -> list[dict[str, Any]]:
+    """The committed fixture placeholder's own geometry, unchanged.
+
+    Page-pixel float boxes quantized by `QUANTIZATION_RULE`. One malformed box
+    yields no geometry for the whole body: `parse_fixture_placeholder` names
+    that before any record is written, and this keeps a direct caller that
+    bypassed the retention seam equally conservative.
+    """
+
+    decoded, _ = _decode(native_payload)
+    blocks = decoded.get("blocks") if isinstance(decoded, dict) else None
+    if not isinstance(blocks, list) or len(blocks) > MAX_LAYOUT_BLOCKS:
         return []
     observed: list[dict[str, Any]] = []
-    for block in decoded["blocks"]:
+    for block in blocks:
         bounds = _quantize_box(block.get("bbox") if isinstance(block, dict) else None)
         if bounds is None:
-            # `parse` names this before the record is written. This guard keeps
-            # direct callers equally conservative if they bypass that seam.
             return []
         observed.append(
             {"ordinal": len(observed), "bounds": bounds, "bounds_source": "native", "span": None}
         )
     return observed
+
+
+def _decode(raw_response: Any) -> tuple[Any | None, str | None]:
+    """Decode bounded raw JSON into a value or one closed parse outcome."""
+    if not isinstance(raw_response, (bytes, bytearray)):
+        return None, "raw-response-not-bytes"
+    if len(raw_response) > MAX_RESPONSE_BYTES:
+        return None, "response-too-large"
+    try:
+        return json.loads(bytes(raw_response).decode("utf-8")), None
+    except RecursionError:
+        # The stdlib scanner raises this separately from JSONDecodeError for a
+        # sufficiently deep but otherwise valid value.  It is still one bad
+        # witness response, never permission to crash the whole stage.
+        return None, "excessive-json-nesting"
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "invalid-json"
 
 
 def _quantize_box(value: Any) -> dict[str, int] | None:

@@ -562,10 +562,10 @@ def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
         infer_background(8, 8, rows, background_policy=_shipped_background_policy(8, 8))
 
 
-def test_a_page_of_int_lists_is_refused_by_name_inside_the_surround_test():
+def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_test():
     """The guard that names the scanline instead of dying inside `translate`.
 
-    `_dark_surround` reads scanlines with `bytes.translate`, but the histogram
+    `_dark_distribution` reads scanlines with `bytes.translate`, but the histogram
     loop above it iterates any sequence of integers, so a caller handing this
     module a list-of-lists page gets all the way to the surround test and then
     fails with an `AttributeError` naming neither the scanline nor the reason.

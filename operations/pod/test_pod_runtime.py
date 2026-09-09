@@ -25,11 +25,13 @@ import pytest
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import DigestMismatchRefusal
+from operations.http_deadline import CANCEL_GRACE_SECONDS
 
 from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -69,7 +71,13 @@ from .models import (
     SpendRefusal,
     validate_pod_report_identity,
 )
-from .notify_bridge import NotifyOutcome, shell_notifier, silent
+from .notify_bridge import (
+    NOTIFY_SCRIPT,
+    NOTIFY_SUPPRESSED_MARKER,
+    NotifyOutcome,
+    shell_notifier,
+    silent,
+)
 from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
 from .preflight import (
     CacheMismatch,
@@ -1518,6 +1526,52 @@ def test_a_price_move_between_preview_and_confirmation_names_itself(tmp_path: Pa
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
+FIXTURE_PLACEMENT_TOML = "\n".join(
+    (
+        'schema = "pod-placement.v1"',
+        "",
+        "[dtype_floor]",
+        'bfloat16 = "8.0"',
+        "",
+        "[[tiers]]",
+        'id = "fixture-48gb"',
+        "min_vram_gib = 40",
+        "max_vram_gib_exclusive = 80",
+        'residency = "single"',
+        'detector_device = "cpu"',
+        "",
+        "[tiers.recipe]",
+        'engine_memory_fraction = "0.90"',
+        "context_cap = 2048",
+        "pixel_cap = 1344",
+        "batch_size = 1",
+        "",
+        "[[card_profile]]",
+        'name = "fixture 48 GiB"',
+        'gpu_type_id = "fake-48gb"',
+        "vram_gib = 48",
+        'hourly_usd = "0.77"',
+        'tier = "fixture-48gb"',
+        'note = "the fake provider\'s only card; reviewed here so a CLI drill has a table"',
+        "",
+    )
+)
+"""A reviewed card table for the fake card these CLI drills rent.
+
+`cli.py` holds every create to `config/pod_placement.toml` unless `--placement`
+names another table, and the real table has no `fake-48gb` row -- correctly, it
+lists cards that exist. A drill that rents an imaginary card names an imaginary
+table, and the gate is exercised rather than switched off: the card is listed,
+and its reviewed $0.77/h fits the $1.00/h ceiling these drills configure.
+"""
+
+
+def fixture_placement(tmp_path: Path) -> Path:
+    path = tmp_path / "pod_placement.toml"
+    path.write_text(FIXTURE_PLACEMENT_TOML, encoding="utf-8")
+    return path
+
+
 def test_cli_prints_preview_before_collecting_typed_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1582,6 +1636,8 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -1696,6 +1752,8 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -2730,6 +2788,55 @@ def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
 
     assert outcome == NotifyOutcome(True, False, "notify: NOT DELIVERED (start) — no topic")
     assert outcome.line().startswith("Phone notification: NOT DELIVERED")
+
+
+def test_pod_shell_notifier_reports_the_test_sink_as_suppressed_never_as_sent() -> None:
+    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
+
+    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
+    not change what the suites it protects measure -- so this bridge read that 0
+    as delivery and printed "Phone notification: sent." for a spend warning no
+    phone ever saw. The marker on stdout is the only thing separating the two.
+    """
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command, kwargs
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n", stderr=""
+        )
+
+    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
+
+    assert outcome.attempted
+    assert not outcome.delivered
+    assert outcome.suppressed
+    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
+    assert outcome.line() == "Phone notification: suppressed (test sink)."
+    assert "sent" not in outcome.line()
+
+
+def test_pod_shell_notifier_still_reports_a_real_success_as_delivered() -> None:
+    """The counterfactual: exit 0 without the marker must not become suppressed."""
+
+    for stdout in ("", "\n", "some unrelated chatter\n"):
+
+        def runner(command, _stdout=stdout, **kwargs):  # type: ignore[no-untyped-def]
+            del command, kwargs
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=_stdout, stderr="")
+
+        outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
+
+        assert outcome == NotifyOutcome(True, True, "delivered")
+        assert not outcome.suppressed
+        assert outcome.line() == "Phone notification: sent."
+
+
+def test_the_marker_word_the_pod_bridge_reads_is_the_one_the_script_prints() -> None:
+    """Two languages, neither able to import the other, one typo apart from a
+    silent return to "sent." for a notification that never left the machine."""
+
+    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
+    assert f"printf '{NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
 
 
 def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -> None:
@@ -4713,6 +4820,22 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
+def _fixture_configuration_receipt() -> dict[str, object]:
+    return {
+        "schema": CONFIGURATION_RECEIPT_SCHEMA,
+        "bindings": {
+            name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
+            for name in (
+                "models_config",
+                "witness_context_config",
+                "serving_recipes_config",
+                "placement_config",
+            )
+        },
+        "witness_context_validation": {},
+    }
+
+
 class FakeBootstrapActions:
     def __init__(
         self, *, crash_once: BootstrapStep | None = None, fail: BootstrapStep | None = None
@@ -4732,6 +4855,10 @@ class FakeBootstrapActions:
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
         return self._step(BootstrapStep.REPOSITORY) | {"commit": commit}
+
+    def validate_configuration(self) -> dict[str, object]:
+        self._step(BootstrapStep.CONFIGURATION)
+        return _fixture_configuration_receipt()
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT) | {"lockfile": str(lockfile)}
@@ -4831,9 +4958,35 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
 
     assert report.green
     assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
+    # CONFIGURATION is cheap and deliberately re-read before any completed
+    # receipt is reused; only the unfinished uv action runs again among paid steps.
+    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 2
     assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 2
     assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
+
+
+def test_a_repaired_configuration_resume_rechecks_before_expensive_steps(tmp_path: Path) -> None:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    actions = FakeBootstrapActions(fail=BootstrapStep.CONFIGURATION)
+    bootstrapper = Bootstrapper(
+        BootstrapJournal(
+            tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+        ),
+        actions,
+    )
+
+    refused = bootstrapper.run()
+    actions.fail = None
+    completed = bootstrapper.run()
+
+    assert refused.failure_step is BootstrapStep.CONFIGURATION
+    assert completed.green
+    assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
+    assert actions.calls.count(BootstrapStep.CONFIGURATION) == 2
+    assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 1
+    assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
 
 
 def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: Path) -> None:
@@ -4849,13 +5002,13 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
         journal.load_or_create()
 
 
-def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
+def test_a_journal_from_before_the_configuration_step_is_refused_as_an_old_schema(
     tmp_path: Path,
 ) -> None:
     """A journal is not blamed for a change this code made to the step list.
 
-    Inserting ``MODEL_STORE`` before ``CHAIR_CACHE`` changed the valid completion
-    prefix. Under the old schema name a perfectly honest v1 journal was rejected
+    Inserting ``CONFIGURATION`` before ``UV_ENVIRONMENT`` changed the valid
+    completion prefix. Under the old schema name a perfectly honest v2 journal was rejected
     as "duplicated, reordered, or skips a step", which reads as tampering. The
     schema bump makes it what it is: a journal this code no longer understands,
     to be preserved and replaced.
@@ -4866,10 +5019,10 @@ def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
     path = tmp_path / "bootstrap.json"
     journal = BootstrapJournal(path, BootstrapPlan("f" * 40, lockfile), now=lambda: START)
     record = journal.load_or_create()
-    # Exactly what a v1 pod wrote after finishing everything through the chair
-    # cache: the step order that existed before the model store was inserted.
-    record["schema"] = "pod-bootstrap.v1"
-    record["completed"] = ["repository", "uv-environment", "transfer", "chair-cache"]
+    # Exactly what a v2 pod wrote after passing repository checkout and uv sync,
+    # without the new checked-out configuration validation between them.
+    record["schema"] = "pod-bootstrap.v2"
+    record["completed"] = ["repository", "uv-environment"]
     path.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(BootstrapStepFailure) as failure:
@@ -4929,6 +5082,7 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     other.write_text("locked = false\n", encoding="utf-8")
 
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -4963,6 +5117,7 @@ def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> N
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -4996,6 +5151,7 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
 
     monkeypatch.setattr("operations.pod.bootstrap.subprocess.run", run)
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -5027,6 +5183,7 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=tmp_path,
         transfer=lambda: {},
         materialize_model_store=lambda: {
@@ -5045,6 +5202,7 @@ def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path
     repository = tmp_path / "repository"
     repository.mkdir()
     actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
         repository=repository,
         transfer=lambda: {},
         materialize_model_store=lambda: {},
@@ -5386,15 +5544,38 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
         assert any(issue.code == "disk-missing" for issue in report.issues)
 
 
-def test_pod_runtime_checked_in_spend_policy_refuses_paid_actions() -> None:
+def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
+    """Since 2026-09-06 the committed policy is configured with Tyrel's values
+    (standing ledger §8-§9). This pins them: a drift in the file is a drift in
+    what every paid gate enforces, and the floor stays marked unverified until
+    it has been checked against the provider's balance."""
+    from decimal import Decimal
+
     from .spend import load_spend_policy
 
     root = Path(__file__).resolve().parents[2]
-    configured = load_spend_policy(root / "config/spend.toml")
-    assert not configured.configured
-    template = (root / "config/spend.toml").read_text(encoding="utf-8")
-    assert 'account_balance_floor_usd = "50.00"' in template
-    assert "unverified" in template
+    policy = load_spend_policy(root / "config/spend.toml")
+    assert policy.configured
+    assert policy.max_hourly_usd == Decimal("0.40")
+    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
+    assert policy.account_balance_floor_usd == Decimal("50.00")
+    assert policy.account_balance_alert_usd == Decimal("75.00")
+    assert policy.hard_lifetime_seconds == 14400
+    assert policy.laptop_heartbeat_timeout_seconds == 900
+    assert policy.shutdown_poll_interval_seconds == 30
+    assert policy.shutdown_deadline_seconds == 900
+    assert policy.billing_cutoff_margin_seconds == 3600
+    text = (root / "config/spend.toml").read_text(encoding="utf-8")
+    # The active note above the floor, not the template comment that also says
+    # "unverified": the check must fail when the live setting loses its caveat.
+    # The template comment above also spells `state = "configured"`; the active
+    # line is the one at column zero.
+    active = text[text.index('\nstate = "configured"') :]
+    floor_note, _, floor_line = active.partition("account_balance_floor_usd =")
+    assert floor_line.startswith(' "50.00"')
+    assert "Documented, unverified default" in floor_note
+    assert "checks it against the RunPod balance" in floor_note
+    assert "not permission to launch" in text
 
 
 def test_spend_configuration_documentation_matches_the_observed_balance_contract() -> None:
@@ -6283,6 +6464,8 @@ def _drive_cli(
             "unused:factory",
             "--spend",
             str(spend_path),
+            "--placement",
+            str(fixture_placement(tmp_path)),
             "--leases",
             str(tmp_path / "leases"),
             "--provider-name",
@@ -6968,7 +7151,116 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
     assert provider.create_requests == []
 
 
+def test_cli_record_fixture_refuses_a_recorder_that_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other way the flag fails, on a provider that *can* record.
+
+    `FixtureRecorder` creates the parent directory, opens the file and narrows
+    its mode, so it raises `OSError` -- here because a regular file sits where
+    the fixture's parent directory belongs. Only `ValueError` was caught, so
+    this raised out of `cli.main` before the preview: a traceback where this
+    command promises a named refusal. `create` refuses, because nothing is paid
+    yet and an operator who asked for evidence should get evidence or a reason.
+    """
+
+    clock = Clock()
+    provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("a file where the fixture's parent directory should be", encoding="utf-8")
+
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["--record-fixture", str(blocked / "fixture.jsonl"), "create", "--request"],
+    )
+
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert "could not be attached" in printed["detail"]
+    assert str(blocked / "fixture.jsonl") in printed["detail"]
+    assert provider.create_requests == []
+
+
 # --- --notify wires launch and close through operations/pod/notify_hooks ----
+
+
+def _stub_balance_notifications(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Close the third notification moment for tests that only care about the first two.
+
+    ``--notify`` wires *three* hooks, not one: launch, close, and -- through
+    ``set_balance_notify`` -- every account-balance observation the launch
+    makes. A green create against ``FakeProvider`` observes the balance three
+    times, so a test that stubs only ``notify_launch`` still reaches
+    ``notify_hooks.notify_balance``, whose ``default_runner`` is the real
+    ``subprocess.run`` on the real ``operations/notify/notify.sh``.
+
+    That is not hypothetical. Three tests here did exactly that, and the first
+    gate to run in a checkout holding ``private/ntfy.conf`` posted nine
+    identical ``pod balance: account, $100.00 available`` milestones to his
+    phone. In every worktree before it the script had failed "no topic
+    configured", so the missing stub read as a passing test.
+
+    Named once, here, so a fourth test driving ``--notify`` has something to
+    call rather than a pattern to notice.
+
+    **The signature is the real one, not ``**kwargs``.** ``notify_balance``
+    requires ``balance_usd`` and ``spend_rate_usd_per_hr``; a stub that accepts
+    anything accepts a call site that has stopped passing one of them, and the
+    tests below would still pass while the real hook would raise. ``runner`` is
+    deliberately absent: a stub cannot honour a runner, so a call site that
+    starts passing one must fail here loudly rather than have it silently
+    dropped.
+
+    **And it returns the suppressed outcome, not a delivered one.** Nothing was
+    delivered -- no phone, no script, no ``curl`` -- so reporting ``delivered``
+    would make ``cli.py`` record "Phone notification: sent." for a notification
+    that never existed, which is the same lie the sink in ``notify.sh`` was
+    built to stop. The three callers need only that the hook ran and that the
+    launch was unaffected; none asserts a delivered balance line.
+    """
+
+    calls: list[dict[str, object]] = []
+
+    def fake_notify_balance(
+        *,
+        balance_usd: object,
+        spend_rate_usd_per_hr: object,
+        lease_id: str | None = None,
+    ) -> cli.notify_hooks.NotifyOutcome:
+        calls.append(
+            {
+                "balance_usd": balance_usd,
+                "spend_rate_usd_per_hr": spend_rate_usd_per_hr,
+                "lease_id": lease_id,
+            }
+        )
+        return cli.notify_hooks.NotifyOutcome(
+            True, False, "NOTIFY_SUPPRESSED test-stub", suppressed=True
+        )
+
+    monkeypatch.setattr(cli.notify_hooks, "notify_balance", fake_notify_balance)
+    return calls
+
+
+def _assert_balance_hook_was_stubbed(calls: list[dict[str, object]]) -> None:
+    """The stub ran, and it recorded what ``notify_balance`` actually requires.
+
+    Asserted, not merely arranged, for two reasons. Emptiness would mean the
+    balance hook is live again -- the exact state that put nine milestones on
+    his phone -- and a stub whose recorded call is never read cannot show that
+    the values reaching the hook are the observation's own. ``FakeProvider``
+    reports ``$100.00`` and no spend rate, so those are the two values a green
+    create must carry into every balance notification.
+    """
+
+    assert calls, "the balance hook is wired by --notify and must be stubbed, not live"
+    for call in calls:
+        assert call["balance_usd"] == Decimal("100.00")
+        assert call["spend_rate_usd_per_hr"] is None
 
 
 def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
@@ -6976,13 +7268,16 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
 ) -> None:
     """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
 
-    A fake stands in for ``notify_hooks.notify_launch`` so this never spawns
-    ``operations/notify/notify.sh`` for real.
+    Fakes stand in for ``notify_hooks.notify_launch`` *and* for the balance
+    hook ``--notify`` also wires, so this never spawns
+    ``operations/notify/notify.sh`` for real. The docstring claimed that
+    before the balance stub existed, and the claim was false.
     """
 
     clock = Clock()
     provider = fake(clock)
     calls: list[dict[str, object]] = []
+    balance_calls = _stub_balance_notifications(monkeypatch)
 
     def fake_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         calls.append(kwargs)
@@ -6992,6 +7287,8 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
 
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
+    _assert_balance_hook_was_stubbed(balance_calls)
+
     assert exit_code == 0
     assert len(calls) == 1
     assert calls[0]["card"] == "fake-48gb"
@@ -6999,6 +7296,16 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     assert isinstance(calls[0]["lease_id"], str) and calls[0]["lease_id"] != "unknown-lease"
     record = _last_json_object(capsys.readouterr().out)
     assert record["launch_notification"] == "Phone notification: sent."
+
+    # The balance half of the record must not claim a delivery the stub never
+    # made. `_BalanceWiring` writes one `NotifyOutcome.line()` per observation
+    # into the launch record an operator reads, so a stub answering "delivered"
+    # would put "Phone notification: sent." there for three notifications that
+    # never left the machine -- the same lie the sink in `notify.sh` exists to
+    # stop, reproduced inside the test suite.
+    balance = record["balance_notification"]
+    assert len(balance["sent"]) == len(balance_calls)
+    assert set(balance["sent"]) == {"Phone notification: suppressed (test sink)."}
 
 
 def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
@@ -7013,6 +7320,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
 
     clock = Clock()
     provider = fake(clock)
+    balance_calls = _stub_balance_notifications(monkeypatch)
 
     def raising_notify_launch(**kwargs: object) -> cli.notify_hooks.NotifyOutcome:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
@@ -7022,6 +7330,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
     assert exit_code == 0
+    _assert_balance_hook_was_stubbed(balance_calls)
     record = _last_json_object(capsys.readouterr().out)
     assert record["pod_id"]
     assert record["lease_path"]
@@ -7220,6 +7529,7 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
 ) -> None:
     clock = Clock()
     provider = fake(clock)
+    balance_calls = _stub_balance_notifications(monkeypatch)
     monkeypatch.setattr(
         cli.notify_hooks,
         "notify_launch",
@@ -7229,5 +7539,147 @@ def test_a_failed_notification_never_changes_the_cli_exit_code(
     exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock, notify=True)
 
     assert exit_code == 0
+    _assert_balance_hook_was_stubbed(balance_calls)
     record = _last_json_object(capsys.readouterr().out)
     assert "NOT DELIVERED" in record["launch_notification"]
+
+
+# -- the shutdown controller's own budget over each provider verb --
+
+
+class BlockingProvider:
+    """A provider seam whose verbs never return, as a hung HTTP client would."""
+
+    def __init__(self, delegate: FakeProvider, blocked: set[str], release: threading.Event) -> None:
+        self.delegate = delegate
+        self.blocked = blocked
+        self.release = release
+        self.calls: list[str] = []
+
+    def _verb(self, name: str, *arguments: object) -> object:
+        self.calls.append(name)
+        if name in self.blocked:
+            self.release.wait(30.0)
+        return getattr(self.delegate, name)(*arguments)
+
+    def estimate(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("estimate", *arguments)
+
+    def create(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("create", *arguments)
+
+    def adopt(self, *arguments: object) -> object:  # pragma: no cover - wiring only
+        return self._verb("adopt", *arguments)
+
+    def status(self, *arguments: object) -> object:
+        return self._verb("status", *arguments)
+
+    def terminate(self, *arguments: object) -> object:
+        return self._verb("terminate", *arguments)
+
+    def verify_absent(self, *arguments: object) -> object:
+        return self._verb("verify_absent", *arguments)
+
+    def capture_cost(self, *arguments: object) -> object:
+        return self._verb("capture_cost", *arguments)
+
+
+def test_a_close_whose_provider_hangs_returns_a_named_failure_inside_its_budget() -> None:
+    """The controller's deadline must bind the verbs, not only the gaps between them.
+
+    `close` used to reach its deadline check only after a terminate and two
+    absence observations had all returned, so one blocked provider call
+    postponed the retry, the failed-close report and every other piece of
+    cleanup indefinitely — while the pod carried on billing. Real clocks here
+    deliberately: a fake one cannot observe a bound whose whole subject is
+    elapsed time.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    release = threading.Event()
+    blocking = BlockingProvider(provider, {"terminate"}, release)
+    closer = VerifiedShutdown(
+        blocking,  # type: ignore[arg-type]
+        timeout_seconds=0.5,
+        poll_seconds=0.1,
+        billing_cutoff_margin_seconds=3600,
+    )
+
+    started = time.monotonic()
+    try:
+        report = closer.close(record, reason="hung provider drill")
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert report.state is CloseState.FAILED_SHUTDOWN
+    assert report.terminate_attempts == 1
+    assert "did not complete within" in report.last_detail
+    assert "provider terminate" in report.last_detail
+    assert report.cost_capture is None
+    assert report.manual_action is not None
+    # The declared budget, plus the grace a cancelled worker is given to unwind.
+    # The declared budget plus the one cancel grace the no-op seam spends in
+    # full, plus scheduling slack: bounded to the second, as the docstring says.
+    bound = 0.5 + CANCEL_GRACE_SECONDS + 1.0
+    assert elapsed < bound, (
+        f"the close ran {elapsed:.2f}s against a 0.5s budget (+{bound - 0.5:g}s)"
+    )
+
+
+def test_a_hung_verb_abandons_one_worker_and_then_ends_the_close() -> None:
+    """A bound that abandons workers must not trade one hang for a slow leak.
+
+    A provider seam exposes no socket, so an overrunning verb here really is
+    abandoned rather than cancelled. What keeps that from accumulating is the
+    budget: each verb is given *the whole remainder* of the shutdown deadline,
+    so a verb that overruns has by definition exhausted it, and the check at the
+    top of the loop ends the close rather than starting another round. At most
+    one worker is left behind per close, and this pins that rather than the
+    per-interval property the loop cannot exhibit.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    release = threading.Event()
+    blocking = BlockingProvider(provider, {"status"}, release)
+    closer = VerifiedShutdown(
+        blocking,  # type: ignore[arg-type]
+        timeout_seconds=0.6,
+        poll_seconds=0.05,
+        billing_cutoff_margin_seconds=3600,
+    )
+
+    def status_workers() -> set[threading.Thread]:
+        # Only this close's own `status` workers, by their exact name, as thread
+        # objects rather than names: two abandoned workers share one name, and a
+        # set of names would count them as one. A preceding test's terminate
+        # worker may still be unwinding, and a process-wide count would let its
+        # exit cancel out the worker this close abandons.
+        return {
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "http-deadline-provider status"
+        }
+
+    before = status_workers()
+    try:
+        report = closer.close(record, reason="hung observation drill")
+        # Read *before* `release` is set: every abandoned worker is still
+        # blocked here, so this counts what the loop left behind rather than
+        # what has already unwound. Reading it afterwards would pass whatever
+        # the loop did, which is no assertion at all.
+        still_running = len(status_workers() - before)
+    finally:
+        release.set()
+        time.sleep(0.2)
+
+    assert report.state is CloseState.FAILED_SHUTDOWN
+    # Exactly the one blocked `status`, still waiting on `release`. A loop that
+    # kept polling after an overrun would leave several.
+    assert still_running == 1, f"{still_running} abandoned workers after one close"
+    assert blocking.calls.count("status") == 1, blocking.calls
+    assert "did not complete within" in report.last_detail

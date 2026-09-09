@@ -9,7 +9,9 @@ unverified file can be counted as sent.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import SplitResult, urlsplit
 
 import pytest
 
@@ -75,6 +77,54 @@ def _client_error(code: str, status: int) -> _ResponseError:
 
 def _spec() -> VolumeSpec:
     return VolumeSpec(datacenter_id="EU-CZ-1", volume_id="fixture-volume-id")
+
+
+# Case-insensitive on the scheme and generic over schemes: `HTTPS://evil.example/`
+# or `ftp://` is still a URL an endpoint-confinement assertion must see.
+_URL_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+
+
+def _urls_in(lines: list[str]) -> list[SplitResult]:
+    """Every URL-shaped token across `lines`, parsed rather than matched as text.
+
+    A substring check (`"runpod.io" in line`) also accepts a look-alike host
+    such as `s3api-eu-cz-1.runpod.io.attacker.example/` or a copy embedded in
+    an unrelated path segment. Parsing each token and comparing the exact
+    scheme/hostname/port/path is what an endpoint-confinement assertion
+    actually needs.
+    """
+
+    urls = []
+    for line in lines:
+        for token in _URL_TOKEN.findall(line):
+            urls.append(urlsplit(token.rstrip(").,")))
+    return urls
+
+
+def _shape(url: SplitResult) -> tuple[str, str | None, int | None, str]:
+    """scheme/hostname/port/path with the scheme and host normalised.
+
+    `urlsplit` keeps a trailing DNS dot and the scheme's case; both spell the
+    same endpoint, so both sides of a comparison go through here.
+    """
+
+    # One trailing dot is the DNS root spelling of the same host; two is a
+    # different, malformed name and must not normalise into the expected one.
+    host = url.hostname.removesuffix(".").lower() if url.hostname else url.hostname
+    return (url.scheme.lower(), host, url.port, url.path)
+
+
+def test_urls_in_sees_every_scheme_spelling_and_normalises_the_host() -> None:
+    """Mutation guard for the helper itself (CodeRabbit on PR #103): an
+    upper-case scheme or a trailing DNS dot must not slip past the assertions
+    that rely on it."""
+
+    found = _urls_in(["ok https://a.example/x and HTTPS://evil.example/ and ftp://f.example/"])
+    assert [u.hostname for u in found] == ["a.example", "evil.example", "f.example"]
+    dotted = _urls_in(["https://s3api-eu-cz-1.runpod.io./bucket"])[0]
+    assert _shape(dotted) == ("https", "s3api-eu-cz-1.runpod.io", None, "/bucket")
+    two_dots = _urls_in(["https://s3api-eu-cz-1.runpod.io../bucket"])[0]
+    assert _shape(two_dots) != ("https", "s3api-eu-cz-1.runpod.io", None, "/bucket")
 
 
 def test_the_endpoint_lowercases_the_datacenter_and_the_region_does_not() -> None:
@@ -344,7 +394,14 @@ def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
 
     assert refusal.value.code is ErrorCode.UPLOAD_VOLUME_UNAVAILABLE
 
-    assert any("https://s3api-eu-cz-1.runpod.io/" in line for line in messages)
+    expected = urlsplit(_spec().endpoint_url)
+    expected_shape = _shape(expected)
+    urls = _urls_in(messages)
+    assert urls, "expected at least one URL in the operator's messages"
+    assert any(_shape(u) == expected_shape for u in urls)
+    # Every URL surfaced must be the one named volume, not just one of them --
+    # a second, unnamed destination would be exactly the leak this guards against.
+    assert all(_shape(u) == expected_shape for u in urls)
     assert any("Nothing outside that sealed record is read or sent." in line for line in messages)
     assert any("zero GPU-hours" in line for line in messages)
 
@@ -386,7 +443,10 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
     surface.upload(source, sealed_manifest=manifest)
 
     assert any("fixture volume" in line for line in messages)
-    assert not any("runpod.io" in line for line in messages)
+    # A fixture-only rehearsal names no real destination at all, so no URL of
+    # any host should appear here -- a runpod.io-only blacklist would still
+    # pass if some other, unnamed remote endpoint leaked into the messages.
+    assert _urls_in(messages) == []
 
 
 # -- the read channel -------------------------------------------------------

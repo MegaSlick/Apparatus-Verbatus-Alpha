@@ -12,6 +12,10 @@ directory anywhere in this tree. Spec 06's contracts section names those as
 concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
 this handoff expresses each as an artifact *kind* below rather than a path.
 
+## Neutral dark-distribution evidence
+
+The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the primary scan and conservation denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
+
 ## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
@@ -550,10 +554,10 @@ inferred at all — no scan ran there, so there is no margin it ran at.
 either. It is the derivation's own other input, so a reader holding
 `background`, `dark_mode` and the sealed `ink_margin_bp` recomputes the margin
 exactly and can say what every ink count on this page was taken at. The
-`surround` block on the `conservation` record carries `dark_mode` as well, but
-only for pages that reach the surround branch — 65 of the 114 inferred pages of
-the 127-page calibration, the other 49 taking the plain modal branch and
-publishing no surround block at all. On those 49 the margin was published with
+`dark_distribution` block on the `conservation` record carries `dark_mode` as
+well, but only for pages that reach the interior-mode branch — 65 of the 114
+inferred pages of the 127-page calibration, the other 49 taking the plain modal
+branch and publishing no dark-distribution block at all. On those 49 the margin was published with
 its derivation dropped. The derivation runs on both branches, so its input is
 recorded on both.
 
@@ -576,15 +580,15 @@ trail for *how* this page was read, and they are published here because this is
 the one per-page record that already exists. `background_source` says where the
 ink threshold came from — `inferred-modal` when the page's own modal pixel was
 taken as its paper, `inferred-interior-mode` when the modal pixel was a
-photographic surround and the paper was taken from the page's own lighter
+a measured dark population and the paper was taken from the page's own lighter
 population instead — so a page whose threshold did not come from its own mode is
 visibly different on disk rather than identical to an ordinary scan. A page on
-the second branch also carries a `surround` block on its conservation record:
-the band the test ran on, the level it called dark, how many pixels that was,
-and the border and interior fractions it measured. That block is present only on
-such a page, so no existing record's bytes move for it. It carries two dark
-counts, which bracket the bezel from below and above rather than either one being
-it — see "The surround is measured, never removed" below.
+the second branch also carries a `dark_distribution` block on its conservation
+record: the band sampled, the level called dark, its count, and the border and
+interior fractions measured. The block is present only on such a page, so no
+existing record's bytes move for it. It records a dark population; it does not
+establish a bezel, page boundary, or paper region — see "The dark distribution is
+measured, never removed" below.
 `structure_evidence` says whether the crops on this page came from detection or
 from the predetermined grid. Both were computed in an in-process dict that
 nothing published, which meant neither fact survived the run. Both are `null` on
@@ -643,39 +647,121 @@ replaces the fixture's declared acts is one call per sealed page through
 (`main(serving_factory=...)`) exactly as the Attestatores and the Perlector
 inject theirs.
 
-**What is sent.** One `chat-completions` request per sealed page, the whole
-page, the exact sealed PNG bytes as one `data:image/png;base64` block, with
+**What is sent.** One `chat-completions` request per sealed page, as a single
+`user` turn with no system turn -- Chandra's own inference code sends exactly
+that, and this chair's occupant is Chandra -- carrying the exact sealed PNG
+bytes as one `data:image/png;base64` block **before** the instruction text,
+which is the order that model was fine-tuned in, with
 `image_sha256s=(source_sha256,)` so the client's digest check binds the request
-to the Exemplar. The prompt is code, sealed by digest
-(`structure_prompt.py`, `verbatus-structure-prompt.v1`); it asks for every act as
-one rectangle in normalized 0–1000 coordinates of the image as shown, its
-transcription as written, an optional label, in reading order, and states no
-preference, severity floor or confidence budget. No `max_tokens` and no
+to the Exemplar. **The instruction is Chandra's own**
+(`structure_prompt.py`, `verbatus-structure-prompt.v3`): the vendor's
+`OCR_LAYOUT_PROMPT` bytes, carried in `common/chandra_layout.py` under their
+Apache-2.0 citation and sealed there against the sha256 recorded for
+`github.com/datalab-to/chandra @ d4f7467435…`, on tonight's ruling (Tyrel,
+2026-09-06) that each witness is asked in its developers' own bytes. Both
+Chandra chairs — this one and `attestator_1` — send the same constant, so one
+model in two roles is asked one way. It asks for HTML layout blocks, each a
+`<div>` with a `data-bbox` in normalized 0–1000 coordinates of the image as
+shown and a `data-label` from the nineteen it lists, and it states no
+preference, severity floor or confidence budget. What that costs is the freedom
+to tune it: trimming a byte would stop it being the vendor's prompt, and that
+trade is recorded rather than discovered later. No `max_tokens` and no
 generation knobs of the stage's own: the engine bounds generation by
 `max_model_len`, and a `"length"` stop then honestly means the answer did not
 fit.
 
-**What comes back** is parsed with `common/structure_answer.py`'s closed
-contract — one accepted wire shape, every other key a named refusal, floats
-quantized under a declared rule, coordinates converted to page pixels once by
-this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
+**v2 was this repository's own instruction** and asked for the closed JSON
+object `common/structure_answer.py` accepted. Nothing about its wording was
+wrong; the premise was — a chair asked outside its own grammar reports what it
+can improvise. Its JSON acceptance (`STRUCTURE_ANSWER_SCHEMA`,
+`decode_json_body`, `validate_box_1000`, `parse`) has no live caller left after
+this unit; the module's shared geometry and page-text rules (`to_page_bounds`,
+`join_delivered_texts`, `text_digest`) are untouched and still the only
+conversion either Chandra reading uses, which is why the record's
+`quantization` and `page_text_rule` keep their `structure-answer.v1` names for
+arithmetic that did not move.
+
+**What comes back** is read by `common/chandra_layout.py::parse_layout_html`,
+the one reader of that grammar in this tree and the same one the page witness
+uses — so two readings of one page cannot disagree about what a `data-bbox`
+means. Each top-level block whose geometry resolves becomes one **structure
+proposal**: its rectangle through `to_page_bounds` against the sealed page, its
+vendor label, its text as a digest and a length. A block whose `data-bbox` is
+malformed or absent, and a block labelled `Blank-Page`, propose nothing and are
+**recorded** in `blocks_without_proposal` with the reason — never minted, and
+never given the `[0, 0, 1, 1]` the vendor's own parser substitutes while
+printing "defaulting to full image" to a stdout nobody retains. Character data
+the answer wrote outside every block is counted and carried as a
+`content-outside-blocks` finding: it is in no proposal and in no span, and a
+page that parsed clean without it would be a missed act under a successful
+status. Nothing is repaired, reordered, or re-asked.
 
 **What each answer does to the page** (`structure_pass.ask_page`):
 
 | Answer | Page | Acts |
 |---|---|---|
-| parsed, complete stop (or unreported), ≥1 act | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
-| parsed, complete stop, zero acts | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
+| parsed, complete stop (or unreported), ≥1 proposal | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
+| parsed, complete stop, no proposal at all | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
 | `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | none; ink → residual holds |
 | parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
 | the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
 | custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
+| the request does not fit the sealed serving row | `held`, `structure-request-too-large` | as above; checked *before* the request is built, and nothing is sent |
 | parsed, the scan found ink, and no rectangle touches any ink pixel | `held`, `structure-answer-no-ink-overlap` | as above |
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
 
+The capacity row is the only one decided before a request exists. U15 retired
+the per-tier pixel ladder for this chair: a whole 300-dpi page costs 6,045
+image tokens at every tier now, not a value that grows with the tier's own
+`max_pixels` (`common/request_capacity.py`); with the measured 593-token
+prompt and a measured dense-page answer budget of 1,645 that is 8,283 against
+the 18,000 every shipped `designator_structure` row states
+(`config/serving_recipes_real.toml`), so **every shipped row holds a dense
+page**, by the same 9,717-token margin at every tier — no longer a narrowest
+tier to name, since the geometry no longer varies by tier — and
+`operations/serving/test_serving_catalogue_capacity.py` asserts it row by row
+rather than leaving it to this paragraph. **Both the prompt and the answer
+numbers moved with v3 and both were re-measured** by the harness of
+`TOKEN_COST_REPORT_2026-09-05.md` §3 and §8, at the same pinned tokenizer, in
+the message shape `page_request` builds: 325 → 593 for the prompt, because the
+carried instruction is 2,161 characters against v2's 1,192 and carries the
+vendor's 36 tags, 14 attributes and 19 labels; 1,575 → 1,645 for the dense-page
+answer, which is **not** the cost of the layout grammar's tags — the same six
+blocks written literally measure 1,506, sixty-nine tokens *fewer* than the JSON
+they replace. The 1,645 is measured over a fixture whose prose is
+entity-escaped, where the act's thirty-two apostrophes cost `&#x27;` at five
+tokens each rather than `'` at one, and it is sealed that way on purpose:
+`parse_layout_html` resolves character references, so an escaped body is a
+valid answer under this grammar and the reserve covers the dearer of the two
+spellings it admits (`common/request_capacity.py` records both). The same runs
+reproduce the superseded 325 and 1,575 exactly, which is what says the pairs
+are comparable rather than merely both present. The dearer prompt is not a
+regression to be tuned away — trimming the carried bytes is what would stop
+them being the vendor's — and it is weighed where it belongs, in
+`page_capacity`, on every page, before anything is sent. A request that does
+not fit its row is one vLLM answers with HTTP 400 and no reading at all, so
+`ask_page` computes the arithmetic first and holds the page rather than paying
+a card to be refused. The page is never downscaled to make it fit: 300 dpi is
+what `config/pdf_render.toml` argues is needed to read the ink, and trading a
+measurable refusal for an unmeasurable misreading is not this pass's decision.
+Every live page record carries its `capacity` block, held or not, and the same
+record travels on the request onto the retained `chair-call-record.v1`.
+
 A cut-off answer is held even though it parsed: a truncated act list is a
-missed act (GOALS 1). The custody row is held before the body is looked at and
+missed act (GOALS 1). Under the layout grammar that row states itself: an
+unclosed block is closed and its bytes kept, with an `unclosed-block` finding,
+so a truncated body *does* read and is held on the engine's stop word alone —
+where the retired JSON contract could not tell the two facts apart, because a
+cut object was also invalid JSON.
+
+**A page whose blocks all failed to place is tiled, not held.** What
+`fallback-tiles` claims is "no rectangle was proposed", which is true both of a
+`Blank-Page` answer and of one whose every `data-bbox` was unreadable; the
+record tells them apart (`block_count`, `blocks_without_proposal`, the
+findings) rather than the disposition. Tiling keeps the page covered by
+predetermined crops, which is what GOALS 1 asks for; holding it would cost
+every act on it until a reviewer looked. The custody row is held before the body is looked at and
 is *one page's* outcome, not the run's: the client retained the bytes and the
 call record before custody was reached, so what a refusal costs is the binding
 that proves which call they came from — and a rectangle minted without it would
@@ -705,25 +791,51 @@ below.
 **`kind="structure-answer"`**, one per sealed page, subject the page identity,
 validated against its own closed field set before publication and then swept
 for content fields (`_validate_structure_answer_payload`, which closes the
-payload, each act entry, the decoding block and each finding, and calls
-`_refuse_text_fields` last). Both of the chair's free strings are reduced the
-same way: `text_digest`/`text_length` and
+payload, each act entry, each unproposed block, the vendor block, the decoding
+block and each finding, and calls `_refuse_text_fields` last). Both of the
+chair's free strings are reduced the same way: `text_digest`/`text_length` and
 `label_digest`/`label_length` are what let a later reader prove it derived the
 same strings from the same retained bytes, and a `label` — the chair's word for
 a rectangle, which in these books can be a whole act — is published no more
-than a transcription is:
+than a transcription is.
+
+Three fields the vendor grammar added sit inside that rule rather than beside
+it. `label_vocabulary` is **not** the chair's string: it names which of the
+twenty words the grammar admits — the prompt's nineteen labels plus the `block`
+the vendor's parser defaults an undeclared one to — the answer used, and `null`
+where it used something outside them, which is itself the signal that the model
+answered outside the list it was given. A closed range is a membership answer,
+not a reading. `nested_bbox_count` is how many `data-bbox` attributes a block
+carried below its own top level: the vendor deletes those, `chandra_layout`
+keeps them as evidence and derives no geometry from them, and a count is the
+part of that evidence a text-free record can carry. And `malformed-bbox`'s
+`data_bbox_digest` replaces the quoted attribute the grammar hands up: a
+`data-bbox` is a string the chair wrote, freely, and the finding exists
+precisely because it was not four integers — so it is published as a digest
+(null exactly where the attribute was absent, which is how "drew no box" is
+told from "drew one nobody could read") with `data_bbox_truncated` saying
+whether that digest covers the whole value:
 
 ```text
 schema = "designator-structure-answer.v1"
 page_id, page_ordinal, page_w, page_h
-prompt_version, prompt_sha256, answer_schema = "verbatus-structure-answer.v1"
+prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
+text_view = "chandra-layout-text.v1"
+vendor = {repository, commit, licence, prompt_source, parser_source,
+          prompt_sha256}
 call_record_ref, raw_response_ref | null, custody_ref | null,
 custody_problem | null, receipt_ref, request_sha256
 finish_reason (verbatim | null), served_model_id, call_problem | null
 parse_state ("parsed" | "refused"), parse_outcome | null
 disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
-act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
-                    label_digest | null, label_length | null}]
+block_count, act_count
+acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
+         label_vocabulary | null, label_declared, label_digest | null,
+         label_length | null, nested_bbox_count}]
+blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null,
+                            label_declared, label_digest | null,
+                            label_length | null, text_digest, text_length,
+                            nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}
@@ -790,26 +902,78 @@ every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
-zero-act and cut-off answers, and 7 of the 11 named parse refusals
+blank-page and cut-off answers, and 2 of the grammar's 6 named refusals
 (`_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`), are exercised there
-over the real chain as well as in this stage's own suite; the remaining four
-refusal codes are exercised only at the parser level
-(`common/test_structure_answer.py`). The export it reaches
-is *held*, for the reason the live seam suite measures over declared acts:
-Churro publishes no native layout, so two witnesses of a floor of three count
-(`pipeline/3_attestatores/HANDOFF.md`). That is a witness-coverage fact, not a
-fact about this stage — every act the chair proposed was read.
+over the real chain as well as in this stage's own suite. The other four are
+properties of the wire bytes rather than of a body a `ScriptedAnswer` can
+carry — `raw-response-not-bytes`, `response-too-large` and `invalid-utf8`
+describe bytes a `str` cannot hold, and `too-many-layout-blocks` needs ten
+thousand divs to prove a ceiling — and all four are measured over the bytes, in
+`common/test_chandra_layout.py`. That is a smaller set than the seven the JSON
+contract could script, and it is a narrowing of what an answer can be wrong
+*about* rather than a loss of coverage: five of those seven named ways a JSON
+envelope could be malformed, and there is no envelope now. This stage's own
+suite covers what the grammar added in its place — a malformed `data-bbox`, an
+absent one, a `Blank-Page`, ink written outside every block, and a page whose
+every block failed to place. The export it reaches
+is *held*, and the reason is not this stage: the Churro chair is scripted there
+in the retired `<output>` envelope, which carries no geometry, so it never
+attaches to an act and two witnesses of a floor of three count. Since U10 that
+is a property of the chair rather than only of the scripted body -- its
+`HistoricalDocument` grammar has no coordinate vocabulary anywhere, so it
+reports no geometry in any framing it can be asked in, and
+`pipeline/test_live_reading_seam_e2e.py` reaches the same held export over
+declared acts (`pipeline/3_attestatores/HANDOFF.md`); U12 closes it at the
+Perlector, on the `anchor-line` basis. The envelope is kept in this suite on
+purpose: pinning the witness floor to a shape this suite does not vary keeps
+"which acts exist" and "how many witnesses reach them" apart. Either way it is a
+witness-coverage fact, not a fact about this stage -- every act the chair
+proposed was read.
 
 **Named risks.** The real `designator_structure` rows' `max_model_len` is a
 planning value, and a whole-page transcription plus geometry may not fit it;
 `structure-answer-cut-off` on every page of the first real run is the
-measurement that says so. The engine resizes the page internally, so the exact
+measurement that says so. **v3 made that risk larger, measurably**: the request
+costs 268 more prompt tokens, and that is 268 fewer left for the reading on
+every row, since what the engine leaves generation is `max_model_len` less the
+image and the prompt (`sendable_max_tokens`). The 70 extra reserved for the
+answer does not come off the reading as well — the reserve is an admission
+term at the capacity check, not a bound sent on the wire, and this chair still
+sends none. U15 (Tyrel's ruling, hard rule 1; merged into this branch) moved
+the shipped rows off the per-tier pixel ladder this paragraph used to describe:
+`max_model_len` now states 18,000 at every tier, and a whole A4 page now costs
+the same 6,045 + 593 + 1,645 = 8,283 at every tier rather than a figure that
+grows with the tier's own pixel cap, so no shipped row refuses the request
+(the arithmetic is `page_capacity`'s, per page, before anything is sent). What
+18,000 does not promise is that a real page's transcription fits the 1,645
+reserved for it: that reserve is a measurement over one 800-word, six-block
+page, and a denser page is where `structure-answer-cut-off` would appear.
+
+**`generation_declared` on this chair's request is still `{}`, and no longer
+because there is nothing to declare.** Chandra's `chandra/settings.py` sets
+`MAX_OUTPUT_TOKENS = 12384`, which `sendable_max_tokens` already weighs. What
+is unsettled is the record shape that bound is retained under, and that shape
+is one shape for both Chandra chairs — the other is set in
+`pipeline/3_attestatores/live_witness.py`'s Chandra branch. Filling it in from
+this side alone would give one model two vendor views, so it is left to the
+unit that sets both. The engine resizes the page internally, so the exact
 image the model saw is not the sealed page (ARCHITECTURE invariant 3): the
 request binds the sealed bytes, the receipt records `pixel_cap`, and normalized
 coordinates keep geometry resolution-independent — a residual gap, named, not
 closed. Bounded recovery from a structural hold stays unbuilt (below).
 `excluded` stays unproduced: it exists only with a Tyrel approval reference,
 and no Designator path resolves one.
+
+**What is still on the retired module, and whose it is.** After this unit the
+Designator calls `common/structure_answer.py` for `to_page_bounds`,
+`join_delivered_texts` and `text_digest` only — the shared rules, which are
+unchanged. Its JSON *acceptance* (`STRUCTURE_ANSWER_SCHEMA`, `parse`) has no
+live caller anywhere. `decode_json_body` and `validate_box_1000` still have two,
+`pipeline/3_attestatores/chandra_response.py` and `common/churro_response.py`,
+which are the two page-witness JSON readers the Chandra and Churro adapter units
+delete; the acceptance itself is removed once they are gone. Nothing here waits
+on that: this stage does not import it, and no answer this stage reads goes
+through it.
 
 **The fixture path is unchanged and re-pinned once.** Under the committed
 catalogue `initial_pass` runs as before: no answer record, no `engine_call`, no
@@ -1299,14 +1463,14 @@ into blind fallback slabs and reconciled none of their ink
 (`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). The premise "the modal
 pixel is paper" is sound for a flatbed scan and false for a photograph.
 
-`structure._dark_surround` asks the one question a histogram cannot answer:
-whether the dark majority is a *frame* around a lighter interior, or the page
-itself. It is a geometric test because the distinction is geometric — an
-inverted scan and a photographed page are both "most of the page is dark", and
-what separates them is where the dark is. Where the interior is not itself dark,
-the paper value is the modal pixel at or above the page's own mean; that value
-still faces the `PRIMARY_MARGIN` guard, and every shape above still refuses by
-name. The thresholds are sealed in `config/designator_grouping.toml`'s
+`structure._dark_distribution` measures the dark fraction in a fixed interior
+sample. It admits the historical photographed examples and continues to refuse
+the measured inverted and dark-core controls, but it does not classify arbitrary
+spatial arrangements as a frame, bezel, or page boundary. Where the interior is
+within the sealed bound, the paper value is the modal pixel at or above the
+page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
+ink-fraction guard. The thresholds are sealed in
+`config/designator_grouping.toml`'s
 `[grouping.background]`, which is the one block in that file with a
 `calibrated_for_this_corpus = true` provenance and a `sample_count` above zero —
 its own block, because the rest of the file is unmeasured defaults and one
@@ -1400,28 +1564,21 @@ pixel, was not. A LANCZOS resample smooths a hard black spike away and the mode
 moves off it. The level is now a valley between two modes, which is what the 2
 grey levels above are measuring.
 
-**The surround is measured, never removed.** Every surround pixel stays on the
-page, stays below the ink threshold, and is counted as ink by `primary_scan` and
-reconciled as ink by `conservation.reconcile`. Masking it out would mean deciding
-where the page ends, and a page edge misjudged by thirty pixels would silently
-delete a marginal name — the loss GOALS 1 ranks worst. Counting the bezel is a
-visible over-count that reconciles; excluding it is an invisible loss. What the
-`surround` block on the conservation record buys is the interpretation. It
-carries two counts, and together they *bracket* the bezel rather than either one
-being it: `border_dark_pixel_count` is the dark inside the border band, a lower
-bound because a real frame is usually wider than `band_bp`, and
-`dark_pixel_count` is the whole page at or below the level, an upper bound
-because the page's own deep writing is at or below it too. Over the 65 pages of
-the 127-page calibration that infer through this branch, at the derived ink
-margin, the bezel is between **34.1% and 79.7%** of the counted ink by the lower
-bound (median 58.6%) and between **78.5% and 96.9%** by the upper (median 88.8%).
-Both figures rose when the margin was derived, and rose for the right reason: the
-denominator is now the ink the page actually has rather than the ink plus a
-quarter of its own paper. At the retired fixed margin of 20 the same pages
-measured 22.5%-58.1% (median 36.6%) and 30.3%-83.6% (median 56.9%).
-Without those numbers a reader takes an ink fraction of two thirds for two thirds
-of a page of writing. One number here would have been read as the bezel and been
-wrong in a direction nobody could tell, which is why there are two.
+**The dark distribution is measured, never removed.** Every sampled dark pixel
+stays on the page, stays below the ink threshold, and is counted as ink by
+`primary_scan` and reconciled as ink by `conservation.reconcile`. Masking any
+population out would mean deciding where the page ends, and a page edge misjudged
+by thirty pixels would silently delete a marginal name — the loss GOALS 1 ranks
+worst. The `dark_distribution` block records two observed counts:
+`border_dark_pixel_count` in the fixed border band and `dark_pixel_count` across
+the whole page at the selected level. They are not bounds on a bezel or on a
+paper region. For the 65 historical calibration pages that inferred through this
+branch, the historical ratios of observed dark counts to counted ink at the
+derived margin were **34.1%-79.7%** (median 58.6%) for the border-band count and
+**78.5%-96.9%** (median 88.8%) for the whole-page count. These are descriptive
+historical ratios, not page-boundary or writing measurements. At the retired
+fixed margin of 20, the same ratios were 22.5%-58.1% (median 36.6%) and
+30.3%-83.6% (median 56.9%).
 
 **What the same 127 pages then fixed** is the constant this section used to end
 by naming: `PRIMARY_MARGIN = 20` is no longer the margin the scan runs at. It is
@@ -1441,11 +1598,10 @@ population spread over dozens of grey levels by lighting, page curl and the
 camera's response, and the modal value is that population's *peak*, not its
 edge. An offset of 20 below the peak therefore lands inside the paper. Over the
 127 pages at the old constant, the whole-page ink fraction ran 0.028 to 0.66 with
-a median of 0.39, and even with the surround's own upper-bound dark count taken
-out of both the ink and the page — the paper region, the part a register page's
-writing is actually on — the ink fraction there was still a median of 23%. A
-written page is a few percent ink. 23% is not a measurement of writing; it is a
-measurement of paper being called ink.
+a median of 0.39, and, in the historical calculation that subtracted the whole-page dark count
+from both ink and page counts, the resulting dark-excluded statistic still had a
+median of 23%. It is not a paper-region or ground-truth writing measurement; it
+only showed that the old fixed threshold included substantial lighter population.
 
 **Why a fraction of the two modes, and not a valley.** The obvious repair is the
 classical one: put the threshold in the valley between the ink population and the
@@ -1468,30 +1624,28 @@ claim, and the table below is what it is worth.
 **Why the fraction is 3333 and not its neighbours.** Two measurements decide it,
 and a third rules out the extremes.
 
-* **The paper-region ink fraction** — the ink left after the surround block's own
-  upper-bound dark count is taken out of both the ink and the page. This is the
-  number that has to be one a register page can plausibly have. Over the ten
-  photographed pages of the survey's own margin sweep, driven live through the
-  shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at 3333**,
-  1.6%-4.2% at 3750, 1.2%-3.1% at 4000. At 2500 the densest page in the sample
-  puts a seventh of its paper region below the ink threshold, which is more ink
-  than a page of handwriting has; at 4000 even that page reads as sparse, which
-  is the ink-loss direction.
+* **The historical dark-excluded statistic** — ink left after the sampled
+  whole-page dark count is subtracted from both ink and page counts. It is a
+  descriptive comparison, not a paper-region or writing measurement. Over the
+  ten photographed pages of the survey's own margin sweep, driven live through
+  the shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at
+  3333**, 1.6%-4.2% at 3750, 1.2%-3.1% at 4000. The range is retained as a
+  historical observation of how the threshold moves the sampled population.
 * **The component count at the sealed `gap_tolerance_px = 3`** — checked for the
   two failures a wrong margin produces, and showing neither at 3333. The median
   over the same ten pages is 2721 / 2557 / **2653** / 2982 / 3197 across
   2500-4000: flat at the bottom through 3000-3333 and rising past it, which is
   fragmentation beginning. It is a weak discriminator between 3000 and 3333 and
   it is reported as one.
-* **Whether tightening loses writing or paper.** Going from 2500 to 3333 removes
-  39-53% of the paper-region ink pixels on all ten pages while the component
-  count moves by -24% to +35%, rising on three of them. Whole faint marks
-  disappearing would take the count down with the pixels; components appearing
-  instead is a welded mass separating. What is being removed is the paper skirt.
+* **Whether tightening changes the sampled distribution.** Going from 2500 to
+  3333 removes 39-53% of the historical dark-excluded pixels on all ten pages
+  while the component count moves by -24% to +35%, rising on three of them. The
+  result is retained as an observed component/threshold trade-off; it does not
+  identify paper, writing, or a physical boundary.
 
-3000 and 3333 are not separated by any of the three, and the report says so. 3333
-is chosen for the paper-region placement and because it is one third, which is a
-number the code can state without a second one beside it.
+3000 and 3333 are not separated by these historical comparisons, and the report
+says so. 3333 is retained as the sealed measured setting and because it is one
+third, which is a number the code can state without a second one beside it.
 
 **The floor is `PRIMARY_MARGIN` and it is load-bearing.** At 3333 it binds
 wherever the two modes are 60 grey levels apart or fewer. Ten of the 127 pages
@@ -1502,18 +1656,18 @@ page's threshold rises and no page can start counting as ink anything it did not
 count as ink before.
 
 **The bound `ink_margin_bp` is held under, and why it is structural.** The loader
-refuses any value at or past 5000. `_dark_surround` measures at the midpoint of
+refuses any value at or past 5000. `_dark_distribution` measures at the midpoint of
 the two modes and publishes two dark counts *as fractions of the ink the page
 goes on to count*; that reading is true exactly while the derived threshold stays
 at or above the midpoint, which is exactly while the fraction stays under 5000.
-At 5000 the two coincide; past it the surround block would be counting pixels the
-scan does not. Zero is refused for the reason the two bounds beside it are: it is
-the derivation switched off by a value rather than by a decision.
+At 5000 the two coincide; past it the dark-distribution block would count pixels
+the scan does not. Zero is refused for the reason the two bounds beside it are:
+it is the derivation switched off by a value rather than by a decision.
 
 **Scale invariance, measured.** Over the same 73 DPI-tagged pages resampled to a
 300-DPI equivalent with LANCZOS, the derived margin moves by **at most 8 grey
-levels** (median 0) and the paper-region ink fraction by at most 0.51 percentage
-points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
+levels** (median 0) and the historical dark-excluded statistic by at most 0.51
+percentage points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
 unit's 72 of 73, because the bound that decides it is not measured at the derived
 threshold — see the next paragraph.
 
@@ -1556,20 +1710,19 @@ shipped pass, one page per process, on the same pages in the same order.
 
 | statistic | min | p25 | median | p75 | p90 | max |
 |---|---:|---:|---:|---:|---:|---:|
-| paper-region ink fraction, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
-| paper-region ink fraction, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
+| historical dark-excluded statistic, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
+| historical dark-excluded statistic, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
 | whole-page ink fraction, fixed margin 20 | 0.0282 | 0.3448 | 0.3946 | 0.4630 | 0.5365 | 0.6595 |
 | whole-page ink fraction, derived margin | 0.0282 | 0.2097 | 0.2421 | 0.2752 | 0.3470 | 0.4728 |
 
-The paper region is the page with the surround block's own upper-bound dark count
-taken out of both the ink and the page — the part a register's writing is on. The
-whole-page figure stays high because the bezel is still counted as ink, on
-purpose: it is a visible over-count that reconciles, where masking it out would
-mean deciding where the page ends.
+The historical dark-excluded statistic subtracts the sampled whole-page dark
+count from both ink and page counts. It does not identify a paper region or the
+part a register's writing is on. The whole-page figure retains every sampled
+pixel and reconciles; no page boundary is inferred or masked.
 
 Per source, on the 114 inferred pages:
 
-| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | paper-region ink, derived |
+| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | historical dark-excluded, derived |
 |---|---|---|---|---|---|---|
 | teklia_dai_cretdhi | 172 / 212 / 231 | 0 / 0 / 22 | 57 / 69 / 75 | 0.2626 / 0.3710 / 0.6149 | 0.1875 / 0.2117 / 0.3899 | 0.0165 / 0.0356 / 0.0962 |
 | recordgold_production_train_v1 | 157 / 212 / 245 | 0 / 1 / 23 | 52 / 69 / 80 | 0.2816 / 0.3946 / 0.5365 | 0.1780 / 0.2481 / 0.4080 | 0.0192 / 0.0474 / 0.0696 |
@@ -1583,8 +1736,8 @@ Per source, on the 114 inferred pages:
 Oka is the source the floor is for: 10 of its 15 pages have 22 grey levels or
 fewer between their two modes and derive the floor margin of 20, so their ink
 fraction barely moves. Saint-Jacques takes the plain modal branch on all 15, so
-it has no surround block and no paper region to report; its whole-page figure is
-the relevant one, and it halves.
+it has no dark-distribution block or dark-excluded statistic to report; its
+whole-page figure is the relevant observed value, and it halves.
 
 **Components at the sealed `gap_tolerance_px = 3`**, over the 114 inferred pages:
 **87 / 2,772 / 24,617** against **87 / 6,237 / 24,617** at the fixed margin — the
@@ -1615,7 +1768,7 @@ different unit.
 **What moved downstream, and what did not.** `structure-status` gains
 `ink_margin`, `ink_threshold` and `dark_mode` — the third added on a reader's
 finding against this unit, because the first two cannot be checked without it
-on the 49 pages of the calibration that publish no `surround` block; `structure_pass.touches_ink` reads the page's
+on the 49 pages of the calibration that publish no `dark_distribution` block; `structure_pass.touches_ink` reads the page's
 own margin instead of the constant, which is what lets the `model-only` signal
 fire at all on photographed material (at a fixed 20, a median of 39% of a real
 page sits below the threshold, so every rectangle a chair can draw touches ink). **No fixture page's cut moves.** All three walking-skeleton pages

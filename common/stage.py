@@ -90,6 +90,7 @@ from common.recovery import (
 )
 from common.runtree.store import PublishResult, RunTree
 from common.witness_adapters import validate_witness_adapter_bindings
+from common.witness_context import validate_witness_context_configuration
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -1837,59 +1838,12 @@ def validate_witness_context_bindings(
             f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
             "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
-    try:
-        witness_context_config_bytes = Path(witness_context_config_path).read_bytes()
-    except OSError as error:
-        raise ContractError(
-            f"the witness-context declaration at {witness_context_config_path} could not be read"
-        ) from error
-    witness_context_config_digest = digest_bytes(witness_context_config_bytes)
-    # Coverage, not just readability, checked here rather than left to the
-    # Perlector: this function already holds `models.witness_chairs` and
-    # already reads this file's bytes for the digest above, so a chair with no
-    # declared entry can refuse before the run tree exists rather than after
-    # the Exemplar, Designator and the entire Attestatores leg have already
-    # run against every witness model on every act — the expensive part of a
-    # live pod run, spent on what is usually a config typo. The Perlector's own
-    # `dossier.load_witness_context` still does the full per-entry schema
-    # validation when it actually loads this file to build a dossier; this is
-    # only the cheap presence check that can run this early.
-    try:
-        witness_context_table = tomllib.loads(witness_context_config_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the witness-context declaration at {witness_context_config_path} could not be "
-            f"parsed: {error}"
-        ) from error
-    missing = [chair for chair in models.witness_chairs if chair not in witness_context_table]
-    if missing:
-        raise ContractError(
-            f"chair {missing[0]!r} has no declared entry in {witness_context_config_path}; "
-            "every configured witness must carry a factual dossier context, or none is described"
-        )
-    for chair, entry in sorted(witness_context_table.items()):
-        # Shape, not just presence: `attestator_1 = "typed by mistake"` passed
-        # the presence check and then cost the whole pre-Perlector leg before
-        # `dossier.load_witness_context` refused it.
-        if (
-            not isinstance(entry, dict)
-            or set(entry) != {"training_domain"}
-            or not isinstance(entry.get("training_domain"), str)
-            or not entry["training_domain"].strip()
-        ):
-            raise ContractError(
-                f"the witness-context entry for {chair!r} in {witness_context_config_path} "
-                "is not a closed table with only a non-blank training_domain"
-            )
-    unaddressed = [
-        chair for chair in witness_context_table if chair not in set(models.witness_chairs)
-    ]
-    if unaddressed:
-        raise ContractError(
-            f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
-            "configured witness chair; a misspelt chair here would silently lose its witness"
-        )
-    return witness_context_config_digest
+    validation = validate_witness_context_configuration(
+        models,
+        witness_context_config_path,
+        shipped_config_root=DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.parent,
+    )
+    return validation.source_sha256
 
 
 def real_run_policy_digest(
@@ -3077,8 +3031,11 @@ def _verify_proposal_act_row(
     here; what it cannot do is publish one rectangle and mint a different one.
     Re-deriving the acts from the retained blob would close that gap and is a
     design change, not a correction: it would make `common/stage.py` a second
-    parser of the chair's wire contract, which today has exactly one
-    (`common/structure_answer.py`).
+    parser of the chair's wire contract, which today has exactly one. That
+    contract is Chandra's layout HTML since `verbatus-structure-prompt.v3`, and
+    its one reader is `common/chandra_layout.py::parse_layout_html`, shared with
+    the page witness; `common/structure_answer.py::parse` reads the retired
+    `verbatus-structure-answer.v1` JSON and has no live caller.
 
     Three claims, and each is refused separately so the refusal says which one
     failed. The **page** must have been scanned: the page's own

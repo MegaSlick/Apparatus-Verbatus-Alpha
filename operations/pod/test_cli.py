@@ -15,6 +15,7 @@ operator's untracked module does.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,45 @@ def test_the_help_text_names_both_shipped_armers(capsys: pytest.CaptureFixture[s
     printed = capsys.readouterr().out
     assert "ChannelControllerArmer" in printed
     assert "ObservingControllerArmer" in printed
+
+
+@pytest.mark.parametrize("command", ["create", "adopt"])
+def test_a_missing_armer_factory_refuses_in_this_surface_s_own_record(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal is a JSON record on stdout and exit 2, not argparse usage.
+
+    `--controller-armer-factory` became optional when `close` landed, and
+    `create` and `adopt` check for it themselves. Reporting that through
+    `parser.error` would have exited 2 as well -- but with usage text on
+    stderr, in a shape nothing that reads this command's records can parse.
+    Every other refusal here is `{"state": "refused", "green": false,
+    "detail": ...}` on stdout, and a refusal only argparse can explain is a
+    refusal half lost (GOVERNANCE 2).
+
+    Nothing is loaded before the check: `--provider-factory` below names a
+    module that does not exist, and the refusal is still this one.
+    """
+
+    argv = [
+        "--provider-factory",
+        "no.such.module:factory",
+        "--leases",
+        str(tmp_path / "leases"),
+        "--provider-name",
+        "fake",
+        command,
+    ]
+    argv += ["--request", str(tmp_path / "request.json")]
+    if command == "adopt":
+        argv += ["--pod-id", "fake-pod-1"]
+
+    exit_code = cli.main(argv)
+
+    assert exit_code == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["state"] == "refused"
+    assert printed["green"] is False
+    assert "--controller-armer-factory" in printed["detail"]
+    assert "no paid action occurred" in printed["detail"]
+    assert not (tmp_path / "leases").exists()

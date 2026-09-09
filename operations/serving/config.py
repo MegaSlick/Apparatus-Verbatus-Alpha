@@ -40,7 +40,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
+from common.chairs.models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    is_hf_revision,
+    is_sha256,
+    is_witness_role,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
@@ -50,6 +57,13 @@ from .errors import ServingConfigurationError
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
 _KINDS = {"vllm", "fixture", "unsupported"}
+# 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
+# 'auto' is admitted only for a witness (Attestator) row: it defers to the
+# exact generation_config.json the chair's own pinned revision ships, which
+# `manager._launch_audit` then digests from the verified snapshot so 'auto'
+# is a value pinned by that revision rather than an unaudited default that
+# could silently change underneath the row.
+_GENERATION_CONFIG_VALUES = {"vllm", "auto"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
@@ -82,6 +96,22 @@ _PROFILE_FIELDS = {
     "readiness_probe",
     "preflight_state",
 }
+# Optional on a vLLM row, and optional deliberately.  ``patch_size``/
+# ``merge_size`` are the chair's vision-encoder geometry, read from the pinned
+# revision's own processor configuration -- ``preprocessor_config.json`` where
+# the repository ships one, ``processor_config.json`` (under its
+# ``image_processor`` object) where it does not, which for `attestator_2`'s
+# pinned DAI revision is the only one that exists (``manager.assert_processor_geometry``
+# reads both spellings from the verified snapshot and refuses a launch where
+# the row disagrees); they decide how many prompt tokens one image costs
+# (``common/request_capacity.py``).  vLLM reads them
+# from the model repository, so a row that omits them still launches -- what it
+# cannot do is have a request checked against it before it is sent, and
+# ``request_capacity.row_image_geometry`` refuses by name in that case rather
+# than counting against a default that is wrong for half the roster.  Left
+# optional so a catalogue that has not been measured is incomplete rather than
+# unloadable.
+_OPTIONAL_PROFILE_FIELDS = {"patch_size", "merge_size"}
 _PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PREFLIGHT_IDENTITY_FIELD = "preflight_identity_digest"
 _PREFLIGHT_MARK_FIELDS = frozenset({"preflight_state", _PREFLIGHT_DIGEST_FIELD})
@@ -186,6 +216,11 @@ class ServingProfile:
     preflight_state: str
     preflight_digest: str | None
     preflight_identity_digest: str | None
+    # The chair's vision-encoder geometry, optional on the row and therefore
+    # optional here.  ``None`` means the catalogue has not stated it, which
+    # ``common/request_capacity.py`` refuses by name rather than defaulting.
+    patch_size: int | None = None
+    merge_size: int | None = None
     kind: str = "vllm"
 
     def __post_init__(self) -> None:
@@ -441,7 +476,12 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
             reason=_text(raw["reason"], "reason"),
         )
     unknown = sorted(
-        set(raw) - (_PROFILE_FIELDS | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD})
+        set(raw)
+        - (
+            _PROFILE_FIELDS
+            | _OPTIONAL_PROFILE_FIELDS
+            | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD}
+        )
     )
     missing = sorted(_PROFILE_FIELDS - set(raw))
     if unknown or missing:
@@ -469,6 +509,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
     max_pixels = _positive_int(raw["max_pixels"], "max_pixels")
     if min_pixels > max_pixels:
         raise ServingConfigurationError("min_pixels cannot exceed max_pixels")
+    patch_size = _optional_positive_int(raw, "patch_size")
+    merge_size = _optional_positive_int(raw, "merge_size")
     enable_prefix_caching = _bool(raw["enable_prefix_caching"], "enable_prefix_caching")
     enforce_eager = _bool(raw["enforce_eager"], "enforce_eager")
     trust_remote_code = _bool(raw["trust_remote_code"], "trust_remote_code")
@@ -481,9 +523,18 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
             "max_lora_rank must be one of vLLM's supported static LoRA ranks"
         )
     generation_config = _text(raw["generation_config"], "generation_config")
-    if generation_config != "vllm":
+    if generation_config not in _GENERATION_CONFIG_VALUES:
         raise ServingConfigurationError(
-            "generation_config must be exactly 'vllm'; model-supplied generation defaults are not a pinned profile"
+            f"generation_config must be one of {sorted(_GENERATION_CONFIG_VALUES)}, not "
+            f"{generation_config!r}"
+        )
+    if generation_config == "auto" and not is_witness_role(chair):
+        raise ServingConfigurationError(
+            f"generation_config='auto' is admitted only for witness (Attestator) rows; "
+            f"chair {chair!r} is not a witness role. A witness's vendor-shipped "
+            "generation_config.json is itself the pinned profile (by the chair's "
+            "revision); the Perlector and Designator rows carry no vendor generation "
+            "defaults to defer to and must stay 'vllm'"
         )
     preflight_state = _text(raw["preflight_state"], "preflight_state")
     if preflight_state not in {"unproven", "proven"}:
@@ -540,6 +591,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         gpu_memory_utilization=fraction,
         min_pixels=min_pixels,
         max_pixels=max_pixels,
+        patch_size=patch_size,
+        merge_size=merge_size,
         enable_prefix_caching=enable_prefix_caching,
         enforce_eager=enforce_eager,
         trust_remote_code=trust_remote_code,
@@ -738,6 +791,19 @@ def _positive_int(value: Any, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ServingConfigurationError(f"{field} must be a positive integer")
     return value
+
+
+def _optional_positive_int(raw: Mapping[str, Any], field: str) -> int | None:
+    """A row's optional positive integer: absent is ``None``, present is checked.
+
+    Absent is a fact a consumer can refuse on by name; present-but-nonsense is
+    a catalogue defect and is refused here, at load, where every other malformed
+    field is.
+    """
+
+    if field not in raw:
+        return None
+    return _positive_int(raw[field], field)
 
 
 def _nonnegative_int(value: Any, field: str) -> int:

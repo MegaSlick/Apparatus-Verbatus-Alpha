@@ -569,3 +569,13 @@ def test_this_project_has_exactly_one_basis_point_rounding_rule():
     for dimension in (1, 5, 10, 200, 260, 2480, 3508):
         for bp in (0, 1, 250, 499, 500, 501, 1500, 3333, 9999, 10000):
             assert geometry._pad_amount(dimension, bp) == round_half_up_bp(dimension, bp)
+
+
+def test_load_padding_config_refuses_calibrated_provenance_with_no_samples(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(
+        path,
+        provenance={**PROVENANCE, "calibrated_for_this_corpus": True, "sample_count": 0},
+    )
+    with pytest.raises(ContractError, match="calibrated_for_this_corpus.*sample_count is zero"):
+        load_padding_config(path)

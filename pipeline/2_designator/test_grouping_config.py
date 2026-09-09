@@ -448,6 +448,28 @@ def test_provenance_negative_sample_count_refused(tmp_path):
         load_grouping_config(path)
 
 
+def test_provenance_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    body = _valid_toml().replace(
+        "calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(
+        ContractError,
+        match=r"\[grouping\.provenance\].*calibrated_for_this_corpus.*sample_count is zero",
+    ):
+        load_grouping_config(path)
+
+
+def test_background_provenance_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    body = _valid_toml().replace("sample_count = 7", "sample_count = 0")
+    path = _write(tmp_path, body)
+    with pytest.raises(
+        ContractError,
+        match=r"\[grouping\.background\.provenance\].*calibrated_for_this_corpus.*sample_count is zero",
+    ):
+        load_grouping_config(path)
+
+
 def test_string_provenance_fields_are_derived_from_the_whole_schema():
     """The two field sets partition `_PROVENANCE_FIELDS` exactly.
 
@@ -594,7 +616,7 @@ def test_background_is_not_a_field_of_the_published_resolved_thresholds():
     resolved = resolve_thresholds(load_grouping_config(), 200, 260)
     assert not hasattr(resolved, "background_policy")
     assert not hasattr(resolved, "surround_policy")
-    assert "surround" not in dataclasses.asdict(
+    assert "dark_distribution" not in dataclasses.asdict(
         resolve_thresholds(load_grouping_config(), 200, 260)
     )
 
@@ -654,7 +676,7 @@ def test_background_provenance_is_held_to_the_same_closed_schema(tmp_path):
 def test_a_band_that_leaves_no_border_or_no_interior_is_refused(tmp_path, bad):
     """Both ends refused by the loader rather than silently disarming the test.
 
-    `structure._dark_surround` returns `None` for a band with no border to
+    `structure._dark_distribution` returns `None` for a band with no border to
     measure or no interior to compare it against, and a page would then refuse
     for a reason no config line stated. The refusal belongs here, where the
     number is written.
@@ -690,11 +712,9 @@ def test_an_ink_margin_fraction_at_or_past_half_its_range_is_refused(tmp_path, b
     Zero derives no margin at all and leaves every page on
     `structure.PRIMARY_MARGIN`, which is the derivation switched off by a value.
     At 5000 the derived ink threshold coincides with the level
-    `structure._dark_surround` measures at, and past it the threshold falls
-    below that level -- at which point the surround block's two dark counts stop
-    being subsets of the ink they are published as fractions of, and
-    `SurroundEvidence`'s whole "this much of the counted ink is bezel" reading
-    becomes false.
+    `structure._dark_distribution` measures at, and past it the threshold falls
+    below that level -- at which point the dark-distribution counts stop being
+    subsets of the ink they are published beside.
     """
     body = _valid_toml().replace("ink_margin_bp = 3333", f"ink_margin_bp = {bad}")
     path = _write(tmp_path, body)

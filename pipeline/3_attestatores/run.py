@@ -25,7 +25,7 @@ the other chairs to reach it would re-read ink nobody doubted.
 import json
 import sys
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Mapping, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,6 +41,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.outcomes import page_attachment_basis  # noqa: E402
 from common.contracts.serving import (  # noqa: E402
     RAW_RESPONSE_KINDS,
     RAW_RESPONSE_MODEL_OUTPUT,
@@ -52,6 +53,8 @@ from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
+    REPORTED_BOUNDS_SOURCES,
+    native_parse_refusal,
     partition_disagreement,
     reported_geometry_overlaps,
     split_page_edge_overshoots,
@@ -64,6 +67,7 @@ from common.native_witness import (  # noqa: E402
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
+from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -106,6 +110,20 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_uncertainty": False,
     "can_express_layout": False,
 }
+
+
+def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
+    """What this adapter's own grammar can carry, validated, for a pre-send refusal.
+
+    Thin wrapper over `witness_adapters.declared_format_capabilities`, the one
+    place this validation lives (it used to be a second copy of
+    `live_witness._format_capabilities_for`'s own body): a
+    `RequestCapacityRefusal` fires before any request reaches the wire, but
+    the refused attempt still names a real adapter, and that adapter's
+    declared expressiveness is a fact about it whether or not this one
+    request was sendable.
+    """
+    return witness_adapters.declared_format_capabilities(adapter)
 
 
 def real_ingress(context) -> bool:
@@ -414,13 +432,86 @@ def _fixture_native_observations(
     return observations
 
 
-def chandra_page_partition_entries(
+#: Adapters whose fixture rows may declare `raw_response` bytes. The committed
+#: corpus carries a synthetic Chandra body and nothing else, and the attempt
+#: boundary already refuses a fixture `raw_response` for any other adapter
+#: (`resolve_attempt`): fixture bytes may not be attributed to a model boundary
+#: that never produced them. Named here because the page-partition branch has to
+#: ask the same question -- "does this chair's response reach `observe` in this
+#: posture?" -- and answering it with an adapter name would put the fixture
+#: posture back on a hard-coded chair.
+FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
+
+
+def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
+    """Whether this chair's page partition is re-derived from its own response bytes.
+
+    True for any page-scoped adapter that reports geometry, on the live path,
+    where the chair really answered and `captured_page_attempt` carried its bytes
+    forward as `observation_payload`. In the fixture posture it is true only for
+    the adapters the fixture may declare response bytes for; every other page
+    chair's offline record keeps the declared-observation route it has always
+    taken, so no committed byte moves.
+
+    The question the branch actually asks is "are there response bytes here to
+    derive geometry from", and it is answered from the registry's
+    `takes_page_size` rather than from an adapter's name. Chandra answers yes;
+    Churro answers no, because `HistoricalDocument` publishes no coordinates at
+    all, and its page record carries the presentation echo the no-geometry route
+    owns for every adapter.
+    """
+    if not isinstance(resolved, ChairIdentity):
+        return False
+    # Not guarded: an adapter with no runnable binding is refused here, loudly,
+    # rather than answered `False` and routed down the no-geometry branch as
+    # though it had simply reported nothing.
+    adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+    if not adapter.takes_page_size:
+        return False
+    return page_captures is not None or (
+        resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+    )
+
+
+def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reported boxes a page partition may be derived from, or a named refusal.
+
+    `split_page_edge_overshoots` admits `native` and `derived` boxes and refuses
+    a `presented` echo by name: an echo restates the image the chair was shown,
+    so turning one into a page-edge finding would report as witness geometry
+    something no witness reported. Chandra's `observe` returns an empty list for
+    a body whose blocks report no usable box, so the only adapter that reaches
+    this seam hands over reported boxes or nothing.
+
+    Three cases, and the third is the point. All reported: the list, unchanged.
+    None reported: empty, which is what the caller already detects as "this
+    response reported no geometry" and answers by putting the presentation echo
+    back through `observed_from_presentation` -- the one path that owns that
+    fact for every adapter, so nothing is dropped and nothing is invented.
+    **A mix is refused**, not filtered: no adapter today returns one, and an
+    adapter that began to would be saying something this partition has no rule
+    for. Silently keeping half of it would publish a page geometry nobody
+    designed and no reader could tell from a complete one (GOVERNANCE 2).
+    """
+    reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
+    if reported and len(reported) != len(observed):
+        raise SchemaRefusal(
+            "a page witness reported geometry and a presentation echo in one response. "
+            "A partition derived from half of that record would look complete. "
+            "Return reported geometry or the no-geometry echo, not both."
+        )
+    # Ordinals stay dense and 0-based, which the page-edge check requires and
+    # reads as the response's own order. Untouched when nothing was filtered.
+    return reported
+
+
+def page_partition_entries(
     observed: list[dict[str, Any]],
     *,
     page_size: tuple[int, int],
     raw_response_ref: dict[str, str] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return surviving Chandra boxes and response-linked page-edge findings.
+    """Return a page witness's surviving boxes and response-linked page-edge findings.
 
     `page_size` is the sealed source page, never a presentation crop: a block
     may cross the crop edge while remaining valid page-space geometry.
@@ -437,9 +528,9 @@ def chandra_page_partition_entries(
         or len(raw_response_ref["sha256"]) != 64
     ):
         raise SchemaRefusal(
-            "a Chandra page-edge finding has no retained response reference. "
+            "a page-edge finding has no retained response reference. "
             "The rejected block cannot be traced to the response that produced it. "
-            "Retain the raw Chandra response before deriving the page partition."
+            "Retain the raw page-witness response before deriving the page partition."
         )
     return survivors, [
         {**finding, "response_sha256": raw_response_ref["sha256"]} for finding in overshoots
@@ -2333,11 +2424,28 @@ def captured_churro_page_attempt(
     # relabel-proof seam accepts no adapter argument at all.
     capture = adapter.retain(
         context.tree,
+        # The adapter's own prompt under its default framing, not a frozen
+        # declaration of this stage's own. Chandra keeps a `FIXTURE_PROMPT`
+        # because its fixture rows are a JSON placeholder no chair was ever
+        # asked for; Churro's fixture rows are answers in shapes the vendor
+        # grammar actually reads, so the honest declaration beside them is the
+        # question the vendor's registry asks. `framing` is deliberately not
+        # recorded: the fixture asks nobody anything, so there is no run whose
+        # question a name would identify.
         view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
         raw_response=raw,
         transport_stop_reason=stop,
+        # One grammar, one parser name, both postures
+        # (`common/native_witness.py::CHURRO_PARSERS`).
         parser="xml",
     )
+    # The adapter's own declared expressiveness, read off its registry entry,
+    # exactly as the live boundary reads it (`_declared_format_capabilities`).
+    # Churro declares `can_express_uncertainty=True, can_express_layout=False`
+    # (`churro.py::FORMAT_CAPABILITIES`); what reading it here buys is that
+    # Churro's grammar and this posture cannot come to disagree about what
+    # that grammar can carry the day either one changes (U12).
+    capabilities = _declared_format_capabilities(adapter)
     parsed = capture["parse"]
     # Post-hoc findings cannot decide whether the transport cut off the response.
     cut_off = stop in _CHURRO_CUTOFF_STOP_REASONS
@@ -2350,7 +2458,7 @@ def captured_churro_page_attempt(
                 "genuinely-empty" if text == "" else "read",
                 text,
                 None,
-                DEFAULT_FORMAT_CAPABILITIES,
+                capabilities,
                 content_health(text, completed=complete),
                 None,
             ),
@@ -2363,7 +2471,7 @@ def captured_churro_page_attempt(
                 "failed",
                 "",
                 None,
-                DEFAULT_FORMAT_CAPABILITIES,
+                capabilities,
                 content_health("", completed=False),
                 (
                     f"Churro response parsed empty after the provider stopped it at its bound "
@@ -2380,17 +2488,24 @@ def captured_churro_page_attempt(
         if cut_off
         else ""
     )
+    # `failed` names its refusal in `reason`; `unrecognized-shape` names the
+    # shape it could not place in `outcome`, and this posture can now reach the
+    # second: the vendor grammar reads any well-formed XML and refuses only the
+    # root elements it knows nothing about. One helper, shared with the live
+    # boundary and with the page validator that re-derives both of these
+    # sentences and compares them.
+    parse_refusal = native_parse_refusal(parsed)
     basis = (
-        f"response cut off by the provider ({stop!r}); {parsed['reason']}"
+        f"response cut off by the provider ({stop!r}); {parse_refusal}"
         if cut_off
-        else parsed["reason"]
+        else parse_refusal
     )
     return (
         Attempt(
             "failed",
             None,
             None,
-            DEFAULT_FORMAT_CAPABILITIES,
+            capabilities,
             {
                 "native_type": "unrecordable",
                 "encoding": "invalid-or-unrecordable",
@@ -2401,7 +2516,7 @@ def captured_churro_page_attempt(
                 "characters": None,
                 "truncation_basis": basis,
             },
-            f"Churro response retained but not usable: {cut_note}{parsed['reason']}",
+            f"Churro response retained but not usable: {cut_note}{parse_refusal}",
         ),
         capture,
     )
@@ -2558,7 +2673,10 @@ def resolve_attempt(
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
-            if "raw_response" in response and resolved.witness_adapter != "chandra.v1":
+            if (
+                "raw_response" in response
+                and resolved.witness_adapter not in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+            ):
                 raise SchemaRefusal(
                     f"fixture raw_response has no native byte route for adapter "
                     f"{resolved.witness_adapter!r}"
@@ -2567,13 +2685,33 @@ def resolve_attempt(
                 raise SchemaRefusal(
                     "fixture raw_response is not text encoding retained response bytes"
                 )
-            if resolved.witness_adapter == "chandra.v1" and isinstance(
+            if resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS and isinstance(
                 response.get("raw_response"), str
             ):
                 # Geometry may derive only from explicitly declared response
                 # bytes; synthesizing JSON from `payload` would create native
                 # evidence no witness returned.
                 raw_response = response["raw_response"].encode("utf-8")
+                # `FIXTURE_NATIVE_RESPONSE_ADAPTERS` is a one-member set and this
+                # block is Chandra's own: the retained view below is
+                # `chandra.FIXTURE_PROMPT`, the fixture's frozen declaration, and
+                # the retain recipe is Chandra's `json` parser. Adding a second
+                # adapter to that set means writing that adapter's own branch
+                # here first, or its bytes would be filed under Chandra's model
+                # boundary (GOVERNANCE 6) -- a Testimonium whose retained view
+                # and parser name a chair that never produced it. The comment
+                # said so and nothing enforced it, so the refusal is written
+                # down: the coupling is between this set and this one recipe,
+                # and it fails closed at the moment the set widens rather than
+                # at whatever later reads the misfiled record.
+                if resolved.witness_adapter != "chandra.v1":
+                    raise SchemaRefusal(
+                        f"fixture raw_response for adapter {resolved.witness_adapter!r} would be "
+                        "retained through Chandra's recipe -- its own retained view, prompt and "
+                        "parser -- and filed under Chandra's model boundary; write that "
+                        "adapter's own fixture retain branch before adding it to "
+                        "FIXTURE_NATIVE_RESPONSE_ADAPTERS"
+                    )
                 adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
                 retained = adapter.retain(
                     context.tree,
@@ -2863,24 +3001,29 @@ def publish_attempt(
         if presented and not live
         else None
     )
-    is_chandra = isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1"
+    # A property of the ADAPTER, read off its registry entry, never a comparison
+    # against one adapter's name: "does this adapter's `observe` take the sealed
+    # page's own size?" Two hard-coded names in one branch is how the third page
+    # adapter is silently left out of a rule it belongs to, which is exactly what
+    # happened to Churro here until Unit 12.
+    takes_page_size = adapter is not None and adapter.takes_page_size
     # One presentation names one sealed page, and that page's size is a fact
     # about the page, not about this view of it. Bound once here: both
     # derivations below need it, and `_sealed_source_page` reads the whole
     # page blob and re-digests it on every call, so asking twice per act view
     # doubled the I/O and the hashing for one unchanging number (CodeRabbit
-    # round 1, T8). Read only where it is actually needed -- a Chandra act
-    # view with a presentation -- exactly as before.
+    # round 1, T8). Read only where it is actually needed -- a page-scoped act
+    # view with a presentation.
     sealed_page_size = (
-        _sealed_source_page(context, presented)[2] if presented and is_chandra else None
+        _sealed_source_page(context, presented)[2] if presented and takes_page_size else None
     )
     if not presented:
         observed: list[dict[str, Any]] = []
     elif fixture_observed is not None:
         observed = fixture_observed
-    elif adapter is not None and is_chandra:
+    elif takes_page_size:
         # A page witness's act view restates page-level geometry, so the
-        # wire contract's normalized boxes convert against the sealed page's
+        # grammar's normalized boxes convert against the sealed page's own
         # size, never this one crop's (`chandra.observe`).
         observed = adapter.observe(
             presented,
@@ -2898,10 +3041,16 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
-    if presented and is_chandra:
+    # Reported geometry only, through the same helper the page partition uses, so
+    # the two seams cannot come to disagree about what a mixed response means:
+    # all reported passes through, none reported is empty, a mix is refused by
+    # name rather than half-kept. An echo needs no split: it restates the
+    # presentation, which is inside its own page by construction, and routing and
+    # coverage exclude it anyway.
+    if presented and takes_page_size and (reported := _partition_geometry(observed)):
         # The act view cannot retain partition findings, but it must exclude an
         # overshoot so one bad block does not prevent the page record retaining it.
-        observed, _ = split_page_edge_overshoots(observed, page_size=sealed_page_size)
+        observed, _ = split_page_edge_overshoots(reported, page_size=sealed_page_size)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -3164,11 +3313,23 @@ def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> 
     the same characters to two acts' dissent rows as though the witness had said
     them twice.
 
-    So neither wins.  Both stay geometrically attached -- the chair really did
-    report ink there -- while their text correspondence becomes explicitly
-    unaligned with a named reason, and neither can count toward the witness
-    floor.  A zero-width span (the trivial attach a genuinely-empty page reading
-    gets) touches nothing and is deliberately not an overlap.
+    So neither wins.  Their text correspondence becomes explicitly unaligned
+    with a named reason, and neither can count toward the witness floor.  A
+    zero-width span (the trivial attach a genuinely-empty page reading gets)
+    touches nothing and is deliberately not an overlap.
+
+    **What survives the unalignment depends on what attached it**, and this is
+    not cosmetic bookkeeping: a chair attached by `geometric-overlap` stays
+    attached, because the chair really did report ink there and the alignment
+    was never its evidence.  A chair attached by `anchor-line` has just lost the
+    only evidence it had, so it becomes unattached and says so.  Leaving it
+    `attached: true` beside an unaligned record published a row neither reader
+    can accept -- both re-derive attachment through
+    `common/contracts/outcomes.py::page_attachment_basis`, which answers
+    `unattached` for a witness with no geometry and no located anchor line, and
+    refuse a record whose stored boolean disagrees.  Unreachable while nothing
+    attached on text alone; reachable from Unit 12, which is why it is fixed
+    here rather than recorded.
 
     Extracted from the attachment pass so it can be exercised directly: the
     combination needs one chair's page reading to match one act's anchor range in
@@ -3197,12 +3358,16 @@ def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> 
                 ):
                     ambiguous.update({index, other_index})
         for index in ambiguous:
-            entries[index]["alignment"] = {
+            entry = entries[index]
+            entry["alignment"] = {
                 "status": "unaligned",
                 "reason": "ambiguous-overlapping-act-alignment",
             }
-            entries[index]["span"] = None
-            entries[index]["comparable"] = False
+            entry["span"] = None
+            entry["comparable"] = False
+            if entry["attachment_basis"] == "anchor-line":
+                entry["attached"] = False
+                entry["attachment_basis"] = "unattached"
 
 
 def act_scoped_attachment_entry(
@@ -3447,10 +3612,18 @@ def publish_page_testimonia_and_attachments(
             # could not parse into a reading at all -- that body arrived, was
             # retained, and produced an unrecordable channel, which is a
             # different fact from a chair that answered nothing (GOVERNANCE 2).
+            # Retained bytes are what the question turns on, which is why the
+            # test is `raw_response_ref` rather than the mere presence of a
+            # capture: a request refused before it was sent
+            # (`capacity_refusal_attempt`) is filed as a capture too, and
+            # nothing arrived for it -- it must take the no-response health,
+            # not the health of a body nobody received.
             # In the fixture posture `page_captures` is None and this is exactly
             # the `native_capture is not None` it has always been.
             arrived = native_capture is not None or (
-                page_captures is not None and captured is not None
+                page_captures is not None
+                and captured is not None
+                and page_attempt_result.raw_response_ref is not None
             )
             attempted_page = captured is not None or page_witness_attempted(
                 page_acts, chair, attempts_by_pair
@@ -3516,14 +3689,16 @@ def publish_page_testimonia_and_attachments(
             )
             if not presented:
                 observed: list[dict[str, Any]] = []
-            elif isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1":
+            elif _derives_partition_from_response(resolved, page_captures):
                 # The fixture executes one retained Chandra response per
                 # compatibility act, while the durable page Testimonium owns
                 # their page partition. Re-derive that partition only from
                 # responses whose primary page is this page; a continuation's
                 # primary-page response must not become geometry on its far
-                # page merely because the act belongs to both.
-                adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+                # page merely because the act belongs to both. The comment about
+                # one response per compatibility act is the fixture walk and
+                # stands; the live path below takes exactly one source.
+                adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
                 observed = []
                 captured_geometry = False
                 needs_default_observation = False
@@ -3574,8 +3749,8 @@ def publish_page_testimonia_and_attachments(
                         and reference not in page_response_refs
                     ):
                         page_response_refs.append(reference)
-                    source_observed, overshoots = chandra_page_partition_entries(
-                        adapter.observe(presented, raw, page_size=page_size),
+                    source_observed, overshoots = page_partition_entries(
+                        _partition_geometry(adapter.observe(presented, raw, page_size=page_size)),
                         page_size=page_size,
                         raw_response_ref=reference,
                     )
@@ -3591,10 +3766,13 @@ def publish_page_testimonia_and_attachments(
                         # walks -- so this one blob is named there after all,
                         # and the double-naming above is accepted because the
                         # alternative is an untraceable finding. Unreachable for
-                        # the wire contract -- its
-                        # page-pixel conversion clamps to the page -- so only a
-                        # live body wearing the fixture placeholder's pixel
-                        # boxes could take this branch.
+                        # Chandra's own layout grammar -- a `data-bbox` with a
+                        # component outside [0, 1000] is `malformed-bbox` and
+                        # reports no rectangle at all, and the ones that survive
+                        # convert through `common/structure_answer.py::
+                        # to_page_bounds`, which clamps the far edges to the
+                        # page -- so only a live body wearing the fixture
+                        # placeholder's pixel boxes could take this branch.
                         page_response_refs.append(reference)
                     for overshoot in overshoots:
                         overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
@@ -3605,7 +3783,10 @@ def publish_page_testimonia_and_attachments(
                         observed.append({**item, "ordinal": len(observed)})
                 if page_captures is not None and captured_geometry and not observed:
                     # A live response that parsed but reported no block geometry
-                    # (the contract's page-text form, or an empty blocks list)
+                    # (a page-scoped chair whose grammar carries no coordinate
+                    # at all, or a layout answer whose blocks each report no
+                    # rectangle -- `Blank-Page` or a malformed `data-bbox` --
+                    # or one with no block in it)
                     # is a page with no reported geometry, the same fact the
                     # fixture's genuinely-empty rows record: the presentation
                     # echo stands in, excluded from routing and coverage.
@@ -3678,7 +3859,19 @@ def publish_page_testimonia_and_attachments(
                     attempted=attempted_page,
                     receipt_ref=page_attempt_result.receipt_ref if captured is not None else None,
                 ),
-                format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                # The captured attempt's own declared value when this record
+                # derives from one real chair response (`page_attempt_result`
+                # is the `Attempt`/`LiveAttempt` `captured_page_attempt`
+                # built, format_capabilities and all); the legacy synthetic
+                # `PageJoin` -- built from possibly several acts' attempts,
+                # each free to declare its own -- carries no single value of
+                # its own, so it keeps the blanket default it always recorded
+                # (`page_join`, `PageJoin` above).
+                format_capabilities=(
+                    page_attempt_result.format_capabilities
+                    if captured is not None
+                    else DEFAULT_FORMAT_CAPABILITIES
+                ),
                 # A cut-off empty capture retains text without claiming absence.
                 native_payload=native_payload if reading or arrived else None,
                 witness_reported=None,
@@ -3953,6 +4146,20 @@ def publish_page_testimonia_and_attachments(
                             else {"start": 0, "end": 0}
                         ),
                         "witness_span": {"start": 0, "end": 0},
+                        # Nothing was matched, because there was no witness text
+                        # to match. The measurement is recorded all the same:
+                        # every aligned record carries it, so a reader never has
+                        # to tell "no match" from "not measured" by the absence
+                        # of a field (GOVERNANCE 2).
+                        "anchor_line_match": {
+                            "anchor_characters": (
+                                act_anchor["end"] - act_anchor["start"]
+                                if act_anchor is not None
+                                else 0
+                            ),
+                            "matched_characters": 0,
+                            "longest_matched_run": 0,
+                        },
                         "line_geometry": (
                             _line_geometry(act_anchor) if act_anchor is not None else []
                         ),
@@ -3997,12 +4204,27 @@ def publish_page_testimonia_and_attachments(
                         # verdict: clip in normalized space first, translate at
                         # this one storage point, spans stay RAW everywhere.
                         clipped = []
+                        # How much of THIS act's anchor line the clipped
+                        # fragments actually matched, measured here because this
+                        # is the only place that holds the fragments: the record
+                        # keeps a hull, and a hull cannot be un-hulled later.
+                        # `anchor_line_located` reads the longest run to decide
+                        # whether anything was located at all -- without it a
+                        # scatter of single coincidental characters produced a
+                        # positive hull and put a chair on the witness floor
+                        # (hostile review of Unit 12, must-fix 1). The matching
+                        # blocks are disjoint and increasing in both sequences,
+                        # so the total is a sum and never double-counts.
+                        matched_characters = 0
+                        longest_matched_run = 0
                         for span in result["spans"]:
                             start = max(span["anchor"]["start"], act_anchor["start"])
                             end = min(span["anchor"]["end"], act_anchor["end"])
                             if start < end:
                                 shift = span["witness"]["start"] - span["anchor"]["start"]
                                 clipped.append((start + shift, end + shift))
+                                matched_characters += end - start
+                                longest_matched_run = max(longest_matched_run, end - start)
                         if clipped:
                             # Still a hull ACROSS the clipped fragments: when the
                             # act's anchor range matches the witness in two
@@ -4034,6 +4256,13 @@ def publish_page_testimonia_and_attachments(
                                         key: act_anchor[key] for key in ("start", "end")
                                     },
                                     "witness_span": {"start": witness_start, "end": witness_end},
+                                    "anchor_line_match": {
+                                        "anchor_characters": (
+                                            act_anchor["end"] - act_anchor["start"]
+                                        ),
+                                        "matched_characters": matched_characters,
+                                        "longest_matched_run": longest_matched_run,
+                                    },
                                     "line_geometry": _line_geometry(act_anchor),
                                     "loss": {
                                         "witness": result["witness"]["loss"],
@@ -4068,20 +4297,32 @@ def publish_page_testimonia_and_attachments(
                         if region["payload"]["transform"]["source_page_ordinal"]
                         == contributing_page
                     ]
-                    # Alignment only supplies a span inside this witness's own
-                    # text.  The attachment itself is the page geometry this
-                    # chair reported against the sealed proposal; no anchor
-                    # selects a witness/proposal correspondence.
+                    # Two bases, derived by the one shared rule
+                    # (`common/contracts/outcomes.py::page_attachment_basis`)
+                    # both readers re-derive: this chair's own reported ink over
+                    # the act's sealed proposal, or -- only where it reported no
+                    # such ink -- an alignment that located this act's anchor
+                    # line inside its page text. The second exists because a
+                    # grammar can carry no geometry at all (Churro's, by vendor
+                    # design), and geometry-only attachment left every such
+                    # chair permanently unattached and every act one witness
+                    # under the floor. Nothing here selects among witnesses: the
+                    # anchor decides whether this chair's text was PLACED in
+                    # this act, never whose reading is right (GOVERNANCE 3).
                     contributing_outcome = page_outcomes.get(
                         (contributing_page, chair), act_attempt.outcome
                     )
-                    page_attached = contributing_outcome in WITNESS_READING_OUTCOMES and any(
-                        reported_geometry_overlaps(
-                            page_observations[(contributing_page, chair)], bounds
-                        )
-                        for bounds in page_bounds
+                    attachment_basis = page_attachment_basis(
+                        reading=contributing_outcome in WITNESS_READING_OUTCOMES,
+                        geometry_overlaps=any(
+                            reported_geometry_overlaps(
+                                page_observations[(contributing_page, chair)], bounds
+                            )
+                            for bounds in page_bounds
+                        ),
+                        alignment=page_alignment,
                     )
-                    attachment_basis = "geometric-overlap" if page_attached else "unattached"
+                    page_attached = attachment_basis != "unattached"
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {
@@ -4418,10 +4659,21 @@ def _page_capture_from_record(
             "would replace immutable evidence with different bytes"
         )
     capture = payload.get("native_capture")
+    if capture is not None:
+        capture = validate_native_capture(capture)
     observation_payload = None
     if (
         capture is not None
-        and capture.get("adapter") == "chandra.v1"
+        # A property of the ADAPTER, read off its registry entry, exactly as
+        # `_derives_partition_from_response` reads it, and never a comparison
+        # against one adapter's name. `captured_page_attempt` carries the
+        # response bytes forward as `observation_payload` for every page-scoped
+        # adapter, and this flag says which of them has geometry in those bytes
+        # to rebuild from -- so a resume republishes exactly what the interrupted
+        # pass sealed rather than something the adapter's name happened to
+        # decide (GOVERNANCE 4). An adapter with no runnable binding is refused
+        # loudly by `resolve_runnable_adapter` rather than answered `False` here.
+        and witness_adapters.resolve_runnable_adapter(capture["adapter"]).takes_page_size
         and capture["parse"]["state"] == "parsed"
         and record["outcome"] in WITNESS_READING_OUTCOMES
     ):
@@ -4528,8 +4780,27 @@ def resumed_page_captures(
                     # record wearing this act's name, it is simply not evidence
                     # of this page's response either way.
                     continue
+                if (
+                    attempt.serving_call_ref is None
+                    and attempt.health.get("recordable") is None
+                    and served_live(context, {"receipt_ref": attempt.receipt_ref})
+                ):
+                    # A live attempt at a request that was refused before it was
+                    # sent (`capacity_refusal_attempt`): there is no call record
+                    # because there was no call, and its no-response health says
+                    # exactly that. Both facts are needed, and neither alone
+                    # would do: the fixture posture also writes a failed attempt
+                    # with no-response health for a row that declared no
+                    # payload, and only the receipt says which posture served
+                    # this one. It stands in for this page rather than being
+                    # refused -- the arithmetic that refused it is the same on a
+                    # resumed pass, and re-asking would only rebuild the record
+                    # it already sealed.
+                    candidates.append((act["act_id"], attempt))
+                    continue
                 if attempt.serving_call_ref is None:
-                    # An *attempted* outcome naming no serving call is the
+                    # An *attempted* outcome naming no serving call, with a
+                    # response channel it could describe, is the
                     # fixture posture's own shape: every live attempt names the
                     # call record of the request that produced it, whether or
                     # not its adapter's retained view could be published beside
@@ -4689,6 +4960,14 @@ def live_attempt_pass(
                 rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
         schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
 
+    # Resolved once for the whole pass, from the roster this run sealed: which
+    # framing each page chair is asked in. A chair whose adapter has a single
+    # framing resolves to `None` and is asked exactly as it always was.
+    framings = {
+        chair: witness_adapters.framing_for(context.registry.config, chair)
+        for chair in sorted(page_chairs)
+    }
+
     def serve(client: ChairClient, row: dict[str, str]) -> None:
         nonlocal recorded
         chair = row["chair"]
@@ -4709,6 +4988,7 @@ def live_attempt_pass(
                 attempts_by_pair=attempts_by_pair,
                 page_captures=page_captures,
                 page_ids=page_ids,
+                framing=framings[chair],
             )
         else:
             recorded += _serve_act_unit(
@@ -4799,6 +5079,64 @@ def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> Non
         )
 
 
+def capacity_refusal_attempt(
+    error: RequestCapacityRefusal,
+    *,
+    receipt_ref: Mapping[str, str],
+    what: str,
+    adapter: Any = None,
+) -> Attempt:
+    """One chair's outcome for a request its sealed row could not hold.
+
+    A pre-send capacity refusal is a fact about *this* request: this page's
+    pixels, at this row's `max_pixels`, against this row's `max_model_len`. It
+    says nothing about the next page, which may be smaller, or about the same
+    chair on another unit. Letting it out of `_serve_act_unit` /
+    `_serve_page_unit` would have stopped the whole pass, so one oversized page
+    would have cost every other page's testimony -- and a missed act is worse
+    than a poorly read one (GOALS 1). It is recorded here instead, in the same
+    shape an empty or malformed response takes: `outcome="failed"`, a named
+    reason, and the pass moves on to the next unit. The Designator already
+    holds this way (`structure_pass`'s `structure-request-too-large`), and this
+    closes the asymmetry.
+
+    The health is the **no-response** shape, not the unrecordable one, and the
+    difference is the whole point: nothing arrived, so there is no channel to
+    call unrecordable. `reason` carries the refusal's own sentence, which is
+    the capacity record in words -- every image's token cost, the prompt, the
+    reserved answer, the need, the row it was measured against, and by how much
+    it overran.
+
+    `receipt_ref` is the chair's real serving moment. The chair *did* start:
+    this pass entered its client, the manager published its receipt, and the
+    request was refused after that, on this laptop. Naming that receipt is what
+    keeps the record a live one -- a resumed pass reads it back and must not
+    mistake this for a fixture-posture record.
+
+    `adapter` names the chair that was refused, so `format_capabilities`
+    still records what its grammar can express even though no request
+    reached the wire (`_declared_format_capabilities`): what a chair's
+    grammar can carry is a fact about the chair, not about whether this one
+    request fit the row. Optional and defaulting to the blanket value only
+    for a caller with no adapter in hand.
+    """
+
+    reason = f"{what} was refused before it was sent: {error}"
+    return Attempt(
+        outcome="failed",
+        native_payload=None,
+        witness_reported=None,
+        format_capabilities=(
+            _declared_format_capabilities(adapter)
+            if adapter is not None
+            else DEFAULT_FORMAT_CAPABILITIES
+        ),
+        health=no_response_health(reason=reason),
+        reason=reason,
+        receipt_ref=dict(receipt_ref),
+    )
+
+
 def _serve_act_unit(
     context,
     *,
@@ -4813,7 +5151,40 @@ def _serve_act_unit(
 ) -> int:
     """One act-scoped chair, one act: ask, derive, publish, before the next act."""
     presentation = presentation_for_region(regions[0])
-    built = live_witness.act_chair_request(context, adapter, presentation)
+    try:
+        built = live_witness.act_chair_request(
+            context,
+            adapter,
+            presentation,
+            # The sealed row this chair is actually running under: a
+            # page-fallback act's crop is one fallback band, not a whole page
+            # (`live_witness.act_chair_request`'s own docstring), and still
+            # needs checking against the row like any other DAI request
+            # (`live_witness.request_capacity_or_refuse`).
+            profile=client.handle.profile,
+        )
+    except RequestCapacityRefusal as error:
+        # This act's crop against this row, and nothing else: the next act's
+        # crop may be a sixth of the page and fit comfortably
+        # (`capacity_refusal_attempt`).
+        attempt = capacity_refusal_attempt(
+            error,
+            receipt_ref=client.handle.receipt_reference,
+            what=f"the {resolved.witness_adapter} request for act {act['act_id']}",
+            adapter=adapter,
+        )
+        attempts_by_pair[(act["act_id"], chair)] = attempt
+        publish_attempt(
+            context,
+            act=act,
+            chair=chair,
+            resolved=resolved,
+            ordinal=ordinal,
+            regions=regions,
+            attempt=attempt,
+            live=True,
+        )
+        return 1
     response = client.read(built.request)
     live = live_witness.live_attempt_from_response(
         context,
@@ -4911,15 +5282,54 @@ def _serve_page_unit(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
     page_ids: dict[int, str] | None = None,
+    framing: str | None = None,
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
-    request = live_witness.page_chair_request(
-        context, adapter, resolved.witness_adapter, presentation
-    )
+    try:
+        request = live_witness.page_chair_request(
+            context,
+            adapter,
+            resolved.witness_adapter,
+            presentation,
+            # The sealed row this chair is actually running under. Every
+            # chair's generation bound is derived from it and from this
+            # request's own capacity record
+            # (`common/request_capacity.py::sendable_max_tokens`).
+            profile=client.handle.profile,
+            # Which framing this run asks this chair in, resolved once from the
+            # sealed roster before the pass began
+            # (`witness_adapters.framing_for`). `None` where the adapter has one
+            # framing and there is nothing to name.
+            framing=framing,
+        )
+    except RequestCapacityRefusal as error:
+        # This page against this row. Every other page keeps its testimony, and
+        # the page's own record says why this one has none
+        # (`capacity_refusal_attempt`). The capture is filed exactly as a
+        # malformed response's is -- with no retained model view, because there
+        # was no response to derive one from.
+        attempt = capacity_refusal_attempt(
+            error,
+            receipt_ref=client.handle.receipt_reference,
+            what=f"the {resolved.witness_adapter} request for page {page_ordinal}",
+            adapter=adapter,
+        )
+        page_captures[(page_ordinal, chair)] = (attempt, None)
+        return publish_page_act_views(
+            context,
+            chair=chair,
+            resolved=resolved,
+            attempt=attempt,
+            page_ordinal=page_ordinal,
+            page_acts=page_acts,
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
+        )
     response = client.read(request)
     live = live_witness.captured_page_attempt(
-        context, page_ordinal, chair, resolved.witness_adapter, adapter, response
+        context, page_ordinal, chair, resolved.witness_adapter, adapter, response, framing=framing
     )
     transport_stop_reason = (
         response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED

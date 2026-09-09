@@ -20,6 +20,23 @@ recensor = "unproven-real-recensor"
 archetypus = "unproven-real-archetypus"
 armarium = "unproven-real-armarium"
 
+# Which framing each witness chair is asked in, for the one chair whose adapter
+# has more than one. Stated explicitly rather than left to the adapter's default
+# so a run says, in its own sealed configuration, which question it asked -- and
+# so an A/B between the two is a line here rather than an edit to code on a pod.
+# The resolved name is written onto every Testimonium the chair produces.
+#
+# Both framings are now a vendor artifact's own bytes, and the two names this
+# file carried before them are gone with the prompts they named. `registry-v0.3.0`
+# is what `providers/specs.py::resolve_ocr_profile("stanford-oval/churro-3B")`
+# returns at tag `v0.3.0`; `paper-harness-ed09bc7` is the `SYSTEM_MESSAGE` the
+# paper's own benchmark harness sent, spelling errors included. Which of the two
+# the fine-tuning itself saw is stated nowhere in the paper, the model card or
+# the code, so the registry's current answer is what a run sends and the
+# comparison is Stage 2's A4b arm.
+[witness_framings]
+attestator_3 = "registry-v0.3.0"
+
 [chairs.designator_structure]
 state = "configured"
 source = "huggingface"
