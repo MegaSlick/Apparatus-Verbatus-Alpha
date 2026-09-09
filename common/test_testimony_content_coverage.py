@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 from common.contracts.errors import SchemaRefusal
@@ -5,6 +7,26 @@ from common.testimony_content_coverage import (
     validate_testimony_content_coverage,
     validate_testimony_content_coverage_continuation,
 )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        [],
+        {"shortfall": None, "reason": "no comparable text"},
+        {"by_chair": {}, "reason": "no comparable text"},
+        {
+            "by_chair": {},
+            "shortfall": None,
+            "reason": "no comparable text",
+            "unexpected": True,
+        },
+    ],
+)
+def test_primary_coverage_requires_a_closed_record_with_both_required_fields(record):
+    with pytest.raises(SchemaRefusal, match="closed tri-state measurement"):
+        validate_testimony_content_coverage(record)
 
 
 def test_tri_state_requires_a_reason_for_an_unmeasured_page():
@@ -65,4 +87,7 @@ def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall):
         "shortfall": shortfall,
         "unclaimed_observations": [],
     }
-    assert validate_testimony_content_coverage(record) == record
+    expected = copy.deepcopy(record)
+    validated = validate_testimony_content_coverage(record)
+    assert validated == expected
+    assert record == expected

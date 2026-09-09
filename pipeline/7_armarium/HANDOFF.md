@@ -255,7 +255,7 @@ and none of them, before this, qualifying the word on the deliverable:
 
 | instrument | what is unmeasured | where the record lives |
 |---|---|---|
-| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` |
+| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` and `testimony_content_coverage_continuation` |
 | `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
 | `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
 | `perlector-uncertain-spans` | `uncertain_spans` is empty while the sealed `round_cap = 1` leaves a re-proof round; a cap of zero is the exhausted-cap path that can mint a span | `config/perlector_audit.toml` and each act's uncertainty layer |
