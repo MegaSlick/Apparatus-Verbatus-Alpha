@@ -289,7 +289,7 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
         provenance["calibrated_for_this_corpus"], provenance["sample_count"]
     ):
         raise ContractError(
-            "the grouping configuration's provenance says calibrated_for_this_corpus but "
+            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
             "sample_count is zero"
         )
     return dict(provenance)

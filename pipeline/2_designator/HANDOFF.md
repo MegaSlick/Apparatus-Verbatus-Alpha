@@ -1751,7 +1751,7 @@ different unit.
 **What moved downstream, and what did not.** `structure-status` gains
 `ink_margin`, `ink_threshold` and `dark_mode` — the third added on a reader's
 finding against this unit, because the first two cannot be checked without it
-on the 49 pages of the calibration that publish no `surround` block; `structure_pass.touches_ink` reads the page's
+on the 49 pages of the calibration that publish no `dark_distribution` block; `structure_pass.touches_ink` reads the page's
 own margin instead of the constant, which is what lets the `model-only` signal
 fire at all on photographed material (at a fixed 20, a median of 39% of a real
 page sits below the threshold, so every rectangle a chair can draw touches ink). **No fixture page's cut moves.** All three walking-skeleton pages
