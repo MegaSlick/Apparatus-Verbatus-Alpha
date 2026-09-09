@@ -23,6 +23,12 @@ _SHIPPED_PROFILES = (
 )
 
 
+def _comparable_sentence(value: str) -> str:
+    """Collapse formatting whitespace without changing the declaration evidence."""
+
+    return " ".join(value.split())
+
+
 @dataclass(frozen=True, slots=True)
 class WitnessContextValidation:
     """The declaration bytes and role-level shipped identity profiles they matched."""
@@ -91,7 +97,7 @@ def validate_witness_context_configuration(
 ) -> WitnessContextValidation:
     """Validate coverage and bind each known shipped sentence to its shipped identity.
 
-    Comments, location, TOML formatting, and edge whitespace inside the value do
+    Comments, location, TOML formatting, and whitespace runs inside the value do
     not disguise a known sentence. Each genuinely different role entry remains
     operator-authored under the closed shape and coverage rules; this code has no
     basis for inferring the truth of arbitrary training-domain prose.
@@ -131,12 +137,13 @@ def validate_witness_context_configuration(
     role_profiles: list[tuple[str, str]] = []
     mismatches: list[str] = []
     for role in models.witness_chairs:
-        selected_sentence = declaration[role]["training_domain"].strip()
+        selected_sentence = _comparable_sentence(declaration[role]["training_domain"])
         known_matches = [
             (profile, shipped_roster)
             for profile, shipped_declaration, shipped_roster in shipped_profiles
             if role in shipped_declaration
-            and selected_sentence == shipped_declaration[role]["training_domain"].strip()
+            and selected_sentence
+            == _comparable_sentence(shipped_declaration[role]["training_domain"])
         ]
         if len(known_matches) > 1:
             raise ConfigurationRefusal(

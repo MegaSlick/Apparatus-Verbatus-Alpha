@@ -433,16 +433,46 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
 # rechecked here. The retained witness basis beside it was already required.
 
 
-def _stage_module(name: str, path: Path):
+def _stage_module(name: str, path: Path, *, isolated_modules: tuple[str, ...] = ()):
     """Load one stage program under a unique name, its own directory first.
 
-    A stage adds its directory to `sys.path` itself, but only for imports it
-    performs at module scope; loading two stage programs in one process needs
-    distinct module names, which is what `name` is for.
+    Restore a stage's import search order and any bare sibling aliases used
+    during its module-scope load. Shared ``common.*`` imports stay cached so
+    their classes retain one process identity across the test session.
     """
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    original_path = list(sys.path)
+    missing = object()
+    previous_module = sys.modules.get(name, missing)
+    isolated = {}
+    stage_dir = path.resolve().parent
+    for module_name in isolated_modules:
+        cached = sys.modules.get(module_name, missing)
+        cached_file = getattr(cached, "__file__", None)
+        expected_file = stage_dir / f"{module_name}.py"
+        if (
+            cached is missing
+            or not isinstance(cached_file, str)
+            or Path(cached_file).resolve() != expected_file
+        ):
+            isolated[module_name] = cached
+            sys.modules.pop(module_name, None)
+    try:
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
+        for module_name, previous in isolated.items():
+            if previous is missing:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous
+        if previous_module is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous_module
     return module
 
 
@@ -452,10 +482,11 @@ def _armarium_module():
     Never a bare ``import run``: several stage directories define a module by that
     name, and the import cache would decide which one this test got.
     """
-    spec = importlib.util.spec_from_file_location("armarium_run_under_test_export", ARMARIUM_CLI)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _stage_module(
+        "armarium_run_under_test_export",
+        ARMARIUM_CLI,
+        isolated_modules=("armarium_export", "display", "textnorm"),
+    )
 
 
 def _established_uncertainty_case(armarium, monkeypatch):

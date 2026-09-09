@@ -24,6 +24,18 @@ def test_continuations_are_positive_unique_page_ordinals():
         validate_testimony_content_coverage_continuation([row, row])
 
 
+@pytest.mark.parametrize("ordinal", [0, -1, True, "2", None])
+def test_continuations_refuse_nonpositive_or_untyped_page_ordinals(ordinal):
+    row = {
+        "by_chair": {},
+        "shortfall": None,
+        "reason": "no comparable text",
+        "page_ordinal": ordinal,
+    }
+    with pytest.raises(SchemaRefusal, match="positive page ordinal"):
+        validate_testimony_content_coverage_continuation([row])
+
+
 def test_tri_state_refuses_untyped_producer_fields():
     with pytest.raises(SchemaRefusal, match="by_chair"):
         validate_testimony_content_coverage({"by_chair": [], "shortfall": False})

@@ -249,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             "What happened: the dry-run transcript could not be prepared or saved "
             f"({safe_detail}).\n"
             "What it means: nothing was changed or billed; no transcript was written.\n"
-            "Next step: check the output path is writable, then run this again; this is safe."
+            "Next step: check the named input files exist and are readable and the output "
+            "path is writable, then run this again; this is safe."
         )
         return 1
     return 0

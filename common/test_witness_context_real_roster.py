@@ -12,6 +12,7 @@ on `--models-config`.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tomllib
 from dataclasses import replace
@@ -47,7 +48,8 @@ def _bindings(models_config: Path, witness_context_config: Path) -> dict:
 def _write_context(path: Path, sentences: dict[str, str]) -> None:
     path.write_text(
         "\n".join(
-            f'[{role}]\ntraining_domain = "{sentence}"\n' for role, sentence in sentences.items()
+            f"[{role}]\ntraining_domain = {json.dumps(sentence, ensure_ascii=False)}\n"
+            for role, sentence in sentences.items()
         ),
         encoding="utf-8",
     )
@@ -66,6 +68,19 @@ def test_the_real_declaration_covers_the_real_rosters_witness_chairs_and_no_othe
     assert set(declared) == set(roster.witness_chairs)
     for chair, entry in declared.items():
         assert set(entry) == {"training_domain"}, chair
+
+
+def test_a_declaration_for_an_unconfigured_witness_chair_is_refused(tmp_path):
+    copied = tmp_path / "extra-chair-context.toml"
+    sentences = {
+        role: entry["training_domain"]
+        for role, entry in tomllib.loads(FIXTURE_CONTEXT.read_text(encoding="utf-8")).items()
+    }
+    sentences["attestator_9"] = "an operator-authored description of an unconfigured witness"
+    _write_context(copied, sentences)
+
+    with pytest.raises(ContractError, match="attestator_9.*not a configured witness chair"):
+        _bindings(FIXTURE_ROSTER, copied)
 
 
 def test_no_real_witness_is_described_as_a_synthetic_fixture():
@@ -134,6 +149,43 @@ def test_edge_whitespace_cannot_disguise_a_known_fixture_sentence(tmp_path):
 
     with pytest.raises(ContractError, match="attestator_2.*shipped-fixture identity projection"):
         _bindings(REAL_ROSTER, copied)
+
+
+@pytest.mark.parametrize("whitespace", ["  ", "\t", "\n"])
+def test_internal_whitespace_cannot_disguise_a_known_fixture_sentence(tmp_path, whitespace):
+    copied = tmp_path / "internal-whitespace-context.toml"
+    disguised = _FIXTURE_SENTENCE.replace("fixture witness", f"fixture{whitespace}witness")
+    _write_context(
+        copied,
+        {
+            "attestator_1": "an operator-authored first witness",
+            "attestator_2": disguised,
+            "attestator_3": "an operator-authored third witness",
+        },
+    )
+
+    with pytest.raises(ContractError, match="attestator_2.*shipped-fixture identity projection"):
+        _bindings(REAL_ROSTER, copied)
+
+
+def test_a_formatting_only_match_keeps_the_selected_declaration_bytes_as_evidence(tmp_path):
+    copied = tmp_path / "formatted-fixture-context.toml"
+    sentences = {
+        role: entry["training_domain"]
+        for role, entry in tomllib.loads(FIXTURE_CONTEXT.read_text(encoding="utf-8")).items()
+    }
+    sentences["attestator_2"] = _FIXTURE_SENTENCE.replace("fixture witness", "fixture  \t\nwitness")
+    _write_context(copied, sentences)
+
+    validation = validate_witness_context_configuration(
+        ChairRegistry.from_toml(FIXTURE_ROSTER).config,
+        copied,
+        shipped_config_root=ROOT / "config",
+    )
+
+    assert validation.profile == "shipped-fixture"
+    assert validation.source_sha256 == digest_bytes(copied.read_bytes())
+    assert validation.source_sha256 != digest_bytes(FIXTURE_CONTEXT.read_bytes())
 
 
 def test_the_refusal_names_the_chairs_and_the_declaration_it_refused():

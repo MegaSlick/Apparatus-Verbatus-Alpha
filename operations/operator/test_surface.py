@@ -3438,13 +3438,15 @@ def test_dry_run_missing_launch_record_uses_the_operator_error_contract(
     assert refusal.value.code is ErrorCode.UNEXPECTED
 
 
+@pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_dry_run_main_strips_control_bytes_from_an_os_error(
+    error_type: type[OSError],
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def refuse(_output: Path) -> Path:
-        raise OSError("cannot write before\x1b[2Jafter")
+        raise error_type("cannot access before\x1b[2Jafter")
 
     monkeypatch.setattr(dry_run, "make_transcript", refuse)
 
@@ -3452,6 +3454,11 @@ def test_dry_run_main_strips_control_bytes_from_an_os_error(
     captured = capsys.readouterr().out
     assert "\x1b" not in captured
     assert "before [2Jafter" in captured
+    assert "What happened:" in captured
+    assert "What it means:" in captured
+    assert "Next step:" in captured
+    assert "input files exist and are readable" in captured
+    assert "output path is writable" in captured
 
 
 def test_dry_run_parser_has_a_description_when_docstrings_are_removed(
