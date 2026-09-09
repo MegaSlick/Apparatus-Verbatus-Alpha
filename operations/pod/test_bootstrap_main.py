@@ -22,6 +22,8 @@ from typing import Callable
 
 import pytest
 
+from common.contracts.errors import ContractError
+
 from . import bootstrap_main
 from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
 from .bootstrap_main import (
@@ -1158,6 +1160,33 @@ def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path
             "path": str(selected),
             "sha256": hashlib.sha256(selected.read_bytes()).hexdigest(),
         }
+
+
+@pytest.mark.parametrize(
+    ("attribute", "label"),
+    [
+        ("serving_recipes_config", "serving catalogue"),
+        ("placement_config", "placement table"),
+    ],
+)
+def test_configuration_names_an_unreadable_selected_source_and_its_repair(
+    tmp_path: Path, attribute: str, label: str
+) -> None:
+    _ws, plan = _checked_out_configuration_plan(tmp_path)
+    selected = getattr(plan, attribute)
+    assert isinstance(selected, Path)
+    selected.unlink()
+
+    with pytest.raises(BootstrapStepFailure) as refusal:
+        bootstrap_main._build_configuration_validation(plan)()
+
+    assert refusal.value.step is BootstrapStep.CONFIGURATION
+    assert "a selected configuration source could not be read" in refusal.value.detail
+    assert str(selected) in refusal.value.detail
+    assert "Repair or restore the named file" in refusal.value.remediation
+    assert "resume this journal before any environment or model work" in refusal.value.remediation
+    assert isinstance(refusal.value.__cause__, ContractError)
+    assert f"{label} {selected} could not be read" in str(refusal.value.__cause__)
 
 
 def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(tmp_path: Path) -> None:

@@ -1194,10 +1194,6 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 plan.witness_context_config,
                 shipped_config_root=plan.repository / "config",
             )
-            serving_source = _read_configuration_source(
-                plan.serving_recipes_config, "serving catalogue"
-            )
-            placement_source = _read_configuration_source(plan.placement_config, "placement table")
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1205,6 +1201,18 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "Repair the pinned roster/declaration selection. Use the fixture trio together, "
                 "the real trio together, or an operator-authored declaration for a custom roster; "
                 "then resume this journal before any environment or model work.",
+            ) from error
+        try:
+            serving_source = _read_configuration_source(
+                plan.serving_recipes_config, "serving catalogue"
+            )
+            placement_source = _read_configuration_source(plan.placement_config, "placement table")
+        except ContractError as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"a selected configuration source could not be read: {error}",
+                "Repair or restore the named file at the pinned commit, then resume this journal "
+                "before any environment or model work.",
             ) from error
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,
