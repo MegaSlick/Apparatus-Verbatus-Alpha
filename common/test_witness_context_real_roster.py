@@ -382,3 +382,25 @@ def test_the_refusal_holds_under_the_blinded_regime_too():
             perlector_instrument_per_mille=0,
             perlector_instrument_approval_ref="",
         )
+
+
+def test_a_roster_without_witness_roles_records_that_absence(tmp_path):
+    roster = ChairRegistry.from_toml(FIXTURE_ROSTER).config
+    without_witnesses = replace(
+        roster,
+        witness_floor=0,
+        chairs={"perlector": roster.chairs["perlector"]},
+        witness_framings={},
+    )
+    declaration = tmp_path / "empty-context.toml"
+    declaration.write_bytes(b"")
+
+    validation = validate_witness_context_configuration(
+        without_witnesses, declaration, shipped_config_root=ROOT / "config"
+    )
+
+    assert validation.profile == "no-witness-roles"
+    assert validation.declared_roles == ()
+    assert validation.verified_present_roles == ()
+    assert validation.role_profiles == ()
+    assert validation.source_sha256 == digest_bytes(b"")

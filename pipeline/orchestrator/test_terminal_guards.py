@@ -20,7 +20,7 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -135,7 +135,7 @@ class _RecordingContext:
         }
 
         def build_manifest(stage: str) -> dict:
-            if stage == "designator":
+            if stage == DESIGNATOR:
                 return {
                     "artifacts": [
                         {"kind": "conservation", "artifact_id": artifact_id}
@@ -159,7 +159,7 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
-            if stage == "designator" and kind == "conservation":
+            if stage == DESIGNATOR and kind == "conservation":
                 return self.conservation_records[artifact_id]
             if stage != INK_MAP or kind != "ink-map":
                 raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")

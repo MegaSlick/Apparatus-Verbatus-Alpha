@@ -179,7 +179,10 @@ def validate_witness_context_configuration(
 
     distinct_profiles = {role_profile for _, role_profile in role_profiles}
     if not distinct_profiles:
-        profile = "operator-authored"
+        # The shared roster contract permits non-witness roles alone. This
+        # records that absence without inventing authorship or a new roster rule;
+        # real ingress separately requires a served witness.
+        profile = "no-witness-roles"
     elif len(distinct_profiles) == 1:
         profile = next(iter(distinct_profiles))
     else:

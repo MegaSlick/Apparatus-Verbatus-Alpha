@@ -87,15 +87,13 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # bundle that names five unmeasured instruments as one that names none, which
 # is the silent-shape-change under one id these ids exist to prevent.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v5"
-# v4 is the clustered act-partition claim shape: `denominator` names logical
-# acts, and `local_proposal_rows`/`logical_membership` join the claim. A v3
-# reader keying on the schema id must not misread `expected_count` as
-# proposal-seal rows -- the same silent-rename-under-one-id miss the ids above
-# exist to prevent -- so an image-local bundle stays v3 byte-for-byte and a
-# clustered bundle declares v4. `verify_export_bundle` accepts both and refuses
+# v4 introduced the clustered act-partition claim: `denominator` names logical
+# acts, and `local_proposal_rows`/`logical_membership` join the claim. At that
+# historical boundary an image-local bundle remained v3 while a clustered one
+# declared v4, so a reader could not mistake logical acts for proposal-seal rows.
+# v6 is v5's clustered counterpart: both shapes gained `claims.not_measured`
+# together. `verify_export_bundle` accepts the current v5/v6 shapes and refuses
 # a schema id that disagrees with its own claim's shape.
-# v6 is v5's clustered counterpart, moved for the same reason and in the same
-# commit: both shapes gained the same required claim, so both ids move.
 EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v6"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
@@ -3528,7 +3526,7 @@ def _export_manifest(
     manifest: dict[str, Any] = {
         # The schema id moves with the claim shape (see the constants): a
         # clustered bundle's act-partition claim is a different contract than
-        # the image-local one, and a reader keying on v3 must never receive it.
+        # the image-local one, whose schema id must never describe clustered claims.
         "schema": (
             EXPORT_MANIFEST_CLUSTERED_SCHEMA
             if any("logical_membership" in act for act in projection.acts)

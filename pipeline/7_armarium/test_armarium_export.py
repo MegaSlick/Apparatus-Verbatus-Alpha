@@ -3604,10 +3604,10 @@ def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_i
 
 # --- `claims.not_measured`: what this run did not measure ---------------------
 #
-# `DELIVERED` and `aggregate.status == "complete"` are reachable over four
+# `DELIVERED` and `aggregate.status == "complete"` are reachable over five
 # things nothing measured -- a page whose testimony content coverage was
 # recorded unmeasured, a page whose ink was never reconciled, two instruments
-# with no producer, and geometry thresholds no sample was taken for. All four
+# with no producer, and geometry thresholds no sample was taken for. All five
 # are recorded somewhere; none of them qualified the word on the deliverable.
 # These prove the block is present, closed, and derived rather than constant.
 

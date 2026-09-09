@@ -79,33 +79,20 @@ neither — instead of hardcoding `fixture_id`. `test_bundle_publish.py` pins a
 real-shaped export payload publishing clean and a both-named payload being
 refused by name.
 
-**The manifest schema id is deliberately not versioned to this shape.** The
-real run identity travels under the existing `EXPORT_MANIFEST_SCHEMA`
-(`.v5` today) rather than a new schema id, unlike the
-clustered act-partition claim a few lines below, which does get its own id
-(`.v6` today) with an id/shape refusal (`_verify_manifest_field_closure`, the
-`expected_schema` check). The two cases differ in what a consumer needs to
-decide first: a clustered manifest changes the *denominator* — a reader must
-know which counting convention a package uses before it can interpret
-`expected_count` at all, so the id has to carry that decision before the
-reader opens `claims`. A real-run manifest changes only *which run this
-package is,* the way a different `fixture_id` value already did before this
-unit — but it changes it by a shape, not a value: every v3 package before
-this unit carried `run.fixture_id` unconditionally, and a reader doing
-`manifest["run"]["fixture_id"]` worked on all of them. After this unit a v3
-package may instead carry `run.submission_id` with no `fixture_id` key at
-all, and that same unconditional read now `KeyError`s. This is latent, not a
-break: a repo-wide search finds no reader of `run.fixture_id` outside the
-Armarium's own tests, and no real run reaches the Armarium today. A consumer
-that keys on the schema id and then reads the run block must branch on which
-identity key is present (`"submission_id" in run` vs `"fixture_id" in run`)
-before it may read either — the two-shape union is closed, but it is not
-uniform, and the id alone does not say which shape a given package has. A
-fourth schema id would let a consumer learn that from the id instead of by
-opening the block first. Any future schema-versioning ruling belongs to
-Tyrel under the boundary this project's `CLAUDE.md` sets for governed
-change; this paragraph records the reasoned default — and the real risk it
-accepts — rather than presupposing that ruling.
+**The real-run identity union does not have a separate manifest schema id.**
+It remains part of the current image-local `armarium-export-manifest.v5` and
+clustered `armarium-export-manifest.v6` shapes. Those two ids distinguish the
+act-partition denominator: a reader must know whether `expected_count` counts
+proposal-seal rows or logical acts before interpreting the claims.
+
+Run identity is a separate closed union within either schema. A fixture package
+carries `run.fixture_id`; a real-submission package carries `run.submission_id`,
+with exactly one of those keys present. Consumers of v5 or v6 must branch on
+that key before reading it. An unconditional `manifest["run"]["fixture_id"]`
+read is invalid for a real-run package, and the schema id alone intentionally
+does not distinguish which run-identity shape the package carries. The producer
+and recipient both enforce this union; the publisher additionally checks it
+against the retained run authority described above.
 
 ## Export contract
 

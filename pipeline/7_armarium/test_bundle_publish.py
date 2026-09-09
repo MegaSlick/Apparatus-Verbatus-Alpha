@@ -832,7 +832,7 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
 def test_a_coherently_resealed_not_measured_claim_cannot_escape_retained_export_authority(
     tmp_path, happy_run
 ):
-    """A package-only claim rewrite fails before publication on its retained blob binding."""
+    """Coherent blob references cannot bypass the retained manifest identity."""
     root = tmp_path / "runs"
     shutil.copytree(happy_run / "r", root / "r")
     tree = RunTree(root, "r")
@@ -841,7 +841,6 @@ def test_a_coherently_resealed_not_measured_claim_cannot_escape_retained_export_
         tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
     )
     original_export = json.loads(export_path.read_text(encoding="utf-8"))
-    original_reference = original_export["payload"]["bundle"]["reference"]
 
     def mutate(_members, manifest):
         row = next(
@@ -865,11 +864,19 @@ def test_a_coherently_resealed_not_measured_claim_cannot_escape_retained_export_
     verify_export_bundle(
         tree.read_bytes(changed_reference["relative_path"]), tmp_path / "internally-valid"
     )
-    tree.resolve(original_reference["relative_path"]).write_bytes(
-        tree.read_bytes(changed_reference["relative_path"])
-    )
-    export_path.write_bytes(canonical_bytes(original_export))
+    original_bundle = original_export["payload"]["bundle"]
+    changed_bundle = changed_export["payload"]["bundle"]
+    assert changed_bundle["manifest_self_hash"] != original_bundle["manifest_self_hash"]
+    # Keep the new bytes at their own digest path and retain the helper's
+    # coherent input/reference. Preserve the original semantic authority so
+    # this reaches the publisher's manifest check, not a blob digest refusal.
+    changed_bundle["manifest_self_hash"] = original_bundle["manifest_self_hash"]
+    changed_bundle["claims_status"] = original_bundle["claims_status"]
+    changed_export["self_hash"] = self_hash(changed_export)
+    export_path.write_bytes(canonical_bytes(changed_export))
 
-    result = _publish(root, "r", tmp_path / "delivery")
+    destination = tmp_path / "delivery"
+    result = _publish(root, "r", destination)
     assert result.returncode != 0
-    assert "digest" in result.stderr
+    assert "manifest identity or status disagrees" in result.stderr
+    assert not destination.exists()

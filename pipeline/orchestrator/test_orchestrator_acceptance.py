@@ -1472,8 +1472,9 @@ def _perlector_dissent():
 # digest, plus one renamed blob per scenario for the same reason. Inside the
 # package, exactly one member changed (`EXPORT_MANIFEST.json`), its 36 added
 # leaves are all under `claims.not_measured`, and its only other moves are the
-# schema id and the self-hash. The snapshot counts and exit codes are unmoved:
-# happy 96 files at exit 0, review 107 at exit 3.
+# schema id and the self-hash. Historical counts for this measurement were
+# unchanged: happy 96 files at exit 0, review 107 at exit 3. The current counts
+# and digests are the single active assignments below.
 #
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two

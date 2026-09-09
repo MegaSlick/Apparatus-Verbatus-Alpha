@@ -191,11 +191,12 @@ class RunPlan:
     def witness_context_config(self) -> Path:
         """The factual witness-context declaration this run seals.
 
-        Named on the plan beside the roster, never defaulted here: the shipped
-        declaration describes every chair as a synthetic fixture, and
-        `common/stage.py::validate_witness_context_bindings` refuses it beside a
-        non-fixture roster. `bootstrap_main` has already refused a plan that
-        left it unnamed with such a roster, so what arrives here is a decision.
+        Named on the plan beside the roster, never defaulted here:
+        `bootstrap_main.resolve_plan` supplies the default when none is named.
+        After checkout, the journaled CONFIGURATION step checks known shipped
+        sentences against their present witness identities before environment
+        or model work. This property receives that resolved path selection;
+        it does not choose another declaration for the orchestrator.
         """
         return _named(self.bootstrap.witness_context_config, "--witness-context-config")
 

@@ -36,3 +36,21 @@ def test_tri_state_refuses_untyped_producer_fields():
 def test_measured_tri_state_requires_a_nonempty_chair_basis():
     with pytest.raises(SchemaRefusal, match="no chair measurement basis"):
         validate_testimony_content_coverage({"by_chair": {}, "shortfall": False})
+
+
+@pytest.mark.parametrize("shortfall", [False, True])
+def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall):
+    record = {
+        "by_chair": {
+            "attestator_1": {
+                "attached_spans": [{"start": 0, "end": 5, "act_id": "act-one"}],
+                "uncovered_non_whitespace": {
+                    "ranges": [{"start": 5, "end": 7}] if shortfall else [],
+                    "count": 2 if shortfall else 0,
+                },
+            }
+        },
+        "shortfall": shortfall,
+        "unclaimed_observations": [],
+    }
+    assert validate_testimony_content_coverage(record) == record
