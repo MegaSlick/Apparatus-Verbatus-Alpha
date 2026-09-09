@@ -1456,33 +1456,34 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-# Provisional final-main control, measured on committed Designator source
-# 700baa2a9ca7bebc79a3eadd6cb94e824b8348a8. Two fresh canonical-run-id "r"
-# roots per scenario agreed on every raw byte and JSON/ZIP leaf. The incoming
-# Shared Background predecessor changes sealed configuration and record shape, so
-# these 100/111-file control pins are retained only until an integrated candidate
-# is measured; they are not claimed as that candidate's acceptance result.
-# Relative to the original Designator54ba1065, current main7f427cce retains four
-# additional vendor image-preparation blobs (96 -> 100 files, 107 -> 111), native
-# capture/attachment evidence, continuation coverage, and Armarium not_measured.
-# All those main changes remain in the integrated output.
-# Relative to the retained exact main tree, direct changes are the sealed
-# designator-grouping bytes and three new structure-status leaves on each of two
-# pages: dark_mode90, ink_margin46=(230-90)*3333//10000, ink_threshold184.
-# Fixture pixel sets, geometry, text, review decisions and output counts match
-# main. Remaining differences follow config/artifact/reference/member hashes;
-# content-addressed JSON and ZIP blobs were paired by stable producer slots.
-# Every logical JSON/JSONL/SQLite leaf, raw file and ZIP member was attributed
-# against both parents: no unexplained changes or ambiguous blob pairings.
-# Local evidence: workbench/raw/codex-queue-2026-09-08/designator/
-# acceptance-causal-attribution-700baa2a.json and independent direct-semantics report.
-# The separate native127 survey reproduces114 inferred/13 refused, with every
-# deterministic measurement unchanged after the neutral dark_distribution rename.
-# It uses deterministic grouping rectangles, not served/padded final proposals.
+# Shared Background integration, measured on source45c7a91a127e6fa778ca05b4c5010b3e45327f33.
+# Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
+# JSON/ZIP leaves. Happy remains100files/exit0; review111files/exit3.
+# Against main54fe0c63, Ink Map publishes one shared background block per page:
+# paper230, dark_mode90, primary margin46, audit contrast40/threshold190,
+# ink_measurable=true, sealed grouping SHA; duplicate ink/edge paper leaves move.
+# Recensor adds an empty unmeasurable_pages census to each fixture review.
+# Armarium manifestv7 adds verified claims.ink_map.unmeasurable_pages=[]; the
+# separate Designator conservation availability disclosure remains unchanged.
+# Grouping configuration text names all three shared readers. Exact Git config
+# bytes explain sealed digests; fixture pixel counts, geometry, text and terminal
+# outcomes are unchanged. Main native preparation/continuation/Honesty disclosure
+# remain present relative to original Shared96ff5572 (96/107 ->100/111files).
+# Every logical JSON/JSONL/SQLite leaf, raw artifact and ZIP member was compared
+# against original and main controls; stable producer slots pair content-addressed
+# blobs. No unexplained leaves, ambiguous pairings or raw/reference mismatches.
+# The v7/v8-aware acceptance reducer retains SQLite row portability and persisted
+# integrity guards. Earlier1d442507 raw-ZIP fallback pins were rejected, not reused.
+# Evidence: workbench/raw/codex-queue-2026-09-08/shared-background/
+# acceptance-causal-attribution-45c7a91a.json and independent direct-semantics report.
+# The separate frozen17page survey repeats14measured/3refused with deterministic
+# fields unchanged. Grouping rectangles are a coverage surrogate, not served or
+# capture-padded proposals or a complete Armarium trial. Generated-image tests
+# separately cover refusals and measurable conservation with an unavailable audit.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "45473ed3e442dbbc964da582f66a2b22dcd02dec509591c6e7bd7bd4b5fd27fe"
-REVIEW_RUN_TREE_DIGEST = "2953f0d9a1cc4a2b8c9830ea69f41af96e7bccf0db1f712e05d13bb6a590c83f"
+HAPPY_RUN_TREE_DIGEST = "ebc7484efd767bbdeaf995cd4c14636e5802cad8953cd41cc465817394e5ed1a"
+REVIEW_RUN_TREE_DIGEST = "1cb2d609a13e1b16a04f5095ca9e63167ea766586ce07bd9dd25a5526df838a4"
 
 
 def orchestrate(
