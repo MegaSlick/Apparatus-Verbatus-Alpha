@@ -20,6 +20,7 @@ from typing import Callable
 
 import pytest
 
+from common.chairs.errors import ConfigurationRefusal
 from common.contracts.canonical import canonical_bytes
 from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
@@ -1729,6 +1730,32 @@ def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
     red = surface.receipts.read(surface._descriptor_receipt("boot"))["payload"]
     assert red["report"]["color"] == "red"
     assert surface.boot().is_file()
+
+
+def test_fixture_boot_does_not_let_a_workspace_redefine_the_shipped_witness_profile(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "operator-workspace"
+    config = workspace / "config"
+    config.mkdir(parents=True)
+    for name in (
+        "models-real.toml",
+        "pod_placement.toml",
+        "serving_recipes.toml",
+        "witness_context-real.toml",
+        "witness_context.toml",
+    ):
+        (config / name).write_bytes((ROOT / "config" / name).read_bytes())
+    # The selected roster is real while its selected declaration repeats the
+    # shipped fixture sentence. Before the reference root was anchored, naming
+    # this real roster as workspace models.toml made it its own identity proof.
+    (config / "models.toml").write_bytes((ROOT / "config" / "models-real.toml").read_bytes())
+    surface = OperatorSurface(workspace, tmp_path / "operator-state")
+
+    with pytest.raises(ConfigurationRefusal, match="shipped-fixture identity projection"):
+        surface_module.FixtureBootstrapActions(
+            surface, transfer_receipt=None
+        ).validate_configuration()
 
 
 def test_laptop_crash_leaves_resumable_pages_and_acts(tmp_path: Path) -> None:

@@ -342,10 +342,11 @@ class FixtureBootstrapActions:
     def validate_configuration(self) -> dict[str, object]:
         root = self.surface.workspace
         config_root = root / "config"
+        shipped_config_root = Path(__file__).resolve().parents[2] / "config"
         validation = validate_witness_context_configuration(
             load_models_toml(config_root / "models.toml"),
             config_root / "witness_context.toml",
-            shipped_config_root=config_root,
+            shipped_config_root=shipped_config_root,
         )
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,

@@ -435,6 +435,7 @@ def test_named_dossier_carries_the_fixture_training_domain_for_the_fixture_roste
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")
     declared = dossier.load_witness_context(DECLARATION)
+    assert declared, "the fixture witness declaration must name at least one chair"
 
     by_label = {row["witness_label"]: row for row in named["testimonia"]}
     assert set(by_label) >= set(declared), (

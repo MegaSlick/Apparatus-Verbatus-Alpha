@@ -67,13 +67,29 @@ def test_tri_state_refuses_untyped_producer_fields():
         )
 
 
+@pytest.mark.parametrize("field", ["reason", "unmeasured_reason"])
+@pytest.mark.parametrize("invalid", ["", "   ", None, 1])
+def test_present_measurement_reasons_must_be_nonblank_strings(field, invalid):
+    record = {"by_chair": {}, "shortfall": None, "reason": "no comparable text"}
+    record[field] = invalid
+    with pytest.raises(SchemaRefusal, match=f"{field} is not a non-blank string"):
+        validate_testimony_content_coverage(record)
+
+
 def test_measured_tri_state_requires_a_nonempty_chair_basis():
     with pytest.raises(SchemaRefusal, match="no chair measurement basis"):
         validate_testimony_content_coverage({"by_chair": {}, "shortfall": False})
 
 
-@pytest.mark.parametrize("shortfall", [False, True])
-def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall):
+@pytest.mark.parametrize(
+    ("shortfall", "unmeasured_reason"),
+    [
+        (False, None),
+        (True, None),
+        (True, "some declared continuation text has no measurable act anchor"),
+    ],
+)
+def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall, unmeasured_reason):
     record = {
         "by_chair": {
             "attestator_1": {
@@ -87,6 +103,8 @@ def test_measured_coverage_with_a_chair_basis_is_accepted_unchanged(shortfall):
         "shortfall": shortfall,
         "unclaimed_observations": [],
     }
+    if unmeasured_reason is not None:
+        record["unmeasured_reason"] = unmeasured_reason
     expected = copy.deepcopy(record)
     validated = validate_testimony_content_coverage(record)
     assert validated == expected
