@@ -2332,7 +2332,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             if (
                 not isinstance(manifest, dict)
                 or manifest.get("schema")
-                not in {"armarium-export-manifest.v5", "armarium-export-manifest.v6"}
+                not in {"armarium-export-manifest.v7", "armarium-export-manifest.v8"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3175,7 +3175,7 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
 
 
 def _write_acceptance_bundle_tree(
-    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v5"
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v7"
 ) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
@@ -3246,7 +3246,7 @@ def _write_acceptance_bundle_tree(
 
 
 @pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
 )
 def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
@@ -3276,7 +3276,7 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path,
 
 
 @pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
 )
 def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
@@ -3333,10 +3333,10 @@ def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
     image_root = tmp_path / "image-local"
     clustered_root = tmp_path / "clustered"
     _write_acceptance_bundle_tree(
-        image_root, database, manifest_schema="armarium-export-manifest.v5"
+        image_root, database, manifest_schema="armarium-export-manifest.v7"
     )
     _write_acceptance_bundle_tree(
-        clustered_root, database, manifest_schema="armarium-export-manifest.v6"
+        clustered_root, database, manifest_schema="armarium-export-manifest.v8"
     )
 
     assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
